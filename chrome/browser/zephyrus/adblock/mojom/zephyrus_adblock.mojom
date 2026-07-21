@@ -1,0 +1,17 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module zephyrus_adblock.mojom;
+
+// Implemented in the browser, called by the renderer at document-start to fetch
+// the main-world ad-block payload for the current frame. Synchronous so the
+// payload is available before the page's own scripts run (scriptlets must patch
+// the page's objects before its ad code executes). The browser resolves the
+// frame's committed URL and profile itself from the bound RenderFrameHost.
+// Returns both the scriptlet JS (`script`) and the element-hiding CSS (`css`)
+// for the frame; either may be empty.
+interface ScriptletHost {
+  [Sync]
+  GetPayload() => (string script, string css);
+};

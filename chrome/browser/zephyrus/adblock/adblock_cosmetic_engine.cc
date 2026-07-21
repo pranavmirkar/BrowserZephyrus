@@ -1,0 +1,168 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/browser/zephyrus/adblock/adblock_cosmetic_engine.h"
+
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
+
+namespace zephyrus_adblock {
+
+namespace {
+
+// Procedural / extended-syntax markers that require JS rather than plain CSS;
+// selectors containing any of these are skipped for now. NOTE: plain ":has()"
+// is NOT here — Chromium supports native CSS :has() (M105+), so those rules are
+// emitted as real CSS (this is what hides whole ad containers, e.g.
+// ytd-rich-item-renderer:has(ytd-ad-slot-renderer)). Only the truly procedural
+// ":has-text()" variant is skipped.
+bool IsProceduralSelector(std::string_view selector) {
+  static constexpr std::string_view kMarkers[] = {
+      ":has-text(",     ":-abp-",      ":xpath(",
+      ":style(",       ":remove(",       ":upward(",    ":matches-css",
+      ":matches-path(",":matches-media(",":min-text-length(",
+      ":watch-attr(",  ":contains(",     ":if(",        ":if-not(",
+      ":nth-ancestor(",":others(",       ":shadow(",    ":remove-attr(",
+      ":remove-class(",
+  };
+  for (std::string_view marker : kMarkers) {
+    if (selector.find(marker) != std::string_view::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+AdblockCosmeticEngine::AdblockCosmeticEngine() = default;
+AdblockCosmeticEngine::~AdblockCosmeticEngine() = default;
+
+size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
+                                       bool inject_generic_selectors) {
+  size_t added = 0;
+  for (std::string_view raw :
+       base::SplitStringPiece(filter_list_text, "\n", base::TRIM_WHITESPACE,
+                              base::SPLIT_WANT_NONEMPTY)) {
+    if (raw[0] == '!' || raw[0] == '[') {
+      continue;
+    }
+
+    // Locate the cosmetic separator: "##" (hide) or "#@#" (unhide). Skip the
+    // extended variants "#?#", "#$#", "#%#" (procedural / scriptlet / style).
+    bool exception = false;
+    size_t sep = std::string_view::npos;
+    size_t sep_len = 0;
+    if (size_t p = raw.find("#@#"); p != std::string_view::npos) {
+      exception = true;
+      sep = p;
+      sep_len = 3;
+    } else if (size_t q = raw.find("##"); q != std::string_view::npos) {
+      // Reject "#?#" / "#$#" which also contain "##"? They don't; they use a
+      // single '#'. But ensure we didn't land inside "#?#"-style tokens.
+      sep = q;
+      sep_len = 2;
+    } else {
+      continue;  // not a cosmetic rule
+    }
+
+    std::string_view domains = raw.substr(0, sep);
+    std::string_view selector = raw.substr(sep + sep_len);
+    // Skip scriptlet injections ("##+js(...)") — those belong to the scriptlet
+    // engine, and as CSS they are invalid and would (grouped) invalidate the
+    // whole element-hiding stylesheet. Also skip empty/procedural selectors.
+    if (selector.empty() || selector.rfind("+js(", 0) == 0 ||
+        IsProceduralSelector(selector)) {
+      continue;
+    }
+    std::string sel(selector);
+
+    if (domains.empty()) {
+      // Generic rule.
+      if (exception) {
+        generic_exceptions_.insert(sel);
+      } else if (inject_generic_selectors) {
+        injected_generic_selectors_.push_back(sel);
+      } else {
+        generic_selectors_.push_back(sel);
+      }
+      ++rule_count_;
+      ++added;
+      continue;
+    }
+
+    // Domain-scoped rule (comma-separated list; "~domain" negations skipped).
+    for (std::string_view d :
+         base::SplitStringPiece(domains, ",", base::TRIM_WHITESPACE,
+                                base::SPLIT_WANT_NONEMPTY)) {
+      if (d[0] == '~') {
+        continue;  // exclusion form not supported yet
+      }
+      std::string domain = base::ToLowerASCII(d);
+      if (exception) {
+        domain_exceptions_[domain].insert(sel);
+      } else {
+        domain_selectors_[domain].push_back(sel);
+      }
+    }
+    ++rule_count_;
+    ++added;
+  }
+  return added;
+}
+
+std::vector<std::string> AdblockCosmeticEngine::GetSelectorsForUrl(
+    const GURL& url) const {
+  std::vector<std::string> result;
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return result;
+  }
+  const std::string host(url.host());
+
+  // Collect the exceptions that apply to this host (generic + all matching
+  // parent domains) so hidden selectors can be filtered out.
+  std::unordered_set<std::string> exceptions = generic_exceptions_;
+
+  // Walk host and each parent domain (a.b.c.com -> b.c.com -> c.com).
+  for (size_t pos = 0; pos != std::string::npos;) {
+    std::string_view candidate(host);
+    candidate.remove_prefix(pos);
+    auto ex_it = domain_exceptions_.find(std::string(candidate));
+    if (ex_it != domain_exceptions_.end()) {
+      exceptions.insert(ex_it->second.begin(), ex_it->second.end());
+    }
+    size_t dot = host.find('.', pos);
+    pos = (dot == std::string::npos) ? std::string::npos : dot + 1;
+  }
+
+  auto add = [&](const std::vector<std::string>& selectors) {
+    for (const std::string& s : selectors) {
+      if (!exceptions.contains(s)) {
+        result.push_back(s);
+      }
+    }
+  };
+
+  // The small curated always-inject set (cookie-banner CMP containers) applies
+  // to every page.
+  add(injected_generic_selectors_);
+
+  // Mass generic (all-site) selectors are parsed but not injected: emitting
+  // ~15k selectors on every page would be a large per-page cost. Enabling them
+  // needs a "surveyor" that injects only the selectors whose classes/ids are
+  // actually present in the document (future).
+  for (size_t pos = 0; pos != std::string::npos;) {
+    std::string_view candidate(host);
+    candidate.remove_prefix(pos);
+    auto it = domain_selectors_.find(std::string(candidate));
+    if (it != domain_selectors_.end()) {
+      add(it->second);
+    }
+    size_t dot = host.find('.', pos);
+    pos = (dot == std::string::npos) ? std::string::npos : dot + 1;
+  }
+  return result;
+}
+
+}  // namespace zephyrus_adblock

@@ -1,0 +1,70 @@
+<style include="cr-shared-style settings-shared">
+  .allowlist-row {
+    justify-content: space-between;
+  }
+
+  .allowlist-domain {
+    overflow-wrap: anywhere;
+  }
+
+  #addRow cr-input {
+    --cr-input-width: 100%;
+    margin-inline-end: 16px;
+  }
+</style>
+<settings-section page-title="$i18n{zephyrusAdblockPageTitle}"
+    class="cr-centered-card-container">
+  <settings-toggle-button
+      id="enabledToggle"
+      pref="{{prefs.zephyrus.adblock.enabled}}"
+      label="$i18n{zephyrusAdblockEnabledLabel}"
+      sub-label="$i18n{zephyrusAdblockEnabledSubLabel}">
+  </settings-toggle-button>
+
+  <settings-toggle-button
+      id="popupToggle"
+      class="hr"
+      pref="{{prefs.zephyrus.adblock.aggressive_popup}}"
+      label="$i18n{zephyrusAdblockPopupLabel}"
+      sub-label="$i18n{zephyrusAdblockPopupSubLabel}">
+  </settings-toggle-button>
+
+  <div class="cr-row">
+    <div class="flex cr-padded-text">
+      <div>$i18n{zephyrusAdblockStatsLabel}</div>
+      <div class="secondary" id="statsValue">[[statsText_]]</div>
+    </div>
+  </div>
+
+  <div class="cr-row">
+    <div class="flex cr-padded-text">
+      <div>$i18n{zephyrusAdblockAllowlistLabel}</div>
+      <div class="secondary">$i18n{zephyrusAdblockAllowlistSubLabel}</div>
+    </div>
+  </div>
+
+  <div class="cr-row continuation" id="addRow">
+    <cr-input class="flex" value="{{newDomain_}}"
+        placeholder="$i18n{zephyrusAdblockAllowlistPlaceholder}"
+        on-keydown="onDomainKeydown_">
+    </cr-input>
+    <cr-button on-click="onAddDomain_">$i18n{zephyrusAdblockAdd}</cr-button>
+  </div>
+
+  <template is="dom-if" if="[[allowlistEmpty_]]">
+    <div class="cr-row continuation">
+      <div class="secondary">$i18n{zephyrusAdblockAllowlistEmpty}</div>
+    </div>
+  </template>
+
+  <template is="dom-repeat"
+      items="[[prefs.zephyrus.adblock.allowlist.value]]">
+    <div class="cr-row continuation allowlist-row">
+      <div class="allowlist-domain">[[item]]</div>
+      <cr-icon-button class="icon-clear" on-click="onRemoveDomain_"
+          title="$i18n{zephyrusAdblockRemove}"
+          aria-label="$i18n{zephyrusAdblockRemove}">
+      </cr-icon-button>
+    </div>
+  </template>
+</settings-section>

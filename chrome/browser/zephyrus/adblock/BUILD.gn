@@ -1,0 +1,51 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# Bundles EasyList + EasyPrivacy next to the binary; the service reads it at
+# startup from DIR_ASSETS.
+copy("filter_list") {
+  sources = [ "lists/zephyrus_filters.txt" ]
+  outputs = [ "$root_out_dir/zephyrus_filters.txt" ]
+}
+
+source_set("adblock") {
+  sources = [
+    "adblock_cosmetic_engine.cc",
+    "adblock_cosmetic_engine.h",
+    "adblock_filter_engine.cc",
+    "adblock_filter_engine.h",
+    "adblock_scriptlet_engine.cc",
+    "adblock_scriptlet_engine.h",
+    "zephyrus_adblock_proxying_url_loader_factory.cc",
+    "zephyrus_adblock_proxying_url_loader_factory.h",
+    "zephyrus_adblock_scriptlet_host.cc",
+    "zephyrus_adblock_scriptlet_host.h",
+    "zephyrus_adblock_service.cc",
+    "zephyrus_adblock_service.h",
+    "zephyrus_adblock_service_factory.cc",
+    "zephyrus_adblock_service_factory.h",
+    "zephyrus_adblock_tab_helper.cc",
+    "zephyrus_adblock_tab_helper.h",
+    "zephyrus_adblock_updater.cc",
+    "zephyrus_adblock_updater.h",
+  ]
+  deps = [
+    "//chrome/common:constants",
+    "//components/prefs",
+    "//content/public/browser",
+    "//mojo/public/cpp/bindings",
+    "//net",
+    "//net/traffic_annotation",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
+  ]
+  public_deps = [
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/zephyrus/adblock/mojom",
+    "//components/keyed_service/core",
+    "//url",
+  ]
+  data_deps = [ ":filter_list" ]
+}

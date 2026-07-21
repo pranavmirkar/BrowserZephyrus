@@ -1,0 +1,186 @@
+/* Copyright 2026 The Chromium Authors
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file. */
+
+/* Zephyrus Private Workspace new-tab page.
+ *
+ * Replaces Chrome's incognito page. Colors come from the same system as the
+ * rest of the browser: the private base #1E1230 (BrowserView::
+ * kZephyrusPrivateThemeColor), surfaces lifted from it with white at low alpha,
+ * 10px card radius, body text at ~69% ink. The page belongs to the window it
+ * sits in instead of reading as a foreign Chrome surface.
+ *
+ * Loaded after chrome://theme/css/incognito_tab_theme.css, so it overrides it. */
+
+/* Three-step surface ladder, built with the system's own lift() model —
+ * AlphaBlend(white, base, alpha) over the private base #1E1230 — so the page
+ * is a different SHADE of the window's theme rather than a different color.
+ *
+ *   window chrome  #1E1230  the base itself (title bar, toolbar, sidebar)
+ *   page           lift 0x0C -> #291E39  content sits above the chrome
+ *   card           lift 0x22 -> #3C324C  the panel level used everywhere else
+ *
+ * Alphas match the rest of the system: 0x1F hairline, 0xB0 body ink. */
+:root {
+  --zephyrus-chrome: #1e1230;
+  --zephyrus-base: #291e39;
+  --zephyrus-card: #3c324c;
+  --zephyrus-hairline: rgba(255, 255, 255, 0.12);  /* 0x1F */
+  --zephyrus-ink: #fff;
+  --zephyrus-ink-muted: rgba(255, 255, 255, 0.69);  /* 0xB0 */
+  --zephyrus-accent: #8b5cf6;
+  --zephyrus-radius: 10px;
+}
+
+html,
+body {
+  background: var(--zephyrus-base) !important;
+  margin: 0;
+  min-height: 100vh;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  align-items: center;
+  box-sizing: border-box;
+  color: var(--zephyrus-ink);
+  display: flex;
+  /* Inter, matching the rest of the Zephyrus UI. Not system-ui — that resolves
+   * to Segoe UI on Windows, which is a different face and made this page read
+   * as a stock Chrome surface. */
+  font-family: Inter, system-ui, sans-serif;
+  justify-content: center;
+  padding: 48px 24px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* The theme stylesheet loaded before this one also styles .content, so the
+ * width needs the extra specificity to actually win. */
+body .content {
+  color: var(--zephyrus-ink);
+  max-width: 560px;
+  min-width: 240px;
+  width: 100%;
+}
+
+/* Zephyrus's dedicated Private Workspace lock (the same mark used in the
+ * toolbar pill and sidebar), in the accent color. A quiet marker, not a hero,
+ * so it doesn't compete with the heading. */
+.icon {
+  background: var(--zephyrus-accent);
+  height: 28px;
+  margin-bottom: 16px;
+  width: 28px;
+  -webkit-mask-image: url("data:image/svg+xml;utf8,%3Csvg width='32' height='32' viewBox='0 0 32 32' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M27.425 13.71H25.905V28.95H27.425V13.71Z'/%3E%3Cpath d='M25.905 28.95H24.375V30.48H25.905V28.95Z'/%3E%3Cpath d='M24.375 30.48H7.61499V32H24.375V30.48Z'/%3E%3Cpath d='M22.855 1.52H21.335V3.05H22.855V1.52Z'/%3E%3Cpath d='M18.285 19.81H16.765V18.29H18.285V16.76H13.715V18.29H12.185V21.33H13.715V22.86H15.235V27.43H16.765V22.86H18.285V21.33H19.805V18.29H18.285V19.81Z'/%3E%3Cpath d='M21.335 0H10.665V1.52H21.335V0Z'/%3E%3Cpath d='M10.665 1.52H9.145V3.05H10.665V1.52Z'/%3E%3Cpath d='M25.905 13.71V12.19H24.375V3.05H22.855V12.19H9.145V3.05H7.615V12.19H6.095V13.71H25.905Z'/%3E%3Cpath d='M7.615 28.95H6.095V30.48H7.615V28.95Z'/%3E%3Cpath d='M6.095 13.71H4.575V28.95H6.095V13.71Z'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+}
+
+h1 {
+  color: var(--zephyrus-ink);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.02em;  /* Negative tracking as display type grows. */
+  line-height: 1.15;
+  margin: 0 0 10px;
+}
+
+#subtitle {
+  color: var(--zephyrus-ink-muted);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 0 0 24px;
+}
+
+em {
+  font-style: normal;
+}
+
+/* Two grouped cards. Same move as the Shield panel's stats: group by raising a
+ * surface rather than by drawing dividers. */
+#bulletpoints-wrapper {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr 1fr;
+}
+
+@media (max-width: 520px) {
+  #bulletpoints-wrapper {
+    grid-template-columns: 1fr;
+  }
+}
+
+.bulletpoints {
+  background: var(--zephyrus-card);
+  border: 1px solid var(--zephyrus-hairline);
+  border-radius: var(--zephyrus-radius);
+  color: var(--zephyrus-ink-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 16px 18px;
+}
+
+.bulletpoints strong {
+  color: var(--zephyrus-ink);
+  display: block;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.bulletpoints ul {
+  margin: 0;
+  padding-inline-start: 18px;
+}
+
+.bulletpoints li {
+  margin-bottom: 4px;
+}
+
+.bulletpoints li:last-child {
+  margin-bottom: 0;
+}
+
+#cookie-controls {
+  align-items: center;
+  background: var(--zephyrus-card);
+  border: 1px solid var(--zephyrus-hairline);
+  border-radius: var(--zephyrus-radius);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding: 14px 18px;
+}
+
+#cookie-controls-description {
+  color: var(--zephyrus-ink-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#cookie-controls-header {
+  align-items: center;
+  color: var(--zephyrus-ink);
+  display: flex;
+  font-weight: 600;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+
+#cookie-controls svg {
+  fill: var(--zephyrus-ink);
+  height: 18px;
+  width: 18px;
+}
+
+.learn-more-button {
+  color: var(--zephyrus-accent);
+  text-decoration: none;
+}
+
+.learn-more-button:hover {
+  text-decoration: underline;
+}

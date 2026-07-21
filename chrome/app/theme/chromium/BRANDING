@@ -1,0 +1,10 @@
+COMPANY_FULLNAME=Lazarus
+COMPANY_SHORTNAME=Lazarus
+PRODUCT_FULLNAME=Lazarus Zephyrus
+PRODUCT_SHORTNAME=Zephyrus
+PRODUCT_INSTALLER_FULLNAME=Lazarus Zephyrus Installer
+PRODUCT_INSTALLER_SHORTNAME=Zephyrus Installer
+COPYRIGHT=Copyright @LASTCHANGE_YEAR@ Lazarus. All rights reserved.
+MAC_BUNDLE_ID=com.lazarus.zephyrus
+MAC_CREATOR_CODE=Lzph
+MAC_TEAM_ID=
