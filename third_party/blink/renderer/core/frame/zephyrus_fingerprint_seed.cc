@@ -8,6 +8,8 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
+#include "third_party/blink/renderer/core/workers/worker_global_scope.h"
+#include "third_party/blink/renderer/core/workers/worker_or_worklet_global_scope.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
@@ -16,36 +18,54 @@
 
 namespace blink {
 
+namespace {
+
+// The content settings client for either kind of context.
+//
+// A worker has no frame, so the window path returns nothing for it — which is
+// why OffscreenCanvas inside a Web Worker went unperturbed and a script could
+// evade the whole feature by moving its canvas work off the main thread.
+// Workers DO carry a WebContentSettingsClient of their own
+// (WorkerOrWorkletGlobalScope::ContentSettingsClient), populated from the
+// creating frame, so both contexts can answer once this looks in both places.
+WebContentSettingsClient* SettingsClientFor(ExecutionContext* context) {
+  if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
+    return window->GetFrame() ? window->GetFrame()->GetContentSettingsClient()
+                              : nullptr;
+  }
+  if (auto* scope = DynamicTo<WorkerOrWorkletGlobalScope>(context)) {
+    return scope->ContentSettingsClient();
+  }
+  return nullptr;
+}
+
+// The interface broker for either kind of context. There is no
+// ExecutionContext::GetBrowserInterfaceBroker(), so this branches — but it
+// branches in ONE place, like SettingsClientFor above, rather than at each
+// caller.
+const BrowserInterfaceBrokerProxy* BrokerFor(ExecutionContext* context) {
+  if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
+    return window->GetFrame() ? &window->GetFrame()->GetBrowserInterfaceBroker()
+                              : nullptr;
+  }
+  if (auto* scope = DynamicTo<WorkerGlobalScope>(context)) {
+    return &scope->GetBrowserInterfaceBroker();
+  }
+  return nullptr;
+}
+
+}  // namespace
+
 std::optional<std::array<uint8_t, 32>> ZephyrusFingerprintSeedFor(
     ExecutionContext* context) {
-  // Nullopt for anything that is not a window. A worker, or an OffscreenCanvas
-  // on a worker thread, has no frame and therefore no WebContentSettingsClient
-  // to ask.
-  //
-  // That is a real coverage gap, recorded here rather than papered over: a
-  // fingerprinting script that moves its canvas work into a worker is not
-  // perturbed. The alternative — inventing a worker-side seed — is worse, since
-  // it would produce perturbation the browser has no record of and therefore
-  // cannot report, which §2 forbids. Closing it properly means giving workers
-  // their own seed channel.
-  auto* window = DynamicTo<LocalDOMWindow>(context);
-  if (!window || !window->GetFrame()) {
-    return std::nullopt;
-  }
-  WebContentSettingsClient* settings =
-      window->GetFrame()->GetContentSettingsClient();
+  WebContentSettingsClient* settings = SettingsClientFor(context);
   return settings ? settings->GetZephyrusFingerprintSeed() : std::nullopt;
 }
 
 std::optional<std::array<uint8_t, 32>> ZephyrusSeedForSurface(
     ExecutionContext* context,
     uint32_t surface_bit) {
-  auto* window = DynamicTo<LocalDOMWindow>(context);
-  if (!window || !window->GetFrame()) {
-    return std::nullopt;
-  }
-  WebContentSettingsClient* settings =
-      window->GetFrame()->GetContentSettingsClient();
+  WebContentSettingsClient* settings = SettingsClientFor(context);
   if (!settings ||
       !(settings->GetZephyrusFingerprintSurfaceMask() & surface_bit)) {
     return std::nullopt;
@@ -86,24 +106,30 @@ namespace {
 // Holds the reporter pipe and the set of surfaces already reported, for the
 // lifetime of one window. A Supplement rather than a static map so it dies with
 // the document and cannot leak a pipe across navigations.
+// Keyed on ExecutionContext, not LocalDOMWindow: a worker is an
+// ExecutionContext too (and ExecutionContext is Supplementable<ExecutionContext>),
+// so one implementation covers documents and workers. Keyed on the window
+// alone, worker fingerprinting was randomized but never reported — invisible
+// on the dashboard and uncounted by the attempt heuristic, which classifies on
+// how many distinct surfaces a context touches.
 class ZephyrusReporter final : public GarbageCollected<ZephyrusReporter>,
-                               public Supplement<LocalDOMWindow> {
+                               public Supplement<ExecutionContext> {
  public:
   static constexpr char kSupplementName[] = "ZephyrusReporter";
 
-  static ZephyrusReporter& From(LocalDOMWindow& window) {
-    auto* self = Supplement<LocalDOMWindow>::From<ZephyrusReporter>(window);
+  static ZephyrusReporter& From(ExecutionContext& context) {
+    auto* self = Supplement<ExecutionContext>::From<ZephyrusReporter>(context);
     if (!self) {
-      self = MakeGarbageCollected<ZephyrusReporter>(window);
-      Supplement<LocalDOMWindow>::ProvideTo(window, self);
+      self = MakeGarbageCollected<ZephyrusReporter>(context);
+      Supplement<ExecutionContext>::ProvideTo(context, self);
     }
     return *self;
   }
 
-  explicit ZephyrusReporter(LocalDOMWindow& window)
-      : Supplement<LocalDOMWindow>(window), remote_(&window) {}
+  explicit ZephyrusReporter(ExecutionContext& context)
+      : Supplement<ExecutionContext>(context), remote_(&context) {}
 
-  void Report(LocalDOMWindow& window,
+  void Report(ExecutionContext& context,
               zephyrus_privacy::mojom::blink::FingerprintSurface surface) {
     const uint32_t bit = 1u << static_cast<uint32_t>(surface);
     if (reported_ & bit) {
@@ -111,16 +137,19 @@ class ZephyrusReporter final : public GarbageCollected<ZephyrusReporter>,
     }
     reported_ |= bit;
     if (!remote_.is_bound()) {
-      window.GetFrame()->GetBrowserInterfaceBroker().GetInterface(
-          remote_.BindNewPipeAndPassReceiver(
-              window.GetTaskRunner(TaskType::kMiscPlatformAPI)));
+      const BrowserInterfaceBrokerProxy* broker = BrokerFor(&context);
+      if (!broker) {
+        return;
+      }
+      broker->GetInterface(remote_.BindNewPipeAndPassReceiver(
+          context.GetTaskRunner(TaskType::kMiscPlatformAPI)));
     }
     remote_->ReportFingerprintSurface(surface);
   }
 
   void Trace(Visitor* visitor) const override {
     visitor->Trace(remote_);
-    Supplement<LocalDOMWindow>::Trace(visitor);
+    Supplement<ExecutionContext>::Trace(visitor);
   }
 
  private:
@@ -133,11 +162,10 @@ class ZephyrusReporter final : public GarbageCollected<ZephyrusReporter>,
 void ZephyrusReportFingerprintSurface(
     ExecutionContext* context,
     zephyrus_privacy::mojom::blink::FingerprintSurface surface) {
-  auto* window = DynamicTo<LocalDOMWindow>(context);
-  if (!window || !window->GetFrame()) {
-    return;  // Workers have no frame; see ZephyrusFingerprintSeedFor.
+  if (!context) {
+    return;
   }
-  ZephyrusReporter::From(*window).Report(*window, surface);
+  ZephyrusReporter::From(*context).Report(*context, surface);
 }
 
 }  // namespace blink
