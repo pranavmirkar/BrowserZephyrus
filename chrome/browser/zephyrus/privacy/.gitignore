@@ -1,0 +1,9 @@
+# Spec 4.2: neither the source dataset nor the built artifact may be committed.
+# Both are CC BY-NC-SA works; this repo is published under the project's own
+# licence, and git history keeps whatever is committed even after deletion.
+# The converter, the fetch script, the format spec and the licence manifest are
+# original work and DO belong here.
+zephyrus_entities.dat
+*.dat
+tools/dataset-src/
+tools/__pycache__/

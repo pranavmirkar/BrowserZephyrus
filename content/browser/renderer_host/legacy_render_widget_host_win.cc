@@ -765,6 +765,17 @@ LRESULT LegacyRenderWidgetHostHWND::OnSetCursor(UINT message,
     ::ScreenToClient(parent, &client_pt);
     RECT rc;
     ::GetClientRect(parent, &rc);
+    // Cheap interior pre-check: a resize border is at most ~kMaxBorderPx wide
+    // even at 4x DPI. When the cursor is comfortably inside, skip the pricier
+    // GetDpiForWindow + border math so WM_SETCURSOR (which fires on every
+    // move over the widget) stays cheap and doesn't add input-thread latency.
+    constexpr int kZephyrusMaxBorderPx = 24;
+    if (client_pt.x >= kZephyrusMaxBorderPx &&
+        client_pt.x < rc.right - kZephyrusMaxBorderPx &&
+        client_pt.y >= kZephyrusMaxBorderPx &&
+        client_pt.y < rc.bottom - kZephyrusMaxBorderPx) {
+      return 0;
+    }
     const int dpi = ::GetDpiForWindow(parent);
     const int kBorder = ::MulDiv(6, dpi, 96);
     const bool on_left   = client_pt.x < kBorder;

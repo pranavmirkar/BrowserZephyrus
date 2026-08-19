@@ -169,7 +169,12 @@
 #include "chrome/browser/ui/views/frame/tab_modal_dialog_host.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_empty_background.h"
+// ZEPHYRUS PROFILES FRONTEND - DISABLED.
+// #include "chrome/browser/ui/views/frame/zephyrus_profile_switcher.h"
+#include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
 #include "chrome/browser/ui/views/frame/zephyrus_sidebar_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_tab_switcher.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "chrome/browser/ui/views/frame/top_controls_slide_controller.h"
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
@@ -352,6 +357,7 @@
 #include "ui/views/controls/button/menu_button.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/webview/webview.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/layout/fill_layout.h"
@@ -987,6 +993,14 @@ BrowserView::BrowserView(Browser* browser)
                 base::Unretained(this))));
     zephyrus_sidebar_ =
         AddChildView(std::make_unique<ZephyrusSidebarView>(this));
+
+    // The Ctrl+T search card. Added after the sidebar so it sits above it, and
+    // it starts hidden: Show() toggles it. It sizes itself to the window when
+    // revealed, so it needs no slot in BrowserView's layout.
+    zephyrus_search_overlay_ =
+        AddChildView(std::make_unique<ZephyrusSearchOverlay>(this));
+    zephyrus_tab_switcher_ =
+        AddChildView(std::make_unique<ZephyrusTabSwitcher>(this));
   }
 
   // InfoBarContainer needs to be added as a child here for drop-shadow, but
@@ -1636,6 +1650,28 @@ void BrowserView::Show() {
   browser_widget_->Show();
 
   browser()->OnWindowDidShow();
+
+  // Zephyrus: first launch asks the user to name their profile. Posted so the
+  // window is fully up before the dialog anchors to it, and a no-op once setup
+  // has been completed (a local-state pref), so this is not a startup picker.
+  // ZEPHYRUS PROFILES FRONTEND - DISABLED until Google auth lands. This was
+  // the first-run "name your profile" prompt; with the profiles UI withdrawn
+  // there is nothing for it to set up, and leaving it would show a dialog for
+  // a feature the user cannot otherwise reach.
+#if 0
+  if (browser()->is_type_normal()) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](base::WeakPtr<BrowserView> view) {
+              if (view && view->browser()) {
+                ZephyrusProfileSwitcher::GetInstance()->MaybeShowFirstRunSetup(
+                    view->browser());
+              }
+            },
+            weak_ptr_factory_.GetWeakPtr()));
+  }
+#endif  // ZEPHYRUS PROFILES FRONTEND - DISABLED
 
   // The fullscreen transition clears out focus, but there are some cases (for
   // example, new window in Mac fullscreen with toolbar showing) where we need
@@ -3050,21 +3086,164 @@ void BrowserView::UpdateZephyrusTitlebarColor() {
   }
 }
 
+void BrowserView::UpdateZephyrusEmptyState() {
+  if (!contents_container_ || !browser_->tab_strip_model()) {
+    return;
+  }
+  const bool empty = browser_->tab_strip_model()->empty();
+  if (empty == zephyrus_showing_empty_state_) {
+    return;
+  }
+  zephyrus_showing_empty_state_ = empty;
+
+  if (empty) {
+    // No tabs: the blurred desktop wallpaper stands in for the missing page.
+    // The contents views must also be hidden — a WebContents that has gone away
+    // leaves its last painted frame on screen (stock Chromium never has an
+    // empty tab strip, so nothing else clears it), and that stale page would
+    // cover the wallpaper entirely.
+    zephyrus::InstallEmptyWindowBackground(contents_container_);
+    if (multi_contents_view_) {
+      multi_contents_view_->SetVisible(false);
+    }
+    // Hiding the focused web contents makes the FocusManager advance focus to
+    // the next focusable view — the first sidebar row — which then paints its
+    // focus ring permanently, because in an empty window nothing ever takes
+    // focus back. Nothing should own focus here, so drop it.
+    if (views::FocusManager* focus_manager = GetFocusManager()) {
+      focus_manager->ClearFocus();
+    }
+    // The omnibox keeps whatever the last tab showed, because nothing tells it
+    // the contents went away — stock Chromium never has a tabless window to
+    // refresh. An empty window must not still read "github.com".
+    if (toolbar_) {
+      toolbar_->Update(nullptr);
+      // Update(nullptr) alone leaves "about:blank": with no WebContents the
+      // location bar model falls back to that, which is still text in a window
+      // that has nothing open. Blank it so only the placeholder shows.
+      if (LocationBarView* location_bar = toolbar_->location_bar_view()) {
+        if (OmniboxView* omnibox = location_bar->GetOmniboxView()) {
+          omnibox->SetUserText(std::u16string(), /*update_popup=*/false);
+        }
+      }
+    }
+  } else {
+    contents_container_->SetBackground(
+        views::CreateSolidBackground(GetZephyrusThemeColor()));
+    if (multi_contents_view_) {
+      multi_contents_view_->SetVisible(true);
+    }
+  }
+  contents_container_->SchedulePaint();
+}
+
+int BrowserView::ZephyrusSidebarOpenWidth() const {
+  if (!zephyrus_sidebar_attached_) {
+    return 0;
+  }
+  return base::ClampFloor(ZephyrusSidebarColumnWidth() *
+                          ZephyrusSidebarRevealAmount());
+}
+
+double BrowserView::ZephyrusSidebarRevealAmount() const {
+  return zephyrus_sidebar_ ? zephyrus_sidebar_->reveal_amount() : 0.0;
+}
+
+// static
+int BrowserView::ZephyrusSidebarColumnWidth() {
+  return kZephyrusSidebarGap + ZephyrusSidebarView::kSidebarWidth;
+}
+
+void BrowserView::SetZephyrusSidebarAttached(bool attached) {
+  if (zephyrus_sidebar_attached_ == attached) {
+    return;
+  }
+  zephyrus_sidebar_attached_ = attached;
+  // Relayout moves the contents container off (or back onto) the column. This
+  // is the single resize per transition; the panel's own slide is a layer
+  // transform and costs nothing.
+  InvalidateLayout();
+}
+
+void BrowserView::ApplyZephyrusSidebarReveal() {
+  // Only the panel. The page's visible rect comes from the layout (which insets
+  // by the animated width) and its renderer size from the pin set in
+  // UpdateZephyrusSidebarPin — both established BEFORE the layout pass runs, so
+  // the pass sees one self-consistent set of values and does not have to be
+  // dirtied again mid-flight.
+  if (!zephyrus_sidebar_) {
+    return;
+  }
+  // Derived as column MINUS the layout's own value, using the layout's own
+  // rounding (ClampFloor), so the panel's right edge and the page's left edge
+  // are the same integer at every ratio. Computing this independently with
+  // ClampRound disagreed by a pixel at some ratios and opened a hairline seam.
+  const int shift = ZephyrusSidebarColumnWidth() - ZephyrusSidebarOpenWidth();
+  gfx::Transform transform;
+  transform.Translate(-shift, 0);
+  zephyrus_sidebar_->layer()->SetTransform(transform);
+}
+
+void BrowserView::UpdateZephyrusSidebarPin() {
+  // Pin the renderer to the width it has with the sidebar CLOSED, and clip the
+  // part the sidebar now covers. The page therefore keeps ONE size for the
+  // whole slide however far its visible edge has travelled, and resizes once at
+  // the end when the pin is cleared.
+  //
+  // Called from the animation tick, deliberately NOT from inside the layout.
+  // SetTargetContentBounds invalidates layout; doing that from BeforeApplyLayout
+  // (which is what setting clip_content_for_animation ends up doing) re-dirties
+  // the pass that is already running, every frame, with a value that changes
+  // every frame. That is the layout storm behind the original stutter — not the
+  // cost of a single pass.
+  ContentsContainerView* const contents = GetActiveContentsContainerView();
+  if (!contents) {
+    return;
+  }
+  const int column = ZephyrusSidebarColumnWidth();
+  const int open = ZephyrusSidebarOpenWidth();
+  if (!zephyrus_sidebar_attached_ || open >= column) {
+    // Settled either way: the laid-out size IS the real size, so stop pinning.
+    // Clearing it is the single resize of the interaction.
+    contents->SetTargetContentBounds(std::nullopt);
+    return;
+  }
+  // POSITIVE outset on the leading edge: grow the web contents left, back under
+  // the panel, and clip it there.
+  //
+  // Set on the ContentsContainerView directly, NOT via MultiContentsView.
+  // MultiContentsView::BeforeApplyLayout negates what it is given
+  // (-clipped_area.ToOutsets()), so routing through it inverted the sign and
+  // SHRANK the contents away from the container's left edge instead — which is
+  // the grey strip that appeared between the panel and the page.
+  contents->SetTargetContentBounds(gfx::Outsets::TLBR(0, open, 0, 0));
+}
+
 void BrowserView::UpdateZephyrusSidebarBounds() {
   if (!zephyrus_sidebar_ || !contents_container_) {
     return;
   }
-  constexpr int kSidebarMargin = 8;
   constexpr int kHotZoneWidth = 5;
   const gfx::Rect content_bounds = contents_container_->bounds();
+  // Anchor to the CLIENT AREA, not to the contents container. Once attached
+  // the container has been pushed right by the column, and anchoring to it
+  // would carry the sidebar along with the page it just made room for.
+  //
+  // Subtract exactly what the layout reserved THIS frame. The layout insets by
+  // the animated width, so subtracting the full column here would drag the
+  // panel's origin left as the column opens — and with the transform applying
+  // its own offset on top, the panel would travel twice the distance and open a
+  // gap against the page. This resolves to a constant client_left.
+  const int client_left = content_bounds.x() - ZephyrusSidebarOpenWidth();
+
   // The sidebar always occupies its revealed position; the slide in/out is done
   // via a layer transform on the view itself.
   zephyrus_sidebar_->SetBounds(
-      content_bounds.x() + kSidebarMargin, content_bounds.y() + kSidebarMargin,
+      client_left + kZephyrusSidebarGap, content_bounds.y() + kZephyrusSidebarGap,
       ZephyrusSidebarView::kSidebarWidth,
-      std::max(0, content_bounds.height() - 2 * kSidebarMargin));
+      std::max(0, content_bounds.height() - 2 * kZephyrusSidebarGap));
   if (zephyrus_sidebar_hotzone_) {
-    zephyrus_sidebar_hotzone_->SetBounds(content_bounds.x(), content_bounds.y(),
+    zephyrus_sidebar_hotzone_->SetBounds(client_left, content_bounds.y(),
                                          kHotZoneWidth, content_bounds.height());
   }
 }
@@ -3756,6 +3935,10 @@ void BrowserView::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
+  // Zephyrus: a window with no tabs stays open on the empty state, so refresh
+  // what the content area paints whenever the tab count crosses zero.
+  UpdateZephyrusEmptyState();
+
   // When the active tab changes, elements in the omnibox can change, which
   // can change its preferred size. Re-lay-out the toolbar to reflect the
   // possible change.
@@ -5058,8 +5241,28 @@ void BrowserView::Layout(PassKey) {
   // Zephyrus: slide the (unpinned) title bar in/out and reflow contents to it.
   ApplyZephyrusTitlebarReveal();
 
-  // Zephyrus: position the floating sidebar (respecting its slide animation).
+  // Zephyrus: position the sidebar, then apply its slide. Bounds first — it
+  // reads the contents container's static, fully-open position, which the
+  // reveal below then shifts.
   UpdateZephyrusSidebarBounds();
+  ApplyZephyrusSidebarReveal();
+
+  // Zephyrus: stop here while the sidebar column is sliding.
+  //
+  // The children are already laid out — LayoutSuperclass and the two calls
+  // above have run. Everything BELOW recomputes state that cannot change
+  // during a 200ms slide: focus behaviour, the frame's minimum size, the
+  // permission-bubble anchor, the modal-dialog anchor position, and a user
+  // education service lookup. Running all of it on every animation frame is
+  // what was left of the stutter once the geometry was fixed.
+  //
+  // Safe because the animation ends with its own InvalidateLayout(), so the
+  // settled layout runs this tail exactly once, with the final bounds. The
+  // worst case is an anchored bubble sitting still for the length of the
+  // slide instead of tracking it.
+  if (zephyrus_sidebar_ && zephyrus_sidebar_->is_revealing_or_tucking()) {
+    return;
+  }
 
   // TODO(jamescook): Why was this in the middle of layout code?
   toolbar_->location_bar()->UpdateFocusBehavior(IsToolbarVisible());

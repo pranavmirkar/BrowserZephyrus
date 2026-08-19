@@ -67,6 +67,7 @@ class ToolbarDivider;
 class OverflowButton;
 class PerformanceInterventionButton;
 class ZephyrusWorkspaceButton;
+class ZephyrusProfileButton;
 class ZephyrusColorTransition;
 class ZephyrusOmniboxFocusAnimation;
 
@@ -206,14 +207,31 @@ class ToolbarView : public views::AccessiblePaneView,
   void UpdateZephyrusWorkspaceButton();
   void ShowZephyrusWorkspaceMenu();
 
+  // Zephyrus: in-window profile switcher pill, left of the workspace pill.
+  // ZEPHYRUS PROFILES FRONTEND - DISABLED until Google auth lands. The
+  // definitions in toolbar_view.cc are inside an #if 0 block; re-enable both
+  // together.
+  // void AddZephyrusProfileButton();
+  // void UpdateZephyrusProfileButton();
+  // void ShowZephyrusProfileMenu();
+
   // Zephyrus: pin toggle (right of the omnibox). When unpinned the title bar
   // auto-hides; updates the icon/tooltip to reflect the current pinned state.
   void AddZephyrusPinButton();
   void UpdateZephyrusPinButton();
 
+  // Keeps the Shield's blocked-count badge bound to the active tab's counter.
+  void ObserveZephyrusAdblockCount();
+  void OnZephyrusAdblockCountChanged();
+  void UpdateZephyrusAdblockBadge();
+
   // Zephyrus: ad-block shield button + statistics popup.
   void AddZephyrusAdblockButton();
   void ShowZephyrusAdblockBubble();
+
+  // Zephyrus: Privacy Intelligence panel (§6.1/§6.2), opened from the Shield
+  // panel. Public because it is posted as a task from that panel's button.
+  void ShowZephyrusPrivacyBubble();
   CustomTabBarView* custom_tab_bar() { return custom_tab_bar_; }
   BatterySaverButton* battery_saver_button() const {
     return battery_saver_button_;
@@ -417,6 +435,8 @@ class ToolbarView : public views::AccessiblePaneView,
   raw_ptr<HomeButton> home_ = nullptr;
   raw_ptr<ToolbarButton> zephyrus_new_tab_button_ = nullptr;
   raw_ptr<views::Button> zephyrus_workspace_button_ = nullptr;
+  // ZEPHYRUS PROFILES FRONTEND - DISABLED.
+  // raw_ptr<views::Button> zephyrus_profile_button_ = nullptr;
   // Liquid-glass pills painted behind the back/forward pair and the window
   // controls (positioned manually in Layout, ignored by FlexLayout).
   raw_ptr<views::View> zephyrus_nav_pill_backdrop_ = nullptr;
@@ -527,6 +547,8 @@ class ToolbarView : public views::AccessiblePaneView,
   base::CallbackListSubscription vertical_tab_subscription_;
   // Keeps the workspace pill's label in sync with the workspace manager.
   base::CallbackListSubscription zephyrus_workspace_changed_subscription_;
+  base::CallbackListSubscription zephyrus_adblock_subscription_;
+  base::OneShotTimer zephyrus_adblock_badge_timer_;
   // Refreshes the pill's audio indicator; audio state isn't a workspace event.
   base::RepeatingTimer zephyrus_audio_poll_timer_;
 

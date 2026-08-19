@@ -55,6 +55,7 @@
 #include "chrome/renderer/chrome_content_settings_agent_delegate.h"
 #include "chrome/renderer/chrome_render_frame_observer.h"
 #include "chrome/renderer/zephyrus_adblock_scriptlet_agent.h"
+#include "chrome/renderer/zephyrus_fingerprint_seed_agent.h"
 #include "chrome/renderer/chrome_render_thread_observer.h"
 #include "chrome/renderer/controlled_frame/controlled_frame_extensions_renderer_api_provider.h"
 #include "chrome/renderer/google_accounts_private_api_extension.h"
@@ -614,6 +615,9 @@ void ChromeContentRendererClient::RenderFrameCreated(
 
   // Zephyrus: injects ad-block scriptlets into the main world at document-start.
   new zephyrus_adblock::ScriptletAgent(render_frame);
+  // §6.5: holds this document's fingerprint seed. Fetches lazily, so a frame
+  // that never touches an instrumented surface costs nothing.
+  new zephyrus_privacy::FingerprintSeedAgent(render_frame);
 
   auto content_settings_delegate =
       std::make_unique<ChromeContentSettingsAgentDelegate>(render_frame);
@@ -622,7 +626,7 @@ void ChromeContentRendererClient::RenderFrameCreated(
       extensions::ExtensionsRendererClient::Get()->dispatcher());
 #endif
   content_settings::ContentSettingsAgentImpl* content_settings =
-      new content_settings::ContentSettingsAgentImpl(
+      new zephyrus_privacy::ZephyrusContentSettingsAgent(
           render_frame, std::move(content_settings_delegate));
   if (chrome_observer_.get()) {
     if (chrome_observer_->content_settings_manager()) {

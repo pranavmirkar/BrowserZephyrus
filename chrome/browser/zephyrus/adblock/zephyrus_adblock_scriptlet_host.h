@@ -27,6 +27,8 @@ class ZephyrusAdblockScriptletHost
 
   // mojom::ScriptletHost:
   void GetPayload(GetPayloadCallback callback) override;
+  void GetGenericCosmeticCss(const std::vector<std::string>& tokens,
+                             GetGenericCosmeticCssCallback callback) override;
 
  private:
   ZephyrusAdblockScriptletHost(

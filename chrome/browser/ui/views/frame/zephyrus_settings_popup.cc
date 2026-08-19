@@ -6,6 +6,7 @@
 
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "build/build_config.h"
 
 #include <algorithm>
 #include <string>
@@ -248,6 +249,10 @@ void ZephyrusSettingsPopup::Show(Browser* browser, Section section) {
   views::Widget* widget = constrained_window::CreateBrowserModalDialogViews(
       std::move(popup), browser->window()->GetNativeWindow());
   popup_ptr->widget_ = widget;
+  // No DWM corner preference here any more: the compositor rounds the frame at
+  // the designed 20px again (see set_use_round_corners in the constructor), and
+  // asking DWM to also round the window at its ~8px system radius would clip the
+  // corners twice and shave them.
   widget->Show();
   // Center over the browser window; the default browser-modal placement pins
   // the dialog to the top edge, which looks misaligned in the Zephyrus
@@ -305,6 +310,19 @@ ZephyrusSettingsPopup::ZephyrusSettingsPopup(Browser* browser,
   SetTitle(u"Zephyrus Settings");
   SetShowTitle(false);
   SetShowCloseButton(false);
+  // Translucent frameless window with compositor-rounded corners — the design's
+  // intent, restored 2026-08-10.
+  //
+  // This was forced opaque (set_opaque_custom_frame(true) +
+  // set_use_round_corners(false) + a DWM corner preference on the HWND) back
+  // when DirectComposition was disabled: a translucent window could not deliver
+  // per-pixel alpha, so its rounded-corner cutouts rendered as an opaque black
+  // border, and the usual software-compositing escape hatch blanks a WebView.
+  // DComp is on again — the disable was a workaround for a vsync bug that lived
+  // somewhere else entirely — so none of that applies. The cost of the
+  // workaround was the designed 20px radius (DWM rounds at ~8) and the soft
+  // compositor shadow.
+  set_use_round_corners(true);
   set_corner_radius(kPopupCornerRadius);
   set_margins(gfx::Insets());
 

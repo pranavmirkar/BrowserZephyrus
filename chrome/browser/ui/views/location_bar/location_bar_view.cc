@@ -68,6 +68,8 @@
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/location_bar/zephyrus_engine_pill.h"
+#include "chrome/browser/ui/views/frame/zephyrus_search_engine_picker.h"
 #include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/location_bar/intent_chip_button.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_layout.h"
@@ -348,6 +350,12 @@ void LocationBarView::Init() {
       std::make_unique<LocationIconView>(omnibox_chip_font_list, this, this);
   location_icon_view->set_drag_controller(this);
   location_icon_view_ = AddChildView(std::move(location_icon_view));
+
+  // Zephyrus: the search-engine pill lives beside the leading icon.
+  if (profile_) {
+    zephyrus_engine_pill_ =
+        AddChildView(std::make_unique<ZephyrusEnginePill>(profile_));
+  }
 
   // Initialize the Omnibox view. browser_ can be nullptr on ChromeOS in the
   // case of simple_web_view_dialog. Or it can be nulltpr on ChromeOS and on
@@ -978,6 +986,18 @@ void LocationBarView::Layout(PassKey) {
                                       location_icon_view_);
   } else {
     location_icon_view_->SetVisible(false);
+  }
+
+  // Zephyrus: the search-engine pill, immediately after the leading icon. It is
+  // always present rather than only while editing — a user looking at a page
+  // should be able to see and change which engine the next search will use
+  // without first having to focus the omnibox.
+  if (zephyrus_engine_pill_) {
+    zephyrus_engine_pill_->SetVisible(true);
+    leading_decorations.AddDecoration(
+        vertical_padding, location_height, /*auto_collapse=*/false,
+        kLeadingDecorationMaxFraction, /*intra_item_padding=*/6,
+        /*edge_padding=*/0, zephyrus_engine_pill_);
   }
 
   auto add_trailing_decoration = [&](View* view, int intra_item_padding,

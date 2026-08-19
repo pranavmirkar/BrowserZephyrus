@@ -5,8 +5,15 @@
 # Bundles EasyList + EasyPrivacy next to the binary; the service reads it at
 # startup from DIR_ASSETS.
 copy("filter_list") {
-  sources = [ "lists/zephyrus_filters.txt" ]
-  outputs = [ "$root_out_dir/zephyrus_filters.txt" ]
+  # The notice ships WITH the list, not separately: zephyrus_filters.txt is a
+  # verbatim EasyList snapshot, so distributing it carries an attribution
+  # obligation (CC BY-SA 3.0 / GPLv3). Keeping them in one target means the
+  # list cannot be shipped without its credit.
+  sources = [
+    "lists/FILTER_LISTS_NOTICE.txt",
+    "lists/zephyrus_filters.txt",
+  ]
+  outputs = [ "$root_out_dir/{{source_file_part}}" ]
 }
 
 source_set("adblock") {
@@ -27,6 +34,8 @@ source_set("adblock") {
     "zephyrus_adblock_service_factory.h",
     "zephyrus_adblock_tab_helper.cc",
     "zephyrus_adblock_tab_helper.h",
+    "zephyrus_cname_harvester.cc",
+    "zephyrus_cname_harvester.h",
     "zephyrus_adblock_updater.cc",
     "zephyrus_adblock_updater.h",
   ]
@@ -44,8 +53,25 @@ source_set("adblock") {
     "//base",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/zephyrus/adblock/mojom",
+    "//chrome/browser/zephyrus/privacy",
     "//components/keyed_service/core",
     "//url",
   ]
   data_deps = [ ":filter_list" ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "zephyrus_adblock_updater_unittest.cc",
+    "zephyrus_cname_harvester_unittest.cc",
+  ]
+  deps = [
+    ":adblock",
+    "//base/test:test_support",
+    "//chrome/browser/zephyrus/privacy",
+    "//mojo/public/cpp/bindings",
+    "//services/network/public/mojom",
+    "//testing/gtest",
+  ]
 }

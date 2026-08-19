@@ -32,6 +32,7 @@ ZephyrusAdblockTabHelper::~ZephyrusAdblockTabHelper() = default;
 void ZephyrusAdblockTabHelper::PrimaryPageChanged(content::Page& page) {
   // New document showing; reset the per-page block count.
   blocked_this_page_ = 0;
+  changed_callbacks_.Notify();
 }
 
 // NOTE: cosmetic (element-hiding) CSS is now injected in the renderer's MAIN

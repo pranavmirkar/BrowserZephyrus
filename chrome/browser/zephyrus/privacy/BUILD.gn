@@ -1,0 +1,201 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//testing/libfuzzer/fuzzer_test.gni")
+import("//testing/test.gni")
+
+# Zephyrus Privacy Intelligence: an analysis and explanation layer over the
+# existing ad/tracker blocker. The dependency is one-directional — the blocker
+# emits, this consumes, and this never calls back to change a block decision.
+# See privacy-intelligence-spec-v3.md §3.1.
+
+# The pipeline itself: ring buffer, aggregation, storage, crypto, entity
+# resolution, host canonicalisation.
+#
+# **Deliberately free of //chrome/browser.** Everything here takes plain values
+# — spans, file paths, PrefService — and knows nothing about Profile or
+# KeyedService. That is what lets `zephyrus_privacy_unittests` below be a small
+# standalone binary, which in turn is what makes a sanitizer or fuzzer build
+# take minutes instead of hours: an ASAN build of the full `unit_tests` has to
+# instrument all of chrome/browser, blink and the WebUI resource pipeline to
+# reach a ring-buffer test.
+#
+# Keep it that way. If something here needs a Profile, it belongs in ":privacy".
+source_set("privacy_core") {
+  sources = [
+    "domain_string_table.cc",
+    "domain_string_table.h",
+    "entity_artifact.h",
+    "entity_resolver.cc",
+    "entity_resolver.h",
+    "entity_signing_key.h",
+    "fingerprint_attempt.cc",
+    "fingerprint_attempt.h",
+    "fingerprint_seed.cc",
+    "fingerprint_seed.h",
+    "privacy_cross_site.cc",
+    "privacy_cross_site.h",
+    "privacy_cname_cache.cc",
+    "privacy_cname_cache.h",
+    "privacy_aggregator.cc",
+    "privacy_aggregator.h",
+    "privacy_crypto.cc",
+    "privacy_crypto.h",
+    "privacy_crypto_impl.cc",
+    "privacy_crypto_impl.h",
+    "privacy_database.cc",
+    "privacy_database.h",
+    "privacy_event.h",
+    "privacy_event_sink.cc",
+    "privacy_event_sink.h",
+    "privacy_features.cc",
+    "privacy_features.h",
+    "privacy_host_canon.cc",
+    "privacy_host_canon.h",
+    "privacy_ring_buffer.cc",
+    "privacy_ring_buffer.h",
+    "privacy_scores.cc",
+    "privacy_scores.h",
+  ]
+  deps = [
+    "//components/os_crypt/async/common",
+    "//components/pref_registry",
+    "//components/prefs",
+    "//crypto",
+    "//net",
+    "//sql",
+  ]
+  public_deps = [
+    "//base",
+    "//url",
+  ]
+}
+
+# The profile-bound half: the KeyedService and its factory.
+source_set("privacy") {
+  sources = [
+    "zephyrus_fingerprint_seed_host.cc",
+    "zephyrus_fingerprint_seed_host.h",
+    "fingerprint_seed_provider.cc",
+    "fingerprint_seed_provider.h",
+    "privacy_intelligence_service.cc",
+    "privacy_intelligence_service.h",
+    "privacy_intelligence_service_factory.cc",
+    "privacy_intelligence_service_factory.h",
+    "privacy_tab_helper.cc",
+    "privacy_tab_helper.h",
+    "zephyrus_privacy_reporter_host.cc",
+    "zephyrus_privacy_reporter_host.h",
+    "zephyrus_webrtc_privacy_observer.cc",
+    "zephyrus_webrtc_privacy_observer.h",
+    "zephyrus_webrtc_privacy_observer_factory.cc",
+    "zephyrus_webrtc_privacy_observer_factory.h",
+  ]
+  deps = [
+    "//components/os_crypt/async/browser",
+    "//components/os_crypt/async/common",
+    "//components/prefs",
+    "//content/public/browser",
+    "//net",
+    "//sql",
+    # blink::kWebRTCIPHandling* — the §9.2.1 policy values, read to decide
+    # whether the "local addresses were withheld" claim is actually true.
+    "//third_party/blink/public/common",
+  ]
+  public_deps = [
+    ":privacy_core",
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//components/keyed_service/core",
+    # The renderer -> browser event channel (§9.2.1), declared under blink
+    # because Blink cannot depend on //chrome.
+    #
+    # Reached through //content/public/common rather than by depending on
+    # :mojom_platform directly, per the instruction at the top of
+    # third_party/blink/public/mojom/BUILD.gn: the non-Blink variant of those
+    # bindings is linked into the //content component, so naming the mojom
+    # target here links a second copy into chrome.dll and the component build
+    # fails with several hundred duplicate symbols.
+    "//content/public/common",
+    "//url",
+  ]
+}
+
+# Tests that need no Profile. These are the ones worth running under a
+# sanitizer, because they cover the parts that touch untrusted input: the
+# artifact parser, the database, the crypto and the lock-free ring buffer.
+source_set("core_unit_tests") {
+  testonly = true
+  sources = [
+    "domain_string_table_unittest.cc",
+    "entity_artifact_roundtrip_unittest.cc",
+    "entity_hash_agreement_unittest.cc",
+    "entity_resolver_unittest.cc",
+    "fingerprint_attempt_unittest.cc",
+    "fingerprint_seed_unittest.cc",
+    "privacy_aggregator_unittest.cc",
+    "privacy_cname_cache_unittest.cc",
+    "privacy_cross_site_unittest.cc",
+    "privacy_crypto_impl_unittest.cc",
+    "privacy_database_unittest.cc",
+    "privacy_failure_injection_unittest.cc",
+    "privacy_host_canon_unittest.cc",
+    "privacy_hot_path_perftest.cc",
+    "privacy_ring_buffer_unittest.cc",
+    "privacy_scores_unittest.cc",
+  ]
+  deps = [
+    ":privacy_core",
+    "//base/test:test_support",
+    "//components/os_crypt/async/browser:test_support",
+    "//components/prefs:test_support",
+    "//crypto",
+    "//sql",
+    "//testing/gtest",
+  ]
+}
+
+# Rolled into the big //chrome/test:unit_tests binary, same as before.
+source_set("unit_tests") {
+  testonly = true
+  sources = [
+    "privacy_intelligence_service_factory_unittest.cc",
+    "privacy_page_signals_unittest.cc",
+    "privacy_tab_helper_unittest.cc",
+  ]
+  deps = [
+    ":core_unit_tests",
+    ":privacy",
+    "//base/test:test_support",
+    "//chrome/test:test_support",
+    "//content/test:test_support",
+    "//testing/gtest",
+  ]
+}
+
+# Standalone binary for sanitizer and fuzzing work:
+#
+#   gn gen out/ASAN --args='is_asan=true is_component_build=true is_debug=false'
+#   autoninja -C out/ASAN zephyrus_privacy_unittests
+#
+# Minutes, not hours, because nothing above //base, //sql, //crypto and //net is
+# in the dependency graph.
+test("zephyrus_privacy_unittests") {
+  deps = [
+    ":core_unit_tests",
+    "//base/test:run_all_unittests",
+  ]
+}
+
+# §15: "fuzzers running without findings". The artifact parser is the only
+# place the feature reads attacker-supplied binary data.
+fuzzer_test("zephyrus_entity_artifact_fuzzer") {
+  sources = [ "entity_artifact_fuzzer.cc" ]
+  deps = [
+    ":privacy_core",
+    "//base",
+    "//base/test:test_support",
+  ]
+  seed_corpus = "test/entity_artifact_corpus"
+}

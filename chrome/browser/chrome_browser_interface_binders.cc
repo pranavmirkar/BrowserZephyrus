@@ -18,6 +18,8 @@
 #include "chrome/browser/navigation_predictor/navigation_predictor.h"
 #include "chrome/browser/zephyrus/adblock/mojom/zephyrus_adblock.mojom.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_scriptlet_host.h"
+#include "chrome/browser/zephyrus/privacy/zephyrus_fingerprint_seed_host.h"
+#include "chrome/browser/zephyrus/privacy/zephyrus_privacy_reporter_host.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
 #include "chrome/browser/password_manager/chrome_password_manager_client.h"
@@ -455,6 +457,18 @@ void PopulateChromeFrameBinders(
   // document-start to inject into the main world).
   map->Add<zephyrus_adblock::mojom::ScriptletHost>(
       &zephyrus_adblock::ZephyrusAdblockScriptletHost::Create);
+
+  // Zephyrus: renderer -> browser privacy event channel (§9.2.1). Reports
+  // surfaces the browser cannot observe, such as a page reading the device
+  // list. Observation only — it can never affect a block decision.
+  map->Add<zephyrus_privacy::mojom::PrivacyReporter>(
+      &zephyrus_privacy::ZephyrusPrivacyReporterHost::Create);
+
+  // Zephyrus: browser -> renderer fingerprint seed (§6.5). The renderer fetches
+  // its own document's seed synchronously at document-start; the session secret
+  // never leaves the browser process.
+  map->Add<zephyrus_privacy::mojom::FingerprintSeedHost>(
+      &zephyrus_privacy::ZephyrusFingerprintSeedHost::Create);
 
   map->Add<blink::mojom::ScriptToolHost>(
       &actor::ActorScriptToolReceiver::Create);

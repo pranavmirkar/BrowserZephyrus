@@ -253,6 +253,8 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/themes/theme_service_factory.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service_factory.h"
+#include "chrome/browser/zephyrus/privacy/privacy_intelligence_service_factory.h"
+#include "chrome/browser/zephyrus/privacy/zephyrus_webrtc_privacy_observer_factory.h"
 #include "chrome/browser/tips/tips_service_factory.h"
 #include "chrome/browser/translate/translate_ranker_factory.h"
 #include "chrome/browser/ui/autofill/autofill_client_provider_factory.h"
@@ -1532,6 +1534,8 @@ void ChromeBrowserMainExtraPartsProfiles::
   ThemeColorsSourceManagerFactory::GetInstance();
   ThemeServiceFactory::GetInstance();
   zephyrus_adblock::ZephyrusAdblockServiceFactory::GetInstance();
+  zephyrus_privacy::PrivacyIntelligenceServiceFactory::GetInstance();
+  zephyrus_privacy::ZephyrusWebrtcPrivacyObserverFactory::GetInstance();
 #endif
 #if BUILDFLAG(IS_ANDROID)
   thin_webview::android::ChromeThinWebViewInitializer::Initialize();

@@ -60,7 +60,9 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
+#include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
 #include "chrome/browser/ui/views/frame/zephyrus_settings_popup.h"
+#include "chrome/browser/ui/views/frame/zephyrus_tab_switcher.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
@@ -634,6 +636,21 @@ bool BrowserCommandController::ExecuteCommandWithDisposition(
   // crashes, e.g. from Windows sending WM_COMMANDs at random times during
   // window construction.  This probably could use closer examination someday.
   if (browser_->tab_strip_model()->active_index() == TabStripModel::kNoTab) {
+    // Zephyrus: an empty tab strip is a normal, user-visible state for us (the
+    // window stays open on the empty backdrop), not just a sliver of window
+    // construction. The commands that get the user *out* of it must therefore
+    // still run — otherwise Ctrl+T is swallowed here and the window is a dead
+    // end. Everything else keeps the stock behavior of being dropped.
+    switch (id) {
+      case IDC_NEW_TAB:
+        ZephyrusSearchOverlay::Show(browser_);
+        break;
+      case IDC_CLOSE_WINDOW:
+        CloseWindow(browser_);
+        break;
+      default:
+        break;
+    }
     return true;
   }
 
@@ -721,7 +738,10 @@ void BrowserCommandController::HandleCommandWithDisposition(
       CloseWindow(browser_);
       break;
     case IDC_NEW_TAB: {
-      NewTab(browser_, NewTabTypes::kNewTabCommand);
+      // Zephyrus has no new-tab page. "New tab" floats the search overlay over
+      // the current view instead; a tab is only created once the user commits a
+      // query or picks a shortcut.
+      ZephyrusSearchOverlay::Show(browser_);
       break;
     }
     case IDC_NEW_TAB_TO_RIGHT: {
@@ -743,6 +763,13 @@ void BrowserCommandController::HandleCommandWithDisposition(
     }
     case IDC_SELECT_NEXT_TAB: {
       base::RecordAction(base::UserMetricsAction("Accel_SelectNextTab"));
+      // Zephyrus: Ctrl+Tab opens the visual switcher (Windows 11 Alt+Tab for
+      // tabs) rather than jumping straight to the next tab. It returns false
+      // when there is nothing to switch between, in which case we fall through
+      // to the plain behaviour below.
+      if (ZephyrusTabSwitcher::CycleOrShow(browser_, /*forward=*/true)) {
+        break;
+      }
       // Zephyrus: cycle within the current workspace only.
       ZephyrusWorkspaceManager* workspace_manager = nullptr;
       if (BrowserView* browser_view =
@@ -761,6 +788,9 @@ void BrowserCommandController::HandleCommandWithDisposition(
     }
     case IDC_SELECT_PREVIOUS_TAB: {
       base::RecordAction(base::UserMetricsAction("Accel_SelectPreviousTab"));
+      if (ZephyrusTabSwitcher::CycleOrShow(browser_, /*forward=*/false)) {
+        break;
+      }
       ZephyrusWorkspaceManager* workspace_manager = nullptr;
       if (BrowserView* browser_view =
               BrowserView::GetBrowserViewForBrowser(browser_)) {

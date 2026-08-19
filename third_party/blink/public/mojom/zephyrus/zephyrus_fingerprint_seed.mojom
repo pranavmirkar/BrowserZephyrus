@@ -1,0 +1,48 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module zephyrus_privacy.mojom;
+
+// §6.5 / §11.5: how a renderer learns the seed for the document it is running.
+//
+// **Why the renderer gets a seed at all.** The values being perturbed — canvas
+// pixels, WebGL strings, audio buffers — are produced in the renderer. The
+// browser cannot perturb what it never sees, so the derived seed has to cross
+// the boundary.
+//
+// **What crosses, and what must never.** Only the seed for THIS document, and
+// only ever derived. The 32-byte session secret stays in the browser process
+// for the life of the browser. That distinction is the whole security argument:
+// a compromised renderer learns the seed for the origin it is already running,
+// which it could in principle recover anyway by studying its own noise, and
+// learns nothing at all about any other origin. Handing over the secret would
+// instead let it predict every origin's perturbation and re-link the user
+// across all of them — turning the protection into a fingerprint.
+//
+// **Why the browser decides the origin.** The renderer never names it. The
+// browser derives the key from the RenderFrameHost the receiver is bound to,
+// exactly as the §9.2.1 reporter does. A renderer that could ask for
+// "https://bank.example" would obtain that site's seed and be able to predict
+// its canvas noise.
+interface FingerprintSeedHost {
+  // Returns the 32-byte seed for the calling document, or an empty array when
+  // randomization is off.
+  //
+  // **Synchronous on purpose, which is a cost worth naming.** A page can read
+  // a canvas in its first inline <script>. If the seed arrived asynchronously,
+  // that read would be served the TRUE values — leaking exactly the
+  // fingerprint the feature exists to perturb, on precisely the reads a
+  // fingerprinting script performs earliest. An async design would be faster
+  // and wrong. The call is made once per document and the result cached for
+  // the document's lifetime, so it is one blocking hop per frame, matching what
+  // ScriptletHost::GetPayload already pays for the same reason.
+  //
+  // An empty seed means "do not randomize" and is the correct answer whenever
+  // the flag is off, so the renderer needs no second signal to interpret it.
+  // `enabled_surfaces` is the §6.5 per-surface mask; a surface whose bit is
+  // clear must not perturb. Sent WITH the seed rather than fetched separately
+  // so the two can never disagree for a document.
+  [Sync]
+  GetSeed() => (array<uint8> seed, uint32 enabled_surfaces);
+};

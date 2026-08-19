@@ -43,4 +43,17 @@ void ZephyrusAdblockScriptletHost::GetPayload(GetPayloadCallback callback) {
   std::move(callback).Run(std::move(script), std::move(css));
 }
 
+void ZephyrusAdblockScriptletHost::GetGenericCosmeticCss(
+    const std::vector<std::string>& tokens,
+    GetGenericCosmeticCssCallback callback) {
+  std::string css;
+  if (ZephyrusAdblockService* service =
+          ZephyrusAdblockServiceFactory::GetForBrowserContext(
+              render_frame_host().GetBrowserContext())) {
+    css = service->GetGenericCosmeticCss(
+        render_frame_host().GetLastCommittedURL(), tokens);
+  }
+  std::move(callback).Run(std::move(css));
+}
+
 }  // namespace zephyrus_adblock

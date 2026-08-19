@@ -384,6 +384,387 @@ var zephyrusScriptlets = (function(){
       return realST.apply(self, arguments);
     };
   };
+
+  // trusted-click-element(selectors, extraMatch, delay)
+  // Clicks elements as they appear. This is what dismisses YouTube's
+  // "ad blockers violate our Terms of Service" dialog: the filter list points
+  // it at the dismiss button, so the modal is gone before it is ever seen.
+  // Selectors are comma-separated and clicked in order; each is watched until
+  // it exists (elements are rendered late), then clicked once.
+  var trustedClickElement = function(rawSelectors, extraMatch, rawDelay){
+    if (!rawSelectors) return;
+    var selectors = String(rawSelectors).split(/\s*,\s*/).filter(Boolean);
+    if (!selectors.length) return;
+    var maxWaitMs = 10000;
+    var delay = parseInt(rawDelay, 10);
+    if (isNaN(delay) || delay < 0) delay = 0;
+    var started = Date.now();
+    var index = 0;
+    var clickNext = function(){
+      if (index >= selectors.length) return true;
+      var sel = selectors[index];
+      var el = null;
+      try { el = document.querySelector(sel); } catch(e){ index++; return false; }
+      if (!el) return false;
+      // Only click something the user could actually click.
+      try { el.click(); } catch(e){}
+      index++;
+      return index >= selectors.length;
+    };
+    var stop = function(observer, timer){
+      if (observer) observer.disconnect();
+      if (timer) clearInterval(timer);
+    };
+    var begin = function(){
+      var observer = null;
+      var timer = null;
+      var tick = function(){
+        if (clickNext() || Date.now() - started > maxWaitMs){
+          stop(observer, timer);
+        }
+      };
+      // Poll AND observe: YouTube swaps nodes without always mutating in a way
+      // a narrow observer would catch, and polling alone can miss a brief node.
+      timer = setInterval(tick, 250);
+      try {
+        observer = new MutationObserver(tick);
+        observer.observe(document.documentElement || document,
+                         { childList: true, subtree: true });
+      } catch(e){}
+      tick();
+    };
+    if (delay > 0) setTimeout(begin, delay); else begin();
+  };
+
+  // no-xhr-if(pattern) — make matching XHRs no-op instead of reaching the net.
+  var noXhrIf = function(rawPattern){
+    var pattern = rawPattern || '';
+    var re = null;
+    if (pattern.length > 2 && pattern.charAt(0) === '/' &&
+        pattern.charAt(pattern.length - 1) === '/'){
+      try { re = new RegExp(pattern.slice(1, -1)); } catch(e){ re = null; }
+    }
+    var matches = function(url){
+      if (!pattern) return true;
+      if (re) { try { return re.test(url); } catch(e){ return false; } }
+      return String(url).indexOf(pattern) !== -1;
+    };
+    var RealXhr = window.XMLHttpRequest;
+    if (!RealXhr) return;
+    var Wrapped = function(){
+      var xhr = new RealXhr();
+      var blocked = false;
+      var realOpen = xhr.open;
+      var realSend = xhr.send;
+      xhr.open = function(method, url){
+        blocked = matches(String(url));
+        return realOpen.apply(xhr, arguments);
+      };
+      xhr.send = function(){
+        if (!blocked) return realSend.apply(xhr, arguments);
+        // Report a benign empty success rather than an error, so page code
+        // that checks status doesn't treat it as "blocker present".
+        Object.defineProperty(xhr, 'readyState', { value: 4, configurable: true });
+        Object.defineProperty(xhr, 'status', { value: 200, configurable: true });
+        Object.defineProperty(xhr, 'responseText', { value: '', configurable: true });
+        Object.defineProperty(xhr, 'response', { value: '', configurable: true });
+        setTimeout(function(){
+          try { if (typeof xhr.onreadystatechange === 'function') xhr.onreadystatechange(); } catch(e){}
+          try { xhr.dispatchEvent(new Event('readystatechange')); } catch(e){}
+          try { xhr.dispatchEvent(new Event('load')); } catch(e){}
+          try { xhr.dispatchEvent(new Event('loadend')); } catch(e){}
+        }, 1);
+      };
+      return xhr;
+    };
+    Wrapped.prototype = RealXhr.prototype;
+    ['UNSENT','OPENED','HEADERS_RECEIVED','LOADING','DONE'].forEach(function(k, i){
+      try { Wrapped[k] = i; } catch(e){}
+    });
+    window.XMLHttpRequest = Wrapped;
+  };
+
+  // rmnt / trusted-rpnt — remove or replace text inside matching nodes.
+  // rmnt(selector, pattern) deletes matching text; trusted-rpnt adds a
+  // replacement string.
+  var replaceNodeText = function(rawSelector, rawPattern, rawReplacement){
+    // A selector is required. Defaulting to '*' would run querySelectorAll('*')
+    // on every DOM mutation, which on a page like YouTube is ruinous.
+    if (!rawSelector) return;
+    var selector = rawSelector;
+    var pattern = rawPattern || '';
+    var replacement = rawReplacement === undefined ? '' : rawReplacement;
+    var re = null;
+    if (pattern.length > 2 && pattern.charAt(0) === '/'){
+      var end = pattern.lastIndexOf('/');
+      if (end > 0){
+        try { re = new RegExp(pattern.slice(1, end), pattern.slice(end + 1) || 'g'); }
+        catch(e){ re = null; }
+      }
+    }
+    var apply = function(){
+      var nodes;
+      try { nodes = document.querySelectorAll(selector); } catch(e){ return; }
+      for (var i = 0; i < nodes.length; i++){
+        var node = nodes[i];
+        var text = node.textContent;
+        if (!text) continue;
+        var next = re ? text.replace(re, replacement)
+                      : text.split(pattern).join(replacement);
+        if (next === text) continue;
+        // Pages with Trusted Types (YouTube among them) throw when script text
+        // is assigned. Swallow it: an uncaught error here both spams the
+        // console and is itself a signal a blocker is present.
+        try {
+          node.textContent = next;
+        } catch(e){}
+      }
+    };
+    apply();
+    // Coalesce mutation bursts; re-scanning the document per mutation is far
+    // too expensive on script-heavy pages.
+    var pending = false;
+    var schedule = function(){
+      if (pending) return;
+      pending = true;
+      setTimeout(function(){ pending = false; apply(); }, 100);
+    };
+    try {
+      new MutationObserver(schedule).observe(document.documentElement || document,
+                                             { childList: true, subtree: true });
+    } catch(e){}
+  };
+
+
+  // trusted-json-edit-xhr-request(edit, propsToMatch, <urlPattern>)
+  // Rewrites the JSON body of an outgoing XHR. YouTube's anti-adblock fixes use
+  // this on the /player request (spoofing clientScreen, stamping
+  // lactMilliseconds, tagging the referer) so the response returns without ad
+  // payloads.
+  //
+  // uBO expresses the edit in a small JSONPath-like DSL. This implements the
+  // subset the live YouTube rules actually use:
+  //   [?<path><op><val>]   leading guard - apply only if it holds
+  //   ..name               recursive descent to every key of that name
+  //   .name                child access
+  //   [?.name==<v>]        predicate on the current node
+  //   ops: ==   *= (contains)   =/regex/
+  //   actions: = <value>  assign     += {json}  shallow-merge
+  //   values: "text", ${now}, repl({"regex":..,"replacement":..})
+  // Anything outside this subset is ignored rather than half-applied: a
+  // malformed player request breaks playback, which is worse than an ad.
+  var jsonEditXhrRequest = function(editSpec, propName, propValue){
+    if (!editSpec) return;
+    var urlNeedle = '';
+    if (propName === 'propsToMatch' && propValue) urlNeedle = String(propValue);
+
+    var parseValue = function(raw){
+      raw = String(raw).trim();
+      if (raw.indexOf('repl(') === 0 && raw.charAt(raw.length - 1) === ')'){
+        try {
+          var spec = JSON.parse(raw.slice(5, -1));
+          return { kind: 'repl', regex: spec.regex,
+                   replacement: spec.replacement || '' };
+        } catch(e){ return null; }
+      }
+      if (raw.charAt(0) === '{' || raw.charAt(0) === '['){
+        try { return { kind: 'json', value: JSON.parse(raw) }; }
+        catch(e){ return null; }
+      }
+      // Strip quotes BEFORE testing for templates: the rules write ="${now}"
+      // with quotes, and checking first left the literal text in the request.
+      var quoted = false;
+      var q = raw.charAt(0);
+      if ((q === '"' || q === "'") && raw.charAt(raw.length - 1) === q){
+        raw = raw.slice(1, -1);
+        quoted = true;
+      }
+      if (raw === '${now}') return { kind: 'now' };
+      if (quoted) return { kind: 'literal', value: raw };
+      if (/^-?\d+(\.\d+)?$/.test(raw)){
+        return { kind: 'literal', value: parseFloat(raw) };
+      }
+      if (raw === 'true') return { kind: 'literal', value: true };
+      if (raw === 'false') return { kind: 'literal', value: false };
+      return { kind: 'literal', value: raw };
+    };
+
+    // Every value reachable under `name`, at any depth.
+    var descend = function(node, name, out){
+      if (node === null || typeof node !== 'object') return;
+      if (Array.isArray(node)){
+        for (var i = 0; i < node.length; i++) descend(node[i], name, out);
+        return;
+      }
+      for (var k in node){
+        if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+        if (k === name) out.push({ parent: node, key: k, value: node[k] });
+        descend(node[k], name, out);
+      }
+    };
+
+    var compare = function(actual, op, expected){
+      if (actual === undefined || actual === null) return false;
+      var a = String(actual);
+      if (op === '==') return a === String(expected);
+      if (op === '*=') return a.indexOf(String(expected)) !== -1;
+      if (op === '=~'){
+        var body = String(expected);
+        if (body.charAt(0) !== '/') return false;
+        var end = body.lastIndexOf('/');
+        try {
+          return new RegExp(body.slice(1, end), body.slice(end + 1)).test(a);
+        } catch(e){ return false; }
+      }
+      return false;
+    };
+
+    var parsePredicate = function(text){
+      var m = text.match(/^\[\?(\.{1,2})([A-Za-z0-9_$]+)(==|\*=|=)([\s\S]*)\]$/);
+      if (!m) return null;
+      var recursive = m[1] === '..';
+      var name = m[2];
+      var op = m[3];
+      var rawVal = m[4].trim();
+      if (op === '=' && rawVal.charAt(0) === '/') op = '=~';
+      var expected = (op === '=~') ? rawVal : (parseValue(rawVal) || {}).value;
+      return function(node){
+        var hits = [];
+        if (recursive){
+          descend(node, name, hits);
+        } else if (node && typeof node === 'object' &&
+                   Object.prototype.hasOwnProperty.call(node, name)){
+          hits.push({ parent: node, key: name, value: node[name] });
+        }
+        for (var i = 0; i < hits.length; i++){
+          if (compare(hits[i].value, op, expected)) return true;
+        }
+        return false;
+      };
+    };
+
+    var spec = String(editSpec).trim();
+    var guard = null;
+    if (spec.charAt(0) === '['){
+      var close = spec.indexOf(']');
+      if (close === -1) return;
+      guard = parsePredicate(spec.slice(0, close + 1));
+      spec = spec.slice(close + 1);
+    }
+
+    // Find the action operator OUTSIDE any predicate, so "==" inside [?...]
+    // is not mistaken for the assignment.
+    var depth = 0;
+    var opIndex = -1;
+    var action = 'assign';
+    for (var i = 0; i < spec.length; i++){
+      var ch = spec.charAt(i);
+      if (ch === '[') depth++;
+      else if (ch === ']') depth--;
+      else if (depth === 0 && ch === '='){
+        if (spec.charAt(i - 1) === '+'){ opIndex = i - 1; action = 'merge'; }
+        else { opIndex = i; action = 'assign'; }
+        break;
+      }
+    }
+    if (opIndex === -1) return;
+    var pathText = spec.slice(0, opIndex);
+    var valueText = spec.slice(opIndex + (action === 'merge' ? 2 : 1));
+    var parsedValue = parseValue(valueText);
+    if (!parsedValue) return;
+
+    var tokens = [];
+    var re = /(\.{1,2})([A-Za-z0-9_$]+)(\[\?[^\]]*\])?/g;
+    var tm;
+    while ((tm = re.exec(pathText)) !== null){
+      tokens.push({ recursive: tm[1] === '..', name: tm[2],
+                    filter: tm[3] ? parsePredicate(tm[3]) : null });
+    }
+    if (!tokens.length) return;
+
+    var applyEdit = function(root){
+      if (guard && !guard(root)) return false;
+      var current = [{ parent: null, key: null, value: root }];
+      for (var t = 0; t < tokens.length; t++){
+        var token = tokens[t];
+        var next = [];
+        for (var c = 0; c < current.length; c++){
+          var node = current[c].value;
+          var hits = [];
+          if (token.recursive){
+            descend(node, token.name, hits);
+          } else if (node && typeof node === 'object' &&
+                     Object.prototype.hasOwnProperty.call(node, token.name)){
+            hits.push({ parent: node, key: token.name,
+                        value: node[token.name] });
+          }
+          for (var h = 0; h < hits.length; h++){
+            if (token.filter && !token.filter(hits[h].value)) continue;
+            next.push(hits[h]);
+          }
+        }
+        current = next;
+        if (!current.length) return false;
+      }
+
+      var changed = false;
+      for (var n = 0; n < current.length; n++){
+        var target = current[n];
+        if (action === 'merge'){
+          if (parsedValue.kind !== 'json' || !target.value ||
+              typeof target.value !== 'object') continue;
+          for (var k2 in parsedValue.value){
+            if (Object.prototype.hasOwnProperty.call(parsedValue.value, k2)){
+              target.value[k2] = parsedValue.value[k2];
+              changed = true;
+            }
+          }
+          continue;
+        }
+        var newValue;
+        if (parsedValue.kind === 'now'){
+          newValue = String(Date.now());
+        } else if (parsedValue.kind === 'repl'){
+          var text = String(target.value === undefined ? '' : target.value);
+          try {
+            newValue = text.replace(new RegExp(parsedValue.regex),
+                                    parsedValue.replacement);
+          } catch(e){ continue; }
+        } else {
+          newValue = parsedValue.value;
+        }
+        if (target.parent && target.value !== newValue){
+          target.parent[target.key] = newValue;
+          changed = true;
+        }
+      }
+      return changed;
+    };
+
+    var RealXhr = window.XMLHttpRequest;
+    if (!RealXhr || !RealXhr.prototype) return;
+    var realOpen = RealXhr.prototype.open;
+    var realSend = RealXhr.prototype.send;
+    RealXhr.prototype.open = function(method, url){
+      try { this.__zephyrusUrl = String(url || ''); } catch(e){}
+      return realOpen.apply(this, arguments);
+    };
+    RealXhr.prototype.send = function(body){
+      try {
+        var url = this.__zephyrusUrl || '';
+        if (urlNeedle && url.indexOf(urlNeedle) !== -1 &&
+            typeof body === 'string' && body.charAt(0) === '{'){
+          var parsed = JSON.parse(body);
+          if (applyEdit(parsed)) arguments[0] = JSON.stringify(parsed);
+        }
+      } catch(e){
+        // Never let an edit failure break the request: a broken /player call is
+        // far more visible - and more detectable - than an unblocked ad.
+      }
+      return realSend.apply(this, arguments);
+    };
+  };
+
   var table = {
     'json-prune': jsonPrune,
     'jp': jsonPrune,
@@ -398,6 +779,29 @@ var zephyrusScriptlets = (function(){
     'trusted-prevent-dom-bypass': trustedPreventDomBypass,
     'nano-setTimeout-booster': nanoSetTimeoutBooster,
     'nano-stb': nanoSetTimeoutBooster,
+    'trusted-click-element': trustedClickElement,
+    // 'trusted-json-edit-xhr-request' is implemented above (jsonEditXhrRequest)
+    // but deliberately NOT registered, for a measured reason:
+    //
+    // Instrumented run on a real watch page logged the hook INSTALLING 3 times
+    // (once per YouTube rule) and FIRING zero times — YouTube requests /player
+    // via fetch(), not XMLHttpRequest, so the edit code never runs. Meanwhile
+    // playback broke: with the scriptlet registered readyState stays 0 and the
+    // video element sometimes never appears; without it playback reaches
+    // readyState 4 and runs normally (same video, identical timing).
+    //
+    // So the harm comes from PATCHING XMLHttpRequest.prototype.open/send at
+    // all, not from any edit. Overwriting those makes
+    // XMLHttpRequest.prototype.open.toString() stop reporting [native code],
+    // which is a standard blocker-detection probe; YouTube's answer is to
+    // withhold playable streams. Registering this can only cost playback and
+    // cannot gain anything here. If it is ever needed, port it to the fetch
+    // path (see hookFetch above) and mask the patch's toString.
+    'no-xhr-if': noXhrIf,
+    'rmnt': replaceNodeText,
+    'remove-node-text': replaceNodeText,
+    'trusted-rpnt': replaceNodeText,
+    'trusted-replace-node-text': replaceNodeText,
     'noop': function(){},
   };
   return table;

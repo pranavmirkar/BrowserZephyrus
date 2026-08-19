@@ -9166,6 +9166,342 @@ Keep your key file in a safe place. You will need it to create new versions of y
       <message name="IDS_ZEPHYRUS_ALWAYS_ENCRYPTED_DNS" desc="Toggle in the Shield panel to always use encrypted DNS (DNS-over-HTTPS in secure mode).">
         Always use encrypted DNS
       </message>
+
+      <!-- Zephyrus Privacy Intelligence popup.
+
+           Every headline here is bound to an observed state, and the
+           distinction between them is the point rather than a nuance of
+           wording. "Detected" means a request was seen; "Blocked" means it was
+           stopped before leaving the device; "Allowed" means it completed.
+           None of them may be used to describe another, in any language: a
+           translation that renders "detected" as "blocked" turns an accurate
+           report into a false promise of protection. -->
+      <message name="IDS_ZEPHYRUS_PRIVACY_TITLE" desc="Title of the privacy panel opened from the shield button in the toolbar. No status: a panel title, reporting nothing about any tracker.">
+        Privacy
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_HEADLINE_PROTECTED" desc="Headline of the privacy panel, shown ONLY when at least one tracker request was actually blocked on this page. Must not be shown when trackers were merely observed. Reports BLOCKED: at least one request was stopped.">
+        Protected on this page
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_HEADLINE_DETECTED_ONLY" desc="Headline of the privacy panel when trackers were observed on this page but none were blocked. Deliberately makes no claim of protection. Reports DETECTED only, never BLOCKED.">
+        Trackers detected on this page
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_HEADLINE_NOTHING" desc="Headline of the privacy panel when nothing at all was observed on this page. Means literally nothing was seen, not 'not much'. Deliberately says 'in page requests' rather than a flat 'no trackers': until CNAME uncloaking ships, a tracker hiding behind a first-party subdomain is invisible to us, so the unqualified claim would be false. Reports the absence of DETECTED: nothing was observed.">
+        No trackers detected in page requests
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_TRACKERS_BLOCKED" desc="Count of tracker requests stopped before they left the device on this page. Reports BLOCKED.">
+        {COUNT, plural,
+         =1 {1 tracker blocked}
+         other {# trackers blocked}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_FINGERPRINT_DETECTED" desc="Count of distinct fingerprinting surfaces the page touched. DETECTED, not blocked or randomized: the browser observed the attempt and did not alter it. Reports DETECTED, never RANDOMIZED.">
+        {COUNT, plural,
+         =1 {1 fingerprinting attempt detected}
+         other {# fingerprinting attempts detected}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_WEBRTC_WITHHELD" desc="Shown when the page asked for the device's network address via WebRTC and the IP handling policy in force kept local addresses hidden. Reports DETECTED plus what the IP policy withheld. Not BLOCKED.">
+        This site requested your network address. Local addresses were withheld.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_WEBRTC_EXPOSED" desc="Shown when the page asked for the device's network address via WebRTC and local addresses were NOT withheld. Deliberately claims no protection. Reports DETECTED only.">
+        This site requested your network address.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY" desc="Label for the Tracking Intensity score. $1 is a band name such as High. No status: a score band, not an observation about a request.">
+        Tracking intensity: <ph name="BAND">$1<ex>High</ex></ph>
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY_MINIMAL" desc="Lowest Tracking Intensity band. Means nothing at all was observed. No status: a score band name.">
+        Minimal
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY_LOW" desc="Second-lowest Tracking Intensity band. No status: a score band name.">
+        Low
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY_MODERATE" desc="Middle Tracking Intensity band. No status: a score band name.">
+        Moderate
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY_HIGH" desc="Second-highest Tracking Intensity band. No status: a score band name.">
+        High
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY_SEVERE" desc="Highest Tracking Intensity band. No status: a score band name.">
+        Severe
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_SEE_WHAT_HAPPENED" desc="Button that opens the detailed per-tracker list for the current page. No status: a navigation button.">
+        See what happened
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_BACK" desc="Button returning from the detailed per-tracker list to the summary. No status: a navigation button.">
+        Back
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_PROTECTION_APPLIED" desc="The Protection Applied score. $1 is a whole percentage of tracker requests that were blocked. Reports the ratio of BLOCKED to all observed requests.">
+        <ph name="PERCENT">$1<ex>94</ex></ph>% of tracker requests blocked
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_SUMMARY_COUNTS" desc="Per-page totals above the tracker list. $1 observed, $2 stopped before leaving the device, $3 completed. Reports DETECTED, BLOCKED and ALLOWED side by side.">
+        Detected: <ph name="DETECTED">$1<ex>7</ex></ph> · Blocked: <ph name="BLOCKED">$2<ex>6</ex></ph> · Allowed: <ph name="ALLOWED">$3<ex>1</ex></ph>
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_NO_REQUESTS" desc="Shown in place of the tracker list when the page made no third-party requests at all. No status: states that there was nothing to report on.">
+        This page made no third-party requests.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_REQUESTS" desc="Request count on one row of the tracker list. Abbreviated because the column is narrow. No status: a request count, independent of outcome.">
+        {COUNT, plural,
+         =1 {1 req}
+         other {# req}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_STATUS_BLOCKED" desc="Status on a tracker row. Used ONLY when every request to that domain was stopped before leaving the device. Reports BLOCKED.">
+        Blocked
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_STATUS_ALLOWED" desc="Status on a tracker row: at least one request to this domain completed and data left the device. Reports ALLOWED.">
+        Allowed
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_STATUS_DETECTED" desc="Status on a tracker row: requests were observed, and no claim is made about whether they were stopped. Reports DETECTED.">
+        Detected
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_CATEGORY_ADVERTISING" desc="Tracker category shown beside a domain in the tracker list. No status: a category label, independent of outcome.">
+        Advertising
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_CATEGORY_ANALYTICS" desc="Tracker category shown beside a domain in the tracker list. No status: a category label, independent of outcome.">
+        Analytics
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_CATEGORY_SOCIAL" desc="Tracker category shown beside a domain in the tracker list. No status: a category label, independent of outcome.">
+        Social
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_CATEGORY_CONTENT" desc="Tracker category shown beside a domain in the tracker list. No status: a category label, independent of outcome.">
+        Content
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_CATEGORY_CDN" desc="Tracker category shown beside a domain in the tracker list: a content delivery network. No status: a category label, independent of outcome.">
+        CDN
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_CATEGORY_FINGERPRINTING" desc="Tracker category shown beside a domain in the tracker list. No status: a category label, independent of outcome.">
+        Fingerprinting
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_CATEGORY_UNKNOWN" desc="Shown where a tracker category would go when no dataset covers the domain. Means 'we do not know', and must never be phrased as a claim that the domain is harmless. No status: absence of dataset coverage, not an outcome.">
+        Unknown
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_ARITHMETIC" desc="Toggle revealing the exact counts each score was computed from. No status: a disclosure toggle.">
+        Show the arithmetic
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_TERM_ENTITIES" desc="Row in the score breakdown: how many distinct companies were behind the third-party requests. No status: a score input name.">
+        Companies
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_TERM_DOMAINS" desc="Row in the score breakdown: how many distinct third-party domains the page contacted. No status: a score input name.">
+        Third-party domains
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_TERM_FINGERPRINTING" desc="Row in the score breakdown: how many fingerprinting surfaces the page touched. No status: a score input name.">
+        Fingerprinting attempts
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_TERM_COOKIES" desc="Row in the score breakdown: how many tracking cookies the page tried to set or read. No status: a score input name.">
+        Tracking cookies
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_TERM_POINTS" desc="Points one row contributed to the Tracking Intensity score. $1 is the points scored, $2 the most that row could score. No status: a score arithmetic cell.">
+        <ph name="POINTS">$1<ex>3</ex></ph> of <ph name="MAX">$2<ex>4</ex></ph>
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_ALLOW_SITE" desc="Toggle in the privacy panel that turns all blocking off for the current site. Users reach for this when a page is broken, so the wording must describe the consequence rather than sound like a reward. No status: a control, not a report.">
+        Allow trackers on this site
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_ALLOW_SITE_HINT" desc="Explanation under the allow-trackers toggle. $1 is a registrable domain such as example.com. No status: describes what the control does.">
+        Turns off all blocking on <ph name="SITE">$1<ex>example.com</ex></ph> and reloads the page.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_ALLOWED_NOTICE" desc="Shown in place of the summary when the user has turned blocking off for this site. Must make clear nothing is being blocked, so an empty tracker list is not mistaken for a clean page. Reports the absence of BLOCKED: with the site allowlisted, no request on it is stopped.">
+        Blocking is off for this site. Nothing here is being blocked.
+      </message>
+
+      <!-- §6.6 What was protected. These name what the USER keeps, not what
+           the browser did. Every one of them is licensed by an action actually
+           taken; a category is never shown for something merely observed. -->
+      <message name="IDS_ZEPHYRUS_PRIVACY_PROTECTED_HEADING" desc="Heading above the list of things that were protected on this page. Reports only outcomes where a request was BLOCKED or a value RANDOMIZED — never anything merely DETECTED.">
+        What was protected
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_PROTECTED_COOKIES" desc="Shown when third-party tracking cookies were BLOCKED on this page.">
+        Tracking cookies
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_PROTECTED_ADVERTISING" desc="Shown when advertising-category requests were BLOCKED on this page.">
+        Advertising identifiers
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_PROTECTED_FINGERPRINT" desc="Shown when fingerprinting APIs returned RANDOMIZED values. Never shown for a surface that was only DETECTED.">
+        Device fingerprint
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_PROTECTED_ACTIVITY" desc="Shown when cross-site requests were BLOCKED on this page.">
+        Browsing activity
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_PROTECTED_REFERRER" desc="Shown when referrer headers were stripped, so the previous page's address was BLOCKED from reaching the destination.">
+        Referrer information
+      </message>
+
+      <!-- Column headers for the tracker list. §14.2 requires the list be a
+           table with headers rather than a stack of rows, so a screen reader
+           can say which column a cell belongs to. -->
+      <message name="IDS_ZEPHYRUS_PRIVACY_COLUMN_TRACKER" desc="Column header: the company or domain contacted. No status: a column name.">
+        Tracker
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_COLUMN_CATEGORY" desc="Column header: the tracker's category. No status: a column name.">
+        Category
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_COLUMN_REQUESTS" desc="Column header: how many requests were made. No status: a column name.">
+        Requests
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_COLUMN_STATUS" desc="Column header: the outcome for that tracker, one of BLOCKED, ALLOWED or DETECTED.">
+        Status
+      </message>
+
+      <message name="IDS_ZEPHYRUS_PRIVACY_ANNOUNCE_SUMMARY" desc="Spoken by a screen reader when the privacy panel opens. $1 is the site, $2 the count DETECTED, $3 the count BLOCKED, $4 the Tracking Intensity band.">
+        Privacy for <ph name="SITE">$1<ex>example.com</ex></ph>. <ph name="DETECTED">$2<ex>7</ex></ph> trackers detected, <ph name="BLOCKED">$3<ex>6</ex></ph> blocked. Tracking intensity <ph name="BAND">$4<ex>High</ex></ph>.
+      </message>
+      <!-- §6.10 templated explanations. One template per (event_type, status)
+           pair, selected by lookup. No model, no inference, no network call —
+           and deliberately no pluggable-explainer abstraction, which §6.10
+           forbids adding in anticipation of one. -->
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_BLOCKED" desc="Explanation under a tracker row where every request was BLOCKED. $1 is the company or domain, $2 the number of requests.">
+        {COUNT, plural,
+         =1 {<ph name="ENTITY">$1<ex>Meta Pixel</ex></ph> attempted 1 request on this page. Zephyrus blocked it.}
+         other {<ph name="ENTITY">$1<ex>Meta Pixel</ex></ph> attempted # requests on this page. Zephyrus blocked them all.}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_PARTIAL" desc="Explanation under a tracker row where some requests were BLOCKED and some were ALLOWED. $1 is the company or domain, $2 the total requests, $3 how many were blocked, $4 how many completed. Must not round the allowed count away.">
+        <ph name="ENTITY">$1<ex>Meta Pixel</ex></ph> attempted <ph name="TOTAL">$2<ex>8</ex></ph> requests on this page. Zephyrus blocked <ph name="BLOCKED">$3<ex>6</ex></ph>; <ph name="ALLOWED">$4<ex>2</ex></ph> completed and data left your device.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_ALLOWED" desc="Explanation under a tracker row where requests completed and none were BLOCKED. States plainly that data left the device.">
+        {COUNT, plural,
+         =1 {<ph name="ENTITY">$1<ex>cdn.unknown.net</ex></ph> completed 1 request on this page. Data left your device.}
+         other {<ph name="ENTITY">$1<ex>cdn.unknown.net</ex></ph> completed # requests on this page. Data left your device.}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_DETECTED" desc="Explanation under a tracker row where requests were DETECTED but neither blocked nor observed completing. Claims nothing beyond having seen them.">
+        {COUNT, plural,
+         =1 {<ph name="ENTITY">$1<ex>analytics.example</ex></ph> attempted 1 request on this page. It did not complete.}
+         other {<ph name="ENTITY">$1<ex>analytics.example</ex></ph> attempted # requests on this page. They did not complete.}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_FINGERPRINT" desc="Explanation for a FINGERPRINT_ATTEMPT timeline event. Reports DETECTED only — Phase 2 observes fingerprinting without altering it, so this must not imply RANDOMIZED.">
+        This site read device characteristics that can be used to identify your browser. Zephyrus recorded the attempt; the values were not altered.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_WEBRTC_WITHHELD" desc="Explanation for a WEBRTC_ADDRESS_REQUEST event where the IP policy withheld local addresses. Reports DETECTED plus what was withheld, never BLOCKED.">
+        This site asked for your network address. Your public address was visible; your local addresses were withheld.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_WEBRTC_EXPOSED" desc="Explanation for a WEBRTC_ADDRESS_REQUEST event where local addresses were NOT withheld. Reports DETECTED and claims no protection.">
+        This site asked for your network address, and local addresses were not withheld.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_USER_ALLOWED" desc="Explanation for a USER_ALLOWED_SITE event. No status: records a choice the user made, not an observation about a tracker.">
+        You turned blocking off for this site, so nothing here is being blocked.
+      </message>
+
+      <!-- chrome://privacy. Section 14: the dashboard was built with its
+           text inline in the C++ that generates its markup, which left the
+           one surface that names companies and sites English-only. These
+           are trusted resource strings, not runtime data, so unlike site
+           and entity names they are inserted without HTML escaping. -->
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_TITLE" desc="Title and heading of the chrome://privacy page. No status: names the page.">
+        Privacy
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_SUBTITLE" desc="Subtitle under the dashboard heading. No status: describes the page, and says observed rather than promising completeness.">
+        What has been observed on this device.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_NO_STORAGE_TITLE" desc="Shown instead of statistics when there is no database (section 5.3). No status: reports the absence of storage, not an observation about a tracker. Avoids the word profile, which section 2.2 bans in the tracking sense and which would collide here.">
+        Nothing has been stored yet.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_NO_STORAGE_BODY" desc="Explains the no-database state. No status: section 10 requires the degraded case be visible and legible as normal rather than as a failure.">
+        Privacy statistics are not being saved, so there is nothing to show here yet. This is a normal state, not an error.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_STAT_BLOCKED" desc="Label under the lifetime count of requests that were BLOCKED.">
+        tracker requests blocked
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_STAT_SEEN" desc="Label under the lifetime count of requests DETECTED, which for this headline includes the BLOCKED ones.">
+        tracker requests seen
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_STAT_SEEN_NOTE" desc="Clarifies that the seen count is a superset, so DETECTED and BLOCKED are not read as alternatives.">
+        Includes the blocked ones: everything stopped was also seen.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EXPOSURE_HEADING" desc="Section 6.7 heading. No status: a section title.">
+        Who tried to reach you
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EXPOSURE_EMPTY" desc="Shown when no third party reached the user today. No status: reports that there was nothing to report.">
+        No third-party company reached you today.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_COL_COMPANY" desc="Table column header naming the company. No status: a column label.">
+        Company
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_COL_REQUESTS" desc="Table column header for the number of requests. No status: a column label.">
+        Requests
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_COL_SITES" desc="Table column header for the number of sites. No status: a column label.">
+        Sites
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_COL_SITE" desc="Table column header for a single site. No status: a column label.">
+        Site
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_COL_BLOCKED" desc="Table column header counting requests that were BLOCKED.">
+        Blocked
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_COL_ALLOWED" desc="Table column header counting requests that were ALLOWED.">
+        Allowed
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EXPOSURE_ORDER_NOTE" desc="Explains the sort order: rows with ALLOWED requests come first, ahead of higher-volume rows.">
+        Ordered by what got through, not by volume.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EXPOSURE_TRUNCATED" desc="States that the exposure list was cut. No status: says the list is incomplete so a shortened list cannot understate what was seen. SHOWN is how many rows are displayed, TOTAL how many exist.">
+        Showing the first {SHOWN} of {TOTAL} companies.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_CROSSSITE_HEADING" desc="Section 6.4 heading. No status: a section title.">
+        Cross-site tracking
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_CROSSSITE_EMPTY" desc="Shown when no company reached the three-site threshold. Reports that nothing was DETECTED across enough sites to support the claim.">
+        No company was seen on three or more different sites.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_CROSSSITE_EMPTY_NOTE" desc="Bounds the empty cross-site result. No status: states the limits of the query rather than reporting on a tracker.">
+        Counts sites you visited within the retention window, and only companies the tracker dataset can identify.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_CROSSSITE_CLAIM" desc="The cross-site headline. ENTITY is the company, already wrapped in markup; COUNT is the number of qualifying sites. Reports DETECTED across those sites. Translators: keep this a statement of what was seen, never of what was done with it.">
+        {ENTITY} was seen on {COUNT, plural, =1 {1 site} other {# sites}} you visited.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_CROSSSITE_CAPABILITY" desc="Follows the cross-site headline. No status: section 6.4 requires the claim be capability, not evidence of linkage.">
+        Could have been used to link your activity across them.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_OWN_SITE" desc="Marks a listed site as belonging to the company itself (section 9.5), shown but not counted. No status: labels the relationship between a company and a site.">
+        (their own site)
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_OWN_COMPANY" desc="Marks an exposure row whose every site belongs to that company, so it is the publisher of a page the user opened rather than a third party that followed them. No status: labels who the company is, not what was observed.">
+        (this site&apos;s own company)
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_OWN_COMPANY_NOTE" desc="Footnote shown when at least one exposure row is marked as the site owner. No status: explains the marker rather than reporting an observation.">
+        Rows marked that way are the companies behind sites you opened yourself.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_SITES_TRUNCATED" desc="States that a cross-site evidence list was cut. No status: the site list is evidence, so a shortened list must say so. SHOWN is displayed rows, TOTAL the real number.">
+        Showing {SHOWN} of {TOTAL} sites.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_LEAK" desc="Shown when some of a company requests were ALLOWED. Section 6.4 requires this be prominent rather than rounded away.">
+        {COUNT, plural, =1 {1 request got through.} other {# requests got through.}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_ALL_BLOCKED" desc="Shown when every request was BLOCKED and none were ALLOWED.">
+        {COUNT, plural, =1 {The 1 request was blocked.} other {All # requests were blocked.}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_CROSSSITE_TRUNCATED" desc="States that the cross-site card list was cut. No status: reports the cut so the number of companies is not understated. SHOWN is displayed cards, TOTAL how many exist.">
+        Showing the first {SHOWN} of {TOTAL} companies seen across three or more sites.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_TIMELINE_HEADING" desc="Section 6.8 heading. No status: a section title.">
+        Recent activity
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_TIMELINE_EMPTY" desc="Shown when the timeline has no entries. No status: reports that nothing notable happened.">
+        Nothing notable recorded yet.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_TIMELINE_EMPTY_NOTE" desc="Explains why the timeline may be empty. No status: describes retention, not an observation.">
+        Only notable events are kept, for 48 hours.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_TIMELINE_NOTE" desc="Retention note under the timeline. No status: describes how long rows live and that clearing history clears them.">
+        Kept for 48 hours, and cleared with your browsing history.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FIRST_SEEN" desc="Timeline line for a FIRST_SEEN_ON_SITE event, followed by the site name. Reports DETECTED.">
+        first seen on
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_CROSS_SITE" desc="Timeline line for a CROSS_SITE_DETECTED event, followed by the site name. Reports DETECTED.">
+        seen across sites on
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FINGERPRINT" desc="Timeline line for a FINGERPRINT_ATTEMPT event, followed by the site name. Reports DETECTED only, because Phase 2 observes fingerprinting without perturbing it and must not imply RANDOMIZED.">
+        fingerprinting attempt detected on
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FINGERPRINT_POTENTIAL" desc="Timeline line for a FINGERPRINT_ATTEMPT event whose status is POTENTIAL, followed by the site name. Reports a heuristic match that is NOT certain, so it must not say detected.">
+        possible fingerprinting activity on
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_USER_ALLOWED" desc="Timeline line for a USER_ALLOWED_SITE event, followed by the site name. No status: records a choice the user made, not an observation about a tracker.">
+        you turned blocking off for
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_WEBRTC" desc="Timeline line for a WEBRTC_ADDRESS_REQUEST event, followed by the site name. Reports DETECTED.">
+        network address requested on
+      </message>
+
+      <message name="IDS_ZEPHYRUS_PRIVACY_ANNOUNCE_DETAILS" desc="Spoken by a screen reader when the user opens the per-tracker list. $1 is the number of rows, all of them already DETECTED.">
+        Tracker list, <ph name="COUNT">$1<ex>4</ex></ph> entries.
+      </message>
       <message name="IDS_ZEPHYRUS_PW_NTP_HEADING" desc="Heading on the Private Workspace new tab page.">
         You're in a Private Workspace
       </message>

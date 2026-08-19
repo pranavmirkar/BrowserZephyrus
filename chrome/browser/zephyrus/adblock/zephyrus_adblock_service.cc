@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service.h"
+#include <optional>
+#include "base/logging.h"
 
 #include <utility>
 
@@ -241,7 +243,13 @@ youtube.com##ytm-companion-slot
 ###qc-cmp2-container
 ##.fc-consent-root
 ###sp_message_container_general
-##.sp-message-open
+! Sourcepoint numbers its container per property, so match the prefix. NOT
+! `.sp-message-open`: that is the state class Sourcepoint puts on <html>, so
+! hiding it blanks the entire document — it did exactly that on theguardian.com
+! until 2026-08-11. The scroll-lock that class applies is released by the
+! renderer's unlock pass, not by hiding anything.
+##[id^="sp_message_container_"]
+##.sp_veil
 ###usercentrics-root
 ###cookiescript_injected
 ##.cc-window.cc-banner
@@ -278,16 +286,45 @@ BuildEnginesFromBundledList() {
   // Prefer the auto-updated list downloaded to the user-data dir; fall back to
   // the snapshot bundled next to the binary if it's missing (fresh install /
   // update never ran / offline).
+  // Bounded + validated read. The updater checks content before WRITING, but
+  // this is the READ path and it must not assume the file got there that way:
+  // a copy written by a build that predates the validation, or by anything else
+  // with write access to the profile directory, would otherwise be handed
+  // straight to the rule engines. An unbounded ReadFileToString here also made
+  // startup allocate whatever size that file happened to be.
+  //
+  // On rejection we fall through to the bundled snapshot, which is the same
+  // "never fail open" shape the rest of the update path uses.
+  static constexpr size_t kMaxFilterFileBytes = 64u * 1024 * 1024;
+  auto read_filter_file = [](const base::FilePath& path, std::string* out) {
+    const std::optional<int64_t> size = base::GetFileSize(path);
+    if (!size.has_value() || *size <= 0 ||
+        static_cast<uint64_t>(*size) > kMaxFilterFileBytes) {
+      return false;
+    }
+    if (!base::ReadFileToStringWithMaxSize(path, out, kMaxFilterFileBytes)) {
+      return false;
+    }
+    if (!LooksLikeFilterList(*out)) {
+      LOG(ERROR) << "[Zephyrus] stored filter list is not a filter list, "
+                    "ignoring it: "
+                 << path;
+      out->clear();
+      return false;
+    }
+    return true;
+  };
+
   std::string contents;
   bool read = false;
   base::FilePath downloaded = DownloadedListPath();
   if (!downloaded.empty()) {
-    read = base::ReadFileToString(downloaded, &contents);
+    read = read_filter_file(downloaded, &contents);
   }
   if (!read) {
     base::FilePath dir;
     if (base::PathService::Get(base::DIR_ASSETS, &dir)) {
-      read = base::ReadFileToString(dir.AppendASCII(kFilterFileName), &contents);
+      read = read_filter_file(dir.AppendASCII(kFilterFileName), &contents);
     }
   }
   if (read) {
@@ -603,6 +640,40 @@ std::vector<std::string> ZephyrusAdblockService::GetCosmeticSelectors(
   return cosmetic_engine_->GetSelectorsForUrl(url);
 }
 
+namespace {
+
+// One selector list per rule would mean a single malformed selector — the
+// lists are community-maintained and occasionally carry one — silently voiding
+// every other selector in the same rule. Chunking caps that blast radius while
+// keeping the stylesheet compact.
+constexpr size_t kSelectorsPerRule = 64;
+
+std::string BuildHideCss(const std::vector<std::string>& selectors) {
+  std::string css;
+  for (size_t i = 0; i < selectors.size(); ++i) {
+    if (i % kSelectorsPerRule == 0) {
+      if (i) {
+        css += "{display:none !important;}";
+      }
+    } else {
+      css += ',';
+    }
+    // Every hide is scoped under body, so no rule can ever match <html> or
+    // <body> and blank the page. A state class on the root — Sourcepoint's
+    // `sp-message-open` — is indistinguishable from a banner's own class in a
+    // filter list, and one such entry took theguardian.com down to a white
+    // page. :where() keeps the guard out of the specificity calculation.
+    css += ":where(body) ";
+    css += selectors[i];
+  }
+  if (!selectors.empty()) {
+    css += "{display:none !important;}";
+  }
+  return css;
+}
+
+}  // namespace
+
 std::string ZephyrusAdblockService::GetCosmeticCss(const GURL& url) const {
   if (!enabled_ || !cosmetic_engine_ || IsAllowlisted(url)) {
     return std::string();
@@ -611,15 +682,23 @@ std::string ZephyrusAdblockService::GetCosmeticCss(const GURL& url) const {
   if (selectors.empty()) {
     return std::string();
   }
-  std::string css;
-  for (size_t i = 0; i < selectors.size(); ++i) {
-    if (i) {
-      css += ',';
-    }
-    css += selectors[i];
+  std::string css = BuildHideCss(selectors);
+  // Style overrides last, so a `:style()` rule releasing an overlay's
+  // scroll-lock is not itself outranked by an earlier rule.
+  for (const std::string& rule : cosmetic_engine_->GetStyleRulesForUrl(url)) {
+    css += rule;
   }
-  css += "{display:none !important;}";
   return css;
+}
+
+std::string ZephyrusAdblockService::GetGenericCosmeticCss(
+    const GURL& url,
+    const std::vector<std::string>& tokens) const {
+  if (!enabled_ || !cosmetic_engine_ || IsAllowlisted(url) || tokens.empty()) {
+    return std::string();
+  }
+  return BuildHideCss(
+      cosmetic_engine_->GetGenericSelectorsForTokens(url, tokens));
 }
 
 std::string ZephyrusAdblockService::GetScriptletInjection(

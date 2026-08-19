@@ -12,10 +12,13 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/gfx/animation/animation_delegate.h"
+#include "ui/gfx/animation/slide_animation.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/mouse_watcher.h"
@@ -61,6 +64,7 @@ class ZephyrusSidebarHotZone : public views::View {
 // overlay on the left edge of the browser's content area and slides in/out on
 // hover via a GPU layer transform.
 class ZephyrusSidebarView : public views::View,
+                            public gfx::AnimationDelegate,
                             public TabStripModelObserver,
                             public views::MouseWatcherListener,
                             public views::ContextMenuController,
@@ -78,6 +82,29 @@ class ZephyrusSidebarView : public views::View,
 
   // Slides the sidebar fully into view.
   void Reveal();
+
+  // Pinned: the sidebar stays out and never auto-tucks. Mirrors the title bar's
+  // pin (BrowserView::ToggleZephyrusTitlebarPinned).
+  bool is_pinned() const { return pinned_; }
+  void TogglePinned();
+
+  // 0 tucked, 1 fully out. Drives how much of the window column the layout
+  // reserves, so the page's edge tracks the panel instead of jumping once.
+  //
+  // Deliberately a separate animation from the layer transform that moves the
+  // panel: that one carries an overshoot-and-settle chain, and the page's edge
+  // should not overshoot with it.
+  double reveal_amount() const { return reveal_animation_.GetCurrentValue(); }
+
+  // Whether the column is mid-slide. Lets the browser skip per-frame work that
+  // cannot change during a 200ms animation.
+  bool is_revealing_or_tucking() const {
+    return reveal_animation_.is_animating();
+  }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override;
+  void AnimationEnded(const gfx::Animation* animation) override;
 
   // Zephyrus: adapts the sidebar's panel, text and icon colors to the active
   // page color. std::nullopt restores the default dark frosted look.
@@ -114,7 +141,15 @@ class ZephyrusSidebarView : public views::View,
 
  private:
   // Rebuilds the tab row list from the current TabStripModel state.
+  //
+  // DANGER: this destroys every row view, including whichever one the user is
+  // currently clicking. Call it directly ONLY from a context that is not
+  // running inside a row's own callback; from tab-strip observer callbacks use
+  // ScheduleRebuildTabList() instead. See its comment.
   void RebuildTabList();
+
+  // Posts RebuildTabList() so the pending input event finishes unwinding first.
+  void ScheduleRebuildTabList();
 
   // Rebuilds the "Favorites" section from the bookmark bar's entries.
   void RebuildFavorites();
@@ -157,6 +192,11 @@ class ZephyrusSidebarView : public views::View,
   bool revealed_ = false;
   std::unique_ptr<views::MouseWatcher> mouse_watcher_;
   base::RepeatingTimer reveal_poll_timer_;
+  // Reserving the column is now driven by this animation rather than a timer:
+  // its end IS the moment the panel is fully off screen, so there is no
+  // duration to keep in sync by hand.
+  gfx::SlideAnimation reveal_animation_{this};
+  bool pinned_ = false;
 
   // Hidden when there are no bookmarks, so the heading never labels nothing.
   raw_ptr<views::View> favorites_header_ = nullptr;
@@ -170,6 +210,9 @@ class ZephyrusSidebarView : public views::View,
   // page opens a tab), and a stale index would act on a different tab.
   raw_ptr<content::WebContents> context_menu_contents_ = nullptr;
   std::vector<int> context_menu_workspace_ids_;
+
+  // Guards the posted rebuild against the sidebar being torn down first.
+  base::WeakPtrFactory<ZephyrusSidebarView> weak_factory_{this};
 };
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_SIDEBAR_VIEW_H_

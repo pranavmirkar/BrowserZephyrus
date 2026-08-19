@@ -100,6 +100,12 @@ class ZephyrusAdblockService : public KeyedService {
   // ("sel1,sel2{display:none !important;}"), or empty if no selectors apply.
   std::string GetCosmeticCss(const GURL& url) const;
 
+  // The generic element-hiding CSS unlocked by the ids/classes the renderer
+  // surveyed in the live document. See AdblockCosmeticEngine.
+  std::string GetGenericCosmeticCss(const GURL& url,
+                                    const std::vector<std::string>& tokens)
+      const;
+
   // Scriptlet injection: the main-world JS to run at document-start on `url`
   // (empty if none / disabled). Neutralizes ad logic on hard sites (YouTube).
   std::string GetScriptletInjection(const GURL& url) const;

@@ -62,11 +62,25 @@ namespace {
 // pixels at 125% and 150% display scaling (25 and 30), so the corner mask
 // doesn't land on fractional pixels. Was 6 upstream.
 constexpr float kContentCornerRadius = 20;
-constexpr gfx::RoundedCornersF kContentRoundedCorners{kContentCornerRadius};
 constexpr int kSplitViewContentPadding = 4;
 
 constexpr int kNewTabFooterSeparatorHeight = 1;
 constexpr int kNewTabFooterHeight = 56;
+
+// Zephyrus: the page as a floating card (the Helium/Zen treatment).
+//
+// The margin has to exist for the outline to read as a border on the PAGE
+// rather than as an outline on the WINDOW: with the contents flush to the
+// window edge there is nowhere for a stroke to sit that does not look like
+// window chrome.
+//
+// The page sits in a thin frame of window background: 4 on the three sides
+// that face the window frame, none on top where the toolbar is attached. The
+// radius is ContentsContainerOutline::kCornerRadius (8), which is also what
+// Windows 11 rounds its window corners to, so the page's curve matches the
+// frame just outside it. There is no stroke — the frame IS the margin.
+constexpr int kZephyrusContentMargin = 4;
+constexpr float kZephyrusContentRadius = ContentsContainerOutline::kCornerRadius;
 }  // namespace
 
 ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
@@ -246,10 +260,20 @@ void ContentsContainerView::UpdateBorderAndOverlay(bool is_in_split,
 }
 
 void ContentsContainerView::UpdateBorderRoundedCorners() {
+  // Zephyrus: split view keeps the radius it was tuned with; the single-pane
+  // floating card uses its own, smaller one. Everything below is shared —
+  // notably the devtools and footer logic, which is the reason this function is
+  // reused rather than the corners being set directly: a page rounded without
+  // regard to a docked devtools pane shows theme-coloured notches between the
+  // two, which is what a hand-rolled version got wrong.
+  const float corner_radius =
+      is_in_split_ ? kContentCornerRadius : kZephyrusContentRadius;
+  const gfx::RoundedCornersF all_corners_rounded{corner_radius};
+
   // Update devtools rounded corners. Note, devtools exists behind the contents
   // view so all devtools corners are rounded.
-  devtools_web_view_->holder()->SetCornerRadii(kContentRoundedCorners);
-  devtools_scrim_view_->SetRoundedCorners(kContentRoundedCorners);
+  devtools_web_view_->holder()->SetCornerRadii(all_corners_rounded);
+  devtools_scrim_view_->SetRoundedCorners(all_corners_rounded);
 
   const bool devtools_in_upper_left =
       devtools_web_view_->GetVisible() &&
@@ -267,18 +291,22 @@ void ContentsContainerView::UpdateBorderRoundedCorners() {
        current_devtools_docked_placement_ == DevToolsDockedPlacement::kRight);
 
   const gfx::RoundedCornersF content_upper_rounded_corners =
-      gfx::RoundedCornersF{devtools_in_upper_left ? 0 : kContentCornerRadius,
-                           devtools_in_upper_right ? 0 : kContentCornerRadius,
+      gfx::RoundedCornersF{devtools_in_upper_left ? 0 : corner_radius,
+                           devtools_in_upper_right ? 0 : corner_radius,
                            0, 0};
   const gfx::RoundedCornersF content_lower_rounded_corners =
       gfx::RoundedCornersF{0, 0,
-                           devtools_in_lower_right ? 0 : kContentCornerRadius,
-                           devtools_in_lower_left ? 0 : kContentCornerRadius};
+                           devtools_in_lower_right ? 0 : corner_radius,
+                           devtools_in_lower_left ? 0 : corner_radius};
+  // Zephyrus: the top corners are always curved. Attached, they curve into the
+  // toolbar; with the title bar hidden they curve into the margin that
+  // GetZephyrusContentMargin opens up on top, so the page reads as the same
+  // card either way rather than changing shape when the toolbar goes away.
   const gfx::RoundedCornersF content_rounded_corners =
-      gfx::RoundedCornersF{devtools_in_upper_left ? 0 : kContentCornerRadius,
-                           devtools_in_upper_right ? 0 : kContentCornerRadius,
-                           devtools_in_lower_right ? 0 : kContentCornerRadius,
-                           devtools_in_lower_left ? 0 : kContentCornerRadius};
+      gfx::RoundedCornersF{devtools_in_upper_left ? 0 : corner_radius,
+                           devtools_in_upper_right ? 0 : corner_radius,
+                           devtools_in_lower_right ? 0 : corner_radius,
+                           devtools_in_lower_left ? 0 : corner_radius};
 
   auto radii = new_tab_footer_view_ && new_tab_footer_view_->GetVisible()
                    ? content_upper_rounded_corners
@@ -286,7 +314,19 @@ void ContentsContainerView::UpdateBorderRoundedCorners() {
 
   contents_view_->SetBackgroundRadii(radii);
   contents_view_->holder()->SetCornerRadii(radii);
-  contents_scrim_view_->SetRoundedCorners(kContentRoundedCorners);
+  // Zephyrus: and the ContentsWebView's OWN layer. The two calls above round
+  // the background the view paints and the native host that carries the
+  // renderer's surface, but the surface is a descendant layer and was not
+  // being clipped by either — so the page's square corner painted straight
+  // over the curve. That is the artifact that took on the colour of whatever
+  // site was loaded: white on Notion, red on a red page. Rounding the parent
+  // layer clips every descendant, which is the only one of the three that
+  // catches the compositor surface.
+  if (ui::Layer* layer = contents_view_->layer()) {
+    layer->SetRoundedCornerRadius(radii);
+    layer->SetIsFastRoundedCorner(true);
+  }
+  contents_scrim_view_->SetRoundedCorners(all_corners_rounded);
 
   if (new_tab_footer_view_) {
     new_tab_footer_view_->holder()->SetCornerRadii(
@@ -321,6 +361,9 @@ void ContentsContainerView::ClearBorderRoundedCorners() {
   devtools_scrim_view_->SetRoundedCorners(kNoRoundedCorners);
 
   contents_view_->SetBackgroundRadii(kNoRoundedCorners);
+  if (ui::Layer* layer = contents_view_->layer()) {
+    layer->SetRoundedCornerRadius(kNoRoundedCorners);
+  }
   contents_view_->holder()->SetCornerRadii(kNoRoundedCorners);
 
   if (new_tab_footer_view_) {
@@ -348,10 +391,83 @@ void ContentsContainerView::ClearBorderRoundedCorners() {
 }
 
 void ContentsContainerView::ChildVisibilityChanged(View* child) {
-  if ((child == new_tab_footer_view_ || child == devtools_web_view_) &&
-      is_in_split_) {
-    UpdateBorderRoundedCorners();
+  // Zephyrus: no longer gated on split view. Outside split the page is a
+  // rounded card too, so showing or hiding devtools or the footer has to
+  // re-derive which of its corners may curve.
+  if (child == new_tab_footer_view_ || child == devtools_web_view_) {
+    UpdateZephyrusContentCorners();
   }
+}
+
+void ContentsContainerView::UpdateZephyrusContentCorners() {
+  // Not yet fully constructed. ChildVisibilityChanged fires from inside this
+  // view's own constructor — new_tab_footer_view_->SetVisible(false) runs while
+  // the footer is already parented but the scrim below it does not exist yet —
+  // and both branches below dereference contents_scrim_view_ unconditionally.
+  // Upstream never hit this because the caller was gated on is_in_split_, which
+  // is false during construction; dropping that gate so the single-pane card
+  // updates too made the null reachable, and the browser crashed before the
+  // window appeared. Layout() applies the corners once construction finishes.
+  if (!contents_view_ || !contents_scrim_view_) {
+    return;
+  }
+
+  // Rounding the bottom corners against a window edge would cut notches out of
+  // the page and show the desktop through them, so a window with no margin —
+  // fullscreen, popups — stays square.
+  if (!is_in_split_ && GetZephyrusContentMargin().IsEmpty()) {
+    ClearBorderRoundedCorners();
+    container_outline_->SetVisible(false);
+    return;
+  }
+  UpdateBorderRoundedCorners();
+  if (!is_in_split_) {
+    // No stroke outside split view. The frame is the margin of window
+    // background around the page; a light line on top of that was reading as a
+    // second, brighter edge rather than as definition.
+    container_outline_->SetVisible(false);
+  }
+}
+
+gfx::Insets ContentsContainerView::GetZephyrusContentMargin() const {
+  // Fullscreen is a request for the page and nothing else; a margin there would
+  // letterbox video. Non-tabbed windows (popups, PWAs, PiP) are sized to their
+  // content by the site, so a floating card inside them just wastes the space
+  // the site asked for.
+  // Split view brings its own insets and its own outline; the card is the
+  // single-pane treatment only.
+  if (is_in_split_ || !browser_view_ || browser_view_->IsFullscreen() ||
+      !browser_view_->GetIsNormalType()) {
+    return gfx::Insets();
+  }
+  // The top is the only edge that changes. With the toolbar attached above,
+  // a gap there would not read as a margin around a card — it would read as the
+  // page having come unstuck from the browser — so the page stays married to
+  // the toolbar and only the three edges facing the window frame get the
+  // margin. With the title bar hidden there is no toolbar to be attached to,
+  // and the page becomes a card on all four sides.
+  // The leading edge behaves like the top: a margin only where the page faces
+  // the window frame. With the sidebar attached the page faces the sidebar
+  // instead, and it meets it flush — the rounded corner alone separates them,
+  // with the sidebar showing through the notch the same way the toolbar does
+  // above.
+  // The margin on all three framed sides regardless of the sidebar. The card
+  // keeps the same frame whether the sidebar is out or not, so it reads as one
+  // consistent object rather than changing shape when the sidebar appears — and
+  // the 4px gap is what separates it from the sidebar instead of the two sitting
+  // flush. Only the TOP still drops, because the toolbar is genuinely attached
+  // there.
+  return gfx::Insets::TLBR(ZephyrusTopIsAttached() ? 0 : kZephyrusContentMargin,
+                           kZephyrusContentMargin, kZephyrusContentMargin,
+                           kZephyrusContentMargin);
+}
+
+bool ContentsContainerView::ZephyrusTopIsAttached() const {
+  // Whether browser chrome is sitting directly on top of the page. When the
+  // title bar is hidden there is nothing up there for the page to curve into,
+  // so curving anyway leaves two notches of window background floating against
+  // the top of the content with no explanation.
+  return browser_view_ && browser_view_->IsZephyrusTitlebarShowing();
 }
 
 void ContentsContainerView::Layout(PassKey pass_key) {
@@ -359,15 +475,7 @@ void ContentsContainerView::Layout(PassKey pass_key) {
 
   UpdateContentsClip();
 
-  // Zephyrus: round the top corners of the web contents (when not in split
-  // view) so the title bar curves into the page below it. holder()'s corner
-  // radii clip the actual web contents, not just the background layer.
-  if (!is_in_split_) {
-    const gfx::RoundedCornersF kZephyrusTopCorners(12, 12, 0, 0);
-    contents_view_->SetBackgroundRadii(kZephyrusTopCorners);
-    contents_view_->holder()->SetCornerRadii(kZephyrusTopCorners);
-    contents_scrim_view_->SetRoundedCorners(kZephyrusTopCorners);
-  }
+  UpdateZephyrusContentCorners();
 }
 
 views::View::Views ContentsContainerView::GetChildrenInZOrder() {
@@ -384,9 +492,9 @@ views::View::Views ContentsContainerView::GetChildrenInZOrder() {
 void ContentsContainerView::OnViewBoundsChanged(View* observed_view) {
   if (observed_view == contents_view_) {
     UpdateDevToolsDockedPlacement();
-    if (is_in_split_) {
-      UpdateBorderRoundedCorners();
-    }
+    // Zephyrus: also outside split view — the docked placement that was just
+    // recomputed decides which corners may curve.
+    UpdateZephyrusContentCorners();
   }
 }
 
@@ -412,7 +520,11 @@ void ContentsContainerView::ApplyWatermarkSettings(
 void ContentsContainerView::UpdateDevToolsDockedPlacement() {
   DevToolsDockedPlacement placement = DevToolsDockedPlacement::kUnknown;
   gfx::Rect contents_view_bounds = GetContentsViewBounds();
-  const gfx::Rect& container_bounds = GetContentsBounds();
+  // Zephyrus: the same margin CalculateProposedLayout applies, or the "devtools
+  // are not open" comparison below never matches and every tab looks like it
+  // has a docked devtools pane.
+  gfx::Rect container_bounds = GetContentsBounds();
+  container_bounds.Inset(GetZephyrusContentMargin());
 
   // If contents_webview has the same bounds as webview_container, it either
   // means that devtools are not open or devtools are open in a separate
@@ -518,7 +630,13 @@ views::ProposedLayout ContentsContainerView::CalculateProposedLayout(
     return layouts;
   }
 
+  // Zephyrus: inset every child by the floating-card margin. Done here rather
+  // than with a views::Border because SetBorder() invalidates layout, and the
+  // margin depends on fullscreen state that changes during a layout pass — the
+  // invalidation would re-enter. GetContentsBounds() is the single source every
+  // child position below is derived from, so insetting it once is enough.
   gfx::Rect full_contents_bounds = GetContentsBounds();
+  full_contents_bounds.Inset(GetZephyrusContentMargin());
   gfx::Rect devtools_bounds;
   // The area contents excluding devtools is drawn (ie |contents_view_|,
   // |new_tab_footer_view_|, etc).
@@ -658,9 +776,12 @@ views::ProposedLayout ContentsContainerView::CalculateProposedLayout(
   }
 
   if (container_outline_) {
-    layouts.child_layouts.emplace_back(container_outline_.get(),
-                                       container_outline_->GetVisible(),
-                                       gfx::Rect(0, 0, width, height));
+    // In split view the outline frames the whole container; outside it, it
+    // frames the card, so it takes the margin-inset bounds every other child
+    // was laid out against.
+    layouts.child_layouts.emplace_back(
+        container_outline_.get(), container_outline_->GetVisible(),
+        is_in_split_ ? gfx::Rect(0, 0, width, height) : full_contents_bounds);
   }
 
   if (capture_contents_border_view_) {

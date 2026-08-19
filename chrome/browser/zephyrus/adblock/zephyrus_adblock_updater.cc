@@ -63,6 +63,15 @@ constexpr size_t kMinListSize = 1024;
 // previous file is kept (guards against writing a gutted list).
 constexpr size_t kMinCombinedSize = 512 * 1024;
 
+// The largest a legitimate combined list has any business being. The
+// per-request cap is already 5 MB; this bounds the concatenation.
+constexpr size_t kMaxCombinedSize = 32u * 1024 * 1024;
+
+// An update that collapses the list to a fraction of what we already have is
+// treated as an outage, not an update: a truncated or stubbed response is far
+// more likely than every publisher legitimately shrinking at once.
+constexpr double kMinShrinkRatio = 0.6;
+
 // Writes `contents` to `path` atomically (temp file + rename). Runs on a
 // background thread. Returns true on success.
 bool WriteCombinedList(const base::FilePath& path,
@@ -74,7 +83,69 @@ bool WriteCombinedList(const base::FilePath& path,
                                                         "ZephyrusAdBlock");
 }
 
+// Refuses an update that would shrink the stored list dramatically, then writes
+// atomically. A partial outage upstream, or a host serving a stub, should leave
+// the user on yesterday's working rules rather than a gutted file.
+bool WriteCombinedListIfNotAShrink(const base::FilePath& path,
+                                   std::unique_ptr<std::string> contents) {
+  std::optional<int64_t> existing = base::GetFileSize(path);
+  if (existing.has_value() && *existing > 0) {
+    const double ratio =
+        static_cast<double>(contents->size()) / static_cast<double>(*existing);
+    if (ratio < kMinShrinkRatio) {
+      LOG(ERROR) << "[Zephyrus] refusing filter list update: new size "
+                 << contents->size() << " is only " << (ratio * 100)
+                 << "% of the existing " << *existing
+                 << " bytes; keeping the previous copy";
+      return false;
+    }
+  }
+  return WriteCombinedList(path, std::move(contents));
+}
+
 }  // namespace
+
+bool LooksLikeFilterList(std::string_view body) {
+  if (body.empty()) {
+    return false;
+  }
+
+  static constexpr std::string_view kSpace = " \t\r\n";
+
+  // Every list we fetch opens with either an Adblock Plus header line
+  // ("[Adblock Plus 2.0]") or a comment ("! Title: ..."). Nothing that is not
+  // a filter list does, and an HTML error page certainly does not.
+  size_t first = body.find_first_not_of(kSpace);
+  if (first == std::string_view::npos) {
+    return false;
+  }
+  // Skip a UTF-8 BOM if the server sent one.
+  static constexpr std::string_view kBom = "\xEF\xBB\xBF";
+  if (body.substr(first).starts_with(kBom)) {
+    first = body.find_first_not_of(kSpace, first + kBom.size());
+    if (first == std::string_view::npos) {
+      return false;
+    }
+  }
+  const std::string_view start = body.substr(first);
+  if (!start.starts_with("[Adblock") && !start.starts_with("!")) {
+    return false;
+  }
+
+  // Belt and braces for the case that actually happens in the wild: a captive
+  // portal or error page whose first bytes were coaxed into looking like a
+  // comment. Real filter lists contain essentially no markup up front, so the
+  // scan is limited to the head -- element-hiding rules further down
+  // legitimately contain angle brackets.
+  const std::string_view head = body.substr(0, 4096);
+  for (std::string_view marker :
+       {"<!doctype", "<!DOCTYPE", "<html", "<HTML", "<head", "<body"}) {
+    if (head.find(marker) != std::string_view::npos) {
+      return false;
+    }
+  }
+  return true;
+}
 
 ZephyrusAdblockUpdater::ZephyrusAdblockUpdater(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
@@ -134,11 +205,18 @@ void ZephyrusAdblockUpdater::Start(CompletionCallback on_complete) {
 void ZephyrusAdblockUpdater::OnListDownloaded(
     size_t index,
     std::optional<std::string> body) {
-  if (body && body->size() >= kMinListSize) {
-    bodies_[index] = std::move(*body);
-  } else {
+  if (!body || body->size() < kMinListSize) {
     LOG(WARNING) << "[Zephyrus] filter list download failed or too small: "
                  << UrlAt(index);
+  } else if (!LooksLikeFilterList(*body)) {
+    // Served something, but not a filter list. Dropping this one list is the
+    // right degradation: the others still update, and the blocker keeps the
+    // rules it already had for this one.
+    LOG(ERROR) << "[Zephyrus] filter list did not look like a filter list, "
+                  "refusing to adopt it: "
+               << UrlAt(index);
+  } else {
+    bodies_[index] = std::move(*body);
   }
   if (--pending_ == 0) {
     OnAllDownloaded();
@@ -161,17 +239,23 @@ void ZephyrusAdblockUpdater::OnAllDownloaded() {
     combined->append("\n");
   }
 
-  if (combined->size() < kMinCombinedSize) {
-    // Too little came back to trust; keep the existing file.
+  if (combined->size() < kMinCombinedSize ||
+      combined->size() > kMaxCombinedSize) {
+    // Too little (or absurdly much) came back to trust; keep the existing file.
+    LOG(ERROR) << "[Zephyrus] combined filter list size implausible ("
+               << combined->size() << " bytes); keeping the previous copy";
     if (on_complete_) {
       std::move(on_complete_).Run(false);
     }
     return;
   }
 
+  // Never replace a good list with a much smaller one. Checked on a blocking
+  // sequence together with the write, because it has to stat the existing file.
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
-      base::BindOnce(&WriteCombinedList, output_path_, std::move(combined)),
+      base::BindOnce(&WriteCombinedListIfNotAShrink, output_path_,
+                     std::move(combined)),
       base::BindOnce(&ZephyrusAdblockUpdater::OnFileWritten,
                      weak_factory_.GetWeakPtr()));
 }

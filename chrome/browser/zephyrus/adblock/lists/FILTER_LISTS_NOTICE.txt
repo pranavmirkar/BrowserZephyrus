@@ -1,0 +1,28 @@
+Zephyrus — third-party filter list notice
+=========================================
+
+Zephyrus distributes the following filter list alongside the browser binary.
+It is data, interpreted at runtime; it is not linked into or compiled with the
+browser executable.
+
+EasyList (includes EasyPrivacy sections)
+  Source:   https://easylist.to/
+  Project:  https://github.com/easylist/easylist
+  Licence:  https://easylist.to/pages/licence.html
+            (dual licensed: GNU General Public License v3, or
+             Creative Commons Attribution-ShareAlike 3.0 Unported)
+  Shipped as: zephyrus_filters.txt
+
+The snapshot's exact version is recorded in the header of that file (the
+"! Version:" line).
+
+Additional filter lists are downloaded at runtime into the user profile and are
+not distributed with the browser:
+
+  EasyPrivacy              https://easylist.to/
+  Fanboy's Cookiemonster   https://secure.fanboy.co.nz/
+  uBlock Origin filters    https://github.com/uBlockOrigin/uAssets
+
+Full licence terms are published at the URLs above. See
+chrome/browser/zephyrus/THIRD_PARTY_DATA.md for the obligations these carry and
+how they interact with distribution.

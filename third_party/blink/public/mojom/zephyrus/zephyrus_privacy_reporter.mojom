@@ -1,0 +1,72 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module zephyrus_privacy.mojom;
+
+// Zephyrus Privacy Intelligence: the renderer -> browser event channel.
+//
+// **Why this exists.** Almost everything the feature reports is observed in the
+// browser, where the network requests are. A few things are not observable
+// there at all: a page can read the device list, or probe a fingerprinting
+// surface, entirely inside the renderer with no request the browser ever sees.
+// Those are exactly the surfaces §9.2.1 and §6.5 care about, so there has to be
+// a way for Blink to say what it saw.
+//
+// **Why it lives here and not in //chrome.** Blink cannot depend on //chrome.
+// The interface is therefore declared in blink/public/mojom and implemented in
+// //chrome, bound through the frame's BrowserInterfaceBroker — the same
+// arrangement every other embedder-implemented frame interface uses.
+//
+// **Trust boundary.** The renderer is not trusted. Two consequences are baked
+// into the shape of this interface and must survive any change to it:
+//
+//  1. There is no URL, origin, or frame identifier in any message. The browser
+//     derives all of those from the RenderFrameHost the receiver is bound to.
+//     A compromised renderer must not be able to attribute its own behaviour to
+//     another site — that would let it forge entries in the user's privacy
+//     record, which is worse than reporting nothing.
+//  2. Every message is advisory and observational. Nothing here can change a
+//     block decision, relax a policy, or cause a write the renderer controls
+//     the size of. See §3.1: the analysis layer never calls back into
+//     enforcement.
+
+// A fingerprinting-relevant surface the page touched.
+//
+// Deliberately a closed enum rather than a string. A string would be an
+// unbounded, renderer-controlled value flowing into storage and into the UI;
+// an enum is validated by the bindings, bounds the number of distinct things
+// that can ever be reported for one document, and binds each value to a
+// translated string at the UI layer per §2.4.
+enum FingerprintSurface {
+  // navigator.mediaDevices.enumerateDevices(). Leaks device labels and stable
+  // device IDs with no permission prompt (§9.2.1).
+  kMediaDeviceEnumeration,
+
+  // Phase 4 surfaces (§6.5). Each is reported at most once per document by the
+  // renderer and at most once per site by the browser, so the count is of
+  // DISTINCT surfaces touched — which is what the §6.5 attempt heuristic
+  // measures. A loop calling one API a thousand times has learned one thing.
+  kCanvasRead,
+  kCanvasExport,
+  kWebglRenderer,
+  kAudioBuffer,
+  kHardwareConcurrency,
+  kDeviceMemory,
+  kScreenDepth,
+};
+
+// Implemented in the browser, one instance per document.
+interface PrivacyReporter {
+  // Reports that the document touched `surface`.
+  //
+  // Fire-and-forget: no reply, so a page cannot use the round trip as a timing
+  // signal, and the renderer never blocks on privacy bookkeeping.
+  //
+  // Repeats are expected and harmless — the browser records each surface at
+  // most once per document. Counting distinct surfaces rather than calls is
+  // both the honest measure (a loop calling one API a thousand times has not
+  // learned a thousand things) and what keeps a hostile renderer from inflating
+  // the user's numbers.
+  ReportFingerprintSurface(FingerprintSurface surface);
+};

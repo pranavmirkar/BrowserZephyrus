@@ -75,6 +75,7 @@ class PermissionDashboardView;
 class Profile;
 class SelectedKeywordView;
 class PrefChangeRegistrar;
+class ZephyrusEnginePill;
 
 namespace page_actions {
 class PageActionContainerView;
@@ -590,6 +591,11 @@ class LocationBarView
   // An icon to the left of the edit field: the HTTPS lock, blank page icon,
   // search icon, EV HTTPS bubble, etc.
   raw_ptr<LocationIconView> location_icon_view_ = nullptr;
+
+  // Zephyrus: names the current search engine and opens the picker. Sits right
+  // after the leading icon; see zephyrus_engine_pill.h for why it is a separate
+  // control rather than a click handler on the magnifier.
+  raw_ptr<ZephyrusEnginePill> zephyrus_engine_pill_ = nullptr;
 
   // Views to show inline autocompletion when an IME is active.  In this case,
   // we shouldn't change the text or selection inside the OmniboxView itself,

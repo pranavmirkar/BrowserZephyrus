@@ -1200,6 +1200,16 @@ void ZephyrusWorkspaceManager::NotifyLocalObservers() {
 }
 
 void ZephyrusWorkspaceManager::AddTabForWorkspace(int workspace_id) {
+  // Zephyrus has no new-tab page, and a window with no tabs is now a valid
+  // state that shows the empty backdrop. So when the window is *already*
+  // empty — at startup, or after the user closed the last tab — never
+  // manufacture a blank tab just to keep a workspace populated; that is
+  // exactly the page we are trying to abolish. Mid-session behaviour, where
+  // other tabs exist, is unchanged.
+  if (tab_strip_model_->count() == 0) {
+    return;
+  }
+
   pending_forced_workspace_id_ = workspace_id;
   tab_strip_model_->delegate()->AddTabAt(GURL(), /*index=*/-1,
                                          /*foreground=*/true);

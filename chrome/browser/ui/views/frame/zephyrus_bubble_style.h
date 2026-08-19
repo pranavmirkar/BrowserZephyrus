@@ -9,6 +9,7 @@
 
 namespace views {
 class BubbleDialogDelegate;
+class View;
 }
 
 #include "chrome/browser/ui/zephyrus_version.h"
@@ -41,6 +42,13 @@ void ConfigureBubble(views::BubbleDialogDelegate* bubble);
 // it. For a BubbleDialogDelegateView subclass call this from
 // OnWidgetInitialized(); for a plain delegate, right after CreateBubble*().
 void ApplyBubbleFrame(views::BubbleDialogDelegate* bubble);
+
+// Call at the top of any "show this bubble" path and bail out when it returns
+// true: the click being handled is the one that just dismissed the bubble, so
+// re-opening would make the trigger impossible to toggle shut. Arming is
+// automatic — ApplyBubbleFrame() above records the close. Each recorded close
+// suppresses at most one re-open.
+bool ConsumeReopenSuppression(const views::View* anchor);
 
 }  // namespace zephyrus
 

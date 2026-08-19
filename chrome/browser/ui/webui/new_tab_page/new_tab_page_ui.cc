@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/webui/new_tab_page/new_tab_page_ui.h"
+#include "chrome/browser/ui/webui/new_tab_page/zephyrus_wallpaper.h"
 
 #include <memory>
 #include <optional>
@@ -812,6 +813,30 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
                          google_util::CommandLineGoogleBaseURL().spec().c_str(),
                          chrome::kChromeUIUntrustedNewTabPageUrl,
                          chrome::kChromeUIUntrustedNtpMicrosoftAuthURL));
+
+  // Zephyrus: allow the stripped new-tab page to paint the (same-origin) blurred
+  // desktop wallpaper served by the request filter below. Keep the sources the
+  // real NTP still needs so nothing else regresses.
+  source->OverrideContentSecurityPolicy(
+      network::mojom::CSPDirectiveName::ImgSrc,
+      "img-src 'self' chrome://resources chrome://theme chrome://image "
+      "chrome://favicon2 https: data: blob:;");
+
+  // Zephyrus: serve the user's desktop wallpaper bytes at a fixed same-origin
+  // path so the page's background layer can blur it in CSS. The `.jpg` suffix
+  // makes the response Content-Type image/jpeg (satisfies nosniff); the image
+  // decoder sniffs the real format, so png/bmp wallpapers still render. Read is
+  // async off the UI thread; a failure replies empty and the page falls back to
+  // its dark background.
+  source->SetRequestFilter(
+      base::BindRepeating([](const std::string& path) {
+        return path == "zephyrus-wallpaper.jpg";
+      }),
+      base::BindRepeating(
+          [](const std::string& path,
+             content::WebUIDataSource::GotDataCallback callback) {
+            zephyrus::ReadDesktopWallpaperBytes(std::move(callback));
+          }));
 
   return source;
 }

@@ -196,6 +196,12 @@ class AccountSelectionBubbleView;
 // Zephyrus: workspace switcher bubble (defined in toolbar_view.cc) needs to
 // subclass BubbleDialogDelegateView, which requires being in the friend list.
 class ZephyrusWorkspaceMenu;
+// Zephyrus: profile switcher bubble (defined in toolbar_view.cc), same as above.
+class ZephyrusProfileMenu;
+class ZephyrusSearchOverlay;
+class ZephyrusProfileDialog;
+class ZephyrusTabSwitcher;
+class ZephyrusSearchEnginePicker;
 
 namespace views {
 
@@ -942,6 +948,11 @@ class VIEWS_EXPORT BubbleDialogDelegateView : public View,
   FRIEND_TEST_ALL_PREFIXES(test::InteractionTestUtilViewsTest, ActivateSurface);
   FRIEND_TEST_ALL_PREFIXES(test::InteractionTestUtilViewsTest, Confirm);
   friend class ::ZephyrusWorkspaceMenu;
+  friend class ::ZephyrusProfileMenu;
+  friend class ::ZephyrusSearchOverlay;
+  friend class ::ZephyrusProfileDialog;
+  friend class ::ZephyrusTabSwitcher;
+  friend class ::ZephyrusSearchEnginePicker;
 
   // |shadow| usually doesn't need to be explicitly set, just uses the default
   // argument. Unless on Mac when the bubble needs to use Views base shadow,

@@ -4,6 +4,9 @@
 
 #include "chrome/browser/zephyrus/adblock/adblock_cosmetic_engine.h"
 
+#include <optional>
+
+#include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 
@@ -20,7 +23,7 @@ namespace {
 bool IsProceduralSelector(std::string_view selector) {
   static constexpr std::string_view kMarkers[] = {
       ":has-text(",     ":-abp-",      ":xpath(",
-      ":style(",       ":remove(",       ":upward(",    ":matches-css",
+      ":remove(",       ":upward(",    ":matches-css",
       ":matches-path(",":matches-media(",":min-text-length(",
       ":watch-attr(",  ":contains(",     ":if(",        ":if-not(",
       ":nth-ancestor(",":others(",       ":shadow(",    ":remove-attr(",
@@ -32,6 +35,51 @@ bool IsProceduralSelector(std::string_view selector) {
     }
   }
   return false;
+}
+
+// The first "#id" or ".class" in `selector`, which any element matching it
+// must carry. Returns nullopt when there is none to key on.
+//
+// A '#' or '.' inside a string or attribute value (`a[href="#top"]`) can be
+// picked up as a token. That only ever makes a selector wait for a hook the
+// page may not have, so the failure mode is a rule staying dormant — never a
+// rule firing on a page it was not written for.
+std::optional<std::string> KeyTokenFor(std::string_view selector) {
+  for (size_t i = 0; i + 1 < selector.size(); ++i) {
+    if (selector[i] != '#' && selector[i] != '.') {
+      continue;
+    }
+    // CSS identifiers cannot start with a digit.
+    const char first = selector[i + 1];
+    if (!base::IsAsciiAlpha(first) && first != '_' && first != '-') {
+      continue;
+    }
+    size_t j = i + 1;
+    while (j < selector.size() &&
+           (base::IsAsciiAlphaNumeric(selector[j]) || selector[j] == '-' ||
+            selector[j] == '_')) {
+      ++j;
+    }
+    return std::string(selector.substr(i, j - i));
+  }
+  return std::nullopt;
+}
+
+// Splits "selector:style(decls)" into a CSS rule. Returns nullopt when the
+// filter is not a style filter.
+std::optional<std::string> AsStyleRule(std::string_view selector) {
+  constexpr std::string_view kMarker = ":style(";
+  const size_t at = selector.rfind(kMarker);
+  if (at == std::string_view::npos || selector.back() != ')') {
+    return std::nullopt;
+  }
+  std::string_view target = selector.substr(0, at);
+  std::string_view decls = selector.substr(
+      at + kMarker.size(), selector.size() - at - kMarker.size() - 1);
+  if (target.empty() || decls.empty()) {
+    return std::nullopt;
+  }
+  return base::StrCat({target, "{", decls, "}"});
 }
 
 }  // namespace
@@ -78,14 +126,30 @@ size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
     }
     std::string sel(selector);
 
+    // A `:style()` filter paints rather than hides, so it leaves the hide
+    // pipeline here with its declarations already folded into a CSS rule.
+    std::optional<std::string> style_rule = AsStyleRule(sel);
+    if (style_rule && exception) {
+      continue;  // Unhiding a style override is meaningless.
+    }
+
     if (domains.empty()) {
       // Generic rule.
-      if (exception) {
+      if (style_rule) {
+        if (!inject_generic_selectors) {
+          continue;  // See injected_style_rules_ in the header.
+        }
+        injected_style_rules_.push_back(*std::move(style_rule));
+      } else if (exception) {
         generic_exceptions_.insert(sel);
       } else if (inject_generic_selectors) {
         injected_generic_selectors_.push_back(sel);
       } else {
         generic_selectors_.push_back(sel);
+        if (std::optional<std::string> token = KeyTokenFor(sel)) {
+          generic_by_token_[*token].push_back(sel);
+          ++indexed_generic_count_;
+        }
       }
       ++rule_count_;
       ++added;
@@ -100,7 +164,9 @@ size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
         continue;  // exclusion form not supported yet
       }
       std::string domain = base::ToLowerASCII(d);
-      if (exception) {
+      if (style_rule) {
+        domain_style_rules_[domain].push_back(*style_rule);
+      } else if (exception) {
         domain_exceptions_[domain].insert(sel);
       } else {
         domain_selectors_[domain].push_back(sel);
@@ -112,18 +178,9 @@ size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
   return added;
 }
 
-std::vector<std::string> AdblockCosmeticEngine::GetSelectorsForUrl(
-    const GURL& url) const {
-  std::vector<std::string> result;
-  if (!url.SchemeIsHTTPOrHTTPS()) {
-    return result;
-  }
-  const std::string host(url.host());
-
-  // Collect the exceptions that apply to this host (generic + all matching
-  // parent domains) so hidden selectors can be filtered out.
+std::unordered_set<std::string> AdblockCosmeticEngine::CollectExceptions(
+    const std::string& host) const {
   std::unordered_set<std::string> exceptions = generic_exceptions_;
-
   // Walk host and each parent domain (a.b.c.com -> b.c.com -> c.com).
   for (size_t pos = 0; pos != std::string::npos;) {
     std::string_view candidate(host);
@@ -135,6 +192,17 @@ std::vector<std::string> AdblockCosmeticEngine::GetSelectorsForUrl(
     size_t dot = host.find('.', pos);
     pos = (dot == std::string::npos) ? std::string::npos : dot + 1;
   }
+  return exceptions;
+}
+
+std::vector<std::string> AdblockCosmeticEngine::GetSelectorsForUrl(
+    const GURL& url) const {
+  std::vector<std::string> result;
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return result;
+  }
+  const std::string host(url.host());
+  const std::unordered_set<std::string> exceptions = CollectExceptions(host);
 
   auto add = [&](const std::vector<std::string>& selectors) {
     for (const std::string& s : selectors) {
@@ -148,16 +216,63 @@ std::vector<std::string> AdblockCosmeticEngine::GetSelectorsForUrl(
   // to every page.
   add(injected_generic_selectors_);
 
-  // Mass generic (all-site) selectors are parsed but not injected: emitting
-  // ~15k selectors on every page would be a large per-page cost. Enabling them
-  // needs a "surveyor" that injects only the selectors whose classes/ids are
-  // actually present in the document (future).
+  // Mass generic (all-site) selectors are deliberately absent here: they are
+  // delivered by GetGenericSelectorsForTokens() once the renderer has surveyed
+  // the document, so a page only pays for the ones it can actually match.
   for (size_t pos = 0; pos != std::string::npos;) {
     std::string_view candidate(host);
     candidate.remove_prefix(pos);
     auto it = domain_selectors_.find(std::string(candidate));
     if (it != domain_selectors_.end()) {
       add(it->second);
+    }
+    size_t dot = host.find('.', pos);
+    pos = (dot == std::string::npos) ? std::string::npos : dot + 1;
+  }
+  return result;
+}
+
+std::vector<std::string> AdblockCosmeticEngine::GetGenericSelectorsForTokens(
+    const GURL& url,
+    const std::vector<std::string>& tokens) const {
+  std::vector<std::string> result;
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return result;
+  }
+  const std::unordered_set<std::string> exceptions =
+      CollectExceptions(std::string(url.host()));
+
+  // One selector can be reachable from several of a page's tokens, and the
+  // renderer re-surveys as the page mutates, so dedupe within the batch.
+  std::unordered_set<std::string> seen;
+  for (const std::string& token : tokens) {
+    const auto it = generic_by_token_.find(token);
+    if (it == generic_by_token_.end()) {
+      continue;
+    }
+    for (const std::string& selector : it->second) {
+      if (!exceptions.contains(selector) && seen.insert(selector).second) {
+        result.push_back(selector);
+      }
+    }
+  }
+  return result;
+}
+
+std::vector<std::string> AdblockCosmeticEngine::GetStyleRulesForUrl(
+    const GURL& url) const {
+  std::vector<std::string> result;
+  if (!url.SchemeIsHTTPOrHTTPS()) {
+    return result;
+  }
+  result = injected_style_rules_;
+  const std::string host(url.host());
+  for (size_t pos = 0; pos != std::string::npos;) {
+    std::string_view candidate(host);
+    candidate.remove_prefix(pos);
+    const auto it = domain_style_rules_.find(std::string(candidate));
+    if (it != domain_style_rules_.end()) {
+      result.insert(result.end(), it->second.begin(), it->second.end());
     }
     size_t dot = host.find('.', pos);
     pos = (dot == std::string::npos) ? std::string::npos : dot + 1;

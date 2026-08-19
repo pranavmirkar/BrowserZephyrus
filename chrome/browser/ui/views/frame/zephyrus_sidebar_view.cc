@@ -11,6 +11,7 @@
 #include <string>
 #include <utility>
 
+#include "base/task/sequenced_task_runner.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ref.h"
 #include "base/strings/utf_string_conversions.h"
@@ -74,7 +75,11 @@ constexpr int kRowHeight = 36;
 // used the system's 10 — two different row shapes in one panel. Both are 10
 // now, matching every other Zephyrus row (workspace dropdown, Shield toggles).
 constexpr int kRowCornerRadius = zephyrus::kCornerRadius;
-constexpr int kPanelCornerRadius = 18;
+// Square. The sidebar is not a card any more — it is a flush column of window
+// chrome running from the toolbar to the bottom edge, so there is no free side
+// for a corner to round against. Was 18 when it floated over the page, then 8
+// briefly when it was still being treated as a panel.
+constexpr int kPanelCornerRadius = 0;
 constexpr int kFaviconSize = 16;
 constexpr int kRowSpacing = 3;
 
@@ -84,20 +89,34 @@ constexpr int kMoveToWorkspaceSubmenu = 2;
 // Zephyrus hides the horizontal tab strip, so this menu is the only place a
 // tab can be pinned — there is no strip to right-click.
 constexpr int kPinTabCommand = 3;
+constexpr int kPinSidebarCommand = 4;
 constexpr int kMoveToWorkspaceBase = 100;  // + workspace index
 // Springy asymmetric slide: the entrance decelerates PAST the resting point
 // (overshoot) and settles back — an under-damped spring, the iOS-sheet feel —
 // while the exit clears out quickly with no bounce (exits never spring).
-// Both directions pair the slide with a fade.
-constexpr base::TimeDelta kSlideInDuration = base::Milliseconds(210);
-constexpr base::TimeDelta kSettleDuration = base::Milliseconds(150);
-constexpr base::TimeDelta kSlideOutDuration = base::Milliseconds(150);
-constexpr int kOvershootPx = 7;
+// 200 in, 150 out. A panel belongs in the 150-250ms band; the reveal used to
+// total 360ms (210 slide + 150 settle), which is over budget for something the
+// cursor triggers dozens of times a day. Exit stays faster than entry: slow
+// where the user is deciding, fast where the system is responding.
+constexpr base::TimeDelta kSlideInDuration = base::Milliseconds(280);
+constexpr base::TimeDelta kSlideOutDuration = base::Milliseconds(200);
 
-// Transform that moves the sidebar fully off-screen to the left.
-gfx::Transform TuckedTransform() {
+// Where the panel sits for a given reveal amount.
+//
+// The panel's right edge and the page's left edge are THE SAME SEAM, so this
+// uses base::ClampFloor exactly as the layout does when it reserves the column
+// — same input, same rounding, same integer. Anything else and the two edges
+// disagree by a pixel that flickers as the value crosses a boundary.
+//
+// This is also why the old overshoot had to go: the panel travelled 7px past
+// its rest position while the page's edge was clamped to the reserved width
+// and could not follow, so the seam visibly tore open and snapped shut. An
+// overshoot belongs to a gesture that carried momentum, not to a hover reveal.
+gfx::Transform TransformForReveal(double amount) {
+  const int visible =
+      base::ClampFloor(ZephyrusSidebarView::kSidebarWidth * amount);
   gfx::Transform transform;
-  transform.Translate(-(ZephyrusSidebarView::kSidebarWidth + 24), 0);
+  transform.Translate(-(ZephyrusSidebarView::kSidebarWidth - visible), 0);
   return transform;
 }
 
@@ -391,9 +410,14 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   // Frosted translucent panel (dark by default; adapts to the page color via
   // SetZephyrusColor()).
   SetPaintToLayer();
-  layer()->SetFillsBoundsOpaquely(false);
+  // Opaque: the panel is flat window chrome with square corners and no fade, so
+  // the compositor can skip blending it and occlude whatever is behind it.
+  layer()->SetFillsBoundsOpaquely(true);
   layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kPanelCornerRadius));
-  layer()->SetBackgroundBlur(24.0f);
+  // No backdrop blur. The panel is ATTACHED — what sits behind it is the
+  // window's own flat background, not the web page, so there is nothing to
+  // frost. The blur still costs a GPU pass to produce an image identical to
+  // the colour underneath it.
   SetBackground(
       views::CreateRoundedRectBackground(GetPanelColor(), kPanelCornerRadius));
 
@@ -471,9 +495,18 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
 
   // Start tucked off-screen and transparent to events so it doesn't intercept
   // input over the web contents until revealed.
-  layer()->SetTransform(TuckedTransform());
-  layer()->SetOpacity(0.0f);
+  //
+  // Hidden by POSITION only. This used to also set opacity to 0, with the
+  // reveal fading it back — two mechanisms for one state. Once the fade was
+  // removed as part of unifying the animation, nothing restored the opacity
+  // and the panel stayed invisible while still reserving its column, so the
+  // unpainted window behind it showed through as a grey slab.
+  layer()->SetTransform(TransformForReveal(0.0));
   SetCanProcessEventsWithinSubtree(false);
+  // The panel itself is a context-menu source, not just its tab rows: the
+  // sidebar-level items (Pin sidebar) must be reachable by right-clicking
+  // anywhere on it, including the empty space below the tab list.
+  set_context_menu_controller(this);
 
   // Extend the watched zone left of the panel so the cursor sitting on the
   // edge hot-zone (left of the panel's margin) doesn't immediately re-tuck it.
@@ -501,6 +534,9 @@ void ZephyrusSidebarView::OnThemeChanged() {
 }
 
 void ZephyrusSidebarView::MouseMovedOutOfHost() {
+  if (pinned_) {
+    return;
+  }
   TuckAway();
 }
 
@@ -510,66 +546,89 @@ void ZephyrusSidebarView::Reveal() {
   }
   revealed_ = true;
   reveal_poll_timer_.Stop();
+  browser_view_->SetZephyrusSidebarAttached(true);
+  // Zero duration under reduced motion, matching the layer slide below, which
+  // has always honoured it. Without this the panel would snap into place while
+  // the page's edge kept easing open behind it — reduced motion half-applied
+  // looks more broken than not applying it at all.
+  reveal_animation_.SetTweenType(gfx::Tween::EASE_OUT_2);
+  reveal_animation_.SetSlideDuration(
+      gfx::Animation::ShouldRenderRichAnimation() ? kSlideInDuration
+                                                  : base::TimeDelta());
+  reveal_animation_.Show();
   SetCanProcessEventsWithinSubtree(true);
   // Refresh rows (titles/favicons/favorites) and clear any stale hover state.
   RebuildTabList();
   RebuildFavorites();
-
-  ui::LayerAnimator* animator = layer()->GetAnimator();
-  // Retarget from wherever the panel currently is (mid-exit included).
-  animator->AbortAllAnimations();
-  if (!gfx::Animation::ShouldRenderRichAnimation()) {
-    layer()->SetTransform(gfx::Transform());
-    layer()->SetOpacity(1.0f);
-  } else {
-    // Fade runs as its own single-element sequence.
-    auto fade = ui::LayerAnimationElement::CreateOpacityElement(
-        1.0f, base::Milliseconds(150));
-    fade->set_tween_type(gfx::Tween::EASE_OUT);
-    animator->StartAnimation(
-        new ui::LayerAnimationSequence(std::move(fade)));
-    // Slide: decelerate into a small overshoot, then settle back to rest.
-    gfx::Transform overshoot;
-    overshoot.Translate(kOvershootPx, 0);
-    auto out = ui::LayerAnimationElement::CreateTransformElement(
-        overshoot, kSlideInDuration);
-    out->set_tween_type(gfx::Tween::EASE_OUT_2);
-    auto settle = ui::LayerAnimationElement::CreateTransformElement(
-        gfx::Transform(), kSettleDuration);
-    settle->set_tween_type(gfx::Tween::EASE_IN_OUT);
-    auto* slide = new ui::LayerAnimationSequence(std::move(out));
-    slide->AddElement(std::move(settle));
-    animator->StartAnimation(slide);
-  }
 
   if (GetWidget()) {
     mouse_watcher_->Start(GetWidget()->GetNativeWindow());
   }
 }
 
+void ZephyrusSidebarView::TogglePinned() {
+  pinned_ = !pinned_;
+  if (pinned_) {
+    reveal_poll_timer_.Stop();
+    // Pinning while tucked must take effect immediately, not on next hover.
+    Reveal();
+    return;
+  }
+  // Unpinned: hand control back to the cursor.
+  if (!IsMouseHovered()) {
+    TuckAway();
+    return;
+  }
+  // Cursor is still on the panel, so let it leave first — but the watcher has
+  // to be RESTARTED, not merely relied on. views::MouseWatcher stops itself
+  // once it has fired, and while pinned MouseMovedOutOfHost swallowed that
+  // notification, so by now it has almost certainly fired and stopped. Without
+  // this the sidebar would unpin but never tuck again.
+  if (GetWidget()) {
+    mouse_watcher_->Start(GetWidget()->GetNativeWindow());
+  }
+}
+
 void ZephyrusSidebarView::TuckAway() {
-  if (!revealed_) {
+  // Pinned means it stays out. Guard here rather than at every caller, so no
+  // future caller can tuck it by accident.
+  if (!revealed_ || pinned_) {
     return;
   }
   revealed_ = false;
   SetCanProcessEventsWithinSubtree(false);
 
-  // Abort any in-flight reveal (incl. its overshoot/settle chain) so the exit
-  // starts from the panel's current on-screen position.
-  layer()->GetAnimator()->AbortAllAnimations();
-  ui::ScopedLayerAnimationSettings settings(layer()->GetAnimator());
-  settings.SetTransitionDuration(gfx::Animation::ShouldRenderRichAnimation()
-                                     ? kSlideOutDuration
-                                     : base::TimeDelta());
-  settings.SetTweenType(gfx::Tween::EASE_OUT);
-  layer()->SetTransform(TuckedTransform());
-  layer()->SetOpacity(0.0f);
-
   reveal_poll_timer_.Start(FROM_HERE, base::Milliseconds(100), this,
                            &ZephyrusSidebarView::OnRevealPoll);
+  reveal_animation_.SetTweenType(gfx::Tween::EASE_OUT_2);
+  reveal_animation_.SetSlideDuration(
+      gfx::Animation::ShouldRenderRichAnimation() ? kSlideOutDuration
+                                                  : base::TimeDelta());
+  reveal_animation_.Hide();
+}
+
+void ZephyrusSidebarView::AnimationProgressed(const gfx::Animation* animation) {
+  // Pin first, THEN ask for the layout: both values are in place before the
+  // pass starts, so it runs once and does not get re-dirtied halfway through.
+  browser_view_->UpdateZephyrusSidebarPin();
+  browser_view_->InvalidateLayout();
+}
+
+void ZephyrusSidebarView::AnimationEnded(const gfx::Animation* animation) {
+  if (!revealed_) {
+    browser_view_->SetZephyrusSidebarAttached(false);
+  }
+  // Clearing the pin here is the one real resize of the interaction, spent with
+  // the panel stationary.
+  browser_view_->UpdateZephyrusSidebarPin();
+  browser_view_->InvalidateLayout();
 }
 
 void ZephyrusSidebarView::OnRevealPoll() {
+  if (pinned_) {
+    reveal_poll_timer_.Stop();  // Nothing to poll for; it is already out.
+    return;
+  }
   if (revealed_ || !GetWidget() || !GetWidget()->IsActive()) {
     return;
   }
@@ -597,7 +656,7 @@ void ZephyrusSidebarView::OnTabStripModelChanged(
   if (!revealed_) {
     return;
   }
-  RebuildTabList();
+  ScheduleRebuildTabList();
 }
 
 void ZephyrusSidebarView::OnTabPinnedStateChanged(tabs::TabInterface* tab,
@@ -607,7 +666,7 @@ void ZephyrusSidebarView::OnTabPinnedStateChanged(tabs::TabInterface* tab,
   }
   // A newly pinned tab becomes visible in every workspace, so the list has to
   // be rebuilt rather than just refreshed in place.
-  RebuildTabList();
+  ScheduleRebuildTabList();
 }
 
 void ZephyrusSidebarView::OnTabChangedAt(tabs::TabInterface* tab,
@@ -672,6 +731,19 @@ void ZephyrusSidebarView::RebuildFavorites() {
   if (favorites_header_) {
     favorites_header_->SetVisible(added > 0);
   }
+}
+
+void ZephyrusSidebarView::ScheduleRebuildTabList() {
+  // RebuildTabList() calls RemoveAllChildViews(), which deletes the row whose
+  // close button is being clicked right now — and Views touches the button
+  // again after its callback returns, so rebuilding synchronously from a
+  // tab-strip observer is a use-after-free. It only became reliably fatal once
+  // closing the last tab stopped tearing the window down (the window now stays
+  // open on the empty state), which is what made this reachable at all.
+  // Posting lets the input event unwind first.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&ZephyrusSidebarView::RebuildTabList,
+                                weak_factory_.GetWeakPtr()));
 }
 
 void ZephyrusSidebarView::RebuildTabList() {
@@ -750,17 +822,22 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
     views::View* source,
     const gfx::Point& point,
     ui::mojom::MenuSourceType source_type) {
+  // A row was right-clicked, or the panel's empty space was. The tab-specific
+  // items only apply in the first case; the sidebar-level ones always apply.
   auto* row = views::AsViewClass<ZephyrusTabRow>(source);
-  if (!row) {
-    return;
+  int row_index = -1;
+  if (row) {
+    row_index = row->model_index();
+    if (row_index < 0 || row_index >= tab_strip_model_->count()) {
+      return;
+    }
   }
-  const int row_index = row->model_index();
-  if (row_index < 0 || row_index >= tab_strip_model_->count()) {
-    return;
-  }
-  // Remember the tab itself, not its index — see the member's comment.
-  context_menu_contents_ = tab_strip_model_->GetWebContentsAt(row_index);
-  if (!context_menu_contents_) {
+  // Remember the tab itself, not its index — see the member's comment. Cleared
+  // when the panel rather than a row was the source, so no stale tab from a
+  // previous menu can be acted on.
+  context_menu_contents_ =
+      row ? tab_strip_model_->GetWebContentsAt(row_index) : nullptr;
+  if (row && !context_menu_contents_) {
     return;
   }
 
@@ -769,7 +846,7 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
   context_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
   context_menu_workspace_ids_.clear();
 
-  if (manager && manager->workspaces().size() > 1) {
+  if (row && manager && manager->workspaces().size() > 1) {
     const int current_ws =
         manager->GetWorkspaceForContents(context_menu_contents_);
     workspace_submenu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
@@ -792,11 +869,18 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
                                     workspace_submenu_model_.get());
     context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
   }
-  // Pinned tabs are global: they stay visible in every workspace.
-  const bool pinned = tab_strip_model_->IsTabPinned(row_index);
-  context_menu_model_->AddItem(
-      kPinTabCommand, pinned ? u"Unpin tab" : u"Pin tab (all workspaces)");
-  context_menu_model_->AddItem(kCloseTabCommand, u"Close tab");
+  if (row) {
+    // Pinned tabs are global: they stay visible in every workspace.
+    const bool tab_pinned = tab_strip_model_->IsTabPinned(row_index);
+    context_menu_model_->AddItem(
+        kPinTabCommand,
+        tab_pinned ? u"Unpin tab" : u"Pin tab (all workspaces)");
+    context_menu_model_->AddItem(kCloseTabCommand, u"Close tab");
+    context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+  }
+  // Sidebar-level, always present.
+  context_menu_model_->AddCheckItem(
+      kPinSidebarCommand, pinned_ ? u"Unpin sidebar" : u"Pin sidebar");
 
   context_menu_runner_ = std::make_unique<views::MenuRunner>(
       context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
@@ -806,7 +890,7 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
 }
 
 bool ZephyrusSidebarView::IsCommandIdChecked(int command_id) const {
-  return false;
+  return command_id == kPinSidebarCommand && pinned_;
 }
 
 bool ZephyrusSidebarView::IsCommandIdEnabled(int command_id) const {
@@ -814,6 +898,13 @@ bool ZephyrusSidebarView::IsCommandIdEnabled(int command_id) const {
 }
 
 void ZephyrusSidebarView::ExecuteCommand(int command_id, int event_flags) {
+  // Handled first, and deliberately ABOVE the tab lookup below: pinning the
+  // sidebar has nothing to do with the tab the menu was opened on, so it must
+  // not be dropped by that early-return.
+  if (command_id == kPinSidebarCommand) {
+    TogglePinned();
+    return;
+  }
   // Re-resolve the tab by identity. If it went away while the menu was open,
   // do nothing rather than acting on whatever now sits at the old index.
   if (!context_menu_contents_) {
@@ -921,14 +1012,16 @@ SkColor ZephyrusSidebarView::GetForegroundColor() const {
 }
 
 SkColor ZephyrusSidebarView::GetPanelColor() const {
-  // Dark frosted glass on the permanent theme. Still translucent, so the
-  // layer's backdrop blur keeps the material feel over page content, but the
-  // panel is now the same family as the title bar and the popovers instead of
-  // the one light surface in the browser. Lifted slightly off the raw theme
-  // color so it reads as a panel above the window rather than a hole in it.
-  return SkColorSetA(
-      color_utils::AlphaBlend(SK_ColorWHITE, GetZephyrusBase(), SkAlpha{0x14}),
-      0xE6);
+  // The theme base, flat. The sidebar reads as the same surface as the title
+  // bar above it, exactly as a vertical tab strip does — the thing that
+  // separates it from the page is the page's own edge sitting against it, not a
+  // fill of its own.
+  //
+  // This was a lift of 0x1A, and before that frosted glass over the page. Both
+  // were trying to make the sidebar a distinct surface. It should not be one:
+  // the structure inside it comes from the quick-actions card and the row
+  // highlights, which carry their own alpha over this base.
+  return GetZephyrusBase();
 }
 
 void ZephyrusSidebarView::SetZephyrusColor(std::optional<SkColor> page_color) {

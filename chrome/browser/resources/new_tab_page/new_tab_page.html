@@ -4,22 +4,16 @@
   <meta charset="utf-8">
   <title>New Tab</title>
   <style>
-    /* Zephyrus motion + color vocabulary. One easing for entrances/response
-       (strong ease-out), one accent, and a time-of-day ambient tint that is
-       pure color — the page itself never moves on its own. */
+    /* Zephyrus new tab — no NTP. A single floating search bar over the user's
+       desktop wallpaper, blurred. One easing for entrances (strong ease-out),
+       one accent. The page itself never moves on its own. */
     :root {
       --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-      /* Under-damped spring (back-out): overshoots ~5% then settles. For
-         interactive lifts only — never on exits or fades. */
+      /* Under-damped spring (back-out): overshoots ~5% then settles. */
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
       --accent: #8b5cf6;
-      --glow: rgba(124, 58, 237, 0.18);   /* night default */
-      --bg: #0e0e10;
+      --bg: #0e0e10;   /* fallback when no wallpaper can be read */
     }
-    :root[data-daypart="dawn"]  { --glow: rgba(244, 162, 97, 0.14); --bg: #100e0e; }
-    :root[data-daypart="day"]   { --glow: rgba(139, 156, 246, 0.14); --bg: #0e0f12; }
-    :root[data-daypart="dusk"]  { --glow: rgba(236, 108, 128, 0.13); --bg: #100e11; }
-    :root[data-daypart="night"] { --glow: rgba(124, 58, 237, 0.18); --bg: #0e0e10; }
 
     *, *::before, *::after { box-sizing: border-box; }
     html, body {
@@ -32,284 +26,152 @@
       overflow: hidden;
     }
     ::selection { background: rgba(139, 92, 246, 0.35); }
-    ::-webkit-scrollbar { width: 6px; }
-    ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
-    ::-webkit-scrollbar-track { background: transparent; }
+
+    /* Desktop wallpaper, blurred. Served same-origin by the browser process at
+       a fixed path; if it fails to load the layer is transparent and the dark
+       --bg shows through — nothing breaks. Overfilled (inset + scale) so the
+       blur's soft edges never reveal the page background at the viewport rim. */
+    #wallpaper {
+      position: fixed; inset: -80px;
+      z-index: 0;
+      background-image: url('zephyrus-wallpaper.jpg');
+      background-size: cover;
+      background-position: center;
+      filter: blur(46px) saturate(1.12) brightness(0.92);
+      transform: scale(1.14);
+      /* quiet materialization once the bytes arrive */
+      animation: wallreveal 600ms var(--ease-out) both;
+    }
+    @keyframes wallreveal { from { opacity: 0; } to { opacity: 1; } }
+
+    /* Scrim: darken + vignette so the bar and chips stay legible over any
+       wallpaper (Apple's "dim to focus" material rule). */
+    #scrim {
+      position: fixed; inset: 0; z-index: 1; pointer-events: none;
+      background:
+        radial-gradient(120% 90% at 50% 42%, transparent 0%, rgba(8,9,12,0.42) 100%),
+        linear-gradient(180deg, rgba(8,9,12,0.34) 0%, rgba(8,9,12,0.52) 100%);
+    }
 
     #root {
-      position: fixed; inset: 0;
-      display: flex; flex-direction: column;
-      overflow-y: auto;
-      padding: 48px 40px;
+      position: fixed; inset: 0; z-index: 2;
+      display: flex; align-items: center; justify-content: center;
+      padding: 24px;
     }
-    /* margin:auto (not justify-content:center) so short windows scroll from
-       the top instead of clipping content above the scroll origin. */
-    #content { margin: auto; }
-
-    /* ambient glow — tinted by time of day, statically (no idle motion) */
-    #glow {
-      position: fixed;
-      top: -120px; left: 50%; transform: translateX(-50%);
-      width: 600px; height: 400px;
-      background: radial-gradient(ellipse at 50% 0%, var(--glow) 0%, transparent 70%);
-      pointer-events: none; z-index: 0;
-    }
-
     #content {
-      position: relative; z-index: 1;
-      display: flex; flex-direction: column;
-      align-items: center;
-      width: 100%; max-width: 720px;
+      display: flex; flex-direction: column; align-items: center;
+      width: 100%; max-width: 640px;
     }
 
     /* Entrance: one fast, quiet rise. New-tab is a many-times-a-day surface,
-       so this stays near-imperceptible — three groups, 45ms apart, 240ms each,
-       transform+opacity only. Never blocks interaction. */
+       so this stays near-imperceptible — transform + opacity only. */
     .rise {
       opacity: 0;
       transform: translateY(10px);
       animation: rise 340ms var(--ease-out) forwards;
     }
-    .rise-1 { animation-delay: 0ms; }
-    .rise-2 { animation-delay: 50ms; }
-    .rise-3 { animation-delay: 100ms; }
-    /* Springy settle: rises past the resting line by 2px, then relaxes. */
+    .rise-1 { animation-delay: 40ms; }
+    .rise-2 { animation-delay: 100ms; }
     @keyframes rise {
       60% { opacity: 1; transform: translateY(-2px); }
       to { opacity: 1; transform: translateY(0); }
     }
     @media (prefers-reduced-motion: reduce) {
       .rise { transform: none; animation: fade 200ms ease forwards; }
+      #wallpaper { animation: none; }
       @keyframes fade { to { opacity: 1; } }
     }
 
-    /* clock — large display serif wants tight leading + negative tracking */
-    #clock {
-      display: flex; align-items: baseline;
-      font-size: 90px; font-weight: 600;
-      letter-spacing: -0.033em; line-height: 1;
-      font-variant-numeric: tabular-nums;
-      color: #fafafa;
-    }
-    #seconds {
-      font-size: 36px; font-weight: 500;
-      color: #52525b; margin-left: 10px;
-      letter-spacing: -0.028em;
-      font-variant-numeric: tabular-nums;
-    }
-    #date {
-      margin-top: 12px;
-      font-size: 14px; color: #71717a;
-    }
-
-    /* search bar — fully rounded pill; lifts toward you on focus */
+    /* Floating search bar — glass pill over the wallpaper; lifts on focus. */
     #searchbar {
-      margin-top: 36px;
-      width: 100%; max-width: 560px;
-      height: 54px;
-      display: flex; align-items: center; gap: 12px;
-      background: #18181b;
-      border: 1px solid #27272a;
+      width: 100%; max-width: 620px;
+      height: 58px;
+      display: flex; align-items: center; gap: 13px;
+      background: rgba(22, 22, 26, 0.62);
+      border: 1px solid rgba(255, 255, 255, 0.10);
       border-radius: 999px;
-      padding: 0 22px;
-      box-shadow: 0 8px 28px rgba(0,0,0,0.34);
+      padding: 0 24px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.40),
+                  inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      -webkit-backdrop-filter: blur(22px) saturate(1.4);
+      backdrop-filter: blur(22px) saturate(1.4);
       cursor: text;
       transition: border-color 150ms ease, box-shadow 200ms var(--ease-out),
                   transform 320ms var(--ease-spring);
     }
     #searchbar:focus-within {
-      border-color: var(--accent);
-      transform: translateY(-2px) scale(1.012);
-      box-shadow: 0 12px 32px rgba(0,0,0,0.4), 0 0 0 4px rgba(139,92,246,0.15);
+      border-color: rgba(139, 92, 246, 0.55);
+      transform: translateY(-2px) scale(1.011);
+      box-shadow: 0 22px 56px rgba(0, 0, 0, 0.46),
+                  0 0 0 4px rgba(139, 92, 246, 0.16),
+                  inset 0 1px 0 rgba(255, 255, 255, 0.07);
     }
-    #searchbar svg { color: #71717a; flex: 0 0 auto; transition: color 150ms ease; }
+    #searchbar svg { color: #a1a1aa; flex: 0 0 auto; transition: color 150ms ease; }
     #searchbar:focus-within svg { color: var(--accent); }
     #searchinput {
       flex: 1; background: transparent; border: none; outline: none;
-      color: #fafafa; font-size: 15px;
+      color: #fafafa; font-size: 16px;
       font-family: inherit;
       caret-color: var(--accent);
     }
-    #searchinput::placeholder { color: #52525b; }
+    #searchinput::placeholder { color: #8a8a93; }
     #searchhint {
-      font-size: 11px; color: #52525b;
-      border: 1px solid #27272a; border-radius: 999px;
+      font-size: 11px; color: #a1a1aa;
+      border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 999px;
       padding: 3px 10px; flex: 0 0 auto;
       font-family: monospace;
       transition: opacity 150ms ease;
     }
     #searchbar:focus-within #searchhint { opacity: 0; }
 
-    /* tiles — sections presented as soft rounded cards */
-    #tiles { margin-top: 40px; width: 100%; display: flex; flex-direction: column; gap: 18px; }
-    .card {
-      background: rgba(255,255,255,0.035);
-      border: 1px solid rgba(255,255,255,0.06);
-      border-radius: 26px;
-      padding: 18px 22px 16px;
+    /* Frequent-site chips — compact glass pills under the bar. */
+    #chips {
+      margin-top: 22px;
+      display: flex; flex-wrap: wrap; gap: 10px;
+      justify-content: center;
     }
-    .section-label {
-      font-size: 11px; font-weight: 600;
-      letter-spacing: .12em; text-transform: uppercase;
-      color: #52525b; margin-bottom: 14px; padding-left: 4px;
-    }
-    .tile-grid {
-      display: grid;
-      /* Responsive: wraps instead of squishing on narrow windows. */
-      grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
-      gap: 10px 8px;
-    }
-    .tile {
-      display: flex; flex-direction: column;
-      align-items: center; gap: 9px;
+    .chip {
+      display: flex; align-items: center; gap: 9px;
+      padding: 8px 15px 8px 9px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.10);
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      color: #e5e7eb; font-size: 13px; text-decoration: none;
       cursor: pointer;
-      transition: transform 300ms var(--ease-spring);
-      text-decoration: none;
-      border-radius: 14px;
+      transition: transform 300ms var(--ease-spring),
+                  background 150ms ease, border-color 150ms ease;
     }
     @media (hover: hover) and (pointer: fine) {
-      .tile:hover { transform: translateY(-3px) scale(1.03); }
+      .chip:hover {
+        transform: translateY(-2px);
+        background: rgba(255, 255, 255, 0.11);
+        border-color: rgba(255, 255, 255, 0.16);
+      }
     }
-    /* Press feedback: the interface heard you. Instant on pointer-down. */
-    /* Press is instant (fast ease-out); the spring only plays on release,
-       so the tile feels grabbed immediately and lets go with life. */
-    .tile:active {
-      transform: translateY(0) scale(0.96);
-      transition: transform 110ms var(--ease-out);
-    }
-    .tile:focus-visible {
-      outline: 2px solid var(--accent);
-      outline-offset: 3px;
+    .chip:active { transform: translateY(0) scale(0.97); transition: transform 110ms var(--ease-out); }
+    .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+    .chip-icon {
+      width: 24px; height: 24px; border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 13px; font-weight: 700;
+      flex: 0 0 auto;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
     }
     @media (prefers-reduced-motion: reduce) {
-      .tile, #searchbar { transition-property: border-color, box-shadow, opacity; }
-      .tile:hover, .tile:active, #searchbar:focus-within { transform: none; }
+      .chip, #searchbar { transition-property: background, border-color, box-shadow; }
+      .chip:hover, .chip:active, #searchbar:focus-within { transform: none; }
     }
-    .tile-icon {
-      width: 54px; height: 54px;
-      border-radius: 17px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 22px; font-weight: 700;
-      box-shadow: 0 4px 14px rgba(0,0,0,0.32),
-                  inset 0 0 0 1px rgba(255,255,255,0.07);
-      flex: 0 0 auto;
-    }
-    .tile-label {
-      font-size: 11px; color: #a1a1aa;
-      white-space: nowrap;
-    }
-
-    #greeting {
-      margin-top: 34px;
-      font-size: 13px; color: #52525b;
-      text-align: center;
-    }
-
-    /* One-time welcome card: states the calm defaults, then gets out of the
-       way forever. Same card language as the tile sections. */
-    #welcome {
-      display: none;
-      width: 100%; max-width: 560px;
-      margin-top: 26px;
-      background: #141417;
-      border: 1px solid #26262b;
-      border-radius: 26px;
-      padding: 22px 26px;
-      text-align: left;
-      position: relative;
-    }
-    #welcome.show { display: block; }
-    #welcome::before {
-      /* the Zephyrus accent notch */
-      content: '';
-      position: absolute; left: 0; top: 26px;
-      width: 3px; height: 18px; border-radius: 2px;
-      background: var(--accent);
-    }
-    #welcome h2 {
-      font-size: 16px; font-weight: 600; color: #fafafa;
-      margin: 0 0 10px;
-      letter-spacing: -0.01em;
-    }
-    #welcome ul {
-      margin: 0; padding: 0; list-style: none;
-    }
-    #welcome li {
-      font-size: 13px; color: #a1a1aa;
-      padding: 3px 0 3px 18px;
-      position: relative;
-    }
-    #welcome li::before {
-      content: ''; position: absolute; left: 2px; top: 10px;
-      width: 5px; height: 5px; border-radius: 50%;
-      background: var(--accent); opacity: 0.8;
-    }
-    #welcome-actions {
-      margin-top: 14px;
-      display: flex; align-items: center; gap: 16px;
-    }
-    #welcome-dismiss {
-      background: #fafafa; color: #141417;
-      border: none; border-radius: 999px;
-      font: inherit; font-size: 13px; font-weight: 600;
-      padding: 8px 18px; cursor: pointer;
-      transition: transform 160ms var(--ease-out);
-    }
-    #welcome-dismiss:active { transform: scale(0.96); }
-    #welcome-settings {
-      font-size: 13px; color: #71717a;
-      text-decoration: none;
-    }
-    #welcome-settings:hover { color: #fafafa; }
   </style>
 </head>
 <body>
-  <div id="glow"></div>
-  <div id="root">
-    <div id="content">
-      <div id="clock" class="rise rise-1">
-        <span id="time">00:00</span>
-        <span id="seconds">00</span>
-      </div>
-      <div id="date" class="rise rise-1"></div>
-
-      <div id="searchbar" class="rise rise-2">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M6 2h8v2H6V2zM4 6V4h2v2H4zm0 8H2V6h2v8zm2 2H4v-2h2v2zm8 0v2H6v-2h8zm2-2h-2v2h2v2h2v2h2v2h2v-2h-2v-2h-2v-2h-2v-2zm0-8h2v8h-2V6zm0 0V4h-2v2h2z"></path>
-        </svg>
-        <input id="searchinput" placeholder="Search with Zephyrus or type a URL" autocomplete="off" spellcheck="false" />
-        <span id="searchhint">Ctrl K</span>
-      </div>
-
-      <div id="welcome" class="rise rise-2">
-        <h2>Zephyrus is quiet by default</h2>
-        <ul>
-          <li>Ads and trackers are blocked</li>
-          <li>Third-party cookies — the ones used to sell your data — are blocked</li>
-          <li>Cookie-consent banners never appear</li>
-          <li>Nothing about you is collected or sent anywhere</li>
-        </ul>
-        <div id="welcome-actions">
-          <button id="welcome-dismiss">Got it</button>
-          <a id="welcome-settings" href="chrome://settings/adBlocker">Shield settings</a>
-        </div>
-      </div>
-
-      <div id="tiles" class="rise rise-3">
-        <div class="card">
-          <div class="section-label">India</div>
-          <div class="tile-grid" id="india-grid"></div>
-        </div>
-        <div class="card">
-          <div class="section-label">Global</div>
-          <div class="tile-grid" id="global-grid"></div>
-        </div>
-      </div>
-
-      <div id="greeting" class="rise rise-3"></div>
-    </div>
-  </div>
-
-  <script type="module" src="zephyrus_newtab.js"></script>
+  <div id="wallpaper"></div>
+  <div id="scrim"></div>
+  <!-- Zephyrus has no new-tab page. Nothing navigates here any more (Ctrl+T
+       opens the native floating search overlay, startup and session restore
+       never produce one), but if something ever does land on this URL it must
+       not look like an NTP: only the same blurred backdrop an empty window
+       paints. No search field, no shortcuts, no branding. -->
 </body>
 </html>

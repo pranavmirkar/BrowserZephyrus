@@ -21,6 +21,7 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/page_transition_types.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_swap.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/geometry/rect.h"
@@ -107,28 +108,6 @@ ZephyrusPrivateWorkspace::~ZephyrusPrivateWorkspace() {
 // static
 bool ZephyrusPrivateWorkspace::IsPrivate(const Browser* browser) {
   return browser && browser->profile() && browser->profile()->IsOffTheRecord();
-}
-
-// static
-void ZephyrusPrivateWorkspace::ShowAt(Browser* browser,
-                                      const gfx::Rect& bounds,
-                                      bool maximized) {
-  views::Widget* widget = WidgetFor(browser);
-  if (!widget) {
-    return;
-  }
-  // Take over the other window's footprint so the swap reads as one window
-  // changing rather than two windows trading places.
-  if (maximized) {
-    widget->Maximize();
-  } else {
-    if (widget->IsMaximized()) {
-      widget->Restore();
-    }
-    widget->SetBounds(bounds);
-  }
-  widget->Show();
-  widget->Activate();
 }
 
 void ZephyrusPrivateWorkspace::StopObserving(views::Widget* widget) {
@@ -285,8 +264,9 @@ void ZephyrusPrivateWorkspace::EnterUnlocked(Browser* from) {
     from_widget->AddObserver(this);
   }
 
-  ShowAt(private_browser_, bounds, maximized);
-  from_widget->Hide();
+  // Seamless swap: show the private window taking over `from`'s footprint, then
+  // hide `from`. Shared with the in-window Profile switcher.
+  zephyrus::SwapWindows(private_browser_, from, bounds, maximized);
 }
 
 void ZephyrusPrivateWorkspace::Leave() {
@@ -296,8 +276,7 @@ void ZephyrusPrivateWorkspace::Leave() {
   }
   const gfx::Rect bounds = private_widget->GetWindowBoundsInScreen();
   const bool maximized = private_widget->IsMaximized();
-  ShowAt(return_to_, bounds, maximized);
-  private_widget->Hide();
+  zephyrus::SwapWindows(return_to_, private_browser_, bounds, maximized);
   // Off screen means locked again: coming back costs another unlock.
   locked_ = true;
 }

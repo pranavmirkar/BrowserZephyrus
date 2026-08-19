@@ -2488,7 +2488,25 @@ void RenderWidgetHostViewAura::OnMouseEvent(ui::MouseEvent* event) {
   // browser window.
   if (event->type() == ui::EventType::kMouseMoved ||
       event->type() == ui::EventType::kMousePressed) {
-    aura::Window* root = window_->GetRootWindow();
+    // Fast path: the native-resize hit test below issues ~8 Win32 syscalls
+    // (GetCursorPos/ScreenToClient/GetClientRect/GetDpiForWindow/...) and runs
+    // on EVERY mouse-move over the page. Only a pointer within a few DIP of a
+    // view edge can be on a window resize border, yet essentially every move
+    // during scrolling, reading, or typing is in the interior. Skip the whole
+    // block (leaving the normal mouse handling below untouched) unless the
+    // pointer is near an edge -- this keeps the input thread free so scrolling
+    // and animation don't stutter. event->location() and window_->bounds() are
+    // pure Aura/DIP lookups with no syscalls.
+    constexpr int kZephyrusResizeEdgeSlopDip = 16;
+    const gfx::Point zephyrus_loc = event->location();
+    const gfx::Size zephyrus_view = window_->bounds().size();
+    const bool zephyrus_near_edge =
+        zephyrus_loc.x() < kZephyrusResizeEdgeSlopDip ||
+        zephyrus_loc.x() >= zephyrus_view.width() - kZephyrusResizeEdgeSlopDip ||
+        zephyrus_loc.y() < kZephyrusResizeEdgeSlopDip ||
+        zephyrus_loc.y() >= zephyrus_view.height() - kZephyrusResizeEdgeSlopDip;
+    aura::Window* root =
+        zephyrus_near_edge ? window_->GetRootWindow() : nullptr;
     aura::WindowTreeHost* tree_host = root ? root->GetHost() : nullptr;
     HWND top_hwnd = tree_host ? tree_host->GetAcceleratedWidget() : nullptr;
     if (top_hwnd && !::IsZoomed(top_hwnd) && !::IsIconic(top_hwnd) &&

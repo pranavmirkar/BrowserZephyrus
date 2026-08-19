@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/zephyrus/privacy/privacy_crypto_impl.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 
 #include <array>
@@ -1384,6 +1385,15 @@ std::string GetCountry() {
 }
 
 void RegisterLocalState(PrefRegistrySimple* registry) {
+  // Zephyrus: whether the one-time profile setup (naming the first profile) has
+  // been completed. Local state, so it runs once per install rather than per
+  // profile. Literal to avoid a layering dependency on //chrome/browser/ui.
+  // Belongs to the profiles feature, whose frontend is currently disabled
+  // (see "ZEPHYRUS PROFILES FRONTEND - DISABLED" in toolbar_view.cc).
+  // Left REGISTERED on purpose: users who already completed setup have
+  // this set, and unregistering it would make that state unreadable when
+  // the feature returns with Google auth. Nothing reads it today.
+  registry->RegisterBooleanPref("zephyrus.profile.setup_complete", false);
   // Call outs to individual subsystems that register Local State (browser-wide)
   // prefs en masse. See RegisterProfilePrefs for per-profile prefs. Please
   // keep this list alphabetized.
@@ -1728,6 +1738,16 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
                                 false);
   // Zephyrus ad blocker settings (see ZephyrusAdblockService). Literals to keep
   // the pref registration free of an adblock dep here.
+  // Sealed HMAC key for the Privacy Intelligence lookup columns (spec 5.3).
+  // Registered here rather than from the service factory so it exists before
+  // anything can read it — an unregistered pref read is a CHECK.
+  // Delegated rather than duplicated: the key name lived here as a string
+  // literal AND as kHmacKeyPref in privacy_crypto_impl.cc, with nothing
+  // tying them together. Renaming one would leave the crypto reading an
+  // unregistered pref, minting a fresh lookup key on every launch — and
+  // since a rotated key now razes the database, that means wiping the
+  // user's privacy history at every start, silently.
+  zephyrus_privacy::PrivacyCryptoImpl::RegisterProfilePrefs(registry);
   registry->RegisterBooleanPref("zephyrus.adblock.enabled", true);
   registry->RegisterBooleanPref("zephyrus.adblock.aggressive_popup", true);
   registry->RegisterListPref("zephyrus.adblock.allowlist");

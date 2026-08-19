@@ -1101,6 +1101,31 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   // slides under the side panel.
   int content_left = params.visual_client_area.x();
   int content_right = params.visual_client_area.right();
+
+  // Zephyrus: the attached sidebar takes a full column off the leading edge.
+  //
+  // STATIC on purpose. The animated position is applied afterwards, by
+  // BrowserView::ApplyZephyrusSidebarReveal shifting the already-laid-out
+  // contents — the same technique the title-bar reveal uses, and the reason
+  // that one is smooth. Feeding the animation value in here instead made every
+  // child position differ each frame and tripped the flyover clip path, which
+  // added SetTargetContentBounds, clip-inset maths and a background repaint to
+  // every one of those frames.
+  //
+  // Taken off before the min-width deficit check below, so a window too narrow
+  // to hold both still resolves through the existing clamp.
+  // Animated: the page's visible edge tracks the panel. The renderer is held
+  // at its closed-state width by the pin BrowserView set before this pass, so
+  // this moving edge costs a clip change rather than a reflow.
+  //
+  // clip_content_for_animation is deliberately NOT set. That flag makes the
+  // block at the end of this function call SetTargetContentBounds from inside
+  // the layout, which invalidates the layout that is currently running — every
+  // frame, with a new value. One pass per frame with consistent inputs beats
+  // two passes chasing each other.
+  content_left += base::ClampFloor(delegate().GetZephyrusSidebarTargetWidth() *
+                                   delegate().GetZephyrusSidebarRevealAmount());
+
   if (const int deficit = horizontal_layout.min_content_width -
                           params.visual_client_area.width();
       deficit > 0) {

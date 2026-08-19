@@ -39,6 +39,10 @@
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/performance_manager/public/user_tuning/user_tuning_utils.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_attributes_entry.h"
+#include "chrome/browser/profiles/profile_attributes_storage.h"
+#include "chrome/browser/profiles/profile_avatar_icon_util.h"
+#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/themes/theme_properties.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
@@ -76,7 +80,11 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_privacy_popup.h"
+#include "chrome/browser/zephyrus/privacy/privacy_features.h"
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
+// ZEPHYRUS PROFILES FRONTEND - DISABLED.
+// #include "chrome/browser/ui/views/frame/zephyrus_profile_switcher.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service_factory.h"
@@ -89,6 +97,7 @@
 #include "ui/base/mojom/dialog_button.mojom-shared.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/views/window/dialog_delegate.h"
+#include "ui/base/models/image_model.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
@@ -172,7 +181,9 @@
 #include "ui/gfx/animation/linear_animation.h"
 #include "ui/gfx/animation/slide_animation.h"
 #include "ui/gfx/animation/tween.h"
+#include "ui/compositor/paint_recorder.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/text_utils.h"
 #include "ui/gfx/geometry/insets_f.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/geometry/transform.h"
@@ -190,6 +201,7 @@
 #include "ui/views/controls/focus_ring.h"
 #include "ui/gfx/font_list.h"
 #include "ui/views/background.h"
+#include "ui/views/paint_info.h"
 #include "ui/views/cascading_property.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/toggle_button.h"
@@ -817,6 +829,8 @@ void ToolbarView::Init() {
   if (browser_->is_type_normal()) {
     AddZephyrusWindowControls();
     AddZephyrusWorkspaceButton();
+  // ZEPHYRUS PROFILES FRONTEND - DISABLED (see toolbar_view.cc).
+    // AddZephyrusProfileButton();
     AddZephyrusAdblockButton();
   }
 
@@ -1350,6 +1364,10 @@ void ToolbarView::Update(WebContents* tab) {
     reload_control->SetDevToolsStatus(
         chrome::IsDebuggerAttachedToCurrentTab(browser_));
   }
+
+  // Runs on tab switch and on navigation, which is exactly when the badge has
+  // to follow a different counter.
+  ObserveZephyrusAdblockCount();
 }
 
 bool ToolbarView::UpdateSecurityState() {
@@ -1994,6 +2012,79 @@ class ZephyrusWin11CaptionButton : public views::Button {
 BEGIN_METADATA(ZephyrusWin11CaptionButton)
 END_METADATA
 
+// The blocked-count chip. A layer-backed CHILD VIEW rather than something the
+// button paints itself: the glyph and the ink drop are children too, and both
+// earlier attempts (PaintButtonContents, then PaintChildren) ended up beneath
+// them — the chip barely showed and the digits read as part of the shield. A
+// child with its own layer composites above unlayered siblings, so the stacking
+// stops being a guess.
+class ZephyrusBadgeView : public views::View {
+  METADATA_HEADER(ZephyrusBadgeView, views::View)
+
+ public:
+  ZephyrusBadgeView() {
+    SetPaintToLayer();
+    layer()->SetFillsBoundsOpaquely(false);
+    // Purely decorative: the button underneath must keep every click.
+    SetCanProcessEventsWithinSubtree(false);
+  }
+
+  void SetCount(int count) {
+    if (count_ == count) {
+      return;
+    }
+    count_ = count;
+    PreferredSizeChanged();
+    SchedulePaint();
+  }
+
+  // The real number, never "99+". A blocker's count is the whole point of
+  // showing it, and rounding it off the moment it gets impressive is exactly
+  // backwards. Longer numbers step the type down so four digits still fit.
+  gfx::FontList GetBadgeFont() const {
+    const int size = count_ < 100 ? 10 : count_ < 1000 ? 9 : 8;
+    return gfx::FontList({"Segoe UI"}, gfx::Font::NORMAL, size,
+                         gfx::Font::Weight::BOLD);
+  }
+
+  // views::View:
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available) const override {
+    const int width = gfx::GetStringWidth(base::NumberToString16(count_),
+                                          GetBadgeFont()) +
+                      kBadgePadding;
+    return gfx::Size(std::max(kBadgeHeight, width), kBadgeHeight);
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    if (count_ <= 0) {
+      return;
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    // Solid, fully opaque, one flat colour — the dark chip of the reference
+    // art. A shade below the toolbar's #0E1123 so the chip still has an edge
+    // where it extends past the glyph.
+    flags.setColor(kBadgeFill);
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kBadgeRadius, flags);
+    canvas->DrawStringRectWithFlags(
+        base::NumberToString16(count_), GetBadgeFont(), SK_ColorWHITE,
+        GetLocalBounds(), gfx::Canvas::TEXT_ALIGN_CENTER);
+  }
+
+ private:
+  static constexpr int kBadgeHeight = 16;
+  static constexpr int kBadgeRadius = 5;
+  static constexpr int kBadgePadding = 9;
+  static constexpr SkColor kBadgeFill = SkColorSetRGB(0x09, 0x0B, 0x11);
+
+  int count_ = 0;
+};
+
+BEGIN_METADATA(ZephyrusBadgeView)
+END_METADATA
+
 // A ToolbarButton whose icon color can be forced to a value that contrasts with
 // the current title bar, so the pin glyph stays visible on light page colors.
 class ZephyrusPinButton : public ToolbarButton {
@@ -2011,13 +2102,50 @@ class ZephyrusPinButton : public ToolbarButton {
     UpdateIcon();
   }
 
+  // Count of requests blocked on the current page. Zero hides the chip
+  // entirely: a shield reading "0" is noise on every page that simply had
+  // nothing to block.
+  void SetZephyrusBadgeCount(int count) {
+    count = std::max(0, count);
+    if (!badge_ && count == 0) {
+      return;
+    }
+    if (!badge_) {
+      badge_ = AddChildView(std::make_unique<ZephyrusBadgeView>());
+    }
+    badge_->SetCount(count);
+    badge_->SetVisible(count > 0);
+    PositionBadge();
+  }
+
   // ToolbarButton:
   SkColor GetForegroundColor(ButtonState state) const override {
     return foreground_.value_or(ToolbarButton::GetForegroundColor(state));
   }
 
+  void OnBoundsChanged(const gfx::Rect& previous_bounds) override {
+    ToolbarButton::OnBoundsChanged(previous_bounds);
+    PositionBadge();
+  }
+
  private:
+  // Bottom-centred over the glyph, as in the reference: the count reads as part
+  // of the shield rather than an ornament clinging to a corner. Positioned by
+  // hand because LabelButton lays out only its own image and label and leaves
+  // extra children where they are put.
+  void PositionBadge() {
+    if (!badge_) {
+      return;
+    }
+    const gfx::Size size = badge_->GetPreferredSize();
+    const gfx::Rect local = GetLocalBounds();
+    badge_->SetBounds(local.CenterPoint().x() - size.width() / 2,
+                      local.bottom() - size.height(), size.width(),
+                      size.height());
+  }
+
   std::optional<SkColor> foreground_;
+  raw_ptr<ZephyrusBadgeView> badge_ = nullptr;
 };
 
 BEGIN_METADATA(ZephyrusPinButton)
@@ -2722,6 +2850,62 @@ void ToolbarView::AddZephyrusPinButton() {
   UpdateZephyrusPinButton();
 }
 
+void ToolbarView::ObserveZephyrusAdblockCount() {
+  zephyrus_adblock_subscription_ = {};
+  if (content::WebContents* contents =
+          browser_->tab_strip_model()->GetActiveWebContents()) {
+    if (auto* helper =
+            zephyrus_adblock::ZephyrusAdblockTabHelper::FromWebContents(
+                contents)) {
+      zephyrus_adblock_subscription_ = helper->AddChangedCallback(
+          base::BindRepeating(&ToolbarView::OnZephyrusAdblockCountChanged,
+                              base::Unretained(this)));
+    }
+  }
+  UpdateZephyrusAdblockBadge();
+}
+
+void ToolbarView::OnZephyrusAdblockCountChanged() {
+  // Coalesced: a page load blocks requests in bursts, and repainting the
+  // toolbar per blocked request would spend more time drawing the count than
+  // the blocking itself costs. A badge that lags by a frame or two is
+  // indistinguishable from one that does not.
+  if (!zephyrus_adblock_badge_timer_.IsRunning()) {
+    zephyrus_adblock_badge_timer_.Start(
+        FROM_HERE, base::Milliseconds(200),
+        base::BindOnce(&ToolbarView::UpdateZephyrusAdblockBadge,
+                       base::Unretained(this)));
+  }
+}
+
+void ToolbarView::UpdateZephyrusAdblockBadge() {
+  if (!zephyrus_adblock_button_) {
+    return;
+  }
+  int blocked = 0;
+  if (content::WebContents* contents =
+          browser_->tab_strip_model()->GetActiveWebContents()) {
+    if (auto* helper =
+            zephyrus_adblock::ZephyrusAdblockTabHelper::FromWebContents(
+                contents)) {
+      blocked = helper->blocked_this_page();
+    }
+  }
+  auto* shield = static_cast<ZephyrusPinButton*>(zephyrus_adblock_button_.get());
+  shield->SetZephyrusBadgeCount(blocked);
+
+  // The count is painted, so it also has to be spoken and shown on hover —
+  // otherwise the badge is information only sighted users get.
+  const std::u16string name =
+      blocked == 0
+          ? u"Zephyrus Shield — ad & tracker blocker"
+          : base::StrCat({u"Zephyrus Shield — ",
+                          base::NumberToString16(blocked),
+                          u" blocked on this page"});
+  shield->SetTooltipText(name);
+  shield->GetViewAccessibility().SetName(name);
+}
+
 void ToolbarView::UpdateZephyrusPinButton() {
   if (!zephyrus_pin_button_) {
     return;
@@ -2792,7 +2976,8 @@ void AnimateZephyrusBubbleIn(views::Widget* widget) {
 }  // namespace
 
 void ToolbarView::ShowZephyrusAdblockBubble() {
-  if (!zephyrus_adblock_button_) {
+  if (!zephyrus_adblock_button_ ||
+      zephyrus::ConsumeReopenSuppression(zephyrus_adblock_button_)) {
     return;
   }
   zephyrus_adblock::ZephyrusAdblockService* service =
@@ -2978,6 +3163,31 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
         }));
   }
 
+  // Privacy Intelligence (§6.1). Entry point rather than inline content: the
+  // Shield panel answers "what is the blocker doing", and the privacy panel
+  // answers "what happened on this page" — related, but two different
+  // questions, and merging them would make both longer and neither clearer.
+  // Opening it closes this bubble first, so the two never stack.
+  if (zephyrus_privacy::IsCollectionEnabled()) {
+    add_spacer(10);
+    auto* privacy_link = content->AddChildView(
+        std::make_unique<views::LabelButton>(
+            base::BindRepeating(
+                [](ToolbarView* toolbar) {
+                  // No explicit close of this bubble, and no posted task:
+                  // BubbleDialogDelegate closes on deactivation, so the Shield
+                  // panel dismisses itself the moment the privacy panel takes
+                  // activation. Calling Close() here would tear down the view
+                  // that owns this very callback.
+                  toolbar->ShowZephyrusPrivacyBubble();
+                },
+                base::Unretained(this)),
+            l10n_util::GetStringUTF16(
+                IDS_ZEPHYRUS_PRIVACY_SEE_WHAT_HAPPENED)));
+    privacy_link->SetEnabledTextColors(kAccent);
+    privacy_link->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  }
+
   content->SetPreferredSize(
       gfx::Size(kWidth, content->GetHeightForWidth(kWidth)));
 
@@ -2996,6 +3206,15 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
   zephyrus::ApplyBubbleFrame(bubble_ptr);
   widget->Show();
   AnimateZephyrusBubbleIn(widget);
+}
+
+void ToolbarView::ShowZephyrusPrivacyBubble() {
+  if (!zephyrus_adblock_button_ || !browser_) {
+    return;
+  }
+  // Anchored to the Shield button: it is the surface this panel belongs to,
+  // and the one the user just came from.
+  zephyrus_privacy::ShowPrivacyPopup(browser_, zephyrus_adblock_button_);
 }
 
 void ToolbarView::UpdateZephyrusWindowControls() {
@@ -3871,6 +4090,298 @@ class ZephyrusWorkspaceButton : public views::Button {
 BEGIN_METADATA(ZephyrusWorkspaceButton)
 END_METADATA
 
+// Circular avatar (the signed-in Google photo when available, else the default
+// silhouette) for `profile`, at `size` px.
+ui::ImageModel ZephyrusProfileAvatar(Profile* profile, int size) {
+  ProfileManager* profile_manager = g_browser_process->profile_manager();
+  if (!profile || !profile_manager) {
+    return ui::ImageModel();
+  }
+  ProfileAttributesEntry* entry =
+      profile_manager->GetProfileAttributesStorage()
+          .GetProfileAttributesWithPath(
+              profile->GetOriginalProfile()->GetPath());
+  if (!entry) {
+    return ui::ImageModel();
+  }
+  return ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
+      entry->GetAvatarIcon(size), size, size, profiles::SHAPE_CIRCLE));
+}
+
+// Zephyrus: the profile-switcher pill in the title bar, sitting just left of the
+// Workspace pill. Mirrors ZephyrusWorkspaceButton but leads with the profile's
+// circular Google avatar. Profile = who you are; Workspace = what you're doing.
+// --------------------------------------------------------------------------
+// ZEPHYRUS PROFILES FRONTEND - DISABLED
+//
+// The user-facing profiles feature is withdrawn until Google auth lands.
+// The backend (views/frame/zephyrus_profile_switcher.*) is retained in the
+// tree and excluded from the build for the same reason.
+//
+// Disabled rather than deleted on purpose: the Zephyrus changes are
+// uncommitted working-tree modifications, so `git checkout` would restore
+// UPSTREAM Chromium here, not this code. Deleting it would be permanent.
+// Re-enable by removing the #if 0 / #endif pair.
+// --------------------------------------------------------------------------
+#if 0
+class ZephyrusProfileButton : public views::Button {
+  METADATA_HEADER(ZephyrusProfileButton, views::Button)
+
+ public:
+  explicit ZephyrusProfileButton(PressedCallback callback)
+      : views::Button(std::move(callback)) {
+    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(3, 6), 5));
+    layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+    avatar_ = AddChildView(std::make_unique<views::ImageView>());
+    chevron_ = AddChildView(std::make_unique<views::ImageView>());
+    SetTooltipText(u"Switch profile");
+    GetViewAccessibility().SetName(u"Switch profile");
+  }
+
+  void SetContent(const ui::ImageModel& avatar, SkColor foreground) {
+    if (!avatar.IsEmpty()) {
+      avatar_->SetImage(avatar);
+    }
+    chevron_->SetImage(ui::ImageModel::FromVectorIcon(kZephyrusDropdownIcon,
+                                                      foreground, 10));
+  }
+
+  // Chevron points up while the dropdown is open (mirrors the Workspace pill).
+  void SetMenuOpen(bool open) {
+    if (menu_open_ == open) {
+      return;
+    }
+    menu_open_ = open;
+    if (!chevron_->layer()) {
+      chevron_->SetPaintToLayer();
+      chevron_->layer()->SetFillsBoundsOpaquely(false);
+    }
+    gfx::Transform flip;
+    if (open) {
+      flip.Translate(0, chevron_->height());
+      flip.Scale(1, -1);
+    }
+    chevron_->SetTransform(flip);
+  }
+
+  void SetPillFills(SkColor normal, SkColor hovered, SkColor pressed) {
+    normal_fill_ = normal;
+    hovered_fill_ = hovered;
+    pressed_fill_ = pressed;
+    UpdatePill();
+  }
+
+  void StateChanged(views::Button::ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    UpdatePill();
+  }
+
+ private:
+  void UpdatePill() {
+    SkColor fill = normal_fill_;
+    if (GetState() == views::Button::STATE_PRESSED) {
+      fill = pressed_fill_;
+    } else if (GetState() == views::Button::STATE_HOVERED) {
+      fill = hovered_fill_;
+    }
+    SetBackground(views::CreateRoundedRectBackground(fill, 10.0f));
+  }
+
+  raw_ptr<views::ImageView> avatar_ = nullptr;
+  raw_ptr<views::ImageView> chevron_ = nullptr;
+  SkColor normal_fill_ = SK_ColorTRANSPARENT;
+  SkColor hovered_fill_ = SK_ColorTRANSPARENT;
+  SkColor pressed_fill_ = SK_ColorTRANSPARENT;
+  bool menu_open_ = false;
+};
+
+BEGIN_METADATA(ZephyrusProfileButton)
+END_METADATA
+#endif  // ZEPHYRUS PROFILES FRONTEND - DISABLED
+
+// Zephyrus: the profile dropdown. Mirrors ZephyrusWorkspaceMenu's card — same
+// bubble style, dynamic-theme colors, hover rows and width-jump entrance — but
+// lists Chromium profiles (circular Google avatar + name, current marked) plus
+// an "Add profile" row. Selecting a profile does the in-window seamless swap.
+// --------------------------------------------------------------------------
+// ZEPHYRUS PROFILES FRONTEND - DISABLED
+//
+// The user-facing profiles feature is withdrawn until Google auth lands.
+// The backend (views/frame/zephyrus_profile_switcher.*) is retained in the
+// tree and excluded from the build for the same reason.
+//
+// Disabled rather than deleted on purpose: the Zephyrus changes are
+// uncommitted working-tree modifications, so `git checkout` would restore
+// UPSTREAM Chromium here, not this code. Deleting it would be permanent.
+// Re-enable by removing the #if 0 / #endif pair.
+// --------------------------------------------------------------------------
+#if 0
+class ZephyrusProfileMenu : public views::BubbleDialogDelegateView,
+                            public gfx::AnimationDelegate {
+  METADATA_HEADER(ZephyrusProfileMenu, views::BubbleDialogDelegateView)
+
+ public:
+  ZephyrusProfileMenu(views::View* anchor,
+                      Browser* browser,
+                      std::optional<SkColor> page_color,
+                      base::RepeatingClosure on_closed)
+      : views::BubbleDialogDelegateView(anchor, views::BubbleBorder::TOP_LEFT),
+        browser_(browser),
+        on_closed_(std::move(on_closed)) {
+    SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+    set_margins(gfx::Insets(8));
+    zephyrus::ConfigureBubble(this);
+    SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
+
+    const SkColor base = page_color.value_or(SkColorSetRGB(0x16, 0x16, 0x18));
+    const bool dark = color_utils::IsDark(base);
+    const SkColor overlay = dark ? SK_ColorWHITE : SK_ColorBLACK;
+    auto lift = [&](SkAlpha a) {
+      return color_utils::AlphaBlend(overlay, base, a);
+    };
+    panel_ = lift(dark ? 0x22 : 0x18);
+    foreground_ = color_utils::GetColorWithMaxContrast(base);
+    row_hover_ = lift(dark ? 0x3A : 0x2C);
+    SetBackgroundColor(panel_);
+
+    expand_animation_.SetSlideDuration(base::Milliseconds(220));
+    expand_animation_.SetTweenType(gfx::Tween::EASE_OUT_3);
+
+    RebuildList();
+  }
+
+  ~ZephyrusProfileMenu() override {
+    if (on_closed_) {
+      on_closed_.Run();
+    }
+  }
+
+  void OnWidgetInitialized() override {
+    views::BubbleDialogDelegateView::OnWidgetInitialized();
+    zephyrus::ApplyBubbleFrame(this);
+  }
+
+  // The Figma "full width jump", identical to the Workspace dropdown.
+  void StartZephyrusEntrance(int anchor_width) {
+    views::Widget* widget = GetWidget();
+    if (!widget || !gfx::Animation::ShouldRenderRichAnimation()) {
+      return;
+    }
+    final_bounds_ = widget->GetWindowBoundsInScreen();
+    start_width_ = std::min(final_bounds_.width(), std::max(anchor_width, 60));
+    expand_animation_.Show();
+    AnimationProgressed(&expand_animation_);
+  }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    views::Widget* widget = GetWidget();
+    if (!widget) {
+      return;
+    }
+    gfx::Rect bounds = final_bounds_;
+    bounds.set_width(gfx::Tween::IntValueBetween(
+        animation->GetCurrentValue(), start_width_, final_bounds_.width()));
+    widget->SetBounds(bounds);
+  }
+  void AnimationEnded(const gfx::Animation* animation) override {
+    if (views::Widget* widget = GetWidget()) {
+      widget->SetBounds(final_bounds_);
+    }
+  }
+
+ private:
+  static constexpr int kRowWidth = 230;
+
+  void RebuildList() {
+    RemoveAllChildViews();
+    ProfileManager* profile_manager = g_browser_process->profile_manager();
+    if (!profile_manager) {
+      return;
+    }
+    const base::FilePath current =
+        browser_ && browser_->profile()
+            ? browser_->profile()->GetOriginalProfile()->GetPath()
+            : base::FilePath();
+    for (ProfileAttributesEntry* entry :
+         profile_manager->GetProfileAttributesStorage()
+             .GetAllProfilesAttributesSortedForDisplay()) {
+      const base::FilePath path = entry->GetPath();
+      const bool active = !current.empty() && path == current;
+      auto* row = AddChildView(
+          std::make_unique<ZephyrusHoverRevealRow>(row_hover_, active));
+      auto* layout = row->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(0, 8), 8));
+      layout->set_cross_axis_alignment(
+          views::BoxLayout::CrossAxisAlignment::kCenter);
+      row->SetPreferredSize(gfx::Size(kRowWidth, 36));
+
+      auto* avatar = row->AddChildView(std::make_unique<views::ImageView>());
+      avatar->SetImage(ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
+          entry->GetAvatarIcon(24), 24, 24, profiles::SHAPE_CIRCLE)));
+
+      auto* name = row->AddChildView(std::make_unique<views::LabelButton>(
+          base::BindRepeating(&ZephyrusProfileMenu::OnSwitch,
+                              base::Unretained(this), path),
+          entry->GetName()));
+      name->SetTextColor(views::Button::STATE_NORMAL, foreground_);
+      name->SetTextColor(views::Button::STATE_HOVERED, foreground_);
+      name->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+      layout->SetFlexForView(name, 1);
+      row->FinishInit();
+    }
+
+    auto* add_row = AddChildView(std::make_unique<views::LabelButton>(
+        base::BindRepeating(&ZephyrusProfileMenu::OnAddProfile,
+                            base::Unretained(this)),
+        u"+   Add profile"));
+    add_row->SetTextColor(views::Button::STATE_NORMAL,
+                          SkColorSetA(foreground_, 0xC0));
+    add_row->SetTextColor(views::Button::STATE_HOVERED, foreground_);
+    add_row->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    add_row->SetMinSize(gfx::Size(kRowWidth, 34));
+
+    if (GetWidget()) {
+      SizeToContents();
+    }
+  }
+
+  void OnSwitch(const base::FilePath& path) {
+    // Copy out of ourselves before Close() tears the bubble (and this bound
+    // path) down.
+    const base::FilePath target = path;
+    Browser* browser = browser_;
+    if (views::Widget* widget = GetWidget()) {
+      widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
+    }
+    ZephyrusProfileSwitcher::GetInstance()->SwitchTo(target, browser);
+  }
+
+  void OnAddProfile() {
+    Browser* browser = browser_;
+    if (views::Widget* widget = GetWidget()) {
+      widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
+    }
+    ZephyrusProfileSwitcher::GetInstance()->AddProfile(browser);
+  }
+
+  raw_ptr<Browser> browser_;
+  base::RepeatingClosure on_closed_;
+  SkColor panel_ = SK_ColorBLACK;
+  SkColor foreground_ = SK_ColorWHITE;
+  SkColor row_hover_ = SK_ColorTRANSPARENT;
+  gfx::SlideAnimation expand_animation_{this};
+  gfx::Rect final_bounds_;
+  int start_width_ = 0;
+};
+
+BEGIN_METADATA(ZephyrusProfileMenu)
+END_METADATA
+#endif  // ZEPHYRUS PROFILES FRONTEND - DISABLED
+
 void ToolbarView::AddZephyrusWorkspaceButton() {
   auto button = std::make_unique<ZephyrusWorkspaceButton>(base::BindRepeating(
       [](ToolbarView* toolbar) { toolbar->ShowZephyrusWorkspaceMenu(); },
@@ -3963,7 +4474,8 @@ void ToolbarView::ShowZephyrusWorkspaceMenu() {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
   ZephyrusWorkspaceManager* manager =
       browser_view ? browser_view->zephyrus_workspace_manager() : nullptr;
-  if (!manager || !zephyrus_workspace_button_) {
+  if (!manager || !zephyrus_workspace_button_ ||
+      zephyrus::ConsumeReopenSuppression(zephyrus_workspace_button_)) {
     return;
   }
   auto menu = std::make_unique<ZephyrusWorkspaceMenu>(
@@ -3997,6 +4509,126 @@ void ToolbarView::ShowZephyrusWorkspaceMenu() {
   }
   menu_ptr->StartZephyrusEntrance(zephyrus_workspace_button_->width());
 }
+
+// --------------------------------------------------------------------------
+// ZEPHYRUS PROFILES FRONTEND - DISABLED
+//
+// The user-facing profiles feature is withdrawn until Google auth lands.
+// The backend (views/frame/zephyrus_profile_switcher.*) is retained in the
+// tree and excluded from the build for the same reason.
+//
+// Disabled rather than deleted on purpose: the Zephyrus changes are
+// uncommitted working-tree modifications, so `git checkout` would restore
+// UPSTREAM Chromium here, not this code. Deleting it would be permanent.
+// Re-enable by removing the #if 0 / #endif pair.
+// --------------------------------------------------------------------------
+#if 0
+void ToolbarView::AddZephyrusProfileButton() {
+  auto button = std::make_unique<ZephyrusProfileButton>(base::BindRepeating(
+      [](ToolbarView* toolbar) { toolbar->ShowZephyrusProfileMenu(); },
+      base::Unretained(this)));
+  button->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 6));
+  // Sit just to the LEFT of the Workspace pill — profile is the higher-level
+  // context (who), the workspace is what you're doing within it.
+  std::optional<size_t> ws_index =
+      zephyrus_workspace_button_ ? GetIndexOf(zephyrus_workspace_button_)
+                                 : std::nullopt;
+  const size_t position = ws_index.value_or(0);
+  zephyrus_profile_button_ =
+      AddChildViewAt<views::Button>(std::move(button), position);
+  UpdateZephyrusProfileButton();
+}
+#endif  // ZEPHYRUS PROFILES FRONTEND - DISABLED
+
+// --------------------------------------------------------------------------
+// ZEPHYRUS PROFILES FRONTEND - DISABLED
+//
+// The user-facing profiles feature is withdrawn until Google auth lands.
+// The backend (views/frame/zephyrus_profile_switcher.*) is retained in the
+// tree and excluded from the build for the same reason.
+//
+// Disabled rather than deleted on purpose: the Zephyrus changes are
+// uncommitted working-tree modifications, so `git checkout` would restore
+// UPSTREAM Chromium here, not this code. Deleting it would be permanent.
+// Re-enable by removing the #if 0 / #endif pair.
+// --------------------------------------------------------------------------
+#if 0
+void ToolbarView::UpdateZephyrusProfileButton() {
+  if (!zephyrus_profile_button_) {
+    return;
+  }
+  // The Private Workspace is an OTR window; profile switching is a normal-profile
+  // concept, so hide the pill there rather than show a confusing identity.
+  const bool is_private = ZephyrusPrivateWorkspace::IsPrivate(browser_);
+  zephyrus_profile_button_->SetVisible(!is_private);
+  if (is_private) {
+    return;
+  }
+  // Same dynamic-theme chip model as the Workspace pill.
+  const SkColor base =
+      zephyrus_titlebar_color_.value_or(SkColorSetRGB(0x16, 0x16, 0x18));
+  const bool dark = color_utils::IsDark(base);
+  const SkColor overlay = dark ? SK_ColorWHITE : SK_ColorBLACK;
+  const SkColor surface = color_utils::AlphaBlend(
+      overlay, base, static_cast<SkAlpha>(dark ? 0x22 : 0x18));
+  const SkColor surface_hover = color_utils::AlphaBlend(
+      overlay, base, static_cast<SkAlpha>(dark ? 0x3A : 0x2C));
+  const SkColor surface_press = color_utils::AlphaBlend(
+      overlay, base, static_cast<SkAlpha>(dark ? 0x4C : 0x3A));
+  const SkColor ink = color_utils::GetColorWithMaxContrast(base);
+  auto* pill =
+      static_cast<ZephyrusProfileButton*>(zephyrus_profile_button_.get());
+  pill->SetContent(ZephyrusProfileAvatar(browser_->profile(), 20), ink);
+  pill->SetPillFills(surface, surface_hover, surface_press);
+}
+#endif  // ZEPHYRUS PROFILES FRONTEND - DISABLED
+
+// --------------------------------------------------------------------------
+// ZEPHYRUS PROFILES FRONTEND - DISABLED
+//
+// The user-facing profiles feature is withdrawn until Google auth lands.
+// The backend (views/frame/zephyrus_profile_switcher.*) is retained in the
+// tree and excluded from the build for the same reason.
+//
+// Disabled rather than deleted on purpose: the Zephyrus changes are
+// uncommitted working-tree modifications, so `git checkout` would restore
+// UPSTREAM Chromium here, not this code. Deleting it would be permanent.
+// Re-enable by removing the #if 0 / #endif pair.
+// --------------------------------------------------------------------------
+#if 0
+void ToolbarView::ShowZephyrusProfileMenu() {
+  if (!zephyrus_profile_button_ ||
+      zephyrus::ConsumeReopenSuppression(zephyrus_profile_button_)) {
+    return;
+  }
+  auto menu = std::make_unique<ZephyrusProfileMenu>(
+      zephyrus_profile_button_, browser_, zephyrus_titlebar_color_,
+      base::BindRepeating(
+          [](ToolbarView* toolbar) {
+            if (toolbar->zephyrus_profile_button_) {
+              static_cast<ZephyrusProfileButton*>(
+                  toolbar->zephyrus_profile_button_.get())
+                  ->SetMenuOpen(false);
+            }
+          },
+          base::Unretained(this)));
+  ZephyrusProfileMenu* menu_ptr = menu.get();
+  views::Widget* menu_widget =
+      views::BubbleDialogDelegateView::CreateBubble(std::move(menu));
+  menu_widget->Show();
+  static_cast<ZephyrusProfileButton*>(zephyrus_profile_button_.get())
+      ->SetMenuOpen(true);
+  if (ui::Layer* layer = menu_widget->GetLayer();
+      layer && gfx::Animation::ShouldRenderRichAnimation()) {
+    layer->SetOpacity(0.0f);
+    ui::ScopedLayerAnimationSettings fade(layer->GetAnimator());
+    fade.SetTransitionDuration(base::Milliseconds(120));
+    fade.SetTweenType(gfx::Tween::EASE_OUT);
+    layer->SetOpacity(1.0f);
+  }
+  menu_ptr->StartZephyrusEntrance(zephyrus_profile_button_->width());
+}
+#endif  // ZEPHYRUS PROFILES FRONTEND - DISABLED
 
 void ToolbarView::LayoutCommon() {
   DCHECK(display_mode_ == DisplayMode::kNormal);

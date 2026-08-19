@@ -97,6 +97,8 @@ class ToolbarView;
 class TopContainerView;
 class ZephyrusSidebarHotZone;
 class ZephyrusSidebarView;
+class ZephyrusSearchOverlay;
+class ZephyrusTabSwitcher;
 class ZephyrusWorkspaceManager;
 class TopControlsSlideController;
 class TopControlsSlideControllerTest;
@@ -279,6 +281,14 @@ class BrowserView : public BrowserWindow,
 
   // Container for the web contents.
   views::View* contents_container() { return contents_container_; }
+
+  // Zephyrus: the Ctrl+T search card, owned as a child view of this window.
+  ZephyrusSearchOverlay* zephyrus_search_overlay() {
+    return zephyrus_search_overlay_;
+  }
+  ZephyrusTabSwitcher* zephyrus_tab_switcher() {
+    return zephyrus_tab_switcher_;
+  }
 
   views::View* main_shadow_overlay() { return main_shadow_overlay_; }
 
@@ -755,6 +765,59 @@ class BrowserView : public BrowserWindow,
 
   // Zephyrus: positions the floating sidebar based on its reveal animation.
   void UpdateZephyrusSidebarBounds();
+
+
+
+  // Zephyrus: the sidebar is ATTACHED, not floating — while it is on screen it
+  // owns a column at the left of the window and the web contents is laid out
+  // beside it rather than underneath it.
+  //
+  // The column is reserved the instant a reveal begins and released only once
+  // the hide animation has finished, so the contents resize exactly once per
+  // reveal and once per hide. Resizing it every animation frame would reflow
+  // the page ~15 times per slide, which is the one thing this machine (no
+  // DirectComposition, AMD iGPU) cannot afford.
+  bool IsZephyrusSidebarAttached() const { return zephyrus_sidebar_attached_; }
+
+  // How far the sidebar column is open, 0..1. Interpolated, so the page's edge
+  // tracks the panel rather than snapping to the final width.
+  double ZephyrusSidebarRevealAmount() const;
+
+  // How many pixels of the sidebar column are currently open. THE single
+  // source for that number.
+  //
+  // Four places need it and they must agree exactly: the layout's leading
+  // inset, the panel's origin, the panel's transform, and the renderer pin.
+  // Computing it separately in any of them has produced a visible defect three
+  // times now — the panel travelling at double speed, and a grey gap opening
+  // between panel and page mid-slide — because one copy used the full column
+  // where another used the animated width. Must match the layout's rounding
+  // (ClampFloor) exactly.
+  int ZephyrusSidebarOpenWidth() const;
+
+  // Applies the current reveal position as layer transforms on the panel and
+  // the page. Cheap enough to call on every animation frame — it resizes
+  // nothing and triggers no layout.
+  void ApplyZephyrusSidebarReveal();
+
+  // Pins the renderer to its closed-state width and clips the covered part, so
+  // the page keeps one size for the whole slide. Must be called BEFORE the
+  // layout pass, never from inside it.
+  void UpdateZephyrusSidebarPin();
+  void SetZephyrusSidebarAttached(bool attached);
+
+  // Width the attached sidebar takes out of the client area: the gap to the
+  // window edge plus the panel. The contents container's own left margin
+  // supplies the gap on the other side, between panel and page.
+  static int ZephyrusSidebarColumnWidth();
+
+  // No gap. The sidebar runs flush into the window edge and flush into the
+  // page beside it, so the column it reserves is exactly the panel width.
+  static constexpr int kZephyrusSidebarGap = 0;
+
+  // Zephyrus: swaps the content area between the normal theme fill and the
+  // blurred-wallpaper empty state as the window gains or loses its last tab.
+  void UpdateZephyrusEmptyState();
 
   // Zephyrus: title-bar pin. When unpinned the title bar (toolbar) auto-hides
   // for a full-content view and reveals when the cursor hits the top edge.
@@ -1301,6 +1364,12 @@ class BrowserView : public BrowserWindow,
   // Zephyrus: floating sidebar overlay listing tabs (and later workspaces),
   // plus a thin left-edge hot-zone that reveals it on hover.
   raw_ptr<ZephyrusSidebarView> zephyrus_sidebar_ = nullptr;
+  bool zephyrus_sidebar_attached_ = false;
+  // Ctrl+T search card. A view rather than a bubble so its backdrop blur has
+  // the web contents to sample; see zephyrus_search_overlay.h.
+  raw_ptr<ZephyrusSearchOverlay> zephyrus_search_overlay_ = nullptr;
+  // Ctrl+Tab switcher. Also a view rather than a bubble, for the blur.
+  raw_ptr<ZephyrusTabSwitcher> zephyrus_tab_switcher_ = nullptr;
   raw_ptr<ZephyrusSidebarHotZone> zephyrus_sidebar_hotzone_ = nullptr;
   std::unique_ptr<ZephyrusWorkspaceManager> zephyrus_workspace_manager_;
 
@@ -1315,6 +1384,9 @@ class BrowserView : public BrowserWindow,
   // applied (opaque id, never dereferenced), so unchanged colors don't rebuild
   // backgrounds on every navigation event.
   uintptr_t zephyrus_last_contents_container_ = 0;
+
+  // Zephyrus: whether the content area is currently painting the empty state.
+  bool zephyrus_showing_empty_state_ = false;
   bool zephyrus_titlebar_pinned_ = true;
   double zephyrus_titlebar_anim_t_ = 1.0;
   double zephyrus_titlebar_anim_target_ = 1.0;

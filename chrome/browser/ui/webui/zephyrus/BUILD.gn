@@ -1,0 +1,35 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/features.gni")
+
+assert(!is_android)
+
+source_set("zephyrus") {
+  sources = [
+    "privacy_dashboard_ui.cc",
+    "privacy_dashboard_ui.h",
+    "privacy_internals_ui.cc",
+    "privacy_internals_ui.h",
+  ]
+  public_deps = [ "//content/public/browser" ]
+  deps = [
+    "//base",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/zephyrus/privacy",
+    "//chrome/common",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "privacy_internals_ui_unittest.cc" ]
+  deps = [
+    ":zephyrus",
+    "//chrome/common",
+    "//content/public/common",
+    "//testing/gtest",
+    "//url",
+  ]
+}

@@ -192,6 +192,46 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[ui::kColorFocusableBorderFocused] = {
       SkColorSetA(SkColorSetRGB(0x8B, 0x5C, 0xF6), 0xB3)};
 
+  // Zephyrus menus. The geometry comes from the "macos-context-menu" Figma
+  // component (see menu_config_win.cc); the COLOURS are deliberately ours, not
+  // the design's — that mock is a light macOS panel, and Zephyrus has one fixed
+  // dark theme with no light mode. So: the design's structure, our palette.
+  {
+    // Panel: the theme navy lifted slightly so the menu reads as a surface
+    // floating above the window rather than a hole in it.
+    // OPAQUE, and likely permanently so for menus. Every precondition for DWM
+    // acrylic is verified true here (not layered, no WS_EX_NOREDIRECTIONBITMAP,
+    // frame extended, DWM reads the backdrop type back as
+    // DWMSBT_TRANSIENTWINDOW — all logged in ApplyBlurBackdrop, menu_host.cc)
+    // and the panel STILL renders as a flat fallback: identical over bright and
+    // dark content, i.e. DWM is not sampling.
+    //
+    // Best remaining explanation is WS_EX_NOACTIVATE. Acrylic falls back to a
+    // solid colour while its window is inactive, and a menu never activates by
+    // design. If so, no menu can ever blur, and alpha here only makes the
+    // fallback show through as a washed-out panel. See the activating-surface
+    // experiment in zephyrus_bubble_blur for the test of that theory.
+    constexpr SkColor kZephyrusMenuBg = SkColorSetRGB(0x1A, 0x1D, 0x2E);
+    mixer[ui::kColorMenuBackground] = {kZephyrusMenuBg};
+    // Hairline edge — the dark-theme counterpart of the design's white 30%.
+    mixer[ui::kColorMenuBorder] = {SkColorSetA(SK_ColorWHITE, 0x24)};
+    mixer[ui::kColorMenuSeparator] = {SkColorSetA(SK_ColorWHITE, 0x14)};
+
+    // Label vs accelerator: the design's near-black/grey pair, inverted for a
+    // dark panel. The accelerator stays clearly secondary.
+    mixer[ui::kColorMenuItemForeground] = {SkColorSetRGB(0xF2, 0xF2, 0xF5)};
+    mixer[ui::kColorMenuItemForegroundSecondary] = {
+        SkColorSetRGB(0x9A, 0x9A, 0xA5)};
+    mixer[ui::kColorMenuItemForegroundDisabled] = {
+        SkColorSetA(SK_ColorWHITE, 0x5A)};
+
+    // Selection: the design's macOS blue becomes the Zephyrus accent, so the
+    // menu agrees with every other selected surface in the browser.
+    mixer[ui::kColorMenuItemBackgroundSelected] = {
+        SkColorSetRGB(0x8B, 0x5C, 0xF6)};
+    mixer[ui::kColorMenuItemForegroundSelected] = {SK_ColorWHITE};
+  }
+
   const bool use_alternate_palette = features::IsTabGroupColorRefreshEnabled();
 
   std::vector<TabGroupColorParams> tab_group_color_params_all = {

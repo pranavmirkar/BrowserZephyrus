@@ -14,4 +14,11 @@ module zephyrus_adblock.mojom;
 interface ScriptletHost {
   [Sync]
   GetPayload() => (string script, string css);
+
+  // Called again once the document exists, with the ids ("#foo") and classes
+  // (".bar") the renderer found in it. Returns the element-hiding CSS for the
+  // generic rules those tokens unlock — the bulk of the filter lists, and most
+  // of the cookie-banner coverage, which cannot be resolved at document-start
+  // because there is no DOM to survey yet. Asynchronous: nothing is racing it.
+  GetGenericCosmeticCss(array<string> tokens) => (string css);
 };

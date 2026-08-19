@@ -92,8 +92,6 @@ class ZephyrusPrivateWorkspace : public base::SupportsUserData::Data,
   void OnWidgetDestroying(views::Widget* widget) override;
 
  private:
-  // Moves `widget` onto `bounds`/`maximized` and brings it forward.
-  static void ShowAt(Browser* browser, const gfx::Rect& bounds, bool maximized);
   void StopObserving(views::Widget* widget);
 
   // The single unlock gate. Runs `action` immediately when no unlock is

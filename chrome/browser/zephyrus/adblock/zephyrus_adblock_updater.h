@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/files/file_path.h"
@@ -21,6 +22,24 @@ class SimpleURLLoader;
 }  // namespace network
 
 namespace zephyrus_adblock {
+
+// Whether `body` plausibly IS an adblock filter list.
+//
+// **Why this exists.** These lists are fetched over HTTPS from third parties
+// (easylist.to, raw.githubusercontent.com, secure.fanboy.co.nz) and we cannot
+// verify a signature: none of those publishers sign their lists, and we cannot
+// sign content we do not control. Real signing needs a project-hosted mirror.
+//
+// Until then, TLS is the only integrity guarantee, and TLS says nothing about
+// WHAT the host served — only that the host we asked served it. A hijacked or
+// misconfigured origin returning an error page, a login portal, or any other
+// large blob previously sailed past the size floor and was adopted verbatim as
+// filter rules. This is the check that stops that: content that is not a filter
+// list is refused, and the previous good copy is kept.
+//
+// It cannot detect a hostile list that is genuinely well-formed. Nothing short
+// of a signed mirror can.
+bool LooksLikeFilterList(std::string_view body);
 
 // Downloads the current upstream filter lists (EasyList, EasyPrivacy, and uBlock
 // Origin's filters/quick-fixes — where the fast-moving YouTube scriptlet rules
