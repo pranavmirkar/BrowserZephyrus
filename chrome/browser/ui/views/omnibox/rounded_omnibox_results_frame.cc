@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.h"
+#include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 
 #include <memory>
 #include <utility>
@@ -53,7 +54,11 @@
 namespace {
 
 // Zephyrus detached-card geometry (Figma searchbar_resultdropdown).
-constexpr int kZephyrusCardRadius = 10;  // Figma card radius.
+// The shared popup radius, not a number of its own. The results card is one of
+// the floating surfaces, so it rounds like the rest of them; keeping a private
+// 10 here is how two popups end up with different corners and nobody notices
+// until they are open side by side.
+constexpr int kZephyrusCardRadius = zephyrus::kRadiusPopup;
 // Extra gap between the bar pill and the card, on top of the location-bar
 // alignment inset's 5px bottom — which already matches Figma's 5px gap.
 constexpr int kZephyrusCardGap = 0;

@@ -1,0 +1,27 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Title bar PINNED: a window whose top strip is filled in, so the bar reads as
+// present and staying put.
+//
+// Rounded throughout (the previous glyph was hard-cornered rectangles, which
+// was the only sharp mark left in a title bar of chevrons and dots). The frame
+// is a rounded rect hollowed out by a second, inset rounded rect -- the same
+// outline-by-subtraction the qrcode icon uses -- so the stroke weight stays
+// even around the corners instead of thinning the way a stroked path does.
+
+CANVAS_DIMENSIONS, 24,
+
+// Frame.
+ROUND_RECT, 3, 5, 18, 14, 3,
+CLOSE,
+NEW_PATH,
+PATH_MODE_CLEAR,
+ROUND_RECT, 4.6f, 6.6f, 14.8f, 10.8f, 1.8f,
+CLOSE,
+
+// The title bar itself, filled: this is the state indicator.
+NEW_PATH,
+ROUND_RECT, 4.6f, 6.6f, 14.8f, 4, 1.6f,
+CLOSE,

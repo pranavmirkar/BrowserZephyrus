@@ -1,0 +1,1408 @@
+{
+ "arm": "on",
+ "surfaces": "27",
+ "chrome": "D:/chromium/src/out/Release/chrome.exe",
+ "when": "2026-08-19T18:18:44.994Z",
+ "trancoListId": "K9LYW",
+ "results": [
+  {
+   "url": "https://www.photopea.com/",
+   "group": "functional",
+   "surfaces": [
+    "canvas",
+    "webgl"
+   ],
+   "manual": true,
+   "loaded": true,
+   "crashed": false,
+   "title": "Photopea | Online Photo Editor",
+   "finalUrl": "https://www.photopea.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "33043654",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_www_photopea_com_.png",
+   "signals": [],
+   "requestCount": 9
+  },
+  {
+   "url": "https://jsfiddle.net/",
+   "group": "functional",
+   "surfaces": [
+    "canvas"
+   ],
+   "manual": false,
+   "loaded": true,
+   "crashed": false,
+   "title": "JSFiddle - React, Tailwind, and code Playground",
+   "finalUrl": "https://jsfiddle.net/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "5bf2c7f8",
+   "error": null,
+   "frameUrls": [
+    "",
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "screenshot": "https_jsfiddle_net_.png",
+   "signals": [
+    {
+     "kind": "challenge-request",
+     "marker": "/cdn-cgi/challenge-platform",
+     "detail": "https://jsfiddle.net/cdn-cgi/challenge-platform/h/g/scripts/jsd/aae2b9a1c261/main.js?"
+    }
+   ],
+   "requestCount": 18
+  },
+  {
+   "url": "https://mozilla.github.io/pdf.js/web/viewer.html",
+   "group": "functional",
+   "surfaces": [
+    "canvas"
+   ],
+   "manual": true,
+   "loaded": true,
+   "crashed": false,
+   "title": "compressed.tracemonkey-pldi-09.pdf",
+   "finalUrl": "https://mozilla.github.io/pdf.js/web/viewer.html",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "ddf0b5d0",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_mozilla_github_io_pdf_js_web_viewer_html.png",
+   "signals": [],
+   "requestCount": 26
+  },
+  {
+   "url": "https://threejs.org/examples/#webgl_animation_keyframes",
+   "group": "functional",
+   "surfaces": [
+    "webgl"
+   ],
+   "manual": true,
+   "loaded": true,
+   "crashed": false,
+   "title": "three.js examples",
+   "finalUrl": "https://threejs.org/examples/#webgl_animation_keyframes",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "76e02621",
+   "error": null,
+   "frameUrls": [
+    "https://threejs.org/examples/webgl_animation_keyframes.html"
+   ],
+   "screenshot": "https_threejs_org_examples_webgl_animation_keyframes.png",
+   "signals": [],
+   "requestCount": 45
+  },
+  {
+   "url": "https://webglsamples.org/aquarium/aquarium.html",
+   "group": "functional",
+   "surfaces": [
+    "webgl"
+   ],
+   "manual": false,
+   "loaded": true,
+   "crashed": false,
+   "title": "WebGL Aquarium",
+   "finalUrl": "https://webglsamples.org/aquarium/aquarium.html",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "257d800a",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_webglsamples_org_aquarium_aquarium_html.png",
+   "signals": [],
+   "requestCount": 114
+  },
+  {
+   "url": "https://www.chartjs.org/samples/latest/",
+   "group": "functional",
+   "surfaces": [
+    "canvas"
+   ],
+   "manual": true,
+   "loaded": true,
+   "crashed": false,
+   "title": "Chart.js Samples | Chart.js",
+   "finalUrl": "https://www.chartjs.org/docs/latest/samples/information.html",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "d4d348d0",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_www_chartjs_org_samples_latest_.png",
+   "signals": [],
+   "requestCount": 287
+  },
+  {
+   "url": "https://observablehq.com/@d3/gallery",
+   "group": "functional",
+   "surfaces": [
+    "canvas"
+   ],
+   "manual": false,
+   "loaded": true,
+   "crashed": false,
+   "title": "D3 gallery / D3 | Observable",
+   "finalUrl": "https://observablehq.com/@d3/gallery",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "4529a720",
+   "error": null,
+   "frameUrls": [
+    "https://d3.static.observableusercontent.com/next/worker-CMofg8OD.html"
+   ],
+   "screenshot": "https_observablehq_com_d3_gallery.png",
+   "signals": [],
+   "requestCount": 78
+  },
+  {
+   "url": "https://www.openstreetmap.org/",
+   "group": "functional",
+   "surfaces": [
+    "canvas",
+    "webgl"
+   ],
+   "manual": false,
+   "loaded": true,
+   "crashed": false,
+   "title": "OpenStreetMap",
+   "finalUrl": "https://www.openstreetmap.org/#map=5/21.84/82.79",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "d87769b",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_www_openstreetmap_org_.png",
+   "signals": [],
+   "requestCount": 36
+  },
+  {
+   "url": "https://mdn.github.io/webaudio-examples/audio-analyser/",
+   "group": "functional",
+   "surfaces": [
+    "audio"
+   ],
+   "manual": true,
+   "loaded": true,
+   "crashed": false,
+   "title": "Web Audio API examples: audio analyser",
+   "finalUrl": "https://mdn.github.io/webaudio-examples/audio-analyser/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "74dc3763",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_mdn_github_io_webaudio_examples_audio_analyser_.png",
+   "signals": [],
+   "requestCount": 2
+  },
+  {
+   "url": "https://mdn.github.io/webaudio-examples/voice-change-o-matic/",
+   "group": "functional",
+   "surfaces": [
+    "audio"
+   ],
+   "manual": false,
+   "loaded": true,
+   "crashed": false,
+   "title": "Voice-change-O-matic",
+   "finalUrl": "https://mdn.github.io/webaudio-examples/voice-change-o-matic/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "74dc3763",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_mdn_github_io_webaudio_examples_voice_change_o_matic_.png",
+   "signals": [],
+   "requestCount": 10
+  },
+  {
+   "url": "https://fonts.google.com/",
+   "group": "functional",
+   "surfaces": [
+    "canvas"
+   ],
+   "manual": false,
+   "loaded": true,
+   "crashed": false,
+   "title": "Browse Fonts - Google Fonts",
+   "finalUrl": "https://fonts.google.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "8f34798b",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_fonts_google_com_.png",
+   "signals": [],
+   "requestCount": 163
+  },
+  {
+   "url": "https://squoosh.app/",
+   "group": "functional",
+   "surfaces": [
+    "canvas"
+   ],
+   "manual": true,
+   "loaded": true,
+   "crashed": false,
+   "title": "Squoosh",
+   "finalUrl": "https://squoosh.app/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "5e455b08",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_squoosh_app_.png",
+   "signals": [],
+   "requestCount": 20
+  },
+  {
+   "url": "https://browserleaks.com/canvas",
+   "group": "functional",
+   "surfaces": [
+    "canvas",
+    "webgl",
+    "audio",
+    "navigator",
+    "screen"
+   ],
+   "manual": false,
+   "loaded": true,
+   "crashed": false,
+   "title": "Canvas Fingerprinting - BrowserLeaks",
+   "finalUrl": "https://browserleaks.com/canvas",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "d4f56dc",
+   "error": null,
+   "frameUrls": [
+    ""
+   ],
+   "screenshot": "https_browserleaks_com_canvas.png",
+   "signals": [],
+   "requestCount": 18
+  },
+  {
+   "url": "https://webbrowsertools.com/canvas-fingerprint/",
+   "group": "functional",
+   "surfaces": [
+    "canvas"
+   ],
+   "manual": false,
+   "loaded": true,
+   "crashed": false,
+   "title": "Detect Canvas Fingerprint :: WebBrowserTools",
+   "finalUrl": "https://webbrowsertools.com/canvas-fingerprint/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "c6ad0661",
+   "error": null,
+   "frameUrls": [
+    "",
+    "",
+    "",
+    ""
+   ],
+   "screenshot": "https_webbrowsertools_com_canvas_fingerprint_.png",
+   "signals": [
+    {
+     "kind": "challenge-request",
+     "marker": "/cdn-cgi/challenge-platform",
+     "detail": "https://webbrowsertools.com/cdn-cgi/challenge-platform/h/g/scripts/jsd/aae2b9a1c261/main.js?"
+    }
+   ],
+   "requestCount": 14
+  },
+  {
+   "url": "https://google.com/",
+   "group": "tranco",
+   "rank": 1,
+   "loaded": true,
+   "crashed": false,
+   "title": "Google",
+   "finalUrl": "https://www.google.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "b1af3bf1",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_google_com_.png",
+   "signals": [],
+   "requestCount": 44
+  },
+  {
+   "url": "https://cloudflare.com/",
+   "group": "tranco",
+   "rank": 2,
+   "loaded": true,
+   "crashed": false,
+   "title": "Cloudflare: Build for the agent era",
+   "finalUrl": "https://www.cloudflare.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "f527213f",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_cloudflare_com_.png",
+   "signals": [],
+   "requestCount": 99
+  },
+  {
+   "url": "https://facebook.com/",
+   "group": "tranco",
+   "rank": 3,
+   "loaded": true,
+   "crashed": false,
+   "title": "Facebook",
+   "finalUrl": "https://www.facebook.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "e1338400",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_facebook_com_.png",
+   "signals": [],
+   "requestCount": 34
+  },
+  {
+   "url": "https://gstatic.com/",
+   "group": "tranco",
+   "rank": 4,
+   "loaded": true,
+   "crashed": false,
+   "title": "Error 404 (Not Found)!!1",
+   "finalUrl": "https://www.gstatic.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "30724798",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_gstatic_com_.png",
+   "signals": [],
+   "requestCount": 4
+  },
+  {
+   "url": "https://gtld-servers.net/",
+   "group": "tranco",
+   "rank": 5,
+   "loaded": true,
+   "crashed": false,
+   "title": "gtld-servers.net",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "38e6be58",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_gtld_servers_net_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://googleapis.com/",
+   "group": "tranco",
+   "rank": 6,
+   "loaded": true,
+   "crashed": false,
+   "title": "Error 404 (Not Found)!!1",
+   "finalUrl": "https://googleapis.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "74a898bf",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_googleapis_com_.png",
+   "signals": [],
+   "requestCount": 4
+  },
+  {
+   "url": "https://microsoft.com/",
+   "group": "tranco",
+   "rank": 7,
+   "loaded": true,
+   "crashed": false,
+   "title": "Microsoft – AI, Cloud, Productivity, Computing, Gaming & Apps",
+   "finalUrl": "https://www.microsoft.com/en-in",
+   "consoleErrors": [
+    "Failed to initialize ReimagineTelemetry: ReferenceError: ReimagineDynamicSearchResultTelemetry is not defined\n    at I.createTelemetryObject (https://www.microsoft.com/echo/etc.clientlibs/store/clientlibs/clientlib-reimagine-telemetry.ACSHASHfe54a3aa6dde8517facbe2e2f7d40c93.min.js:25:343)\n    at new"
+   ],
+   "exceptions": [
+    "TypeError: Cannot read properties of undefined (reading 'querySelectorAllDeep')",
+    "Error: Failed to load script https://www.googletagmanager.com/gtag/js?id=923371515",
+    "TypeError: Cannot read properties of undefined (reading 'log')"
+   ],
+   "canvasHash": "4a587998",
+   "error": null,
+   "frameUrls": [
+    "https://www.microsoft.com/store/buy/cartcount",
+    "https://www.microsoft.com/cascadeauth/store/account/silentauth?auth=default"
+   ],
+   "screenshot": "https_microsoft_com_.png",
+   "signals": [
+    {
+     "kind": "console-error",
+     "marker": "failed to initialize reimaginetelemetry: referenceerror: reimaginedynamicsearchresulttelemetry is not defined at i.createtelemetryobject (<url>) at new",
+     "detail": "Failed to initialize ReimagineTelemetry: ReferenceError: ReimagineDynamicSearchResultTelemetry is not defined\n    at I.createTelemetryObject (https://www.microsoft.com/echo/etc.clientlibs/store/client"
+    },
+    {
+     "kind": "exception",
+     "marker": "typeerror: cannot read properties of undefined (reading 'queryselectoralldeep')",
+     "detail": "TypeError: Cannot read properties of undefined (reading 'querySelectorAllDeep')"
+    },
+    {
+     "kind": "exception",
+     "marker": "error: failed to load script <url>",
+     "detail": "Error: Failed to load script https://www.googletagmanager.com/gtag/js?id=923371515"
+    },
+    {
+     "kind": "exception",
+     "marker": "typeerror: cannot read properties of undefined (reading 'log')",
+     "detail": "TypeError: Cannot read properties of undefined (reading 'log')"
+    }
+   ],
+   "requestCount": 206
+  },
+  {
+   "url": "https://amazonaws.com/",
+   "group": "tranco",
+   "rank": 8,
+   "loaded": true,
+   "crashed": false,
+   "title": "Cloud Computing Services - Amazon Web Services (AWS)",
+   "finalUrl": "https://aws.amazon.com/",
+   "consoleErrors": [
+    "[TangerineBox] Telemetry configuration is missing. Error: Error: Session data meta tag not found",
+    "[TangerineBox] Telemetry configuration is missing. Error: Error: Session data meta tag not found",
+    "Couldn't determine console domain and dual-stack values."
+   ],
+   "exceptions": [],
+   "canvasHash": "687aece",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_amazonaws_com_.png",
+   "signals": [
+    {
+     "kind": "console-error",
+     "marker": "[tangerinebox] telemetry configuration is missing. error: error: session data meta tag not found",
+     "detail": "[TangerineBox] Telemetry configuration is missing. Error: Error: Session data meta tag not found"
+    },
+    {
+     "kind": "console-error",
+     "marker": "couldn't determine console domain and dual-stack values.",
+     "detail": "Couldn't determine console domain and dual-stack values."
+    }
+   ],
+   "requestCount": 227
+  },
+  {
+   "url": "https://youtube.com/",
+   "group": "tranco",
+   "rank": 9,
+   "loaded": true,
+   "crashed": false,
+   "title": "YouTube",
+   "finalUrl": "https://www.youtube.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "31625b5c",
+   "error": null,
+   "frameUrls": [
+    "about:blank"
+   ],
+   "screenshot": "https_youtube_com_.png",
+   "signals": [],
+   "requestCount": 163
+  },
+  {
+   "url": "https://apple.com/",
+   "group": "tranco",
+   "rank": 10,
+   "loaded": true,
+   "crashed": false,
+   "title": "Apple",
+   "finalUrl": "https://www.apple.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "8eb20010",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_apple_com_.png",
+   "signals": [],
+   "requestCount": 68
+  },
+  {
+   "url": "https://instagram.com/",
+   "group": "tranco",
+   "rank": 11,
+   "loaded": true,
+   "crashed": false,
+   "title": "Instagram",
+   "finalUrl": "https://www.instagram.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "aa12e8a5",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_instagram_com_.png",
+   "signals": [],
+   "requestCount": 51
+  },
+  {
+   "url": "https://mail.ru/",
+   "group": "tranco",
+   "rank": 12,
+   "loaded": true,
+   "crashed": false,
+   "title": "Mail: Почта, Облако, Календарь, Заметки, Покупки — сервисы для работы и жизни",
+   "finalUrl": "https://mail.ru/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "8c65e4bc",
+   "error": null,
+   "frameUrls": [
+    "https://yandex.ru/portal/searchframe/desktop?theme=system&button=&mstatid=112000000&dark_theme=0&image_search=1",
+    "https://vkvideo.ru/video_ext.php?__ref=vk.api&api_hash=17871534021be115a328_JJEQYJAAAAAAA%3D%3D%3D&autoplay=1&hash=65354bea5601fc04&id=456266986&oid=-106879986&extra_params%5Bexp_id%5D=112&partner_position=1&js_api=1&mute=1",
+    "https://o2.mail.ru/login?client_id=a870b71849c04df5a073d952f167eb44&redirect_uri=https://mail.ru&lang=en-US&scope=gamification.promo.set%20calendar.calendars.read%20calendar.events.read%20calendar.events.update%20mail.api.home.settings%20mail.api.home.last_senders%20mail.api.home.vkmarket%20mail.api.home.cloud_status&response_type=token&mode=hidden&state=cid%3D1%26e%3D__mailru_oauth_1787163108209_0.6138979919013565__",
+    "https://r.mradx.net/h5/00/4E823B93/D07518B25A.html?data=AACt_wGHfWJsyUTg37lnrepkYjlmKPuN8nPcXeJxLU0qmNbrWQ8Z5b3gJkcpbL4EYzvPzY1qk2UUaZbnT3WbgDOnj4H0LpSy4gP15VSHfN3BzHUcECBBr5Kw09y0qupWT--qxm0WoXUYEb1tUaUnrFv6HyV07JEdO-JNyBhK7ZmwlYjOUKnGQzUnAAAATBf4Xa7_L7EEkbNcPdbc2sjqAhbqmoSzryBZVkZQSGY0xT6wMBPz3S-56Zi8tIVm"
+   ],
+   "screenshot": "https_mail_ru_.png",
+   "signals": [],
+   "requestCount": 136
+  },
+  {
+   "url": "https://akamai.net/",
+   "group": "tranco",
+   "rank": 13,
+   "loaded": true,
+   "crashed": false,
+   "title": "akamai.net",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "d1ea59db",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_akamai_net_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://ezviz7.com/",
+   "group": "tranco",
+   "rank": 14,
+   "loaded": true,
+   "crashed": false,
+   "title": "ezviz7.com",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "2a9ce566",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_ezviz7_com_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://fbcdn.net/",
+   "group": "tranco",
+   "rank": 15,
+   "loaded": true,
+   "crashed": false,
+   "title": "Facebook",
+   "finalUrl": "https://www.facebook.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "e1338400",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_fbcdn_net_.png",
+   "signals": [],
+   "requestCount": 30
+  },
+  {
+   "url": "https://twitter.com/",
+   "group": "tranco",
+   "rank": 16,
+   "loaded": true,
+   "crashed": false,
+   "title": "X. It’s what’s happening / X",
+   "finalUrl": "https://x.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "e5fe30c2",
+   "error": null,
+   "frameUrls": [
+    "https://accounts.google.com/gsi/button?theme=outline&size=large&shape=pill&logo_alignment=center&text=continue_with&type=standard&is_fedcm_supported=true&client_id=49625052041-kgt0hghf445lmcmhijv46b715m2mpbct.apps.googleusercontent.com&iframe_id=gsi_145980_916745&cas=0RzoGPxjgkjn1abAcshSHP%2BNf6lZp6qob2yO9jsSW7I&hl=en"
+   ],
+   "screenshot": "https_twitter_com_.png",
+   "signals": [],
+   "requestCount": 462
+  },
+  {
+   "url": "https://dzen.ru/",
+   "group": "tranco",
+   "rank": 17,
+   "loaded": true,
+   "crashed": false,
+   "title": "Дзен — главная новостная информационная платформа, которая помогает миллионам людей узнавать, что происходит в мире.",
+   "finalUrl": "https://dzen.ru/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "a9b96018",
+   "error": null,
+   "frameUrls": [
+    "https://suggest.sso.dzen.ru/portal/dzensearch/desktop?enable_suggest_sso_dzen_host=1&ext-test-id=736493&yu=2758544221787163153&clid=&theme=light",
+    "https://id.vk.ru/button_one_tap_auth?app_id=51441269&response_type=silent_token&v=1.61.5-alpha.sakSdk.bjviA&origin=https%3A%2F%2Fdzen.ru&uuid=in3VyieM4OOZ4fDK9YsvK&display=default&button_skin=primary&show_agreements=0&show_alternative_login=0&style_height=48&style_border_radius=12&lang_id=0&is_for_session_detecting_only=1&code_challenge=yPhfYeIPissC05nUBKhlwe_PL6U1hhZrswKnm42Yeic&code_challenge_method=s256",
+    "https://ad.mail.ru/dist/vkAuth.html"
+   ],
+   "screenshot": "https_dzen_ru_.png",
+   "signals": [],
+   "requestCount": 138
+  },
+  {
+   "url": "https://linkedin.com/",
+   "group": "tranco",
+   "rank": 18,
+   "loaded": true,
+   "crashed": false,
+   "title": "LinkedIn: Log In or Sign Up",
+   "finalUrl": "https://www.linkedin.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "8ea53f5a",
+   "error": null,
+   "frameUrls": [
+    "https://accounts.google.com/gsi/button?logo_alignment=center&shape=pill&size=large&text=continue_with&theme=filled_blue&type=undefined&width=400px&client_id=990339570472-k6nqn1tpmitg8pui82bfaun3jrpmiuhs.apps.googleusercontent.com&iframe_id=gsi_164440_486267&as=CHky1ED6DjkATeFrGLJ9yw&hl=en_US",
+    "https://edge-auth.microsoft.com/v0.5/signinbutton?type=standard&theme=light&size=large&text=continue_with&shape=pill&width=400&height=42&logo_alignment=center&locale=en-US&use_dropdown_list=true&uuid=e029dfc4-07f6-4f28-9aa7-8a691183af67&client_id=3fa91358-6f74-4525-b5df-da149652be36",
+    "",
+    "https://li.protechts.net/index.html?ts=1787163164409&r_id=AAZZalmCMyXiP6EjJmXB%2Bw%3D%3D&app_id=PXdOjV695v&uc=scraping&d_id=ce1f576ea37dd6da11cea236258456e056aa52f7d4e793fdd96be5d3452e2c28",
+    "https://edge-auth.microsoft.com/v0.5/signinprompt?uuid=e029dfc4-07f6-4f28-9aa7-8a691183af67&send_session_started=true&client_id=3fa91358-6f74-4525-b5df-da149652be36&locale=en-US&context=use"
+   ],
+   "screenshot": "https_linkedin_com_.png",
+   "signals": [],
+   "requestCount": 60
+  },
+  {
+   "url": "https://office.com/",
+   "group": "tranco",
+   "rank": 19,
+   "loaded": true,
+   "crashed": false,
+   "title": "Microsoft 365 Copilot - Sign in",
+   "finalUrl": "https://m365.cloud.microsoft/",
+   "consoleErrors": [
+    "Unable to load WCP: WCPConsent library not found"
+   ],
+   "exceptions": [],
+   "canvasHash": "cbe4873",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_office_com_.png",
+   "signals": [
+    {
+     "kind": "console-error",
+     "marker": "unable to load wcp: wcpconsent library not found",
+     "detail": "Unable to load WCP: WCPConsent library not found"
+    }
+   ],
+   "requestCount": 58
+  },
+  {
+   "url": "https://domaincontrol.com/",
+   "group": "tranco",
+   "rank": 20,
+   "loaded": true,
+   "crashed": false,
+   "title": "domaincontrol.com",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "db57f9cb",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_domaincontrol_com_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://googlevideo.com/",
+   "group": "tranco",
+   "rank": 21,
+   "loaded": true,
+   "crashed": false,
+   "title": "Privacy error",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "bab0bce2",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_googlevideo_com_.png",
+   "signals": [],
+   "requestCount": 3
+  },
+  {
+   "url": "https://hicloudcam.com/",
+   "group": "tranco",
+   "rank": 22,
+   "loaded": true,
+   "crashed": false,
+   "title": "hicloudcam.com",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "85aa8fc5",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_hicloudcam_com_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://googletagmanager.com/",
+   "group": "tranco",
+   "rank": 23,
+   "loaded": true,
+   "crashed": false,
+   "title": "googletagmanager.com",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "a61a1a56",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_googletagmanager_com_.png",
+   "signals": [],
+   "requestCount": 4
+  },
+  {
+   "url": "https://akamaiedge.net/",
+   "group": "tranco",
+   "rank": 24,
+   "loaded": true,
+   "crashed": false,
+   "title": "akamaiedge.net",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "1d515144",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_akamaiedge_net_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://amazon.com/",
+   "group": "tranco",
+   "rank": 25,
+   "loaded": true,
+   "crashed": false,
+   "title": "Amazon.com. Spend less. Smile more.",
+   "finalUrl": "https://www.amazon.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "f98ef5ba",
+   "error": null,
+   "frameUrls": [
+    "https://s.amazon-adsystem.com/iu3?d=amazon.com&slot=navFooter&a2=01011336a6504e85e52986f5294a7ac5c16bb125a0b4731f633b16611021e213557e&old_oo=0&ts=1787163234272&s=ARtH6Ht9h5q3VqtJzFK2EfXV5-iqHVF8H0jJKRKUbhWE&gdpr_consent=&gdpr_consent_avl=&cb=1787163234272"
+   ],
+   "screenshot": "https_amazon_com_.png",
+   "signals": [],
+   "requestCount": 333
+  },
+  {
+   "url": "https://live.com/",
+   "group": "tranco",
+   "rank": 26,
+   "loaded": true,
+   "crashed": false,
+   "title": "Microsoft Outlook Personal Email and Calendar | Microsoft 365",
+   "finalUrl": "https://www.microsoft.com/en-us/microsoft-365/outlook/email-and-calendar-software-microsoft-outlook?deeplink=%2Fmail%2F&sdf=0&sessionId=e07ea9b6-cc3d-443b-8acf-d08d15f340d2",
+   "consoleErrors": [],
+   "exceptions": [
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared"
+   ],
+   "canvasHash": "4a587998",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_live_com_.png",
+   "signals": [
+    {
+     "kind": "exception",
+     "marker": "syntaxerror: identifier 'onecloudutil' has already been declared",
+     "detail": "SyntaxError: Identifier 'OneCloudUtil' has already been declared"
+    },
+    {
+     "kind": "exception",
+     "marker": "syntaxerror: identifier 'localstorageutil' has already been declared",
+     "detail": "SyntaxError: Identifier 'LocalStorageUtil' has already been declared"
+    }
+   ],
+   "requestCount": 153
+  },
+  {
+   "url": "https://akadns.net/",
+   "group": "tranco",
+   "rank": 27,
+   "loaded": true,
+   "crashed": false,
+   "title": "akadns.net",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "fd6922f6",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_akadns_net_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://azure.com/",
+   "group": "tranco",
+   "rank": 28,
+   "loaded": true,
+   "crashed": false,
+   "title": "Cloud Computing Services | Microsoft Azure",
+   "finalUrl": "https://azure.microsoft.com/en-us",
+   "consoleErrors": [
+    "Failed to load ttMETA: Error: Timeout waiting for ttMETA\n    at poll (https://azure.microsoft.com/msonecloudapi/assets/msochead.js:595:5596)"
+   ],
+   "exceptions": [
+    "TypeError: Cannot read properties of undefined (reading 'includes')",
+    "TypeError: Cannot read properties of undefined (reading 'includes')"
+   ],
+   "canvasHash": "4d2b4f74",
+   "error": null,
+   "frameUrls": [
+    "about:blank",
+    "https://publisher.liveperson.net/iframe-le-tag/iframe-cs.html?lpsite=60270350&lpsection=azure-leadgen-en-us&buttons=lpChatAzure"
+   ],
+   "screenshot": "https_azure_com_.png",
+   "signals": [
+    {
+     "kind": "console-error",
+     "marker": "failed to load ttmeta: error: timeout waiting for ttmeta at poll (<url>)",
+     "detail": "Failed to load ttMETA: Error: Timeout waiting for ttMETA\n    at poll (https://azure.microsoft.com/msonecloudapi/assets/msochead.js:595:5596)"
+    },
+    {
+     "kind": "exception",
+     "marker": "typeerror: cannot read properties of undefined (reading 'includes')",
+     "detail": "TypeError: Cannot read properties of undefined (reading 'includes')"
+    }
+   ],
+   "requestCount": 170
+  },
+  {
+   "url": "https://bing.com/",
+   "group": "tranco",
+   "rank": 29,
+   "loaded": true,
+   "crashed": false,
+   "title": "Search - Microsoft Bing",
+   "finalUrl": "https://www.bing.com/?toWww=1&redig=D963B70502DE49EBA3C641102561348A",
+   "consoleErrors": [
+    "{\"id\":20155,\"severity\":0,\"pb\":{\"build\":\"20260817.22\",\"appType\":\"bingHomepage\",\"pcsVersion\":\"20260817.1\",\"pcsEnv\":\"prod\",\"buildAlias\":\"latest\",\"shouldDelayUntilLoadTime\":false,\"shouldSampleErrorsForTreatement1\":true,\"customMessage\":\"pageType: binghp, status: 0, StatusText: , StartTime: 2026-08-19T18:",
+    "This App error Id: 20155 will not be sent due to app error sampling!",
+    "Wed Aug 19 2026 23:44:35 GMT+0530 (India Standard Time): 1787163275959 {\"id\":60144,\"severity\":0,\"pb\":{\"build\":\"20260817.22\",\"appType\":\"bingHomepage\",\"pcsVersion\":\"20260817.1\",\"pcsEnv\":\"prod\",\"buildAlias\":\"latest\",\"shouldDelayUntilLoadTime\":false,\"shouldSampleErrorsForTreatement1\":false,\"adsReplacedC"
+   ],
+   "exceptions": [
+    "ReferenceError: _w is not defined"
+   ],
+   "canvasHash": "7898572a",
+   "error": null,
+   "frameUrls": [
+    "https://www.bing.com/fd/auth/signin/v2?action=interactive&isSilent=true"
+   ],
+   "screenshot": "https_bing_com_.png",
+   "signals": [
+    {
+     "kind": "console-error",
+     "marker": "{\"id\":<n>,\"severity\":<n>,\"pb\":{\"build\":\"<hex>.<n>\",\"apptype\":\"binghomepage\",\"pcsversion\":\"<hex>.<n>\",\"pcsenv\":\"prod\",\"buildalias\":\"latest\",\"shoulddelayuntilloadtime\":false,\"shoulds",
+     "detail": "{\"id\":20155,\"severity\":0,\"pb\":{\"build\":\"20260817.22\",\"appType\":\"bingHomepage\",\"pcsVersion\":\"20260817.1\",\"pcsEnv\":\"prod\",\"buildAlias\":\"latest\",\"shouldDelayUntilLoadTime\":false,\"shouldSampleErrorsForTre"
+    },
+    {
+     "kind": "console-error",
+     "marker": "this app error id: <n> will not be sent due to app error sampling!",
+     "detail": "This App error Id: 20155 will not be sent due to app error sampling!"
+    },
+    {
+     "kind": "console-error",
+     "marker": "wed aug <n> <n> <n>:<n>:<n> gmt+<n> (india standard time): <hex> {\"id\":<n>,\"severity\":<n>,\"pb\":{\"build\":\"<hex>.<n>\",\"apptype\":\"binghomepage\",\"pcsversion\":\"<hex>.<n>\",\"pcsenv\":\"prod",
+     "detail": "Wed Aug 19 2026 23:44:35 GMT+0530 (India Standard Time): 1787163275959 {\"id\":60144,\"severity\":0,\"pb\":{\"build\":\"20260817.22\",\"appType\":\"bingHomepage\",\"pcsVersion\":\"20260817.1\",\"pcsEnv\":\"prod\",\"buildAli"
+    },
+    {
+     "kind": "exception",
+     "marker": "referenceerror: _w is not defined",
+     "detail": "ReferenceError: _w is not defined"
+    }
+   ],
+   "requestCount": 281
+  },
+  {
+   "url": "https://github.com/",
+   "group": "tranco",
+   "rank": 30,
+   "loaded": true,
+   "crashed": false,
+   "title": "GitHub · Change is constant. GitHub keeps you ahead. · GitHub",
+   "finalUrl": "https://github.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "55e778e4",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_github_com_.png",
+   "signals": [],
+   "requestCount": 148
+  },
+  {
+   "url": "https://wikipedia.org/",
+   "group": "tranco",
+   "rank": 31,
+   "loaded": true,
+   "crashed": false,
+   "title": "Wikipedia",
+   "finalUrl": "https://www.wikipedia.org/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "f14c8aab",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_wikipedia_org_.png",
+   "signals": [],
+   "requestCount": 6
+  },
+  {
+   "url": "https://whatsapp.net/",
+   "group": "tranco",
+   "rank": 32,
+   "loaded": true,
+   "crashed": false,
+   "title": "WhatsApp | Secure and Reliable Free Private Messaging and Calling",
+   "finalUrl": "https://www.whatsapp.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "2f192257",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_whatsapp_net_.png",
+   "signals": [],
+   "requestCount": 39
+  },
+  {
+   "url": "https://fastly.net/",
+   "group": "tranco",
+   "rank": 33,
+   "loaded": true,
+   "crashed": false,
+   "title": "Powering the best of the internet | Fastly",
+   "finalUrl": "https://www.fastly.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "ae8b2806",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_fastly_net_.png",
+   "signals": [],
+   "requestCount": 41
+  },
+  {
+   "url": "https://apple-dns.net/",
+   "group": "tranco",
+   "rank": 34,
+   "loaded": true,
+   "crashed": false,
+   "title": "apple-dns.net",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "2439d6ba",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_apple_dns_net_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://appsflyersdk.com/",
+   "group": "tranco",
+   "rank": 35,
+   "loaded": true,
+   "crashed": false,
+   "title": "",
+   "finalUrl": "https://appsflyersdk.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "ERR:c.getContext is not a function",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_appsflyersdk_com_.png",
+   "signals": [
+    {
+     "kind": "http-403",
+     "marker": "403",
+     "detail": "https://appsflyersdk.com/",
+     "isMain": true
+    }
+   ],
+   "requestCount": 3
+  },
+  {
+   "url": "https://googleusercontent.com/",
+   "group": "tranco",
+   "rank": 36,
+   "loaded": true,
+   "crashed": false,
+   "title": "Error 404 (Not Found)!!1",
+   "finalUrl": "https://googleusercontent.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "e190a3df",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_googleusercontent_com_.png",
+   "signals": [],
+   "requestCount": 4
+  },
+  {
+   "url": "https://doubleclick.net/",
+   "group": "tranco",
+   "rank": 37,
+   "loaded": true,
+   "crashed": false,
+   "title": "doubleclick.net",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "ddea723d",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_doubleclick_net_.png",
+   "signals": [],
+   "requestCount": 4
+  },
+  {
+   "url": "https://aaplimg.com/",
+   "group": "tranco",
+   "rank": 38,
+   "loaded": true,
+   "crashed": false,
+   "title": "aaplimg.com",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "25a596a2",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_aaplimg_com_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://netflix.com/",
+   "group": "tranco",
+   "rank": 39,
+   "loaded": true,
+   "crashed": false,
+   "title": "Netflix India – Watch Shows Online, Watch Movies Online",
+   "finalUrl": "https://www.netflix.com/in/",
+   "consoleErrors": [
+    "There was an error sending the data to CL Error: Send failed.\n    at e (https://assets.nflxext.com/web/ffe/wp/ui/landingPages/nmhp/nmhpFrameworkClient.87ed281405cf6ea5f3eb.js:92:2046086)\n    at e.throw (<anonymous>)\n    at C (https://assets.nflxext.com/web/ffe/wp/ui/landingPages/nmhp/nmhpFrameworkCl"
+   ],
+   "exceptions": [],
+   "canvasHash": "e324d32",
+   "error": null,
+   "frameUrls": [
+    "https://www.google.com/recaptcha/enterprise/anchor?ar=1&k=6LdqW_EqAAAAAO87Fb_kcZfNzs0IqJRcKiJDYpUv&co=aHR0cHM6Ly93d3cubmV0ZmxpeC5jb206NDQz&hl=en&v=xg_pWYS8-HRESiV6Rdg4aY_R&size=invisible&anchor-ms=20000&execute-ms=30000&cb=qf62ywrjhxmt",
+    "https://www.google.com/recaptcha/enterprise/anchor?ar=1&k=6LdqW_EqAAAAAO87Fb_kcZfNzs0IqJRcKiJDYpUv&co=aHR0cHM6Ly93d3cubmV0ZmxpeC5jb206NDQz&hl=en&v=xg_pWYS8-HRESiV6Rdg4aY_R&size=invisible&anchor-ms=20000&execute-ms=30000&cb=t1owk7oi39ro",
+    "",
+    "https://ae.nflximg.net/monet/scripts/adtech_iframe_target_05.html?data=%7B%22membership_status%22%3A%22ANONYMOUS%22%2C%22country%22%3A%22IN%22%2C%22region_code%22%3A%22MH%22%2C%22request_id%22%3A%227888711b-6e61-43ac-98ca-649771840a87-225858605%22%2C%22is_member%22%3A%22ANONYMOUS%22%2C%22wasFormerMember%22%3Afalse%2C%22referrer%22%3A%22nmLanding%22%7D"
+   ],
+   "screenshot": "https_netflix_com_.png",
+   "signals": [
+    {
+     "kind": "challenge-request",
+     "marker": "google.com/recaptcha",
+     "detail": "https://www.google.com/recaptcha/enterprise.js?render=6LdqW_EqAAAAAO87Fb_kcZfNzs0IqJRcKiJDYpUv"
+    },
+    {
+     "kind": "challenge-frame",
+     "marker": "google.com/recaptcha",
+     "detail": "https://www.google.com/recaptcha/enterprise/anchor?ar=1&k=6LdqW_EqAAAAAO87Fb_kcZfNzs0IqJRcKiJDYpUv&co=aHR0cHM6Ly93d3cubmV0ZmxpeC5jb206NDQz&hl=en&v=xg_pWYS8-HRES"
+    },
+    {
+     "kind": "console-error",
+     "marker": "there was an error sending the data to cl error: send failed. at e (<url>) at e.throw (<anonymous>) at c (<url>",
+     "detail": "There was an error sending the data to CL Error: Send failed.\n    at e (https://assets.nflxext.com/web/ffe/wp/ui/landingPages/nmhp/nmhpFrameworkClient.87ed281405cf6ea5f3eb.js:92:2046086)\n    at e.thro"
+    }
+   ],
+   "requestCount": 52
+  },
+  {
+   "url": "https://microsoftonline.com/",
+   "group": "tranco",
+   "rank": 40,
+   "loaded": true,
+   "crashed": false,
+   "title": "microsoftonline.com",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "f0323427",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_microsoftonline_com_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://office.net/",
+   "group": "tranco",
+   "rank": 41,
+   "loaded": true,
+   "crashed": false,
+   "title": "office.net",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "d9eb34e7",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_office_net_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://trafficmanager.net/",
+   "group": "tranco",
+   "rank": 42,
+   "loaded": true,
+   "crashed": false,
+   "title": "trafficmanager.net",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "209accf0",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_trafficmanager_net_.png",
+   "signals": [],
+   "requestCount": 8
+  },
+  {
+   "url": "https://gandi.net/",
+   "group": "tranco",
+   "rank": 43,
+   "loaded": true,
+   "crashed": false,
+   "title": "",
+   "finalUrl": "chrome-error://chromewebdata/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "71216669",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_gandi_net_.png",
+   "signals": [],
+   "requestCount": 6
+  },
+  {
+   "url": "https://digicert.com/",
+   "group": "tranco",
+   "rank": 44,
+   "loaded": true,
+   "crashed": false,
+   "title": "TLS/SSL Certificate Authority | Leader in Digital Trust | DigiCert",
+   "finalUrl": "https://www.digicert.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "aaf40119",
+   "error": null,
+   "frameUrls": [
+    ""
+   ],
+   "screenshot": "https_digicert_com_.png",
+   "signals": [],
+   "requestCount": 164
+  },
+  {
+   "url": "https://sharepoint.com/",
+   "group": "tranco",
+   "rank": 45,
+   "loaded": true,
+   "crashed": false,
+   "title": "SharePoint, Team Collaboration Software Tools",
+   "finalUrl": "https://www.microsoft.com/en-in/microsoft-365/sharepoint/collaboration?ms.officeurl=sharepoint",
+   "consoleErrors": [],
+   "exceptions": [
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared"
+   ],
+   "canvasHash": "4a587998",
+   "error": null,
+   "frameUrls": [
+    "https://publisher.liveperson.net/iframe-le-tag/iframe-cs.html?lpsite=60270350&lpsection=office365-leadgen-en-in&buttons=hiddenchat",
+    "https://login.microsoftonline.com/savedusers?appid=10fa57ef-4895-4ab2-872c-8c3613d4f7fb&wreply=https%3A%2F%2Fwww.microsoft.com%2Fcascadeauth%2Faccount%2Fsignin-oidc&idpflag=proxy"
+   ],
+   "screenshot": "https_sharepoint_com_.png",
+   "signals": [
+    {
+     "kind": "exception",
+     "marker": "syntaxerror: identifier 'onecloudutil' has already been declared",
+     "detail": "SyntaxError: Identifier 'OneCloudUtil' has already been declared"
+    },
+    {
+     "kind": "exception",
+     "marker": "syntaxerror: identifier 'localstorageutil' has already been declared",
+     "detail": "SyntaxError: Identifier 'LocalStorageUtil' has already been declared"
+    }
+   ],
+   "requestCount": 119
+  },
+  {
+   "url": "https://wordpress.org/",
+   "group": "tranco",
+   "rank": 46,
+   "loaded": true,
+   "crashed": false,
+   "title": "Blog Tool, Publishing Platform, and CMS – WordPress.org",
+   "finalUrl": "https://wordpress.org/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "3c5d25e1",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_wordpress_org_.png",
+   "signals": [],
+   "requestCount": 46
+  },
+  {
+   "url": "https://youtu.be/",
+   "group": "tranco",
+   "rank": 47,
+   "loaded": true,
+   "crashed": false,
+   "title": "YouTube",
+   "finalUrl": "https://www.youtube.com/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "31625b5c",
+   "error": null,
+   "frameUrls": [
+    "about:blank"
+   ],
+   "screenshot": "https_youtu_be_.png",
+   "signals": [],
+   "requestCount": 50
+  },
+  {
+   "url": "https://skype.com/",
+   "group": "tranco",
+   "rank": 48,
+   "loaded": true,
+   "crashed": false,
+   "title": "Free Online Meetings & Video Calls | Microsoft Teams",
+   "finalUrl": "https://teams.live.com/free",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "5dffff04",
+   "error": null,
+   "frameUrls": [
+    "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?client_id=4b3e8f46-56d3-427f-b1e2-d239b2ea6bca&response_type=token&scope=openid+profile&redirect_uri=https%3A%2F%2Fteams.live.com%2Fv2%2Fauth&prompt=none"
+   ],
+   "screenshot": "https_skype_com_.png",
+   "signals": [],
+   "requestCount": 33
+  },
+  {
+   "url": "https://outlook.com/",
+   "group": "tranco",
+   "rank": 49,
+   "loaded": true,
+   "crashed": false,
+   "title": "Microsoft Outlook Personal Email and Calendar | Microsoft 365",
+   "finalUrl": "https://www.microsoft.com/en-us/microsoft-365/outlook/email-and-calendar-software-microsoft-outlook?deeplink=%2Fmail%2F&sdf=0&sessionId=b68d0864-3563-45b8-be25-4d0de7f2d7cf",
+   "consoleErrors": [],
+   "exceptions": [
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared",
+    "SyntaxError: Identifier 'OneCloudUtil' has already been declared",
+    "SyntaxError: Identifier 'LocalStorageUtil' has already been declared"
+   ],
+   "canvasHash": "4a587998",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_outlook_com_.png",
+   "signals": [
+    {
+     "kind": "exception",
+     "marker": "syntaxerror: identifier 'onecloudutil' has already been declared",
+     "detail": "SyntaxError: Identifier 'OneCloudUtil' has already been declared"
+    },
+    {
+     "kind": "exception",
+     "marker": "syntaxerror: identifier 'localstorageutil' has already been declared",
+     "detail": "SyntaxError: Identifier 'LocalStorageUtil' has already been declared"
+    }
+   ],
+   "requestCount": 158
+  },
+  {
+   "url": "https://goo.gl/",
+   "group": "tranco",
+   "rank": 50,
+   "loaded": true,
+   "crashed": false,
+   "title": "Invalid Dynamic Link",
+   "finalUrl": "https://goo.gl/",
+   "consoleErrors": [],
+   "exceptions": [],
+   "canvasHash": "39c44656",
+   "error": null,
+   "frameUrls": [],
+   "screenshot": "https_goo_gl_.png",
+   "signals": [],
+   "requestCount": 3
+  }
+ ]
+}

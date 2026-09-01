@@ -77,7 +77,7 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
   // let a backdrop blur sample the browser's compositor CRASHED the browser on
   // 2026-08-10 — see zephyrus-menu-blur-impossible. Reverted; without the blur
   // an alpha here only washes the bubble out.
-  SetBackgroundColor(SkColorSetRGB(0x16, 0x16, 0x1A));
+  SetBackgroundColor(zephyrus::Surface());
 
   SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
@@ -85,7 +85,7 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
   auto* heading =
       AddChildView(std::make_unique<views::Label>(u"Search with"));
   heading->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  heading->SetEnabledColor(SkColorSetRGB(0x9A, 0x9A, 0xA5));
+  heading->SetEnabledColor(zephyrus::Muted());
   heading->SetFontList(gfx::FontList("Segoe UI, 11px"));
   heading->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(2, 8, 6, 8)));
 
@@ -116,11 +116,11 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
     row->SetImageModel(
         views::Button::STATE_NORMAL,
         ui::ImageModel::FromVectorIcon(vector_icons::kSearchIcon,
-                                       SkColorSetRGB(0x9A, 0x9A, 0xA5),
+                                       zephyrus::Muted(),
                                        kFaviconSize));
     row->SetImageLabelSpacing(10);
     row->SetTextColor(views::Button::STATE_NORMAL,
-                      selected ? SK_ColorWHITE : SkColorSetRGB(0xC8, 0xC8, 0xD0));
+                      selected ? zephyrus::Ink() : zephyrus::Muted());
     row->SetTextColor(views::Button::STATE_HOVERED, SK_ColorWHITE);
     // No font override: LabelButton exposes no public font setter (label() is
     // protected), and the Ctrl+T shortcut chips leave it default too, so this
@@ -129,7 +129,7 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
     row->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 8)));
     if (selected) {
       row->SetBackground(views::CreateRoundedRectBackground(
-          SkColorSetARGB(0x1A, 0xFF, 0xFF, 0xFF), zephyrus::kCornerRadius));
+          zephyrus::Surface(), zephyrus::kRadiusCard));
     }
     views::LabelButton* row_ptr = AddChildView(std::move(row));
 

@@ -88,7 +88,9 @@ ZephyrusProfileDialog::ZephyrusProfileDialog(Mode mode,
   // Setup is a decision, not a passing popup: don't let a stray click discard it.
   set_close_on_deactivate(false);
   zephyrus::ConfigureBubble(this);
-  SetBackgroundColor(SkColorSetRGB(0x16, 0x16, 0x1A));
+  // Was a hardcoded #16161A panel -- a dark-theme leftover that never moved
+  // when the palette did, so on a light browser it was a black box.
+  SetBackgroundColor(zephyrus::Surface());
 
   SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(), 10));
@@ -108,7 +110,7 @@ ZephyrusProfileDialog::ZephyrusProfileDialog(Mode mode,
             u"logins."));
   body->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   body->SetMultiLine(true);
-  body->SetEnabledColor(SkColorSetRGB(0xA1, 0xA1, 0xAA));
+  body->SetEnabledColor(zephyrus::Muted());
   body->SetFontList(gfx::FontList("Segoe UI, 12px"));
   body->SizeToFit(kDialogWidth);
 
@@ -125,7 +127,7 @@ ZephyrusProfileDialog::ZephyrusProfileDialog(Mode mode,
 void ZephyrusProfileDialog::BuildAvatarRow() {
   auto* caption = AddChildView(std::make_unique<views::Label>(u"Pick an icon"));
   caption->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  caption->SetEnabledColor(SkColorSetRGB(0xA1, 0xA1, 0xAA));
+  caption->SetEnabledColor(zephyrus::Muted());
   caption->SetFontList(gfx::FontList("Segoe UI, 12px"));
 
   auto* row = AddChildView(std::make_unique<views::View>());
@@ -182,7 +184,7 @@ void ZephyrusProfileDialog::SelectAvatar(size_t row_position) {
         selected ? views::CreateRoundedRectBorder(
                        kAvatarRingThickness,
                        (kAvatarSize + 2 * kAvatarRingThickness) / 2.0f,
-                       zephyrus::kAccent)
+                       zephyrus::Accent())
                  : views::CreateEmptyBorder(gfx::Insets(kAvatarRingThickness)));
   }
 }

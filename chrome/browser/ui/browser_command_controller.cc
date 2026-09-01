@@ -96,6 +96,7 @@
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -201,6 +202,25 @@ using WebExposedIsolationLevel = content::WebExposedIsolationLevel;
 namespace chrome {
 
 namespace {
+
+// Zephyrus: true when pressing Home would land on a new-tab page.
+//
+// Both spellings have to be checked. `chrome://newtab` is what the pref holds
+// and what the user can type; `chrome://new-tab-page` is what it resolves to
+// (see NewTabURLDetails::ForProfile, which Zephyrus forces to the latter so the
+// default search engine never gets handed the surface). Matching only one of
+// them would leave a live path to the page for the other.
+//
+// GetHomePage() already folds in kHomePageIsNewTabPage, so this covers both the
+// "use the New Tab page" checkbox and an explicitly typed NTP URL.
+bool IsZephyrusNewTabHomePage(Profile* profile) {
+  if (!profile) {
+    return false;
+  }
+  const GURL home = profile->GetHomePage();
+  return home == GURL(chrome::kChromeUINewTabURL) ||
+         home == GURL(chrome::kChromeUINewTabPageURL);
+}
 
 // Ensures that - if we have not popped up an infobar to prompt the user to e.g.
 // reload the current page - that the content pane of the browser is refocused.
@@ -686,6 +706,26 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ReloadBypassingCache(browser_, disposition);
       break;
     case IDC_HOME:
+      // Zephyrus: Home must not be able to summon a new-tab page, because
+      // Zephyrus does not have one. When the home page is the NTP (the default,
+      // and whatever the pref says the URL is), the button behaves exactly like
+      // Ctrl+T: the native floating search overlay, no navigation, no tab. Left
+      // alone it would load chrome://newtab, which is the SECOND empty state
+      // this browser deliberately no longer has -- the user would get a flat
+      // dark page instead of the wallpaper an empty window paints.
+      //
+      // A real, user-set home page is still honoured; only the NTP case is
+      // intercepted.
+      //
+      // Normal windows ONLY. IDC_HOME is also enabled for app and app-popup
+      // windows (see UpdateCommandsForTabState), and there Home() ignores the
+      // home-page pref entirely and returns to the extension's launch URL.
+      // Without this guard a hosted app whose profile happens to use the NTP as
+      // its home page would get a search overlay instead of its own start page.
+      if (browser_->is_type_normal() && IsZephyrusNewTabHomePage(profile())) {
+        ZephyrusSearchOverlay::Show(browser_);
+        break;
+      }
       Home(browser_, disposition);
       break;
     case IDC_OPEN_CURRENT_URL:
@@ -706,6 +746,24 @@ void BrowserCommandController::HandleCommandWithDisposition(
     case IDC_TOGGLE_VERTICAL_TABS:
       ToggleVerticalTabs(browser_);
       break;
+    case IDC_TOGGLE_VERTICAL_TABS_COLLAPSE:
+#if !BUILDFLAG(IS_MAC)
+      // On Mac, the logging for both the keyboard shortcut and the view menu
+      // is handled in BrowserNativeWidgetMac::ExecuteCommand to correctly
+      // distinguish between the two trigger sources.
+      if (auto* controller =
+              tabs::VerticalTabStripStateController::From(browser_)) {
+        if (controller->IsCollapsed()) {
+          base::RecordAction(base::UserMetricsAction(
+              "VerticalTabs_TabStrip_KeyboardShortcutToggleUncollapsed"));
+        } else {
+          base::RecordAction(base::UserMetricsAction(
+              "VerticalTabs_TabStrip_KeyboardShortcutToggleCollapsed"));
+        }
+      }
+#endif  // !BUILDFLAG(IS_MAC)
+      ToggleCollapseVerticalTabs(browser_);
+      break;
     case IDC_VERTICAL_TABS_SEND_FEEDBACK:
       chrome::ShowFeedbackPage(browser_, feedback::kFeedbackSourceVerticalTabs,
                                /*description_template=*/"",
@@ -722,13 +780,20 @@ void BrowserCommandController::HandleCommandWithDisposition(
       break;
     case IDC_NEW_INCOGNITO_WINDOW:
       // Zephyrus replaces Incognito Mode with Private Workspace. The command
-      // is redirected rather than removed so every existing door — the
-      // Ctrl+Shift+N accelerator, the app menu item, and any internal caller —
+      // is redirected rather than removed so every existing door -- the
+      // Ctrl+Shift+N accelerator, the app menu item, and any internal caller --
       // arrives at the same place; deleting it would leave those entry points
-      // dangling or silently dead. Already private: nothing to do.
-      if (!ZephyrusPrivateWorkspace::IsPrivate(browser_)) {
-        if (auto* private_workspace =
-                ZephyrusPrivateWorkspace::GetForProfile(profile())) {
+      // dangling or silently dead.
+      //
+      // It TOGGLES. It used to do nothing when already private, which made the
+      // app menu item and Ctrl+Shift+N one-way: the only way back out was
+      // closing the window. Leaving is the same intent as entering, expressed
+      // by the same control, so it belongs on the same command.
+      if (auto* private_workspace =
+              ZephyrusPrivateWorkspace::GetForProfile(profile())) {
+        if (ZephyrusPrivateWorkspace::IsPrivate(browser_)) {
+          private_workspace->Leave();
+        } else {
           private_workspace->Enter(browser_);
         }
       }
@@ -1833,6 +1898,8 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(IDC_VERTICAL_TABS_SEND_FEEDBACK, true);
   command_updater_->UpdateCommandEnabled(
       IDC_TOGGLE_VERTICAL_TABS_EXPAND_ON_HOVER, true);
+  command_updater_->UpdateCommandEnabled(IDC_TOGGLE_VERTICAL_TABS_COLLAPSE,
+                                         true);
 #if BUILDFLAG(IS_CHROMEOS)
   command_updater_->UpdateCommandEnabled(IDC_TOGGLE_MULTITASK_MENU, true);
   command_updater_->UpdateCommandEnabled(IDC_MINIMIZE_WINDOW, true);
@@ -2009,9 +2076,6 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(IDC_SHOW_AVATAR_MENU,
                                          /*state=*/normal_window);
 #endif
-  command_updater_->UpdateCommandEnabled(
-      IDC_SHOW_SAVE_LOCAL_CARD_SIGN_IN_PROMO_IF_APPLICABLE, true);
-  command_updater_->UpdateCommandEnabled(IDC_CLOSE_SIGN_IN_PROMO, true);
   command_updater_->UpdateCommandEnabled(IDC_CARET_BROWSING_TOGGLE, true);
   // Navigation commands
   command_updater_->UpdateCommandEnabled(

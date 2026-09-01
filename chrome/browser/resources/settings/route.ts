@@ -228,7 +228,7 @@ function createRoutes(): SettingsRoutes {
   if (visibility.adBlocker !== false) {
     r.AD_BLOCKER = r.BASIC.createSection(
         '/adBlocker', 'adBlocker',
-        loadTimeData.getString('zephyrusAdblockPageTitle'));
+        loadTimeData.getString('zephyrusPrivacyPageTitle'));
   }
 
   if (loadTimeData.getBoolean('enableYourSavedInfoSettingsPage')) {

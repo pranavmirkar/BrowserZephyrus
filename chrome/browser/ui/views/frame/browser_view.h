@@ -23,8 +23,12 @@
 #include "chrome/browser/ui/bookmarks/bookmark_bar_controller.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/tabs/projects/projects_panel_state_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+// Zephyrus: the palette lives here. The kZephyrus* constants below are aliases
+// of it, not a second copy.
+#include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/translate/partial_translate_bubble_model.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
@@ -33,7 +37,6 @@
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
 #include "chrome/browser/ui/views/frame/contents_web_view.h"
 #include "chrome/browser/ui/views/frame/horizontal_tab_strip_region_view.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/frame/layout/browser_view_layout_params.h"
 #include "chrome/browser/ui/views/frame/shadow_overlay_view.h"
 #include "chrome/browser/ui/views/intent_picker_bubble_view.h"
@@ -96,6 +99,7 @@ class ToolbarButtonProvider;
 class ToolbarView;
 class TopContainerView;
 class ZephyrusSidebarHotZone;
+class ZephyrusSidebarResizeHandle;
 class ZephyrusSidebarView;
 class ZephyrusSearchOverlay;
 class ZephyrusTabSwitcher;
@@ -157,15 +161,20 @@ class BrowserView : public BrowserWindow,
   // locate this object using just the handle.
   static constexpr char kBrowserViewKey[] = "__BROWSER_VIEW__";
 
-  // Zephyrus: the browser's PERMANENT theme base — the deep navy the title bar
-  // adopted on helium.computer. Every Zephyrus surface (title bar, toolbar, nav
-  // buttons, search bar, results card, sidebar) derives from this single value.
-  // There is no page-adaptive theming and no light/dark switching.
-  static constexpr SkColor kZephyrusThemeColor = SkColorSetRGB(0x0E, 0x11, 0x23);
-  // Private Workspace's base color: the same darkness as the normal theme so
-  // the UI keeps its weight, but unmistakably violet rather than navy.
-  static constexpr SkColor kZephyrusPrivateThemeColor =
-      SkColorSetRGB(0x1E, 0x12, 0x30);
+  // Zephyrus: the window's base colour.
+  //
+  // These are FUNCTIONS, not constants, and that is the whole point. The
+  // browser had one permanent colour until 2026-08-26; under the Nothing OS
+  // language it has two themes resolved from the OS at paint time, so a
+  // compile-time constant can no longer express it. See zephyrus_bubble_style.h
+  // for the palettes themselves -- this is only a per-window convenience that
+  // knows about Private Workspace.
+  static SkColor ZephyrusGround(bool is_private) {
+    return zephyrus::PaletteFor(is_private).ground;
+  }
+  static SkColor ZephyrusInk(bool is_private) {
+    return zephyrus::PaletteFor(is_private).ink;
+  }
   // The base color for THIS window — the private variant when off the record.
   // Every Zephyrus surface derives from this, so it is the one place the
   // window's identity is decided.
@@ -809,7 +818,9 @@ class BrowserView : public BrowserWindow,
   // Width the attached sidebar takes out of the client area: the gap to the
   // window edge plus the panel. The contents container's own left margin
   // supplies the gap on the other side, between panel and page.
-  static int ZephyrusSidebarColumnWidth();
+  // No longer static: the sidebar's width is a user preference, so this has to
+  // ask the live sidebar rather than read a compile-time constant.
+  int ZephyrusSidebarColumnWidth() const;
 
   // No gap. The sidebar runs flush into the window edge and flush into the
   // page beside it, so the column it reserves is exactly the panel width.
@@ -924,8 +935,6 @@ class BrowserView : public BrowserWindow,
   // FrameView to get the correct offset. See
   // ThemedBackground::PaintThemeCustomImage for details.
   gfx::Point GetThemeOffsetFromBrowserView() const;
-
-  void UpdateAccessibleNameForAllTabs();
 
 #if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
   void ApplyScreenshotSettings(bool allow);
@@ -1197,6 +1206,9 @@ class BrowserView : public BrowserWindow,
   // Called by BrowserWindowZoomObserver when zoom changes on the active tab.
   void ZoomChangedForActiveTab(bool can_show_bubble);
 
+  void UpdateAccessibleNameForAllTabs();
+  void UpdateAccessibleNameForTabAt(int index);
+
   void UpdateAccessibleNameForRootView();
   void UpdateAccessibleURLForRootView(const GURL& url);
 
@@ -1371,6 +1383,11 @@ class BrowserView : public BrowserWindow,
   // Ctrl+Tab switcher. Also a view rather than a bubble, for the blur.
   raw_ptr<ZephyrusTabSwitcher> zephyrus_tab_switcher_ = nullptr;
   raw_ptr<ZephyrusSidebarHotZone> zephyrus_sidebar_hotzone_ = nullptr;
+  // Drag-to-resize strip over the sidebar/page seam. Owned here rather than by
+  // the sidebar because the seam falls partly outside the panel's bounds; see
+  // the class comment.
+  raw_ptr<ZephyrusSidebarResizeHandle> zephyrus_sidebar_resize_handle_ =
+      nullptr;
   std::unique_ptr<ZephyrusWorkspaceManager> zephyrus_workspace_manager_;
 
   // Zephyrus: title-bar pin/auto-hide state. Pinned by default. When unpinned

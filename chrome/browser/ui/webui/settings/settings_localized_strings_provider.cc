@@ -89,6 +89,7 @@
 #include "components/google/core/common/google_util.h"
 #include "components/history/core/common/pref_names.h"
 #include "components/lens/lens_features.h"
+#include "components/live_caption/caption_util.h"
 #include "components/password_manager/core/browser/features/password_features.h"
 #include "components/password_manager/core/browser/leak_detection_dialog_utils.h"
 #include "components/password_manager/core/browser/manage_passwords_referrer.h"
@@ -496,6 +497,12 @@ void AddAiStrings(content::WebUIDataSource* html_source) {
       {"indigoLabel", IDS_INDIGO_SETTINGS_LABEL},
       {"indigoSublabel", IDS_INDIGO_SETTINGS_SUB_LABEL},
 
+      // Google Search AI Mode and connected apps (AIM Workspace) strings.
+      {"googleSearchAiModeWorkspaceLabel",
+       IDS_SETTINGS_GOOGLE_SEARCH_AI_MODE_WORKSPACE_LABEL},
+      {"googleSearchAiModeWorkspaceSublabel",
+       IDS_SETTINGS_GOOGLE_SEARCH_AI_MODE_WORKSPACE_SUBLABEL},
+
       // AI Mode Search Settings strings for Smart Tab Sharing (STS)
       {"stsSettingsEntrypointGoogleSearchAiMode",
        IDS_STS_SETTINGS_ENTRYPOINT_GOOGLE_SEARCH_AI_MODE},
@@ -556,6 +563,11 @@ void AddAiStrings(content::WebUIDataSource* html_source) {
   html_source->AddString("passwordChangeSettingsUrl",
                          chrome::kChromeUiPasswordChangeUrl);
   html_source->AddString("indigoSavedUrl", features::kIndigoSavedUrl.Get());
+
+  html_source->AddString("googleSearchAiModeWorkspaceUrl",
+                         chrome::kMyActivitySearchServicesAppsUrl);
+  html_source->AddString("googleSearchAiModeRestrictedUrl",
+                         "https://myactivity.google.com/myactivity");
 }
 
 void AddAppearanceStrings(content::WebUIDataSource* html_source,
@@ -816,7 +828,26 @@ void AddDefaultBrowserStrings(content::WebUIDataSource* html_source) {
 
 void AddZephyrusAdblockStrings(content::WebUIDataSource* html_source) {
   // Literal strings (unbranded fork; no .grd churn / translations needed).
-  html_source->AddString("zephyrusAdblockPageTitle", u"Ad blocker");
+  // The page holds more than the ad blocker now, so its name and the name of
+  // the ad-blocker section are separate strings. Reusing one for both would
+  // relabel the section every time the page name changes.
+  html_source->AddString("zephyrusPrivacyPageTitle",
+                         u"Privacy & ad blocking");
+  html_source->AddString("zephyrusAdblockSectionTitle", u"Ad blocker");
+  // Deliberately NOT "browse like a fresh install every time". The identifiers
+  // reset here are real, but the IP address, cookie jar, TLS session cache and
+  // font list are untouched and each identifies a browser more strongly than
+  // anything this clears. A user who reads an anonymity claim and acts on it is
+  // worse off than one who reads an accurate, narrower one.
+  html_source->AddString("zephyrusResetIdsSectionTitle",
+                         u"Browser identifiers");
+  html_source->AddString("zephyrusResetIdsLabel",
+                         u"Reset browser identifiers on each launch");
+  html_source->AddString(
+      "zephyrusResetIdsSubLabel",
+      u"Clears the internal IDs this installation would otherwise keep "
+      u"forever, so they cannot be used to recognise it across sessions. "
+      u"This does not hide your IP address or clear cookies.");
   html_source->AddString("zephyrusAdblockEnabledLabel",
                          u"Block ads and trackers");
   html_source->AddString(
@@ -1006,6 +1037,9 @@ void AddGlicStrings(content::WebUIDataSource* html_source, Profile* profile) {
        IDS_SETTINGS_GLIC_EXPERIMENTAL_TRIGGERING_CONSIDER_1},
       {"glicExperimentalTriggeringConsider2",
        IDS_SETTINGS_GLIC_EXPERIMENTAL_TRIGGERING_CONSIDER_2},
+      {"glicMediaUnderstandingToggle", IDS_SETTINGS_GLIC_MEDIA_UNDERSTANDING},
+      {"glicMediaUnderstandingToggleSublabel",
+       IDS_SETTINGS_GLIC_MEDIA_UNDERSTANDING_SUBLABEL},
   };
   html_source->AddLocalizedStrings(kLocalizedStrings);
 
@@ -1104,6 +1138,8 @@ void AddGlicStrings(content::WebUIDataSource* html_source, Profile* profile) {
   html_source->AddBoolean(
       "glicCanUseLive",
       glic::GlicEnabling::EnablementForProfile(profile).EligibleForLive());
+  html_source->AddBoolean("headlessCaptionsEnabled",
+                          captions::IsHeadlessCaptionFeatureSupported());
   html_source->AddBoolean(
       "actorLoginFederatedLoginSupportEnabled",
       base::FeatureList::IsEnabled(features::kFedCmEmbedderInitiatedLogin));
@@ -1512,6 +1548,16 @@ void AddAutofillStrings(content::WebUIDataSource* html_source,
                         Profile* profile,
                         content::WebContents* web_contents) {
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
+      {"atMemoryTriggerSettingLabel",
+       IDS_SETTINGS_AUTOFILL_AT_MEMORY_TRIGGER_SETTING_LABEL},
+      {"atMemoryTriggerSettingSecondaryLabel",
+       IDS_SETTINGS_AUTOFILL_AT_MEMORY_TRIGGER_SETTING_SECONDARY_LABEL},
+      {"atMemoryTriggerSettingInputAreaLabel",
+       IDS_SETTINGS_AUTOFILL_AT_MEMORY_TRIGGER_SETTING_INPUT_AREA_LABEL},
+      {"atMemoryTriggerSettingEditButtonLabel",
+       IDS_SETTINGS_AUTOFILL_AT_MEMORY_TRIGGER_SETTING_EDIT_BUTTON_LABEL},
+      {"atMemoryTriggerSettingClearButtonLabel",
+       IDS_SETTINGS_AUTOFILL_AT_MEMORY_TRIGGER_SETTING_CLEAR_BUTTON_LABEL},
       {"autofillPageTitle", IDS_SETTINGS_AUTOFILL_AND_PASSWORDS},
       {"yourSavedInfoPageDescription",
        IDS_SETTINGS_YOUR_SAVED_INFO_DESCRIPTION},
@@ -1749,6 +1795,18 @@ void AddAutofillStrings(content::WebUIDataSource* html_source,
       {"autofillAiDescription", IDS_SETTINGS_AUTOFILL_AI_DESCRIPTION},
       {"autofillAiManageYourInfo", IDS_AUTOFILL_MANAGE_YOUR_INFO_LINK},
       {"autofillAiToggleSubLabel", IDS_SETTINGS_AUTOFILL_AI_TOGGLE_SUB_LABEL},
+      {"suggestionsFromGeminiQualityLoggingTitle",
+       IDS_SETTINGS_SUGGESTIONS_FROM_GEMINI_QUALITY_LOGGING_TITLE},
+      {"suggestionsFromGeminiWhenUsed1",
+       IDS_SETTINGS_SUGGESTIONS_FROM_GEMINI_WHEN_USED_1},
+      {"suggestionsFromGeminiWhenUsed2",
+       IDS_SETTINGS_SUGGESTIONS_FROM_GEMINI_WHEN_USED_2},
+      {"suggestionsFromGeminiConsider1",
+       IDS_SETTINGS_SUGGESTIONS_FROM_GEMINI_CONSIDER_1},
+      {"suggestionsFromGeminiConsider2",
+       IDS_SETTINGS_SUGGESTIONS_FROM_GEMINI_CONSIDER_2},
+      {"suggestionsFromGeminiConsider3",
+       IDS_SETTINGS_SUGGESTIONS_FROM_GEMINI_CONSIDER_3},
       {"autofillAiWhenOnSavedInfo",
        IDS_SETTINGS_AUTOFILL_AI_WHEN_ON_SAVED_INFO},
       {"autofillAiWhenOnCanFillDifficultFields",

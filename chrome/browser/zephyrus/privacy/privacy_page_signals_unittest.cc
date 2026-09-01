@@ -117,14 +117,16 @@ TEST_F(PrivacyPageSignalsTest, UnknownSiteHasNothingRecorded) {
 TEST_F(PrivacyPageSignalsTest, FingerprintSurfaceIsRecordedOncePerSite) {
   const GURL page("https://example.com/");
   service_->RecordFingerprintSurface(
-      page, FingerprintSurface::kMediaDeviceEnumeration);
+      page, FingerprintSurface::kMediaDeviceEnumeration,
+      /*randomized=*/false);
   EXPECT_EQ(1u, service_->GetPageSignals(page).fingerprint_surface_count());
 
   // The bound on a hostile renderer: a page calling the API in a loop cannot
   // inflate the user's numbers, because distinct surfaces are what is counted.
   for (int i = 0; i < 10000; ++i) {
     service_->RecordFingerprintSurface(
-        page, FingerprintSurface::kMediaDeviceEnumeration);
+        page, FingerprintSurface::kMediaDeviceEnumeration,
+        /*randomized=*/false);
   }
   EXPECT_EQ(1u, service_->GetPageSignals(page).fingerprint_surface_count());
 }
@@ -132,7 +134,7 @@ TEST_F(PrivacyPageSignalsTest, FingerprintSurfaceIsRecordedOncePerSite) {
 TEST_F(PrivacyPageSignalsTest, SubdomainsShareTheSiteRecord) {
   service_->RecordFingerprintSurface(
       GURL("https://a.example.com/"),
-      FingerprintSurface::kMediaDeviceEnumeration);
+      FingerprintSurface::kMediaDeviceEnumeration, /*randomized=*/false);
   // The popup describes a SITE, so a report from one subdomain has to be
   // visible when the user is looking at another.
   EXPECT_EQ(1u, service_->GetPageSignals(GURL("https://b.example.com/"))
@@ -142,7 +144,7 @@ TEST_F(PrivacyPageSignalsTest, SubdomainsShareTheSiteRecord) {
 TEST_F(PrivacyPageSignalsTest, SitesDoNotBleedIntoEachOther) {
   service_->RecordFingerprintSurface(
       GURL("https://tracker.example/"),
-      FingerprintSurface::kMediaDeviceEnumeration);
+      FingerprintSurface::kMediaDeviceEnumeration, /*randomized=*/false);
   EXPECT_EQ(0u, service_->GetPageSignals(GURL("https://innocent.example/"))
                     .fingerprint_surface_count());
 }
@@ -150,8 +152,59 @@ TEST_F(PrivacyPageSignalsTest, SitesDoNotBleedIntoEachOther) {
 TEST_F(PrivacyPageSignalsTest, HostsWithNoOwnerRecordNothing) {
   const GURL page("http://127.0.0.1/");
   service_->RecordFingerprintSurface(
-      page, FingerprintSurface::kMediaDeviceEnumeration);
+      page, FingerprintSurface::kMediaDeviceEnumeration,
+      /*randomized=*/false);
   EXPECT_EQ(0u, service_->GetPageSignals(page).fingerprint_surface_count());
+}
+
+// A surface is reported whether or not it was perturbed, so the two masks must
+// not track each other. If they ever do, "Device fingerprint" appears under
+// "What was protected" for surfaces that were only DETECTED — the §2 false
+// claim that IDS_ZEPHYRUS_PRIVACY_PROTECTED_FINGERPRINT's own description
+// forbids, and the single most likely way to reintroduce it.
+TEST_F(PrivacyPageSignalsTest, DetectedSurfacesDoNotCountAsProtected) {
+  const GURL page("https://example.com/");
+  service_->RecordFingerprintSurface(page, FingerprintSurface::kCanvasRead,
+                                     /*randomized=*/false);
+  service_->RecordFingerprintSurface(page, FingerprintSurface::kAudioBuffer,
+                                     /*randomized=*/false);
+
+  const auto signals = service_->GetPageSignals(page);
+  EXPECT_EQ(2u, signals.fingerprint_surface_count());
+  EXPECT_EQ(0u, signals.fingerprint_randomized_count())
+      << "nothing was perturbed, so nothing may be claimed as protected";
+}
+
+TEST_F(PrivacyPageSignalsTest, OnlyPerturbedSurfacesCountAsProtected) {
+  const GURL page("https://example.com/");
+  service_->RecordFingerprintSurface(page, FingerprintSurface::kCanvasRead,
+                                     /*randomized=*/true);
+  service_->RecordFingerprintSurface(page, FingerprintSurface::kAudioBuffer,
+                                     /*randomized=*/false);
+
+  const auto signals = service_->GetPageSignals(page);
+  EXPECT_EQ(2u, signals.fingerprint_surface_count());
+  EXPECT_EQ(1u, signals.fingerprint_randomized_count())
+      << "the randomized count is a strict subset of the touched count";
+}
+
+// The same surface can be touched before a seed is available and again after.
+// The honest answer to "was this perturbed on this site" is yes if it ever was,
+// so the repeat must still be able to set the bit even though the repeat is
+// otherwise dropped.
+TEST_F(PrivacyPageSignalsTest, LaterPerturbationOfASeenSurfaceStillCounts) {
+  const GURL page("https://example.com/");
+  service_->RecordFingerprintSurface(page, FingerprintSurface::kCanvasRead,
+                                     /*randomized=*/false);
+  ASSERT_EQ(0u, service_->GetPageSignals(page).fingerprint_randomized_count());
+
+  service_->RecordFingerprintSurface(page, FingerprintSurface::kCanvasRead,
+                                     /*randomized=*/true);
+
+  const auto signals = service_->GetPageSignals(page);
+  EXPECT_EQ(1u, signals.fingerprint_surface_count())
+      << "still one distinct surface; the repeat must not inflate the count";
+  EXPECT_EQ(1u, signals.fingerprint_randomized_count());
 }
 
 // -- WebRTC -----------------------------------------------------------------
@@ -191,9 +244,9 @@ TEST_F(PrivacyPageSignalsTest, OneUnprotectedRequestFalsifiesTheClaim) {
 // silently revert to "nothing observed".
 TEST_F(PrivacyPageSignalsTest, TrackedSitesAreCapped) {
   for (int i = 0; i < 2000; ++i) {
-    service_->RecordFingerprintSurface(
-        GURL(base::StringPrintf("https://site%d.example/", i)),
-        FingerprintSurface::kMediaDeviceEnumeration);
+    service_->RecordFingerprintSurface(GURL(base::StringPrintf("https://site%d.example/", i)),
+        FingerprintSurface::kMediaDeviceEnumeration,
+                                     /*randomized=*/false);
   }
   // An early site is inside the cap and still recorded.
   EXPECT_EQ(1u, service_->GetPageSignals(GURL("https://site0.example/"))
@@ -206,7 +259,8 @@ TEST_F(PrivacyPageSignalsTest, TrackedSitesAreCapped) {
 TEST_F(PrivacyPageSignalsTest, ClearingEverythingWipesPageSignals) {
   const GURL page("https://example.com/");
   service_->RecordFingerprintSurface(
-      page, FingerprintSurface::kMediaDeviceEnumeration);
+      page, FingerprintSurface::kMediaDeviceEnumeration,
+      /*randomized=*/false);
   service_->RecordWebrtcAddressRequest(page, true);
   ASSERT_EQ(1u, service_->GetPageSignals(page).fingerprint_surface_count());
 

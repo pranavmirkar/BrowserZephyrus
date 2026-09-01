@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/command_observer.h"
 #include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
@@ -204,8 +205,13 @@ class ToolbarView : public views::AccessiblePaneView,
 
   // Zephyrus: workspace switcher dropdown in the title bar.
   void AddZephyrusWorkspaceButton();
+  // Opens the Zen-style emoji grid for one workspace.
+  void ShowZephyrusIconPicker(int workspace_id);
+  // Opens the file dialog behind the picker's "Choose a photo" entry.
+  void ChooseZephyrusWorkspacePhoto(int workspace_id);
+  // Asks before closing a workspace's tabs.
+  void ConfirmZephyrusWorkspaceDelete(int workspace_id);
   void UpdateZephyrusWorkspaceButton();
-  void ShowZephyrusWorkspaceMenu();
 
   // Zephyrus: in-window profile switcher pill, left of the workspace pill.
   // ZEPHYRUS PROFILES FRONTEND - DISABLED until Google auth lands. The
@@ -434,7 +440,12 @@ class ToolbarView : public views::AccessiblePaneView,
   std::unique_ptr<WebUIToolbarWebView> detached_toolbar_webview_;
   raw_ptr<HomeButton> home_ = nullptr;
   raw_ptr<ToolbarButton> zephyrus_new_tab_button_ = nullptr;
-  raw_ptr<views::Button> zephyrus_workspace_button_ = nullptr;
+  // The Linux-style numbered workspace strip. Replaces the pill + dropdown.
+  raw_ptr<views::View> zephyrus_workspace_strip_ = nullptr;
+  // Fires once just after construction, when the workspace manager finally
+  // exists, so the strip can subscribe to changes. See
+  // UpdateZephyrusWorkspaceButton().
+  base::OneShotTimer zephyrus_workspace_subscribe_kick_;
   // ZEPHYRUS PROFILES FRONTEND - DISABLED.
   // raw_ptr<views::Button> zephyrus_profile_button_ = nullptr;
   // Liquid-glass pills painted behind the back/forward pair and the window
@@ -480,6 +491,9 @@ class ToolbarView : public views::AccessiblePaneView,
   // Zephyrus window controls hosted in the toolbar/title bar.
   // Zephyrus: Windows 11-style caption buttons (ZephyrusWin11CaptionButton,
   // defined in the .cc); stored as the base type here.
+  // A hairline between the browser's own controls and the window controls, so
+  // the two groups read as separate sets rather than one long row of glyphs.
+  raw_ptr<views::View> zephyrus_caption_separator_ = nullptr;
   raw_ptr<views::Button> zephyrus_minimize_button_ = nullptr;
   raw_ptr<views::Button> zephyrus_maximize_button_ = nullptr;
   raw_ptr<views::Button> zephyrus_close_button_ = nullptr;
@@ -555,6 +569,12 @@ class ToolbarView : public views::AccessiblePaneView,
   bool should_display_vertical_tabs_ = false;
   bool should_show_glic_button_ = false;
   bool should_show_glic_actor_ = false;
+
+  // Zephyrus: for callbacks that outlive ordinary view lifetime. The workspace
+  // photo picker is the reason this exists -- it waits on a file dialog, which
+  // waits on a person, so the toolbar can easily be gone before it returns.
+  // Must be last.
+  base::WeakPtrFactory<ToolbarView> weak_ptr_factory_{this};
 };
 
 extern const ui::ClassProperty<bool>* const kActionItemUnderlineIndicatorKey;

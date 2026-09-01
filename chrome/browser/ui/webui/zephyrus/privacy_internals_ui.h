@@ -21,6 +21,11 @@ class PrivacyInternalsUIConfig
     : public content::DefaultWebUIConfig<PrivacyInternalsUI> {
  public:
   PrivacyInternalsUIConfig();
+
+  // §13.2: each surface is independently disableable. Without this the flag
+  // existed but gated nothing — the page registered unconditionally, so
+  // turning kZephyrusPrivacyInternals off did exactly nothing.
+  bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
 };
 
 // chrome://privacy-internals — the diagnostic surface for the Privacy

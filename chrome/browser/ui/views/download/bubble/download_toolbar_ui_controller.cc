@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/download/bubble/download_toolbar_ui_controller.h"
+#include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
@@ -986,10 +987,19 @@ void DownloadToolbarUIController::OnBubbleAnchorAssembled(
           ImmersiveModeController::ANIMATE_REVEAL_YES);
     }
   }
+  // Zephyrus: TOP_CENTER so the popup centres under the downloads button and
+  // the nub lands in the middle of its top edge.
   auto bubble_delegate = std::make_unique<views::BubbleDialogDelegate>(
-      anchor.value(), views::BubbleBorder::TOP_RIGHT,
-      views::BubbleBorder::DIALOG_SHADOW,
+      anchor.value(), views::BubbleBorder::TOP_CENTER,
+      // Zephyrus: STANDARD_SHADOW, not DIALOG_SHADOW. DIALOG_SHADOW is
+      // drawn by the platform and the widget is sized tight to the bubble,
+      // which clips the nub and the top corners' curve off the top edge.
+      // STANDARD_SHADOW is Chromium-drawn and leaves a margin the nub can
+      // live in; it is what the shield popup uses.
+      views::BubbleBorder::STANDARD_SHADOW,
       /*autosize=*/true);
+  // 28px corners, matching every other Zephyrus popup.
+  zephyrus::ConfigureBubble(bubble_delegate.get());
   bubble_delegate->SetOwnedByWidget(
       views::WidgetDelegate::OwnedByWidgetPassKey());
   bubble_delegate->SetTitle(
@@ -1027,6 +1037,8 @@ void DownloadToolbarUIController::OnBubbleAnchorAssembled(
           std::move(bubble_delegate),
           views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
   CHECK(bubble_widget);
+  // Zephyrus: after the widget, since the nub needs the bubble's frame view.
+  zephyrus::ApplyAnchoredNub(bubble_delegate_);
 
   // Zephyrus: flip the whole bubble's themed colors (text, icons, row hover,
   // separators) to match the page's brightness so they contrast with the

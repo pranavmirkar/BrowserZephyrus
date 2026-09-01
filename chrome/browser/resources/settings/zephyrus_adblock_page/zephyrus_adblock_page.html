@@ -12,7 +12,17 @@
     margin-inline-end: 16px;
   }
 </style>
-<settings-section page-title="$i18n{zephyrusAdblockPageTitle}"
+<settings-section page-title="$i18n{zephyrusResetIdsSectionTitle}"
+    class="cr-centered-card-container">
+  <settings-toggle-button
+      id="resetIdsToggle"
+      pref="{{prefs.zephyrus.privacy.auto_reset_ids}}"
+      label="$i18n{zephyrusResetIdsLabel}"
+      sub-label="$i18n{zephyrusResetIdsSubLabel}">
+  </settings-toggle-button>
+</settings-section>
+
+<settings-section page-title="$i18n{zephyrusAdblockSectionTitle}"
     class="cr-centered-card-container">
   <settings-toggle-button
       id="enabledToggle"

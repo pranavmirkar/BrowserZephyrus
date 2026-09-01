@@ -76,9 +76,15 @@ ReloadButton::ReloadButton(
                     nullptr),
       metrics_recorder_(std::make_unique<WaapUIMetricsRecorder>(profile)),
       command_updater_(command_updater),
-      // Zephyrus: custom pixel-block reload glyph.
-      reload_icon_(kZephyrusReloadIcon),
-      reload_touch_icon_(kZephyrusReloadIcon),
+      // Zephyrus: the custom pixel-block reload glyph is retired.
+      //
+      // It was built from 1.52-unit blocks on a 32 canvas -- not a whole
+      // number of pixels at any common scale, so every block edge landed
+      // mid-pixel and the arrow read as low-resolution. Chromium's own refresh
+      // arrow is drawn with Beziers and stays crisp at every size, which is
+      // exactly what a hand-authored arc would have to reproduce.
+      reload_icon_(vector_icons::kReloadChromeRefreshOldIcon),
+      reload_touch_icon_(vector_icons::kReloadChromeRefreshOldIcon),
       stop_icon_(features::IsRoundedIconsEnabled()
                      ? kCloseIcon
                      : kNavigateStopChromeRefreshOldIcon),

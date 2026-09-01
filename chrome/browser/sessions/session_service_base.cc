@@ -225,6 +225,12 @@ void SessionServiceBase::SetTabWindow(SessionID window_id, SessionID tab_id) {
   if (!ShouldTrackChangesToWindow(window_id)) {
     return;
   }
+  // ZEPHYRUS: and the tab must belong to this profile. See
+  // ShouldTrackTab() -- the window gate above is not enough once a
+  // window can host tabs from more than one profile.
+  if (!ShouldTrackTab(tab_id)) {
+    return;
+  }
 
   ScheduleCommand(sessions::CreateSetTabWindowCommand(window_id, tab_id));
 }
@@ -257,6 +263,12 @@ void SessionServiceBase::SetTabIndexInWindow(SessionID window_id,
   if (!ShouldTrackChangesToWindow(window_id)) {
     return;
   }
+  // ZEPHYRUS: and the tab must belong to this profile. See
+  // ShouldTrackTab() -- the window gate above is not enough once a
+  // window can host tabs from more than one profile.
+  if (!ShouldTrackTab(tab_id)) {
+    return;
+  }
 
   ScheduleCommand(
       sessions::CreateSetTabIndexInWindowCommand(tab_id, new_index));
@@ -265,6 +277,19 @@ void SessionServiceBase::SetTabIndexInWindow(SessionID window_id,
 void SessionServiceBase::TabInserted(WebContents* contents) {
   sessions::SessionTabHelper* session_tab_helper =
       sessions::SessionTabHelper::FromWebContents(contents);
+
+  // ZEPHYRUS: profile check, per TAB.
+  //
+  // This is the one point where a tab's own BrowserContext is available, so it
+  // is where the decision has to be made and remembered. A tab from another
+  // profile in a tracked window would otherwise be written to this profile's
+  // session file and restored into it after a restart.
+  if (contents->GetBrowserContext() != profile()) {
+    untracked_tabs_.insert(session_tab_helper->session_id());
+    return;
+  }
+  untracked_tabs_.erase(session_tab_helper->session_id());
+
   if (!ShouldTrackChangesToWindow(session_tab_helper->window_id())) {
     return;
   }
@@ -303,6 +328,11 @@ void SessionServiceBase::TabClosing(WebContents* contents) {
   session_storage_namespace->SetShouldPersist(false);
   sessions::SessionTabHelper* session_tab_helper =
       sessions::SessionTabHelper::FromWebContents(contents);
+  // ZEPHYRUS: forget the tab's tracking decision. SessionIDs are not reused
+  // within a run, so this is housekeeping rather than correctness -- but a set
+  // that only ever grows across a long session is a leak in a service that
+  // lives as long as the profile.
+  untracked_tabs_.erase(session_tab_helper->session_id());
   TabClosed(session_tab_helper->window_id(), session_tab_helper->session_id());
 }
 
@@ -345,6 +375,12 @@ void SessionServiceBase::SetTabExtensionAppID(
   if (!ShouldTrackChangesToWindow(window_id)) {
     return;
   }
+  // ZEPHYRUS: and the tab must belong to this profile. See
+  // ShouldTrackTab() -- the window gate above is not enough once a
+  // window can host tabs from more than one profile.
+  if (!ShouldTrackTab(tab_id)) {
+    return;
+  }
 
   ScheduleCommand(
       sessions::CreateSetTabExtensionAppIDCommand(tab_id, extension_app_id));
@@ -354,6 +390,12 @@ void SessionServiceBase::SetLastActiveTime(SessionID window_id,
                                            SessionID tab_id,
                                            base::Time last_active_time) {
   if (!ShouldTrackChangesToWindow(window_id)) {
+    return;
+  }
+  // ZEPHYRUS: and the tab must belong to this profile. See
+  // ShouldTrackTab() -- the window gate above is not enough once a
+  // window can host tabs from more than one profile.
+  if (!ShouldTrackTab(tab_id)) {
     return;
   }
 
@@ -383,6 +425,12 @@ void SessionServiceBase::SetPinnedState(SessionID window_id,
                                         SessionID tab_id,
                                         bool is_pinned) {
   if (!ShouldTrackChangesToWindow(window_id)) {
+    return;
+  }
+  // ZEPHYRUS: and the tab must belong to this profile. See
+  // ShouldTrackTab() -- the window gate above is not enough once a
+  // window can host tabs from more than one profile.
+  if (!ShouldTrackTab(tab_id)) {
     return;
   }
 
@@ -428,6 +476,12 @@ void SessionServiceBase::SetSelectedNavigationIndex(SessionID window_id,
   if (!ShouldTrackChangesToWindow(window_id)) {
     return;
   }
+  // ZEPHYRUS: and the tab must belong to this profile. See
+  // ShouldTrackTab() -- the window gate above is not enough once a
+  // window can host tabs from more than one profile.
+  if (!ShouldTrackTab(tab_id)) {
+    return;
+  }
 
   auto it = tab_to_available_range_.find(tab_id);
   if (it != tab_to_available_range_.end()) {
@@ -447,8 +501,11 @@ void SessionServiceBase::UpdateTabNavigation(
     SessionID window_id,
     SessionID tab_id,
     const SerializedNavigationEntry& navigation) {
+  // ZEPHYRUS: ShouldTrackTab is in this condition, not a separate guard, only
+  // because the guards here are already combined. This is the method that
+  // writes actual URLs, so it is the single most important one to gate.
   if (!ShouldTrackURLForRestore(navigation.virtual_url()) ||
-      !ShouldTrackChangesToWindow(window_id)) {
+      !ShouldTrackChangesToWindow(window_id) || !ShouldTrackTab(tab_id)) {
     return;
   }
 
@@ -466,6 +523,12 @@ void SessionServiceBase::TabNavigationPathPruned(SessionID window_id,
                                                  int index,
                                                  int count) {
   if (!ShouldTrackChangesToWindow(window_id)) {
+    return;
+  }
+  // ZEPHYRUS: and the tab must belong to this profile. See
+  // ShouldTrackTab() -- the window gate above is not enough once a
+  // window can host tabs from more than one profile.
+  if (!ShouldTrackTab(tab_id)) {
     return;
   }
 
@@ -505,6 +568,12 @@ void SessionServiceBase::TabNavigationPathPruned(SessionID window_id,
 void SessionServiceBase::TabNavigationPathEntriesDeleted(SessionID window_id,
                                                          SessionID tab_id) {
   if (!ShouldTrackChangesToWindow(window_id)) {
+    return;
+  }
+  // ZEPHYRUS: and the tab must belong to this profile. See
+  // ShouldTrackTab() -- the window gate above is not enough once a
+  // window can host tabs from more than one profile.
+  if (!ShouldTrackTab(tab_id)) {
     return;
   }
 
@@ -820,6 +889,14 @@ void SessionServiceBase::ScheduleCommand(
 
 bool SessionServiceBase::ShouldTrackChangesToWindow(SessionID window_id) const {
   return windows_tracking_.contains(window_id);
+}
+
+bool SessionServiceBase::ShouldTrackTab(SessionID tab_id) const {
+  // Default is TRACK. Only tabs positively identified as belonging to another
+  // profile at insertion are excluded, so a tab this service never saw behaves
+  // exactly as it did before -- this narrows what is written, it does not
+  // change what is written for ordinary tabs.
+  return !untracked_tabs_.contains(tab_id);
 }
 
 bool SessionServiceBase::ShouldTrackBrowser(

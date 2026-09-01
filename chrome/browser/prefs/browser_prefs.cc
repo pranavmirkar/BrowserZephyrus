@@ -201,6 +201,7 @@
 #include "components/subresource_filter/core/common/constants.h"
 #include "components/subscription_eligibility/subscription_eligibility_prefs.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
+#include "components/sync/base/account_pref_utils.h"
 #include "components/sync/base/pref_names.h"
 #include "components/sync/service/device_statistics_scheduler.h"
 #include "components/sync/service/glue/sync_transport_data_prefs.h"
@@ -299,6 +300,7 @@
 #include "chrome/browser/desktop_to_mobile_promos/promos_utils.h"  // nogncheck crbug.com/40147906
 #include "chrome/browser/gcm/gcm_product_util.h"
 #include "chrome/browser/hid/hid_policy_allowed_devices.h"
+#include "chrome/browser/indigo/indigo_prefs.h"
 #include "chrome/browser/intranet_redirect_detector.h"
 #include "chrome/browser/media/router/discovery/access_code/access_code_cast_feature.h"
 #include "chrome/browser/media/router/media_router_feature.h"
@@ -1394,6 +1396,14 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
   // this set, and unregistering it would make that state unreadable when
   // the feature returns with Google auth. Nothing reads it today.
   registry->RegisterBooleanPref("zephyrus.profile.setup_complete", false);
+  // Zephyrus "Auto reset browser IDs": discard installation-scoped identifiers
+  // (metrics client ID, entropy sources, machine ID, UKM client ID, enterprise
+  // profile GUID) on every launch. Local state, because the identifiers it
+  // clears are browser-wide rather than per-profile. Ships ON: none of these
+  // has a user-visible function in this build, so there is nothing to trade
+  // against. Literal for the same layering reason as the pref above; mirrored
+  // as zephyrus_privacy::kAutoResetIdsPref.
+  registry->RegisterBooleanPref("zephyrus.privacy.auto_reset_ids", true);
   // Call outs to individual subsystems that register Local State (browser-wide)
   // prefs en masse. See RegisterProfilePrefs for per-profile prefs. Please
   // keep this list alphabetized.
@@ -1634,6 +1644,7 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
   MediaFoundationServiceMonitor::RegisterPrefs(registry);
   os_crypt_async::AppBoundEncryptionProviderWin::RegisterLocalPrefs(registry);
   webnn::RegisterLocalPrefs(registry);
+  registry->RegisterStringPref(prefs::kPreviousIsolationState, std::string());
   registry->RegisterBooleanPref(prefs::kForegroundLaunchOnLogin, false);
   registry->RegisterBooleanPref(prefs::kStartupLaunchInfobarAccepted, false);
   registry->RegisterTimePref(prefs::kStartupLaunchInfobarLastDeclinedTime,
@@ -1730,6 +1741,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   // Zephyrus: persisted Arc-style workspaces (see ZephyrusWorkspaceManager).
   // Kept as a literal to avoid a //chrome/browser -> views layering dependency.
   registry->RegisterStringPref("zephyrus.workspaces", std::string());
+  // Sidebar width in DIP, adjusted by dragging the panel's right edge. Literal
+  // for the same layering reason as the line above; the name and default are
+  // mirrored by ZephyrusSidebarView::kWidthPrefName / kDefaultSidebarWidth,
+  // and the view clamps on read so a bad value here cannot strand the panel.
+  registry->RegisterIntegerPref("zephyrus.sidebar.width", 240);
   // Whether entering Private Workspace requires an OS unlock. Registered on the
   // REGULAR profile deliberately: the private profile is destroyed every
   // session, so a setting stored there would silently forget itself — and a
@@ -1837,6 +1853,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   registry->RegisterBooleanPref(prefs::kRestrictYouTubeCookiesDeletion, false);
   RegisterGeminiSettingsPrefs(registry);
   registry->RegisterIntegerPref(prefs::kVoiceTypingSettings, 0);
+  registry->RegisterBooleanPref(prefs::kPrefDictationOnboardingCompleted,
+                                false);
+#if !BUILDFLAG(IS_ANDROID)
+  indigo::prefs::RegisterProfilePrefs(registry);
+#endif
   RegisterPrefersDefaultScrollbarStylesPrefs(registry);
   RegisterSafetyHubProfilePrefs(registry);
 #if BUILDFLAG(IS_CHROMEOS)
@@ -2696,6 +2717,15 @@ void MigrateObsoleteProfilePrefs(PrefService* profile_prefs,
   // Added 06/2026.
   profile_prefs->ClearPref(kMetricsUserReportingLevel);
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+  // Added 06/2026.
+  syncer::ClearAccountKeyedPrefValue(
+      profile_prefs, autofill::prefs::kAutofillAiOptInStatus, {});
+
+#if !BUILDFLAG(IS_ANDROID)
+  // Added 07/2026.
+  tabs::MigrateEverythingMenuPinnedToTabstripPref(profile_prefs);
+#endif
 
   // Please don't delete the following line. It is used by PRESUBMIT.py.
   // END_MIGRATE_OBSOLETE_PROFILE_PREFS

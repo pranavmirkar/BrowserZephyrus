@@ -4,6 +4,10 @@
 
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_image.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
+#include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+
 #include <algorithm>
 
 #include "base/functional/bind.h"
@@ -34,22 +38,37 @@ namespace {
 // workspace id of each tab in tab-strip order). Registered in browser_prefs.cc.
 constexpr char kZephyrusWorkspacesPref[] = "zephyrus.workspaces";
 
-// Distinct, pleasant accent colors auto-assigned to workspaces by index.
-constexpr SkColor kWorkspacePalette[] = {
-    SkColorSetRGB(0x4f, 0x8c, 0xff),  // blue
-    SkColorSetRGB(0x9c, 0x6c, 0xff),  // purple
-    SkColorSetRGB(0xff, 0x6c, 0x9c),  // pink
-    SkColorSetRGB(0xff, 0x8a, 0x4f),  // orange
-    SkColorSetRGB(0x35, 0xc7, 0x8a),  // green
-    SkColorSetRGB(0xff, 0xc7, 0x4f),  // amber
-    SkColorSetRGB(0x4f, 0xc7, 0xff),  // cyan
-    SkColorSetRGB(0xff, 0x5c, 0x5c),  // red
-};
+// Workspaces are no longer identified by HUE.
+//
+// The eight-colour palette that used to live here (blue, purple, pink, orange,
+// green, amber, cyan, red) cannot survive a one-accent language: eight accents
+// is the opposite of one, and the whole value of the single red is how rarely
+// it appears. Identity moved to a DOT INDEX instead -- workspace n is drawn as
+// n dots on the same grid the rest of the interface is built on -- which says
+// the same thing using position and count rather than colour, and unlike a
+// colour table it keeps working past the eighth workspace.
+//
+// The stored per-workspace colour is kept in the model rather than deleted:
+// existing profiles have values in their prefs, and dropping the field would
+// discard them on first launch. It now always resolves to the ink, so anything
+// still painting with it stays monochrome instead of drawing a stale hue.
+//
+// See ZephyrusWorkspaceManager::DotsForIndex for the count.
 }  // namespace
 
 // static
 SkColor ZephyrusWorkspaceManager::DefaultColorForIndex(size_t index) {
-  return kWorkspacePalette[index % std::size(kWorkspacePalette)];
+  // One ink for every workspace. The index is expressed as dots, not hue.
+  return zephyrus::Ink();
+}
+
+// static
+int ZephyrusWorkspaceManager::DotsForIndex(size_t index) {
+  // 1-based, and capped so a very long workspace list does not draw a row of
+  // dots wider than the pill holding it. Past the cap the name carries the
+  // distinction, which it has to anyway at that count.
+  constexpr int kMaxDots = 6;
+  return static_cast<int>(index % kMaxDots) + 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +184,29 @@ int ZephyrusWorkspaceStore::TakePendingActiveOrdinal(int workspace_id) {
   return ordinal;
 }
 
+int ZephyrusWorkspaceStore::PeekPendingRestoreId() const {
+  return pending_restore_ids_.empty() ? 0 : pending_restore_ids_.front();
+}
+
+std::string ZephyrusWorkspaceStore::PartitionNameForWorkspace(
+    int workspace_id) const {
+  if (workspace_id == 0) {
+    return std::string();
+  }
+  for (const ZephyrusWorkspace& workspace : workspaces_) {
+    if (workspace.id == workspace_id) {
+      return workspace.partition_name;
+    }
+  }
+  // The workspace is gone. The default partition is the only safe answer, and
+  // the tab is about to be re-filed anyway.
+  return std::string();
+}
+
+std::string ZephyrusWorkspaceStore::PartitionNameForPendingRestore() const {
+  return PartitionNameForWorkspace(PeekPendingRestoreId());
+}
+
 int ZephyrusWorkspaceStore::TakePendingRestoreId() {
   if (pending_restore_ids_.empty()) {
     return 0;
@@ -182,6 +224,55 @@ ZephyrusWorkspaceStore::RegisterChangedCallback(
 
 void ZephyrusWorkspaceStore::NotifyChanged() {
   changed_callbacks_.Notify();
+}
+
+gfx::ImageSkia ZephyrusWorkspaceStore::GetImage(const std::string& name,
+                                                int size_dip) {
+  if (name.empty() || size_dip <= 0) {
+    return gfx::ImageSkia();
+  }
+  // Cell size changed (DPI, or a design change): everything cached is the wrong
+  // size, so start over rather than draw one stale entry among fresh ones.
+  if (size_dip != image_size_dip_) {
+    image_size_dip_ = size_dip;
+    image_cache_.clear();
+    // Loads already in flight will land at the OLD size. Let them: they will be
+    // stored, then immediately superseded by a re-request at the new size. The
+    // alternative -- tracking a size per in-flight load -- costs more than
+    // redrawing one icon slightly wrong for a few milliseconds after a monitor
+    // change.
+  }
+  if (auto it = image_cache_.find(name); it != image_cache_.end()) {
+    return it->second;
+  }
+  // Already being read. Returning empty here is not a failure: the change
+  // notification when it lands is what brings it on screen.
+  if (image_pending_.contains(name)) {
+    return gfx::ImageSkia();
+  }
+  image_pending_.insert(name);
+  zephyrus::LoadWorkspaceImage(
+      profile_, name, size_dip,
+      base::BindOnce(&ZephyrusWorkspaceStore::OnImageLoaded,
+                     weak_factory_.GetWeakPtr(), name));
+  return gfx::ImageSkia();
+}
+
+void ZephyrusWorkspaceStore::OnImageLoaded(const std::string& name,
+                                           const gfx::ImageSkia& image) {
+  image_pending_.erase(name);
+  // Cached EVEN WHEN EMPTY. A workspace whose file has been deleted has to be
+  // remembered as "nothing there", or every repaint starts another read of a
+  // file that is not coming back.
+  image_cache_[name] = image;
+  if (!image.isNull()) {
+    NotifyChanged();
+  }
+}
+
+void ZephyrusWorkspaceStore::ForgetImage(const std::string& name) {
+  image_cache_.erase(name);
+  image_pending_.erase(name);
 }
 
 bool ZephyrusWorkspaceStore::IsWorkspaceDisplayed(int workspace_id) const {
@@ -214,13 +305,40 @@ void ZephyrusWorkspaceStore::SetWindowWorkspace(const void* window,
   }
   window_current_workspace_[window] = workspace_id;
   RefreshBackgroundTimestamps();
-  // Silence the workspace we just left immediately; waiting for the timer would
-  // leave it audible for up to a tick.
-  ApplyResourcePolicy();
+
+  // OFF the switch path.
+  //
+  // This called ApplyResourcePolicy() inline, and that walks every window x
+  // every tab, muting and discarding as it goes. Because SetWindowWorkspace()
+  // runs BEFORE observers are notified, the whole walk sat between the click
+  // and the workspace indicator updating -- the tab itself had already
+  // activated, so switching looked fast while the highlight visibly lagged
+  // behind it.
+  //
+  // A zero-delay one-shot runs it on the very next turn of the message loop:
+  // still effectively immediate for muting (the original reason it was inline),
+  // but after the UI has painted. OneShotTimer cancels on destruction, so this
+  // is safe without a weak pointer.
+  resource_kick_timer_.Start(FROM_HERE, base::TimeDelta(), this,
+                             &ZephyrusWorkspaceStore::ApplyResourcePolicy);
   if (!resource_timer_.IsRunning()) {
     resource_timer_.Start(FROM_HERE, base::Minutes(1), this,
                           &ZephyrusWorkspaceStore::ApplyResourcePolicy);
   }
+}
+
+std::string ZephyrusWorkspaceStore::PartitionNameForWindow(
+    const void* window) const {
+  const auto it = window_current_workspace_.find(window);
+  if (it == window_current_workspace_.end()) {
+    return std::string();
+  }
+  for (const ZephyrusWorkspace& workspace : workspaces_) {
+    if (workspace.id == it->second) {
+      return workspace.partition_name;
+    }
+  }
+  return std::string();
 }
 
 void ZephyrusWorkspaceStore::RemoveWindow(const void* window) {
@@ -238,9 +356,25 @@ void ZephyrusWorkspaceStore::UnmuteIfOurs(content::WebContents* contents) {
 
 void ZephyrusWorkspaceStore::ApplyResourcePolicy() {
   // How long a workspace must be off screen before its tabs are discarded.
-  // Discarding is lossy (the tab reloads), so it deliberately doesn't happen
-  // the instant you switch away — that would make switching back feel slow.
-  constexpr base::TimeDelta kDiscardGrace = base::Minutes(5);
+  //
+  // Discarding is lossy: the tab RELOADS when you come back, which is a full
+  // network round trip and page load standing between a click and the content.
+  //
+  // This was 5 minutes, and that is shorter than the interval at which people
+  // actually rotate between workspaces -- so the common case was not "reclaim
+  // memory from something abandoned", it was "reload the page every single time
+  // the user switches back". The original comment already predicted the
+  // failure ("that would make switching back feel slow"); the number was just
+  // set well inside the range where it happens.
+  //
+  // Two hours is genuinely "you have not touched this since this morning".
+  // A workspace you use during a work session now stays resident.
+  //
+  // The RIGHT trigger is memory pressure rather than elapsed time -- a
+  // workspace idle for hours on a machine with free memory costs nothing to
+  // keep. That needs a pressure signal plumbed in here; until then a long grace
+  // is the conservative approximation.
+  constexpr base::TimeDelta kDiscardGrace = base::Hours(2);
   const base::TimeTicks now = base::TimeTicks::Now();
 
   GlobalBrowserCollection::GetInstance()->ForEach(
@@ -257,11 +391,12 @@ void ZephyrusWorkspaceStore::ApplyResourcePolicy() {
           if (!contents) {
             continue;
           }
-          // Pinned tabs appear in every workspace, and the active tab is by
-          // definition in use — neither is ever "background".
+          // The active tab is by definition in use, and a workspace on screen
+          // in some window is not hidden. Pinning no longer exempts anything:
+          // a pinned tab now belongs to one workspace, so when that workspace
+          // is away the tab is as background as its neighbours.
           const int workspace = GetWorkspaceForContents(contents);
-          if (model->IsTabPinned(i) || i == model->active_index() ||
-              IsWorkspaceDisplayed(workspace)) {
+          if (i == model->active_index() || IsWorkspaceDisplayed(workspace)) {
             UnmuteIfOurs(contents);
             continue;
           }
@@ -407,10 +542,10 @@ bool ZephyrusWorkspaceStore::HasBackgroundAudio() {
           if (!contents || !contents->IsCurrentlyAudible()) {
             continue;
           }
-          // Pinned tabs show in every workspace, and a workspace on screen in
-          // some window isn't hidden — neither counts as unseen audio.
-          if (model->IsTabPinned(i) ||
-              IsWorkspaceDisplayed(GetWorkspaceForContents(contents))) {
+          // A workspace on screen in some window isn't hidden, so its audio is
+          // not unseen. Pinned tabs get no exemption now that pinning is scoped
+          // to one workspace.
+          if (IsWorkspaceDisplayed(GetWorkspaceForContents(contents))) {
             continue;
           }
           found = true;
@@ -455,6 +590,8 @@ std::string ZephyrusWorkspaceStore::SerializeState() const {
     // SkColor is a uint32; store as a signed int (round-trips the bits).
     item.Set("color", static_cast<int>(workspace.color));
     item.Set("emoji", base::UTF16ToUTF8(workspace.emoji));
+    item.Set("image", workspace.image);
+    item.Set("partition", workspace.partition_name);
     // Where this workspace was last parked, as an ordinal among its OWN tabs
     // (a raw strip index wouldn't survive other workspaces' tabs moving).
     if (content::WebContents* active = GetActiveContents(workspace.id)) {
@@ -575,6 +712,23 @@ bool ZephyrusWorkspaceStore::LoadState() {
     if (const std::string* emoji = item.FindString("emoji")) {
       workspace.emoji = base::UTF8ToUTF16(*emoji);
     }
+    // Prefs are a user-writable file, and this value is about to be joined onto
+    // a directory path. Anything that is not the exact shape we generate is
+    // dropped here rather than at the point of use, so a hand-edited pref can
+    // never reach the filesystem code at all.
+    if (const std::string* image = item.FindString("image");
+        image && zephyrus::IsValidWorkspaceImageName(*image)) {
+      workspace.image = *image;
+    }
+    // Absent on anything written before isolation, which is exactly right:
+    // those workspaces keep sharing the default cookie jar.
+    //
+    // VALIDATED, like the image name above: this string comes from a
+    // user-writable prefs file and ends up naming a directory on disk.
+    if (const std::string* partition = item.FindString("partition");
+        partition && zephyrus::IsValidWorkspacePartitionName(*partition)) {
+      workspace.partition_name = *partition;
+    }
     if (std::optional<int> active = item.FindInt("active");
         active && *active >= 0) {
       pending_active_ordinal_[id] = *active;
@@ -668,7 +822,10 @@ ZephyrusWorkspaceManager::~ZephyrusWorkspaceManager() {
   }
   // This window is gone, so its workspace may no longer be displayed anywhere.
   if (store_) {
-    store_->RemoveWindow(this);
+    // Keyed by the BROWSER, not by this manager: browser_navigator.cc has a
+    // browser and no way to reach the manager, and it needs to know which
+    // workspace a new tab belongs to. The key is opaque either way.
+    store_->RemoveWindow(browser_);
   }
 }
 
@@ -758,9 +915,37 @@ void ZephyrusWorkspaceManager::SwitchToWorkspace(int workspace_id) {
 int ZephyrusWorkspaceManager::AddWorkspace() {
   const int id = store_->AllocateWorkspaceId();
   const size_t position = store_->workspaces().size();
-  store_->workspaces().push_back(
-      {id, u"Workspace " + base::NumberToString16(position + 1),
-       DefaultColorForIndex(position), u""});
+  // NUMBERED BY DEFAULT, like a tiling WM's workspaces: the name IS the number.
+  //
+  // It was "Workspace 3", which is four times the width for no extra
+  // information -- the pill sits in a title bar where space is the scarce
+  // thing, and a bare numeral is instantly scannable in a way a sentence is
+  // not. A user who wants a name or an icon sets one; until then the number
+  // does the whole job.
+  //
+  // NO name. The number shown in the strip is derived from the workspace's
+  // CURRENT position every time it is drawn, never stored.
+  //
+  // Storing it was wrong and visibly so: create 1/2/3, delete 1, and the
+  // survivors keep the names "2" and "3" while sitting at positions 1 and 2 --
+  // then the next new workspace takes position 2 and is also named "3". That is
+  // the "3 2 3" strip. A derived number cannot disagree with the order it is
+  // drawn in.
+  //
+  // An empty name means "unnamed, show the number"; a non-empty one is a name
+  // the user chose and is shown as-is.
+  // A NEW workspace gets its own StoragePartition -- its own cookies and site
+  // data, so the same site can be logged into two accounts at once in one
+  // window. Extensions, bookmarks, history and the adblock allowlist stay
+  // shared, because there is still only one profile.
+  //
+  // The partition is only NAMED here. Nothing is created until a tab actually
+  // uses it, so making a workspace stays instant and an abandoned one costs
+  // nothing on disk.
+  Workspace workspace{id, std::u16string(), DefaultColorForIndex(position),
+                      u""};
+  workspace.partition_name = zephyrus::WorkspacePartitionName(id);
+  store_->workspaces().push_back(std::move(workspace));
   current_workspace_id_ = id;
   // Force the tag: the outgoing workspace's tab is still active here, so opener
   // inheritance would otherwise file this tab back into that workspace.
@@ -811,6 +996,19 @@ void ZephyrusWorkspaceManager::DeleteWorkspace(int workspace_id) {
   }
 
   const bool deleting_current = current_workspace_id_ == workspace_id;
+  // Its photo goes with it. Nothing can name the file once the workspace is
+  // gone, so leaving it behind would grow the profile directory by one image
+  // per deleted workspace, forever.
+  if (!it->image.empty()) {
+    store_->ForgetImage(it->image);
+    zephyrus::DeleteWorkspaceImage(browser_->profile(), it->image);
+  }
+  // Its stored data goes too -- the cookies and logins that were only ever
+  // reachable through this workspace. Deleting the workspace while leaving them
+  // on disk, unreachable and never cleaned up, is the worse of the two
+  // surprises. A no-op for the default partition, which is the user's ordinary
+  // browsing data.
+  const std::string doomed_partition = it->partition_name;
   all.erase(it);
   // Its visit index, saved-active-tab, and background bookkeeping go with it —
   // the PersistState() below then rewrites prefs without the dead workspace's
@@ -846,6 +1044,12 @@ void ZephyrusWorkspaceManager::DeleteWorkspace(int workspace_id) {
   }
   NotifyChanged();
   PersistState();
+
+  // LAST, after the tabs are closed and the state is written: clearing a
+  // partition while tabs are still using it would race them, and doing it
+  // before the pref write would risk a crash in between leaving a workspace
+  // whose data is already gone.
+  zephyrus::ClearWorkspacePartition(browser_->profile(), doomed_partition);
 }
 
 void ZephyrusWorkspaceManager::SetWorkspaceColor(int workspace_id,
@@ -865,11 +1069,58 @@ void ZephyrusWorkspaceManager::SetWorkspaceEmoji(int workspace_id,
   for (Workspace& workspace : store_->workspaces()) {
     if (workspace.id == workspace_id) {
       workspace.emoji = emoji;
+      // One identity mark per workspace: choosing an emoji drops any photo.
+      // See SetWorkspaceImage() for why they are exclusive.
+      if (!workspace.image.empty()) {
+        store_->ForgetImage(workspace.image);
+        zephyrus::DeleteWorkspaceImage(browser_->profile(), workspace.image);
+        workspace.image.clear();
+      }
       NotifyChanged();
       PersistState();
       return;
     }
   }
+}
+
+void ZephyrusWorkspaceManager::SetWorkspaceImage(int workspace_id,
+                                                 const std::string& image) {
+  // Defence in depth: the pick path only ever produces a valid name, but this
+  // is the seam a future caller would reach for, and the value ends up joined
+  // onto a filesystem path.
+  if (!image.empty() && !zephyrus::IsValidWorkspaceImageName(image)) {
+    return;
+  }
+  for (Workspace& workspace : store_->workspaces()) {
+    if (workspace.id != workspace_id) {
+      continue;
+    }
+    if (workspace.image == image) {
+      return;
+    }
+    // The outgoing file is unreferenced the moment this returns, and nothing
+    // else can name it, so it goes now rather than accumulating in the profile.
+    if (!workspace.image.empty()) {
+      store_->ForgetImage(workspace.image);
+      zephyrus::DeleteWorkspaceImage(browser_->profile(), workspace.image);
+    }
+    workspace.image = image;
+    if (!image.empty()) {
+      workspace.emoji.clear();
+    }
+    NotifyChanged();
+    PersistState();
+    return;
+  }
+}
+
+gfx::ImageSkia ZephyrusWorkspaceManager::GetWorkspaceImage(int workspace_id,
+                                                           int size_dip) {
+  const Workspace* workspace = GetWorkspace(workspace_id);
+  if (!workspace || workspace->image.empty()) {
+    return gfx::ImageSkia();
+  }
+  return store_->GetImage(workspace->image, size_dip);
 }
 
 const ZephyrusWorkspaceManager::Workspace*
@@ -949,19 +1200,16 @@ int ZephyrusWorkspaceManager::GetWorkspaceForContents(
   return store_->GetWorkspaceForContents(contents);
 }
 
-bool ZephyrusWorkspaceManager::IsContentsPinned(
-    content::WebContents* contents) const {
-  const int index = tab_strip_model_->GetIndexOfWebContents(contents);
-  return index != TabStripModel::kNoTab && tab_strip_model_->IsTabPinned(index);
-}
-
 bool ZephyrusWorkspaceManager::IsContentsInCurrentWorkspace(
     content::WebContents* contents) const {
-  // A pinned tab is a global favourite — it belongs to every workspace, so it
-  // stays visible (and doesn't count as "foreign") wherever the user is.
-  if (IsContentsPinned(contents)) {
-    return true;
-  }
+  // Pinning is PER-WORKSPACE. It used to make a tab a global favourite, visible
+  // everywhere — that cannot survive workspaces being profiles, because a tab
+  // is one WebContents with one profile and cannot be in several at once.
+  //
+  // Dropping the exemption is also what makes the window's core invariant hold
+  // without exception: every visible tab belongs to the current workspace, so
+  // the window has exactly one active profile at any instant. Window chrome
+  // rebinds on workspace switch and needs no per-tab profile resolution.
   const int workspace = GetWorkspaceForContents(contents);
   if (workspace == current_workspace_id_) {
     return true;
@@ -1185,7 +1433,7 @@ void ZephyrusWorkspaceManager::OnTabChangedAt(tabs::TabInterface* tab,
 void ZephyrusWorkspaceManager::NotifyChanged() {
   // Every path that changes this window's workspace ends here, so this is the
   // single place the store learns what each window is displaying.
-  store_->SetWindowWorkspace(this, current_workspace_id_);
+  store_->SetWindowWorkspace(browser_, current_workspace_id_);
   // Fan out through the store rather than notifying only this window. The
   // workspace list and the tab->workspace map are shared, so a rename, delete
   // or move made here must refresh EVERY window's sidebar and pill — otherwise
@@ -1200,6 +1448,21 @@ void ZephyrusWorkspaceManager::NotifyLocalObservers() {
 }
 
 void ZephyrusWorkspaceManager::AddTabForWorkspace(int workspace_id) {
+  // TELL THE STORE FIRST, before any tab is created.
+  //
+  // The new tab is built through Navigate(), which asks the store which
+  // partition this window's current workspace uses. Callers reach here having
+  // set `current_workspace_id_` but BEFORE NotifyChanged() -- which is where
+  // the store normally learns it -- so without this the tab would be created
+  // in the PREVIOUS workspace's cookie jar.
+  //
+  // That failure is silent and reads as the opposite of a bug: the user makes
+  // a fresh workspace, opens a site, and is already logged in.
+  //
+  // SetWindowWorkspace() is idempotent, so the NotifyChanged() that follows in
+  // every caller still costs nothing.
+  store_->SetWindowWorkspace(browser_, workspace_id);
+
   // Zephyrus has no new-tab page, and a window with no tabs is now a valid
   // state that shows the empty backdrop. So when the window is *already*
   // empty — at startup, or after the user closed the last tab — never
@@ -1268,5 +1531,18 @@ void ZephyrusWorkspaceManager::SchedulePersistState() {
 }
 
 void ZephyrusWorkspaceManager::PersistState() {
-  store_->Persist();
+  // SCHEDULE, do not write.
+  //
+  // This called Persist() directly, which serializes the whole workspace state
+  // synchronously on the UI thread and writes a pref -- and SerializeState()
+  // walks every window x every tab to compute each workspace's active-tab
+  // ordinal. Doing that inside SwitchToWorkspace meant every click on a
+  // workspace paid an O(workspaces x windows x tabs) walk plus a pref write
+  // before the new tab could paint, which is exactly the "switching is slow"
+  // symptom.
+  //
+  // SchedulePersist() already existed for this, with a 300ms debounce to
+  // coalesce bursts -- the switch path simply was not using it. Nothing is
+  // lost: the state is still written, just after the UI has moved.
+  store_->SchedulePersist();
 }

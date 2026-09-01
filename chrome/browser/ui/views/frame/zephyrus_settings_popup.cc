@@ -78,7 +78,8 @@ ZephyrusSettingsPopup* g_active_popup = nullptr;
 // holder()->SetCornerRadii(), and layer-rounded corners must be a whole number
 // of device pixels or the curve renders blurry at fractional display scaling
 // (22 x 1.25 = 27.5). 20 also matches the web contents viewer.
-constexpr int kPopupCornerRadius = 20;
+// Holds things -> card radius. Was 20.
+constexpr int kPopupCornerRadius = zephyrus::kRadiusCard;
 constexpr int kRailWidth = 208;
 constexpr int kRowHeight = 34;
 constexpr int kRowRadius = zephyrus::kCornerRadius;
@@ -91,25 +92,32 @@ constexpr int kRowIconSize = 16;
 // selected row — no colored chips, no filled accent slabs.
 //
 // The rail IS the theme color, so the popup's edge continues the title bar.
-constexpr SkColor kRailColor = BrowserView::kZephyrusThemeColor;
-// System hairline weight (was 0x14).
-constexpr SkColor kRailHairline = SkColorSetA(SK_ColorWHITE, 0x1F);
-// == color_utils::GetColorWithMaxContrast(kZephyrusThemeColor).
-constexpr SkColor kForeground = SK_ColorWHITE;
-// System body alpha (was 0xA6).
-constexpr SkColor kMutedForeground = SkColorSetA(SK_ColorWHITE, 0xB0);
-// Zephyrus accent (matches the NTP's purple glow); used only for the small
-// selection notch.
-constexpr SkColor kAccent = zephyrus::kAccent;
-// Same row-state weights the sidebar uses, so a selected row means the same
-// thing in both places. Were 0x14 / 0x0A, which were nearly invisible.
-constexpr SkColor kSelectedRowFill = SkColorSetA(SK_ColorWHITE, 0x33);
-constexpr SkColor kHoverRowFill = SkColorSetA(SK_ColorWHITE, 0x1A);
-// Base painted behind the hosted WebUI while it loads, so opening the popup
-// doesn't flash before the page paints. The theme lifted 0x16 toward white
-// (#0E1123 -> #232636), which sits just above the rail so the content area
-// reads as the raised half of the popup.
-constexpr SkColor kWebViewBase = SkColorSetRGB(0x23, 0x26, 0x36);
+// All of these were constexpr against the single permanent theme. They cannot
+// be: the palette is resolved from the OS at paint time now, so they are
+// functions that read it. Same names, same roles, one pair of parentheses.
+SkColor RailColor() {
+  return zephyrus::Ground();
+}
+SkColor RailHairline() {
+  return zephyrus::Rule();
+}
+SkColor Foreground() {
+  return zephyrus::Ink();
+}
+SkColor MutedForeground() {
+  return zephyrus::Muted();
+}
+SkColor SelectedRowFill() {
+  return SkColorSetA(zephyrus::Ink(), 0x1F);
+}
+SkColor HoverRowFill() {
+  return SkColorSetA(zephyrus::Ink(), 0x0F);
+}
+// The content half, one surface step off the rail so the popup still reads as
+// two halves in either theme.
+SkColor WebViewBase() {
+  return zephyrus::Surface();
+}
 
 // A rail entry: monochrome icon + label. Selection is a soft neutral
 // rounded fill with a small accent notch on the left edge; hover is an even
@@ -154,13 +162,13 @@ class ZephyrusNavPill : public views::LabelButton {
     }
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(selected_ ? kSelectedRowFill : kHoverRowFill);
+    flags.setColor(selected_ ? SelectedRowFill() : HoverRowFill());
     canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kRowRadius, flags);
     if (selected_) {
       // Small accent notch, vertically centered on the left edge.
       constexpr float kNotchWidth = 3.0f;
       constexpr float kNotchHeight = 14.0f;
-      flags.setColor(kAccent);
+      flags.setColor(zephyrus::Accent());
       const float y = (height() - kNotchHeight) / 2.0f;
       canvas->DrawRoundRect(gfx::RectF(0, y, kNotchWidth, kNotchHeight),
                             kNotchWidth / 2.0f, flags);
@@ -172,10 +180,10 @@ class ZephyrusNavPill : public views::LabelButton {
     const bool hovered = GetState() == views::Button::STATE_HOVERED ||
                          GetState() == views::Button::STATE_PRESSED;
     const SkColor fg =
-        (selected_ || hovered) ? kForeground : kMutedForeground;
+        (selected_ || hovered) ? Foreground() : MutedForeground();
     SetTextColor(views::Button::STATE_NORMAL, fg);
-    SetTextColor(views::Button::STATE_HOVERED, kForeground);
-    SetTextColor(views::Button::STATE_PRESSED, kForeground);
+    SetTextColor(views::Button::STATE_HOVERED, Foreground());
+    SetTextColor(views::Button::STATE_PRESSED, Foreground());
     SetImageModel(
         views::Button::STATE_NORMAL,
         ui::ImageModel::FromVectorIcon(*icon_, fg, kRowIconSize));
@@ -357,10 +365,10 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
   // ---- Left: pill navigation rail -----------------------------------------
   auto* rail = root->AddChildView(std::make_unique<views::View>());
   rail->SetPreferredSize(gfx::Size(kRailWidth, size.height()));
-  rail->SetBackground(views::CreateSolidBackground(kRailColor));
+  rail->SetBackground(views::CreateSolidBackground(RailColor()));
   // Hairline between the rail and the hosted page gives the split definition.
   rail->SetBorder(views::CreateSolidSidedBorder(gfx::Insets::TLBR(0, 0, 0, 1),
-                                                kRailHairline));
+                                                RailHairline()));
   auto* rail_layout = rail->SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets::TLBR(12, 12, 12, 11),
       4));
@@ -379,10 +387,10 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
               base::Unretained(this))));
   close_button->SetImageModel(
       views::Button::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(kZephyrusCloseIcon, kMutedForeground, 16));
+      ui::ImageModel::FromVectorIcon(kZephyrusCloseIcon, MutedForeground(), 16));
   close_button->SetImageModel(
       views::Button::STATE_HOVERED,
-      ui::ImageModel::FromVectorIcon(kZephyrusCloseIcon, kForeground, 16));
+      ui::ImageModel::FromVectorIcon(kZephyrusCloseIcon, Foreground(), 16));
   close_button->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
   close_button->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
   close_button->SetPreferredSize(gfx::Size(28, 28));
@@ -409,7 +417,7 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
     gap->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(4, 10), 0));
     auto* line = gap->AddChildView(std::make_unique<views::View>());
-    line->SetBackground(views::CreateSolidBackground(kRailHairline));
+    line->SetBackground(views::CreateSolidBackground(RailHairline()));
     line->SetPreferredSize(gfx::Size(1, 1));
   };
   for (const auto& [item_section, item_icon, item_label] : items) {
@@ -438,7 +446,7 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
   auto* version = rail->AddChildView(std::make_unique<views::Label>(
       u"Zephyrus " + std::u16string(zephyrus::kVersion)));
   version->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  version->SetEnabledColor(kMutedForeground);
+  version->SetEnabledColor(MutedForeground());
   version->SetAutoColorReadabilityEnabled(false);
   version->SetSubpixelRenderingEnabled(false);
   version->SetFontList(version->font_list().DeriveWithSizeDelta(-1));
@@ -454,13 +462,13 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
       gfx::RoundedCornersF(0, kPopupCornerRadius, kPopupCornerRadius, 0));
   // Dark base under/behind the page so opening the popup and switching
   // sections never flashes white before the (dark) WebUI paints.
-  web_view->SetBackground(views::CreateSolidBackground(kWebViewBase));
+  web_view->SetBackground(views::CreateSolidBackground(WebViewBase()));
   // Register the embedding context BEFORE the first navigation: hosted WebUIs
   // (history clusters, settings subpages, ...) resolve their browser through
   // webui::GetBrowserWindowInterface() since they are not in a tab here.
   content::WebContents* web_contents = web_view->GetWebContents();
   webui::SetBrowserWindowInterface(web_contents, browser_);
-  web_contents->SetPageBaseBackgroundColor(kWebViewBase);
+  web_contents->SetPageBaseBackgroundColor(WebViewBase());
   web_contents->SetDelegate(this);
   // Observe navigations so the rail highlight follows pages the popup did not
   // navigate to itself (e.g. history's "Delete browsing data" subpage).

@@ -33,6 +33,7 @@ libLiteRtWebGpuAccelerator.dll: %(VersionDir)s\
 notification_helper.exe: %(VersionDir)s\
 optimization_guide_internal.dll: %(VersionDir)s\
 resources.pak: %(VersionDir)s\
+FILTER_LISTS_NOTICE.txt: %(VersionDir)s\
 zephyrus_filters.txt: %(VersionDir)s\
 vk_swiftshader.dll: %(VersionDir)s\
 vk_swiftshader_icd.json: %(VersionDir)s\
@@ -58,6 +59,17 @@ SmallLogo.png: %(VersionDir)s\VisualElements\
 #
 PrivacySandboxAttestationsPreloaded\manifest.json: %(VersionDir)s\PrivacySandboxAttestationsPreloaded\
 PrivacySandboxAttestationsPreloaded\privacy-sandbox-attestations.dat: %(VersionDir)s\PrivacySandboxAttestationsPreloaded\
+
+#
+# Zephyrus entity dataset (spec 4). Absent from developer builds by
+# design: fetch_entity_dataset.py is licence-encumbered and must never
+# be able to break a contributor's build, so it exits 0 on failure and
+# the browser falls back to the null resolver showing bare domains.
+# create_installer_archive.py SILENTLY SKIPS files it cannot find, so a
+# release build that skipped the fetch step would package no dataset and
+# say nothing. verify_release_payload.py turns that silence into an error.
+#
+ZephyrusEntities\zephyrus_entities.dat: %(VersionDir)s\ZephyrusEntities\
 
 #
 # MEI Preload sub dir

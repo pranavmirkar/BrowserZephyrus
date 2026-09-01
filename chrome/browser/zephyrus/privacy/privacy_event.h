@@ -73,6 +73,30 @@ enum class FingerprintSurface : uint8_t {
 static_assert(static_cast<int>(FingerprintSurface::kMaxValue) < 32,
               "fingerprint_surface_mask is uint32_t");
 
+// §13.3. Why collection stopped itself, or kNone while it is running.
+//
+// A reason rather than a bool because the three triggers call for different
+// responses and the user-visible consequence is identical: the history simply
+// stops growing. §5.3 already insists a degraded state be VISIBLE rather than
+// look like a clean web, and a switch that fired without saying which condition
+// fired would be the same mistake one layer down.
+enum class KillSwitchReason : uint8_t {
+  kNone = 0,
+  // Sustained ring overflow: the consumer cannot keep up with the network
+  // thread, so events are being lost anyway. Continuing costs the hot path
+  // real time to produce data that is already incomplete.
+  kRingOverflow = 1,
+  // Drain round trips are taking far longer than budget, which means the
+  // privacy sequence is starved or blocked. Whatever it is competing with
+  // matters more than this feature does.
+  kFlushLatency = 2,
+  // Repeated database write failures. Aggregation continues in memory
+  // regardless (§5.3), but persisting is failing and retrying it forever helps
+  // nobody.
+  kDatabaseFailures = 3,
+  kMaxValue = kDatabaseFailures,
+};
+
 // Tracker Radar categories, collapsed to the set we display. kUnknown is not a
 // failure state — it is the honest answer for a domain no dataset covers, and
 // such domains render as the bare domain with no invented owner (§4.1).

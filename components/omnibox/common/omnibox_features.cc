@@ -178,6 +178,9 @@ BASE_FEATURE(kMostVisitedTilesHorizontalRenderGroup,
 // accommodate the autocompletions.
 BASE_FEATURE(kRichAutocompletion, "OmniboxRichAutocompletion", ENABLED);
 
+// Enables the AIM eligibility diagnostic component extension.
+BASE_FEATURE(kAimEligibilityComponentExtension, DISABLED);
+
 // Whether the aim button should dynamically change to portray the submission
 // type.
 BASE_FEATURE(kDynamicAimSubmit, DISABLED);
@@ -228,6 +231,10 @@ BASE_FEATURE(kOmniboxWebUIDetachWebContentsOnHide, ENABLED);
 // When enabled, the Omnibox WebUI popup will mark its web contents as hidden
 // when hidden, to unlock frames from compositor cache.
 BASE_FEATURE(kOmniboxWebUIPopupMarkAsHidden, DISABLED);
+
+// When enabled, the WebUI searchbox will bypass OmniboxController and
+// OmniboxEditModel.
+BASE_FEATURE(kWebUISearchboxWithoutModelController, DISABLED);
 
 // Feature used to default typed navigations to use HTTPS instead of HTTP.
 // This only applies to navigations that don't have a scheme such as
@@ -396,10 +403,24 @@ BASE_FEATURE(kComposeboxAttachmentsTypedState, DISABLED);
 
 // Whether to enable Google Drive context menu option in the composebox.
 BASE_FEATURE(kComposeboxDriveContextMenuOption, DISABLED);
+const base::FeatureParam<bool> kComposeboxDriveIdentityFallback{
+    &kComposeboxDriveContextMenuOption, "enable_identity_fallback", true};
 
 // Whether to enable Google Drive context menu option's disclaimer flow in the
 // composebox.
 BASE_FEATURE(kComposeboxDriveContextMenuOptionDisclaimer, DISABLED);
+
+// For Workspace AIM, the Flow ID is the ConsentKit frontend identifier
+// (e.g. CHOICEFLOW_PCONTEXT_WORKSPACE_AIM) and the Product ID is the
+// Footprints ConsentVariant ID (e.g.
+// CHOICEFLOW_VARIANT_PCONTEXT_WORKSPACE_AIM_DEFAULT)
+const base::FeatureParam<int> kComposeboxDriveConsentFlowId{
+    &kComposeboxDriveContextMenuOptionDisclaimer, "flow_id", 76};
+
+const base::FeatureParam<int> kComposeboxDriveConsentProductId{
+    &kComposeboxDriveContextMenuOptionDisclaimer, "product_id", 89978449};
+const base::FeatureParam<std::string> kComposeboxDriveConsentEntrypointId{
+    &kComposeboxDriveContextMenuOptionDisclaimer, "entrypoint_id", "aim-drive"};
 
 // Whether to force the Google Drive disclaimer to be accepted. This flag is
 // only used for testing purposes since dasher accounts are not allowed to
@@ -473,7 +494,6 @@ BASE_FEATURE(kDiagnostics, "OmniboxDiagnostics", DISABLED);
 // Force the realbox on Android regardless of platform/configuration checks.
 BASE_FEATURE(kForceAndroidRealbox, DISABLED);
 
-
 // If enabled, disables ligatures in the URL bar on Android.
 BASE_FEATURE(kUrlBarWithoutLigatures, ENABLED);
 
@@ -484,6 +504,10 @@ BASE_FEATURE(kServeJavaCachedZeroSuggest, ENABLED);
 // If enabled, OmniboxSuggestionsDropdown will force reset the scroll position
 // of the Omnibox suggestion list to the top during any re-layout.
 BASE_FEATURE(kResetSuggestionsScroll, DISABLED);
+
+// Kill switch for special handling for session-less voice search queries
+// (e.g. from NTP fakebox). This special case was added to address b/541295247.
+BASE_FEATURE(kOmniboxSessionlessVoiceSearch, ENABLED);
 
 namespace android {
 static int64_t JNI_OmniboxFeatureMap_GetNativeMap(JNIEnv* env) {
@@ -511,7 +535,8 @@ static int64_t JNI_OmniboxFeatureMap_GetNativeMap(JNIEnv* env) {
       &kResetSuggestionsScroll,
       &kOmniboxItemDecoration,
       &kExactMatchFavicons,
-      &kStarterPackExpansion};
+      &kStarterPackExpansion,
+      &kOmniboxSessionlessVoiceSearch};
   static base::NoDestructor<base::android::FeatureMap> kFeatureMap(
       kFeaturesExposedToJava);
   return reinterpret_cast<int64_t>(kFeatureMap.get());

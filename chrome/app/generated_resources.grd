@@ -523,6 +523,16 @@ are declared in tools/grit/grit_args.gni.
       <message name="IDS_HISTORY_TURN_ON_SYNC_PROMO_DESC" desc="Description of the turn on sync/sign-in promo. Further tells users to turn o sync/sign in to Chrome to see synced tabs from other devices.">
         To get your tabs from your other devices, turn on sync
       </message>
+      <!-- Sign in on your phone (QR code) strings  -->
+      <message name="IDS_HISTORY_SIGNIN_ON_PHONE_PROMO_TITLE" desc="Title of the Cross device sign in promo on the History page, the promo will open the QR code bubble that allows the user to sign in on their phone.">
+        Pick up where you left off
+      </message>
+      <message name="IDS_HISTORY_SIGNIN_ON_PHONE_PROMO_SUBTITLE" desc="Subtitle of the Cross device sign in promo on the History page, the promo will open the QR code bubble that allows the user to sign in on their phone.">
+        Easily get back to sites you've visited by signing in to the same account on both devices
+      </message>
+      <message name="IDS_HISTORY_SIGNIN_ON_PHONE_PROMO_BUTTON" desc="Action button of the Cross device sign in promo on the History page, the promo will open the QR code bubble that allows the user to sign in on their phone. Clicking this button opens the QR code bubble.">
+        Sign in on your phone
+      </message>
 
       <message name="IDS_HISTORY_SYNC_HISTORY_PROMO" desc="Text of the sync hystory promo. This will show up if a user is not logged in and has no synced tabs.">
         Browse across devices
@@ -676,10 +686,6 @@ are declared in tools/grit/grit_args.gni.
           </message>
           <message name="IDS_CONTENT_CONTEXT_ARCHIVE_GLIC" desc="Context menu item to archive Glic conversation">
            Archive
-          </message>
-          <!-- TODO(b/510738735) Placeholder for now so mark translateable=false -->
-          <message name="IDS_CONTENT_CONTEXT_DICTATION" desc="Context menu item to start dictation" translateable="false">
-           Start dictation
           </message>
           <message name="IDS_CONTENT_CONTEXT_RELOAD" desc="The name of the Reload command in the content area context menu">
             &amp;Reload
@@ -8611,7 +8617,7 @@ Keep your key file in a safe place. You will need it to create new versions of y
         Share tabs
       </message>
       <message name="IDS_NTP_COMPOSEBOX_RECENT_TAB_SUFFIX" desc="Suffix label appended after the title of the most recently active tab in the Share tabs flyout. Visual separation from the title is handled by CSS, not by leading white space in this string.">
-        · Recent tab
+        Recent tab
       </message>
       <message name="IDS_NTP_COMPOSE_ADD_IMAGE"  desc="Text for a button label that opens a menu so users can add an image to their search.">
         Add image
@@ -8700,6 +8706,10 @@ Keep your key file in a safe place. You will need it to create new versions of y
        <message name="IDS_COMPOSE_CURRENT_TAB" desc="Label for the row in the Composebox context menu flyout that shows the current tab the user has open.">
         Current tab
       </message>
+      <message name="IDS_COMPOSE_MAX_FILE_UPLOAD_ERROR" desc="Error message shown in toast when file limit maximum is reached.">
+        You can only add up to <ph name="COUNT">$1<ex>10</ex></ph> files
+      </message>
+
       <message name="IDS_NTP_ACTION_CHIP_TAB_HEADING_1" desc="Heading of the tab action chip on the NTP." >
         Ask about previous tab
       </message>
@@ -8732,6 +8742,12 @@ Keep your key file in a safe place. You will need it to create new versions of y
       </message>
       <message name="IDS_NTP_ACTION_CHIP_CANVAS_BODY" desc="Body text in the canvas action chip describing the use of the chip.">
         Write, plan, code, and more
+      </message>
+      <message name="IDS_NTP_ACTION_CHIP_STARTER_HEADING" desc="Heading of the conversation starter action chip on the NTP." translateable="false">
+        Do more with AI Mode
+      </message>
+      <message name="IDS_NTP_ACTION_CHIP_STARTER_BODY" desc="Body text in the conversation starter action chip describing the use of the chip." translateable="false">
+        Create, plan, summarize
       </message>
       <message name="IDS_NTP_ACTION_CHIP_DISABLE_TEXT" desc="Text for menu option to disable action chip feature.">
         Disable suggestions
@@ -9363,8 +9379,11 @@ Keep your key file in a safe place. You will need it to create new versions of y
          =1 {<ph name="ENTITY">$1<ex>analytics.example</ex></ph> attempted 1 request on this page. It did not complete.}
          other {<ph name="ENTITY">$1<ex>analytics.example</ex></ph> attempted # requests on this page. They did not complete.}}
       </message>
-      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_FINGERPRINT" desc="Explanation for a FINGERPRINT_ATTEMPT timeline event. Reports DETECTED only — Phase 2 observes fingerprinting without altering it, so this must not imply RANDOMIZED.">
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_FINGERPRINT" desc="Explanation for a FINGERPRINT_ATTEMPT timeline event where the values were NOT perturbed — either randomization is off, or it is off for this particular surface. Reports DETECTED only, and must not imply RANDOMIZED. Paired with IDS_ZEPHYRUS_PRIVACY_EXPLAIN_FINGERPRINT_RANDOMIZED, which is shown when the values WERE altered; showing this one then would be a false claim in the reassuring direction, which §2 forbids just as firmly as the other.">
         This site read device characteristics that can be used to identify your browser. Zephyrus recorded the attempt; the values were not altered.
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_FINGERPRINT_RANDOMIZED" desc="Explanation for a FINGERPRINT_ATTEMPT timeline event where the values WERE perturbed. Deliberately claims only that THESE SURFACES were randomized — never that the browser cannot be identified. Randomization is detectable and does not cover every surface (fonts are not instrumented, and shared workers read true values), so any wording implying anonymity would be a promise the feature does not keep.">
+        This site read device characteristics that can be used to identify your browser. Zephyrus randomized the values it returned for these surfaces.
       </message>
       <message name="IDS_ZEPHYRUS_PRIVACY_EXPLAIN_WEBRTC_WITHHELD" desc="Explanation for a WEBRTC_ADDRESS_REQUEST event where the IP policy withheld local addresses. Reports DETECTED plus what was withheld, never BLOCKED.">
         This site asked for your network address. Your public address was visible; your local addresses were withheld.
@@ -9488,6 +9507,9 @@ Keep your key file in a safe place. You will need it to create new versions of y
       </message>
       <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FINGERPRINT" desc="Timeline line for a FINGERPRINT_ATTEMPT event, followed by the site name. Reports DETECTED only, because Phase 2 observes fingerprinting without perturbing it and must not imply RANDOMIZED.">
         fingerprinting attempt detected on
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FINGERPRINT_RANDOMIZED" desc="Timeline line for a FINGERPRINT_ATTEMPT event whose status is RANDOMIZED, followed by the site name. Claims only that the values returned for these surfaces were randomized — never that the user cannot be identified. Randomization is itself detectable, fonts are not instrumented at all, and shared workers still read true values, so any wording implying anonymity would promise more than the feature delivers.">
+        fingerprinting randomized on
       </message>
       <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FINGERPRINT_POTENTIAL" desc="Timeline line for a FINGERPRINT_ATTEMPT event whose status is POTENTIAL, followed by the site name. Reports a heuristic match that is NOT certain, so it must not say detected.">
         possible fingerprinting activity on
@@ -10802,6 +10824,9 @@ Keep your key file in a safe place. You will need it to create new versions of y
       </message>
       <message name="IDS_VERTICAL_TAB_GROUP_MORE_OPTIONS" is_accessibility_with_no_ui="true" desc="The accessibility label for the button in the tab group header that opens the editor bubble.">
             More Options
+      </message>
+      <message name="IDS_VERTICAL_TABS_VIEW_MENU_TOGGLE_COLLAPSE" desc="In Title Case: The mac view menu item that toggles the collapse state.">
+            Collapse Vertical Tabs
       </message>
       <!-- /Vertical Tab Strings -->
 
@@ -19481,6 +19506,12 @@ Please help our engineers fix this problem. Tell us what happened right before y
       <message name="IDS_MULTISTEP_FILTER_CUE_EXPANDABLE_CONTENT_HEADING" desc="Text for the expandable content heading on the contextual cue for multistep filters." translateable="false">
         From your recent search
       </message>
+      <message name="IDS_MULTISTEP_FILTER_IPH_BODY" desc="Text shown in the IPH bubble for educating users about Multistep Filter." translateable="false">
+        Chrome can now suggest your recent filters and search details, helping you pick up where you left off or compare options across sites
+      </message>
+      <message name="IDS_MULTISTEP_FILTER_IPH_BODY_SCREENREADER" is_accessibility_with_no_ui="true" desc="Screenreader text shown in the IPH bubble for educating users about Multistep Filter." translateable="false">
+        Chrome can now suggest your recent filters and search details, helping you pick up where you left off or compare options across sites
+      </message>
       <message name="IDS_LINK_COPIED_TOAST_BODY" desc="Text on a toast notification that is shown when a link is successfully copied.">
         Link copied
       </message>
@@ -19492,6 +19523,12 @@ Please help our engineers fix this problem. Tell us what happened right before y
       </message>
       <message name="IDS_LINK_COPIED_TO_HIGHLIGHT_TOAST_BODY" desc="Text on a toast notification that is shown when a link to highlight is successfully copied.">
         Link copied to highlight
+      </message>
+      <message name="IDS_DICTATION_ERROR_TOAST" desc="Text shown in a toast notification when a voice typing/dictation session fails due to an error." translateable="false">
+        Something went wrong. Try again later
+      </message>
+      <message name="IDS_DICTATION_STOPPED_TOAST" desc="Text shown in a toast notification when a voice typing/dictation session is stopped." translateable="false">
+        Voice typing stopped
       </message>
       <message name="IDS_READING_LIST_TOAST_BODY" desc="Text on a toast notification that is shown when one or more items are added to the reading list [ICU Syntax]">
         {PAGES, plural, =1 {Page added to reading list} other {Pages added to reading list}}
@@ -19528,6 +19565,25 @@ Please help our engineers fix this problem. Tell us what happened right before y
       </message>
       <message name="IDS_SPLIT_VIEW_UNDO_SPLIT_ACTION_BUTTON" desc="Text for the action button on a split view toast notification to undo creating the split view.">
         Undo
+      </message>
+      <message name="IDS_TAB_STRIP_SWITCH_DELAYED_TO_HORIZONTAL_TOAST_BODY" desc="Text on a toast notification shown when the tab strip mode switch to horizontal is delayed because the browser is in immersive fullscreen.">
+        Exit full screen to show tabs horizontally
+      </message>
+      <message name="IDS_TAB_STRIP_SWITCH_DELAYED_TO_VERTICAL_TOAST_BODY" desc="Text on a toast notification shown when the tab strip mode switch to vertical is delayed because the browser is in immersive fullscreen.">
+        Exit full screen to show tabs vertically
+      </message>
+      <message name="IDS_TAB_STRIP_SWITCH_DELAYED_EXIT_FULLSCREEN_ACTION" desc="Action button on a toast notification that exits immersive fullscreen mode.">
+        Exit full screen
+      </message>
+      <!-- Dictation strings -->
+      <message name="IDS_DICTATION_ONBOARDING_BULLET_DATA_SHARING" desc="The second paragraph in the onboarding dialog describing data sharing with Google servers." translateable="false">
+        Your spoken audio, the transcribed text, and the content and URL of the page you're interacting with will be sent to Google.
+      </message>
+      <message name="IDS_DICTATION_ONBOARDING_BUTTON_ACCEPT" desc="Button label on the onboarding dialog to confirm the provided information and use the feature." translateable="false">
+        Ok, got it
+      </message>
+      <message name="IDS_DICTATION_BUTTON_START" desc="Button label on the dictation UI that turns on the microphone to start dictating text." translateable="false">
+        Start
       </message>
     </if>
 

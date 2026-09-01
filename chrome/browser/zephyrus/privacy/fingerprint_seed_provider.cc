@@ -52,6 +52,15 @@ FingerprintSeed FingerprintSeedProvider::SeedForFrame(
   return secret_.DeriveForOriginKey(OriginKeyForFrame(rfh));
 }
 
+std::optional<FingerprintSeed> FingerprintSeedProvider::SeedForOrigin(
+    const url::Origin& origin) const {
+  if (origin.opaque()) {
+    return std::nullopt;
+  }
+  return secret_.DeriveForOriginKey(
+      OriginKeyForSeed(origin.scheme(), origin.host(), origin.port()));
+}
+
 std::string OriginKeyForFrame(content::RenderFrameHost* rfh) {
   if (!rfh) {
     // No frame, no principal. Returning a constant would be worse than it

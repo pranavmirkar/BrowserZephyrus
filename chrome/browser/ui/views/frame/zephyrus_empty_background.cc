@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/zephyrus_empty_background.h"
 
+#include "chrome/browser/ui/views/frame/browser_view.h"
+
 #include <algorithm>
 #include <memory>
 #include <optional>
@@ -37,11 +39,27 @@ namespace zephyrus {
 namespace {
 
 // The flat colour behind everything: what a window shows before the wallpaper
-// resolves, and permanently if there is none to read.
-constexpr SkColor kFallback = SkColorSetRGB(0x0E, 0x11, 0x23);
+// resolves, and permanently if there is none to read. Tracks the one permanent
+// theme colour rather than repeating it, so a palette change cannot leave this
+// surface behind -- which is exactly what happened when the theme went from
+// navy to cream and this constant stayed #0E1123.
+SkColor Fallback() {
+  return zephyrus::Ground();
+}
 
-// Dim applied over the wallpaper so it stays a backdrop rather than a picture.
-constexpr SkColor kScrim = SkColorSetARGB(0x7A, 0x08, 0x09, 0x0C);
+// Wash applied over the wallpaper so it stays a backdrop rather than a picture.
+//
+// This LIGHTENS. It used to be a near-black dim, which was right when the ink
+// over it was white; the warm light theme inks in wine, so a dark wash would
+// bury the very text it exists to make legible. Same purpose, opposite
+// direction -- the wallpaper is pushed toward the cream ground instead of away
+// from it.
+// Wash over the wallpaper. Pushes it toward the ground in BOTH themes, so
+// it lightens on light and darkens on dark -- a fixed cream wash would have
+// been a bright rectangle in a dark browser.
+SkColor Scrim() {
+  return SkColorSetA(zephyrus::Ground(), 0xC4);
+}
 
 // The blur is produced by shrinking the bitmap and letting the GPU scale it
 // back up with linear filtering — far cheaper than a real blur filter, and
@@ -159,7 +177,7 @@ class ZephyrusEmptyBackground : public views::Background {
 
   void Paint(gfx::Canvas* canvas, views::View* view) const override {
     const gfx::Rect bounds = view->GetLocalBounds();
-    canvas->FillRect(bounds, kFallback);
+    canvas->FillRect(bounds, Fallback());
 
     WallpaperCache& cache = WallpaperCache::Get();
     cache.EnsureLoaded(view);
@@ -179,7 +197,7 @@ class ZephyrusEmptyBackground : public views::Background {
                          bounds.x() + (bounds.width() - dest_w) / 2,
                          bounds.y() + (bounds.height() - dest_h) / 2, dest_w,
                          dest_h, /*filter=*/true);
-    canvas->FillRect(bounds, kScrim);
+    canvas->FillRect(bounds, Scrim());
   }
 };
 

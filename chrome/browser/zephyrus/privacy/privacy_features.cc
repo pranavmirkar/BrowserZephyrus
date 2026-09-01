@@ -12,27 +12,27 @@ namespace zephyrus_privacy {
 
 BASE_FEATURE(kZephyrusPrivacyIntelligence,
              "ZephyrusPrivacyIntelligence",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kZephyrusPrivacyFingerprinting,
              "ZephyrusPrivacyFingerprinting",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kZephyrusPrivacyFingerprintRandomization,
              "ZephyrusPrivacyFingerprintRandomization",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kZephyrusPrivacyCnameUncloaking,
              "ZephyrusPrivacyCnameUncloaking",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kZephyrusPrivacyDashboard,
              "ZephyrusPrivacyDashboard",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kZephyrusPrivacyInternals,
              "ZephyrusPrivacyInternals",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 namespace {
 
@@ -42,11 +42,18 @@ constexpr base::FeatureParam<Mode>::Option kModeOptions[] = {
     {Mode::kEnabled, "enabled"},
 };
 
-// Defaults to collect-only rather than enabled: turning the feature on should
-// start the pipeline, not the UI. Reaching kEnabled is a deliberate second
-// step.
+// kEnabled as of 151.0.7922.171. The staged COLLECT_ONLY -> ENABLED path in
+// §13.1 exists so performance and stability can be validated before any UI
+// depends on the data, and that validation has now happened: the §12.6 breakage
+// corpus is clean (64 sites, both arms, zero findings), the manual pass covered
+// the load-bearing canvas cases, and ASAN/LSAN/TSAN are clean on this base.
+//
+// The four things that kept this off are all closed: the entity dataset now
+// actually ships, the §13.3 kill switch exists, §13.4 is decided and guarded,
+// and the panel can no longer claim protection for surfaces that were only
+// detected.
 constexpr base::FeatureParam<Mode> kMode{&kZephyrusPrivacyIntelligence, "mode",
-                                         Mode::kCollectOnly, &kModeOptions};
+                                         Mode::kEnabled, &kModeOptions};
 
 }  // namespace
 
@@ -87,7 +94,7 @@ uint32_t FingerprintSurfaceMask() {
   }
   static const base::FeatureParam<int> kSurfaces{
       &kZephyrusPrivacyFingerprintRandomization, "surfaces",
-      static_cast<int>(kFpSurfaceAll)};
+      static_cast<int>(kFpSurfaceDefault)};
   return static_cast<uint32_t>(kSurfaces.Get()) & kFpSurfaceAll;
 }
 

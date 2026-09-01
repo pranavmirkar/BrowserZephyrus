@@ -50,14 +50,23 @@ int ThumbHeightFor(int width) {
   return width * 10 / 16;
 }
 
-constexpr SkColor kCardBg = SkColorSetARGB(0x14, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kCardSelectedBg = SkColorSetARGB(0x2E, 0xFF, 0xFF, 0xFF);
-constexpr SkColor kPlaceholder = SkColorSetRGB(0x24, 0x24, 0x2A);
+// Alphas of WHITE lift a dark surface and do nothing on a light one, so
+// these are palette steps now. Cards HOLD things -> card radius.
+SkColor CardBg() {
+  return zephyrus::Surface();
+}
+SkColor CardSelectedBg() {
+  return zephyrus::Raise(zephyrus::Surface(), 0x3A);
+}
+SkColor Placeholder() {
+  return zephyrus::Rule();
+}
 
 // Matches the spotlight card, so the two frosted surfaces read as the same
 // material rather than two different treatments.
 constexpr float kPanelBlurSigma = 15.0f;
-constexpr int kPanelCornerRadius = 16;
+// Holds things -> card radius. Was 16.
+constexpr int kPanelCornerRadius = zephyrus::kRadiusCard;
 
 // Only one switching session at a time.
 ZephyrusTabSwitcher* g_switcher = nullptr;
@@ -82,7 +91,7 @@ ZephyrusTabSwitcher::ZephyrusTabSwitcher(BrowserView* browser_view)
       gfx::RoundedCornersF(kPanelCornerRadius));
   panel_->layer()->SetBackgroundBlur(kPanelBlurSigma);
   panel_->SetBackground(views::CreateRoundedRectBackground(
-      SkColorSetARGB(0x99, 0x14, 0x14, 0x18), kPanelCornerRadius));
+      SkColorSetA(zephyrus::Surface(), 0xF2), kPanelCornerRadius));
   panel_->SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal, gfx::Insets(12),
       kCardSpacing));
@@ -237,7 +246,7 @@ bool ZephyrusTabSwitcher::BuildEntries() {
         views::BoxLayout::Orientation::kVertical,
         gfx::Insets(kCardPadding), 8));
     card->SetBackground(views::CreateRoundedRectBackground(
-        kCardBg, zephyrus::kCornerRadius));
+        CardBg(), zephyrus::kRadiusCard));
     // Pin the card. Without this it sizes to its title label, so a tab with a
     // long title got a visibly wider card than its neighbours.
     card->SetPreferredSize(gfx::Size(thumb_width + 2 * kCardPadding,
@@ -247,7 +256,8 @@ bool ZephyrusTabSwitcher::BuildEntries() {
     image->SetImageSize(gfx::Size(thumb_width, thumb_height));
     image->SetPreferredSize(gfx::Size(thumb_width, thumb_height));
     // Until the real thumbnail arrives, a flat panel rather than empty space.
-    image->SetBackground(views::CreateRoundedRectBackground(kPlaceholder, 6));
+    image->SetBackground(views::CreateRoundedRectBackground(Placeholder(),
+                                          zephyrus::kRadiusCard));
 
     std::u16string title = contents->GetTitle();
     if (title.empty()) {
@@ -336,10 +346,11 @@ void ZephyrusTabSwitcher::UpdateSelectionVisuals() {
     }
     const bool is_selected = (i == selected_);
     card->SetBackground(views::CreateRoundedRectBackground(
-        is_selected ? kCardSelectedBg : kCardBg, zephyrus::kCornerRadius));
+        is_selected ? CardSelectedBg() : CardBg(), zephyrus::kRadiusCard));
     card->SetBorder(
-        is_selected ? views::CreateRoundedRectBorder(2, zephyrus::kCornerRadius,
-                                                     zephyrus::kAccent)
+        is_selected ? views::CreateRoundedRectBorder(
+              zephyrus::kHairline * 2.f, zephyrus::kRadiusCard,
+              zephyrus::Accent())
                     : views::CreateEmptyBorder(2));
     card->SchedulePaint();
   }

@@ -1,0 +1,104 @@
+/* Copyright 2017 The Chromium Authors
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file. */
+
+a {
+  color: var(--link-color);
+}
+
+/* ZEPHYRUS: interstitials are monochrome, and RED IS RESERVED.
+ *
+ * These pages define their own --google-* variables locally, so they are not
+ * reached by the palette work elsewhere -- left alone they render as stock
+ * Chrome (blue buttons, Google greys) in an otherwise monochrome browser.
+ *
+ * The buttons here are deliberately INK, not the Zephyrus accent. A security
+ * warning is the one screen where red has to mean danger and nothing else; if
+ * the "Back to safety" button were also red, the page would be red-on-red and
+ * the warning colour would stop carrying information. The danger red stays
+ * exactly where Chromium put it -- the warning triangle and the safebrowsing
+ * background -- and everything around it goes greyscale so it stands alone.
+ *
+ * This is the same reasoning as kColorSysError keeping its own red rather than
+ * borrowing the brand accent.
+ */
+body {
+  --background-color: #fff;
+  --error-code-color: var(--google-gray-700);
+  /* Retuned to greyscale. These are consumed by the sibling interstitial
+   * stylesheets (httpsonly, insecureform, lookalikeurl, superviseduserverify,
+   * interstitial_common) for LINK colours, so fixing them here covers all of
+   * them -- and covers whichever one is added next, which per-file edits would
+   * not. Still named "blue" because renaming would break those consumers. */
+  --google-blue-50: rgb(244, 244, 244);
+  --google-blue-100: rgb(226, 226, 226);
+  --google-blue-300: rgb(255, 255, 255);
+  --google-blue-600: rgb(4, 4, 4);
+  --google-blue-700: rgb(4, 4, 4);
+  --google-gray-100: rgb(241, 243, 244);
+  --google-gray-300: rgb(218, 220, 224);
+  --google-gray-500: rgb(154, 160, 166);
+  --google-gray-50: rgb(248, 249, 250);
+  --google-gray-600: rgb(128, 134, 139);
+  --google-gray-700: rgb(95, 99, 104);
+  --google-gray-800: rgb(60, 64, 67);
+  --google-gray-900: rgb(32, 33, 36);
+  --heading-color: rgb(4, 4, 4);
+  --link-color: rgb(4, 4, 4);
+  --primary-button-fill-color-active: rgb(35, 35, 35);
+  --primary-button-fill-color: rgb(4, 4, 4);
+  --primary-button-text-color: #fff;
+  --quiet-background-color: rgb(247, 247, 247);
+  --secondary-button-border-color: var(--google-gray-500);
+  --secondary-button-fill-color: #fff;
+  --secondary-button-hover-border-color: var(--google-gray-600);
+  --secondary-button-hover-fill-color: var(--google-gray-50);
+  --secondary-button-text-color: rgb(89, 90, 90);
+  --small-link-color: rgb(89, 90, 90);
+  --text-color: rgb(89, 90, 90);
+  background: var(--background-color);
+  color: var(--text-color);
+  word-wrap: break-word;
+}
+
+.nav-wrapper .secondary-button {
+  background: var(--secondary-button-fill-color);
+  border: 1px solid var(--secondary-button-border-color);
+  color: var(--secondary-button-text-color);
+  float: none;
+  margin: 0;
+  padding: 8px 16px;
+}
+
+.hidden {
+  display: none;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  font-size: 125%;
+}
+
+.icon {
+  background-repeat: no-repeat;
+  background-size: 100%;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    --background-color: rgb(4, 4, 4);
+    --error-code-color: rgb(89, 90, 90);
+    --heading-color: rgb(255, 255, 255);
+    --link-color: rgb(255, 255, 255);
+    --primary-button-fill-color-active: rgb(216, 216, 216);
+    --primary-button-fill-color: rgb(255, 255, 255);
+    --primary-button-text-color: rgb(4, 4, 4);
+    --quiet-background-color: var(--background-color);
+    --secondary-button-border-color: rgb(38, 38, 38);
+    --secondary-button-fill-color: rgb(18, 18, 18);
+    --secondary-button-hover-fill-color: rgb(38, 38, 38);
+    --secondary-button-text-color: rgb(255, 255, 255);
+    --small-link-color: rgb(177, 179, 179);
+    --text-color: rgb(177, 179, 179);
+  }
+}

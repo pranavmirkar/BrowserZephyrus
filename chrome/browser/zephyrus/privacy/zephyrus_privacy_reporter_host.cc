@@ -43,6 +43,33 @@ std::optional<FingerprintSurface> FromMojom(mojom::FingerprintSurface surface) {
   return std::nullopt;
 }
 
+// Which §6.5 per-surface bit governs this surface, or 0 for a surface that is
+// only ever DETECTED and never perturbed.
+//
+// kMediaDeviceEnumeration is the deliberate 0: it is a Phase 2 detection
+// surface with no randomization behind it, so it must never contribute to a
+// "protected" claim. A switch with no `default:` again, so a new surface has to
+// state which side it is on.
+uint32_t SurfaceMaskBitFor(FingerprintSurface surface) {
+  switch (surface) {
+    case FingerprintSurface::kMediaDeviceEnumeration:
+      return 0;
+    case FingerprintSurface::kCanvasRead:
+    case FingerprintSurface::kCanvasExport:
+      return kFpSurfaceCanvas;
+    case FingerprintSurface::kWebglRenderer:
+      return kFpSurfaceWebgl;
+    case FingerprintSurface::kAudioBuffer:
+      return kFpSurfaceAudio;
+    case FingerprintSurface::kHardwareConcurrency:
+    case FingerprintSurface::kDeviceMemory:
+      return kFpSurfaceNavigator;
+    case FingerprintSurface::kScreenDepth:
+      return kFpSurfaceScreen;
+  }
+  return 0;
+}
+
 }  // namespace
 
 // static
@@ -88,7 +115,21 @@ void ZephyrusPrivacyReporterHost::ReportFingerprintSurface(
   // that stops a compromised renderer forging an entry against another site.
   const GURL page_url =
       render_frame_host().GetOutermostMainFrame()->GetLastCommittedURL();
-  service->RecordFingerprintSurface(page_url, *translated);
+  // Whether the value was actually perturbed is decided HERE, from the mask the
+  // browser itself enforces — never from the renderer's word for it. The
+  // renderer reports a touch whether or not it perturbed (so that turning
+  // randomization off does not blind detection), so it cannot be the authority
+  // on whether protection happened: a compromised one would claim protection
+  // that was never applied, which is a §2 false claim in the safest-sounding
+  // direction.
+  //
+  // An opaque-origin document is seeded on its frame token and still perturbs,
+  // so origin opacity is deliberately NOT a disqualifier here.
+  const uint32_t surface_bit = SurfaceMaskBitFor(*translated);
+  const bool randomized =
+      surface_bit != 0 && (FingerprintSurfaceMask() & surface_bit) != 0;
+
+  service->RecordFingerprintSurface(page_url, *translated, randomized);
 }
 
 }  // namespace zephyrus_privacy

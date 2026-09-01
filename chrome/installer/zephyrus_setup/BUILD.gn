@@ -1,0 +1,35 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+# The Zephyrus installer's user interface.
+#
+# Deliberately free of //base and of everything else in this repository. An
+# installer runs on a machine that has none of our code on it yet, and every
+# dependency is one more thing that can be missing or mismatched at the exact
+# moment a first impression is being made. What it needs -- a window, Direct2D
+# and DirectWrite -- ships with Windows.
+
+assert(is_win)
+
+executable("zephyrus_setup") {
+  sources = [
+    "installer_runner.cc",
+    "installer_runner.h",
+    "mascot.cc",
+    "mascot.h",
+    "setup_resource_ids.h",
+    "setup_resources.rc",
+    "setup_window.cc",
+  ]
+
+  configs -= [ "//build/config/win:console" ]
+  configs += [ "//build/config/win:windowed" ]
+
+  libs = [
+    "d2d1.lib",
+    "dwrite.lib",
+    "ole32.lib",
+    "shell32.lib",
+  ]
+}

@@ -3,6 +3,11 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/border.h"
+#include "ui/gfx/canvas.h"
+#include "cc/paint/paint_flags.h"
+#include "ui/native_theme/native_theme.h"
 
 #include <map>
 
@@ -111,11 +116,81 @@ class ToggleCloseRecorder : public views::WidgetObserver {
 
 }  // namespace
 
+namespace {
+
+// This revision of NativeTheme has no ShouldUseDarkColors(); the state lives in
+// preferred_color_scheme(), which has THREE values, not two. kNoPreference is
+// the common case on a machine that has never been switched, and it must fall
+// to light rather than being lumped in with dark -- treating "no preference" as
+// dark would ship a black browser to everyone who never chose anything.
+bool OsPrefersDark() {
+  return ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
+         ui::NativeTheme::PreferredColorScheme::kDark;
+}
+
+}  // namespace
+
+const Palette& Current() {
+  // The OS decides. Zephyrus has no theme pref of its own, deliberately: the
+  // native surfaces we do not own (context menus, WebUI, system dialogs) follow
+  // the OS regardless, so any independent setting here would guarantee a
+  // mismatch on some surface rather than remove one.
+  //
+  // NativeTheme notifies on change, and Views repaints on it, so this being a
+  // live read rather than a cached value is what lets the browser follow a
+  // theme flip without a restart.
+  return OsPrefersDark() ? kDarkPalette : kLightPalette;
+}
+
+const Palette& PaletteFor(bool is_private) {
+  // Private is its OWN palette, not a transform of the current one -- so it
+  // looks the same whichever theme the machine is set to. "Am I private?"
+  // should not have a different answer depending on the OS setting.
+  if (is_private) {
+    return kPrivatePalette;
+  }
+  return OsPrefersDark() ? kDarkPalette : kLightPalette;
+}
+
+
+
 void ConfigureBubble(views::BubbleDialogDelegate* bubble) {
   if (!bubble) {
     return;
   }
-  bubble->set_corner_radius(kCornerRadius);
+  // kRadiusPopup, not kRadiusCard: a bubble floats over the window rather than
+  // sitting in the layout. See zephyrus_bubble_style.h.
+  //
+  // PROBE: on Windows, DWM rounds popup windows at the system radius (8dip) and
+  // menu_config_win.cc already records a 10dip menu fill being shaved by it. A
+  // bubble widget is translucent and larger than the bubble it draws, so it may
+  // escape that clip where a menu window cannot. If these corners come out at
+  // 28 rather than shaved back to 8, the clip does not apply here.
+  bubble->set_corner_radius(kRadiusPopup);
+}
+
+void ApplyAnchoredNub(views::BubbleDialogDelegate* bubble) {
+  if (!bubble) {
+    return;
+  }
+  views::BubbleFrameView* frame = bubble->GetBubbleFrameView();
+  if (!frame || !frame->bubble_border()) {
+    return;
+  }
+  frame->bubble_border()->set_visible_arrow(true);
+
+  // FORCE A BOUNDS RECOMPUTE, not just a relayout.
+  //
+  // The nub is drawn from `visible_arrow_rect_`, which BubbleBorder fills in
+  // only while computing the widget's bounds. Turning the arrow on after the
+  // widget exists leaves that rect empty, and an empty rect means no nub -- the
+  // corners and placement come out right and the nub silently never appears.
+  //
+  // Bubbles constructed with autosize get this recompute for free, which is why
+  // the first two popups worked and a bubble without it did not. Doing it here
+  // means a caller does not have to know about that.
+  frame->InvalidateLayout();
+  bubble->SizeToContents();
 }
 
 void ApplyBubbleFrame(views::BubbleDialogDelegate* bubble) {

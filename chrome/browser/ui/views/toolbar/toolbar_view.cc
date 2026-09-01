@@ -229,6 +229,8 @@
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/windows_icon_painter.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_image.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/dialog_button.mojom-shared.h"
@@ -409,6 +411,86 @@ void SetRefreshMargins(views::View* button, bool expanded) {
       gfx::Insets::VH(0, expanded ? kBrowserAppMenuRefreshExpandedMargin
                                   : kBrowserAppMenuRefreshCollapsedMargin));
 }
+
+// Width of one caption button cell.
+//
+// ONE constant, because there used to be two: SetPreferredSize said one thing
+// and ToolbarView::Layout() hardcoded 46, and since Layout() positions these
+// absolutely it always won. Changing the preferred size therefore did nothing
+// at all, which is how the buttons ended up drawn small while still occupying
+// -- and overlapping -- a 46px column each.
+// Title-bar pill geometry, shared by the Shield counter and the workspace
+// switcher.
+//
+// These live at namespace scope on purpose: the two pills sit side by side, so
+// any difference between them reads as a mistake rather than a variation. They
+// were separately tuned before (the workspace pill carried VH(4, 12) against
+// the Shield's VH(0, 5)), which is exactly the drift this prevents.
+//
+// Height is set by the CONTENTS, not by padding -- the pill just wraps whatever
+// is inside it -- so the icon and font sizes matter more than the insets.
+inline constexpr int kPillPadV = 0;
+inline constexpr int kPillPadH = 5;
+inline constexpr int kPillIconSize = 13;
+inline constexpr int kPillFontSize = 10;
+// Gap between a glyph and the number it labels: they are one token, so it is
+// nearly closed.
+inline constexpr int kPillIconTextGap = 1;
+inline constexpr float kPillStroke = 0.5f;
+// The height BOTH title-bar pills use.
+//
+// It used to be implicit -- each pill wrapped its own contents, so the Shield's
+// height came from its icon and the workspace circle from its font, and the two
+// only matched by coincidence. Stating it once and applying it to both is what
+// actually keeps them level; it also makes the workspace cell square (a circle
+// needs width == height), so the cell's width follows from this too.
+inline constexpr int kPillHeight = 24;
+
+inline constexpr int kZephyrusCaptionWidth = 32;
+
+// Air between the close button and the window's right edge. The strip used to
+// run flush into the corner; a few pixels of inset lets the cluster read as a
+// group sitting in the title bar rather than jammed against the frame.
+inline constexpr int kZephyrusCaptionRightPad = 4;
+
+// Nudges the browser controls (extensions, media, app menu) toward the
+// separator.
+//
+// They are placed by the flex layout, while the separator and window controls
+// are positioned absolutely in Layout() afterwards. So flex reserves cells and
+// margins for those pinned views that Layout() then ignores, and the slack
+// piles up as a gap on the left of the separator. Shrinking the toolbar's right
+// interior margin takes that slack back and slides the flex cluster right; the
+// pinned views do not move, because their bounds are set by hand.
+//
+// Raise to move the icons further right.
+inline constexpr int kZephyrusBrowserControlsRightShift = 3;
+
+// Cell the separator occupies. Its own width is a hairline; the rest is the
+// air either side, which is what actually makes it read as a divider rather
+// than a stray mark.
+// Air each side of the red rule. ASYMMETRIC on purpose, because its two
+// neighbours are not built the same way.
+//
+// To the RIGHT is a caption button, and it carries far more dead space than its
+// numbers suggest. The cell is 32px, the glyph box 16px centred inside it, but
+// the Breeze glyph only inks the middle 10 of its 18 grid units (see kGlyphBox
+// and the geometry table below). So the chevron's visible edge sits about
+// 8 + (4/18 * 16) = 11.6px inside the button, not 8px.
+//
+// To the LEFT is the app menu, whose dots ink nearly their whole box, behind
+// only 2px of inter-icon margin and a little internal padding.
+//
+// Balancing the CELL widths therefore leaves the rule looking closer to the app
+// menu, because ~4px of the right-hand gap is invisible glyph margin rather
+// than air. These numbers balance the INK instead, which is what the eye reads.
+//
+// The two knobs: raise kLeftAir to push the rule off the app menu, raise
+// kRightAir to push it off the window controls.
+inline constexpr int kZephyrusCaptionSeparatorLeftAir = 7;
+inline constexpr int kZephyrusCaptionSeparatorRightAir = 2;
+inline constexpr int kZephyrusCaptionSeparatorCell =
+    kZephyrusCaptionSeparatorLeftAir + 1 + kZephyrusCaptionSeparatorRightAir;
 
 }  // namespace
 
@@ -1637,16 +1719,21 @@ void ToolbarView::Layout(PassKey) {
   // and full title-bar height like native Win11 caption buttons (the floating
   // glass-pill variant was tried and reverted on user feedback).
   if (zephyrus_close_button_ && zephyrus_close_button_->GetVisible()) {
-    constexpr int kCaptionButtonWidth = 46;
-    int right = width();
+    int right = width() - kZephyrusCaptionRightPad;
     for (views::Button* button :
          {zephyrus_close_button_.get(), zephyrus_maximize_button_.get(),
           zephyrus_minimize_button_.get()}) {
       if (button && button->GetVisible()) {
-        button->SetBounds(right - kCaptionButtonWidth, 0, kCaptionButtonWidth,
-                          height());
-        right -= kCaptionButtonWidth;
+        button->SetBounds(right - kZephyrusCaptionWidth, 0,
+                          kZephyrusCaptionWidth, height());
+        right -= kZephyrusCaptionWidth;
       }
+    }
+    // `right` is now the left edge of the strip.
+    if (zephyrus_caption_separator_) {
+      zephyrus_caption_separator_->SetBounds(
+          right - kZephyrusCaptionSeparatorCell, 0,
+          kZephyrusCaptionSeparatorCell, height());
     }
   }
   if (zephyrus_controls_backdrop_) {
@@ -1889,6 +1976,42 @@ namespace {
 // A Windows 11-style caption button (minimize / maximize-restore / close) that
 // paints the authentic Win11 glyphs via Windows11IconPainter, with rectangular
 // hover backgrounds (red for close) like the native title bar buttons.
+// A vertical hairline dividing the browser controls from the window controls.
+class ZephyrusCaptionSeparator : public views::View {
+  METADATA_HEADER(ZephyrusCaptionSeparator, views::View)
+
+ public:
+  ZephyrusCaptionSeparator() { SetCanProcessEventsWithinSubtree(false); }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    // Short and centred, not full height: a rule that runs the whole title bar
+    // would cut the window in two, where this only has to say "different group
+    // of controls".
+    constexpr int kRuleHeight = 16;
+    const gfx::Rect b = GetContentsBounds();
+    // Positioned from the LEFT edge, not centred: the cell is deliberately
+    // lopsided so the rule sits the same optical distance from the app menu
+    // glyph as from the chevron. Centring here would undo that.
+    const float x = b.x() + kZephyrusCaptionSeparatorLeftAir + 0.5f;
+    const float top = b.CenterPoint().y() - kRuleHeight / 2.f;
+
+    cc::PaintFlags flags;
+    flags.setAntiAlias(false);
+    flags.setStyle(cc::PaintFlags::kStroke_Style);
+    flags.setStrokeWidth(zephyrus::kHairline);
+    // Accent, by request. Worth noting this is the only DECORATIVE use of the
+    // red in the browser -- everywhere else it marks something live or
+    // destructive (close, focus, drop target, active tab). A permanent red
+    // mark in the title bar spends a little of what makes those read as
+    // urgent; it is a deliberate trade, not an oversight.
+    flags.setColor(zephyrus::Accent());
+    canvas->sk_canvas()->drawLine(x, top, x, top + kRuleHeight, flags);
+  }
+};
+
+BEGIN_METADATA(ZephyrusCaptionSeparator)
+END_METADATA
+
 class ZephyrusWin11CaptionButton : public views::Button {
   METADATA_HEADER(ZephyrusWin11CaptionButton, views::Button)
 
@@ -1902,11 +2025,15 @@ class ZephyrusWin11CaptionButton : public views::Button {
     GetViewAccessibility().SetName(name);
     SetTooltipText(name);
     SetAnimateOnStateChange(false);
-    // Height matches the full title bar (location bar height + the interior
-    // margin that the negative margins below cancel out), so the buttons fill
-    // the title bar flush to the top/bottom edges.
-    SetPreferredSize(gfx::Size(46, 36));
+    // Tight cells, macOS-style grouping. Height stays 36 so the strip is flush
+    // to the top edge and stays hittable when the pointer is thrown into the
+    // screen corner.
+    SetPreferredSize(gfx::Size(kZephyrusCaptionWidth, 36));
   }
+
+  // The 18-unit Breeze grid is drawn into a box this many DIPs across; the
+  // drawn glyph occupies roughly the middle 10 units.
+  static constexpr float kGlyphBox = 16.f;
 
   void SetMaximized(bool maximized) {
     if (maximized_ != maximized) {
@@ -1923,80 +2050,103 @@ class ZephyrusWin11CaptionButton : public views::Button {
   }
 
   // views::Button:
+  //
+  // KDE Breeze glyphs, handled the way macOS handles its controls: a small,
+  // tightly grouped cluster rather than Windows' wide full-height cells.
+  // The glyph is permanent (Breeze) and a circle fills behind it on hover.
+  //
+  // The traffic-light dots that briefly lived here were wrong: the ask was
+  // Breeze's marks with macOS's *treatment*, not macOS's coloured dots.
   void OnPaintBackground(gfx::Canvas* canvas) override {
-    SkColor bg = SK_ColorTRANSPARENT;
     const bool hovered = GetState() == STATE_HOVERED;
     const bool pressed = GetState() == STATE_PRESSED;
-    if (kind_ == Kind::kClose) {
-      if (pressed) {
-        bg = SkColorSetRGB(0xF1, 0x70, 0x7A);
-      } else if (hovered) {
-        bg = SkColorSetRGB(0xC4, 0x2B, 0x1C);
-      }
-    } else if (pressed) {
-      bg = SkColorSetA(foreground_, 0x3A);
-    } else if (hovered) {
-      bg = SkColorSetA(foreground_, 0x24);
-    }
-    if (bg != SK_ColorTRANSPARENT) {
-      canvas->FillRect(GetLocalBounds(), bg);
-    }
-  }
-
-  void PaintButtonContents(gfx::Canvas* canvas) override {
-    SkColor symbol_color = foreground_;
-    if (kind_ == Kind::kClose &&
-        (GetState() == STATE_HOVERED || GetState() == STATE_PRESSED)) {
-      symbol_color = SK_ColorWHITE;
-    }
-
-    // Zephyrus: custom pixel-block glyphs for close and maximize/restore.
-    // Minimize keeps the crisp pixel-snapped Win11 dash below.
-    if (kind_ == Kind::kClose || kind_ == Kind::kMaximizeRestore) {
-      constexpr int kGlyphSize = 12;
-      const gfx::VectorIcon& icon = kind_ == Kind::kClose
-                                        ? kZephyrusCloseIcon
-                                        : kZephyrusMaximizeIcon;
-      const gfx::ImageSkia image =
-          gfx::CreateVectorIcon(icon, kGlyphSize, symbol_color);
-      const gfx::Point center = GetContentsBounds().CenterPoint();
-      canvas->DrawImageInt(image, center.x() - kGlyphSize / 2,
-                           center.y() - kGlyphSize / 2);
+    if (!hovered && !pressed) {
       return;
     }
 
-    gfx::ScopedCanvas scoped_canvas(canvas);
-    const float scale = canvas->UndoDeviceScaleFactor();
-    const int symbol_size_pixels = base::ClampRound(10 * scale);
-    gfx::RectF bounds_rect(GetContentsBounds());
-    bounds_rect.Scale(scale);
-    gfx::Rect symbol_rect(gfx::ToEnclosingRect(bounds_rect));
-    symbol_rect.ClampToCenteredSize(
-        gfx::Size(symbol_size_pixels, symbol_size_pixels));
+    SkColor bg;
+    if (kind_ == Kind::kClose) {
+      // Close is the one destructive control, and the only red in the strip.
+      bg = zephyrus::Accent();
+      if (pressed) {
+        bg = color_utils::AlphaBlend(SK_ColorBLACK, bg, SkAlpha{0x2E});
+      }
+    } else {
+      bg = pressed ? zephyrus::Ink() : SkColorSetA(zephyrus::Ink(), 0xC4);
+    }
 
     cc::PaintFlags flags;
-    flags.setAntiAlias(false);
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(bg);
+    canvas->DrawCircle(gfx::PointF(GetContentsBounds().CenterPoint()),
+                       (kGlyphBox + 6.f) / 2.f, flags);
+  }
+
+  // Breeze geometry, from breezebutton.cpp, on its own 18x18 grid:
+  //   close     X       (5,5)-(13,13) and (13,5)-(5,13)
+  //   maximize  chevron UP    (4,11)-(9,6)-(14,11)
+  //   minimize  chevron DOWN  (4,7)-(9,12)-(14,7)
+  //   restore   filled diamond (4,9)-(9,4)-(14,9)-(9,14)
+  //
+  // Antialiased on a float grid deliberately: diagonals and chevrons cannot be
+  // snapped to whole pixels without distorting their angles, which is what made
+  // the old pixel-blocked X ragged at fractional scaling.
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    const bool hot =
+        GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
+    // On hover the glyph sits on a filled circle, so it flips to the ground --
+    // the same inversion rule the rest of the browser follows.
+    const SkColor symbol_color = hot ? zephyrus::Ground() : foreground_;
+
+    gfx::ScopedCanvas scoped(canvas);
+    const gfx::Rect contents = GetContentsBounds();
+    const float unit = kGlyphBox / 18.f;
+    canvas->Translate(gfx::Vector2d(contents.x(), contents.y()));
+    canvas->sk_canvas()->scale(unit, unit);
+    canvas->sk_canvas()->translate((contents.width() / unit) / 2.f - 9.f,
+                                   (contents.height() / unit) / 2.f - 9.f);
+
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
     flags.setColor(symbol_color);
     flags.setStyle(cc::PaintFlags::kStroke_Style);
-    const int stroke_width = base::ClampRound(scale);
-    flags.setStrokeWidth(stroke_width);
+    flags.setStrokeWidth(1.25f);
+    flags.setStrokeCap(cc::PaintFlags::kRound_Cap);
+    flags.setStrokeJoin(cc::PaintFlags::kRound_Join);
 
     switch (kind_) {
-      case Kind::kMinimize:
-        painter_.PaintMinimizeIcon(canvas, symbol_rect, flags);
+      case Kind::kClose:
+        canvas->sk_canvas()->drawLine(5, 5, 13, 13, flags);
+        canvas->sk_canvas()->drawLine(13, 5, 5, 13, flags);
         break;
-      case Kind::kMaximizeRestore:
+      case Kind::kMinimize: {
+        SkPathBuilder path;
+        path.moveTo(4, 7);
+        path.lineTo(9, 12);
+        path.lineTo(14, 7);
+        canvas->sk_canvas()->drawPath(path.detach(), flags);
+        break;
+      }
+      case Kind::kMaximizeRestore: {
+        SkPathBuilder path;
         if (maximized_) {
-          painter_.PaintRestoreIcon(canvas, symbol_rect, flags);
+          path.moveTo(4, 9);
+          path.lineTo(9, 4);
+          path.lineTo(14, 9);
+          path.lineTo(9, 14);
+          path.close();
+          // STROKED, not filled. Breeze fills this diamond, but Breeze draws it
+          // much larger; at 16px a solid diamond reads as a blob next to two
+          // hairline chevrons, so it keeps the same pen as its neighbours and
+          // the row stays one weight.
+          canvas->sk_canvas()->drawPath(path.detach(), flags);
         } else {
-          painter_.PaintMaximizeIcon(canvas, symbol_rect, flags);
+          path.moveTo(4, 11);
+          path.lineTo(9, 6);
+          path.lineTo(14, 11);
+          canvas->sk_canvas()->drawPath(path.detach(), flags);
         }
-        break;
-      case Kind::kClose: {
-        const float halo =
-            stroke_width * (symbol_color == SK_ColorWHITE ? 0.1f : 0.05f);
-        flags.setStrokeWidth(stroke_width + halo);
-        painter_.PaintCloseIcon(canvas, symbol_rect, flags);
         break;
       }
     }
@@ -2006,84 +2156,12 @@ class ZephyrusWin11CaptionButton : public views::Button {
   Kind kind_;
   bool maximized_ = false;
   SkColor foreground_ = SK_ColorWHITE;
-  Windows11IconPainter painter_;
 };
 
 BEGIN_METADATA(ZephyrusWin11CaptionButton)
 END_METADATA
 
-// The blocked-count chip. A layer-backed CHILD VIEW rather than something the
-// button paints itself: the glyph and the ink drop are children too, and both
-// earlier attempts (PaintButtonContents, then PaintChildren) ended up beneath
-// them — the chip barely showed and the digits read as part of the shield. A
-// child with its own layer composites above unlayered siblings, so the stacking
-// stops being a guess.
-class ZephyrusBadgeView : public views::View {
-  METADATA_HEADER(ZephyrusBadgeView, views::View)
 
- public:
-  ZephyrusBadgeView() {
-    SetPaintToLayer();
-    layer()->SetFillsBoundsOpaquely(false);
-    // Purely decorative: the button underneath must keep every click.
-    SetCanProcessEventsWithinSubtree(false);
-  }
-
-  void SetCount(int count) {
-    if (count_ == count) {
-      return;
-    }
-    count_ = count;
-    PreferredSizeChanged();
-    SchedulePaint();
-  }
-
-  // The real number, never "99+". A blocker's count is the whole point of
-  // showing it, and rounding it off the moment it gets impressive is exactly
-  // backwards. Longer numbers step the type down so four digits still fit.
-  gfx::FontList GetBadgeFont() const {
-    const int size = count_ < 100 ? 10 : count_ < 1000 ? 9 : 8;
-    return gfx::FontList({"Segoe UI"}, gfx::Font::NORMAL, size,
-                         gfx::Font::Weight::BOLD);
-  }
-
-  // views::View:
-  gfx::Size CalculatePreferredSize(
-      const views::SizeBounds& available) const override {
-    const int width = gfx::GetStringWidth(base::NumberToString16(count_),
-                                          GetBadgeFont()) +
-                      kBadgePadding;
-    return gfx::Size(std::max(kBadgeHeight, width), kBadgeHeight);
-  }
-
-  void OnPaint(gfx::Canvas* canvas) override {
-    if (count_ <= 0) {
-      return;
-    }
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setStyle(cc::PaintFlags::kFill_Style);
-    // Solid, fully opaque, one flat colour — the dark chip of the reference
-    // art. A shade below the toolbar's #0E1123 so the chip still has an edge
-    // where it extends past the glyph.
-    flags.setColor(kBadgeFill);
-    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kBadgeRadius, flags);
-    canvas->DrawStringRectWithFlags(
-        base::NumberToString16(count_), GetBadgeFont(), SK_ColorWHITE,
-        GetLocalBounds(), gfx::Canvas::TEXT_ALIGN_CENTER);
-  }
-
- private:
-  static constexpr int kBadgeHeight = 16;
-  static constexpr int kBadgeRadius = 5;
-  static constexpr int kBadgePadding = 9;
-  static constexpr SkColor kBadgeFill = SkColorSetRGB(0x09, 0x0B, 0x11);
-
-  int count_ = 0;
-};
-
-BEGIN_METADATA(ZephyrusBadgeView)
-END_METADATA
 
 // A ToolbarButton whose icon color can be forced to a value that contrasts with
 // the current title bar, so the pin glyph stays visible on light page colors.
@@ -2107,15 +2185,42 @@ class ZephyrusPinButton : public ToolbarButton {
   // nothing to block.
   void SetZephyrusBadgeCount(int count) {
     count = std::max(0, count);
-    if (!badge_ && count == 0) {
-      return;
+    // The count sits BESIDE the glyph now, not on top of it.
+    //
+    // It used to be a badge overlaid on the shield's lower half, which meant
+    // the number fought the icon for the same pixels and had to shrink as it
+    // grew. ToolbarButton is a LabelButton, so handing it text gets a proper
+    // horizontal image+label layout for free -- and the pill drawn in
+    // OnPaintBackground turns the pair into one object.
+    //
+    // Zero still shows nothing: a shield reading "0" is noise on every page
+    // that simply had nothing to block.
+    show_pill_ = count > 0;
+    SetText(count > 0 ? base::NumberToString16(count) : std::u16string());
+
+    if (show_pill_) {
+      // Tight. LabelButton's default image-label gap is sized for a button with
+      // a word next to an icon; here it is a glyph and a number that should
+      // read as ONE token, so the gap comes right down.
+      SetImageLabelSpacing(kPillIconTextGap);
+      // Padding drives the pill's size -- there is no explicit height, the
+      // rounded rect just wraps whatever the contents need. Small vertical
+      // padding is what keeps it from towering over the workspace pill beside
+      // it.
+      SetBorder(views::CreateEmptyBorder(
+          gfx::Insets::VH(kPillPadV, kPillPadH)));
+      // Pin the height rather than letting the icon and label decide it, so it
+      // matches the workspace circles exactly instead of approximately.
+      SetMinSize(gfx::Size(0, kPillHeight));
+      label()->SetFontList(gfx::FontList({"Segoe UI"}, gfx::Font::NORMAL,
+                                         kPillFontSize,
+                                         gfx::Font::Weight::MEDIUM));
+      // The icon size is read during UpdateIcon(), so it has to be re-read
+      // after show_pill_ flips or the glyph keeps its old size.
+      UpdateIcon();
     }
-    if (!badge_) {
-      badge_ = AddChildView(std::make_unique<ZephyrusBadgeView>());
-    }
-    badge_->SetCount(count);
-    badge_->SetVisible(count > 0);
-    PositionBadge();
+    PreferredSizeChanged();
+    SchedulePaint();
   }
 
   // ToolbarButton:
@@ -2123,29 +2228,48 @@ class ZephyrusPinButton : public ToolbarButton {
     return foreground_.value_or(ToolbarButton::GetForegroundColor(state));
   }
 
-  void OnBoundsChanged(const gfx::Rect& previous_bounds) override {
-    ToolbarButton::OnBoundsChanged(previous_bounds);
-    PositionBadge();
+  // Only the counter pill shrinks its glyph; the plain pin button keeps the
+  // standard toolbar icon size so it still matches its neighbours.
+  int GetIconSize() const override {
+    return show_pill_ ? kPillIconSize : ToolbarButton::GetIconSize();
+  }
+
+  // The pill: title-bar coloured, with a hairline outline.
+  //
+  // Filling in the GROUND rather than a lighter surface is deliberate -- the
+  // pill is meant to read as a shape cut into the title bar, not as a raised
+  // chip floating on it, so the outline does all the separating.
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (!show_pill_) {
+      ToolbarButton::OnPaintBackground(canvas);
+      return;
+    }
+    gfx::RectF body(GetLocalBounds());
+    // Half a pixel in, so the 1px stroke lands on the grid instead of
+    // straddling two rows and rendering as a soft 2px edge.
+    body.Inset(0.5f);
+    const float radius = body.height() / 2.f;
+
+    cc::PaintFlags fill;
+    fill.setAntiAlias(true);
+    fill.setStyle(cc::PaintFlags::kFill_Style);
+    fill.setColor(zephyrus::Ground());
+    canvas->DrawRoundRect(body, radius, fill);
+
+    cc::PaintFlags stroke;
+    stroke.setAntiAlias(true);
+    stroke.setStyle(cc::PaintFlags::kStroke_Style);
+    // Thinner than the standard hairline. At this size a full 1px outline is
+    // the heaviest thing in the title bar; sub-pixel width renders as a lighter
+    // line rather than a thinner one, which is the effect wanted here.
+    stroke.setStrokeWidth(kPillStroke);
+    stroke.setColor(zephyrus::Ink());
+    canvas->DrawRoundRect(body, radius, stroke);
   }
 
  private:
-  // Bottom-centred over the glyph, as in the reference: the count reads as part
-  // of the shield rather than an ornament clinging to a corner. Positioned by
-  // hand because LabelButton lays out only its own image and label and leaves
-  // extra children where they are put.
-  void PositionBadge() {
-    if (!badge_) {
-      return;
-    }
-    const gfx::Size size = badge_->GetPreferredSize();
-    const gfx::Rect local = GetLocalBounds();
-    badge_->SetBounds(local.CenterPoint().x() - size.width() / 2,
-                      local.bottom() - size.height(), size.width(),
-                      size.height());
-  }
-
   std::optional<SkColor> foreground_;
-  raw_ptr<ZephyrusBadgeView> badge_ = nullptr;
+  bool show_pill_ = false;
 };
 
 BEGIN_METADATA(ZephyrusPinButton)
@@ -2155,7 +2279,8 @@ END_METADATA
 // file has no dialog component, so the surface is derived from the design
 // system already in use — the workspace dropdown's lifted panel color and the
 // 10px card radius — rather than inventing a second visual language.
-constexpr int kZephyrusDialogRadius = zephyrus::kCornerRadius;
+// Holds things -> card radius.
+constexpr int kZephyrusDialogRadius = zephyrus::kRadiusCard;
 constexpr int kZephyrusDialogWidth = 360;
 // Entrance is generous enough to be read as an arrival; the exit is quicker,
 // because waiting on a dialog you have already dismissed is what makes an
@@ -2212,53 +2337,38 @@ class ZephyrusShieldToggleRow : public views::View {
 BEGIN_METADATA(ZephyrusShieldToggleRow)
 END_METADATA
 
-// A dialog action button. The native dialog button row is not used (it paints
-// on the platform frame, which is light-themed regardless of our permanent
-// dark theme), so the buttons live inside the panel and are styled from the
-// same lifted-surface model as the workspace dropdown rows.
+// A dialog action button (Cancel / destructive confirm).
 class ZephyrusDialogButton : public views::LabelButton {
   METADATA_HEADER(ZephyrusDialogButton, views::LabelButton)
 
  public:
   ZephyrusDialogButton(const std::u16string& text,
-                       SkColor foreground,
+                       SkColor text_color,
                        SkColor fill,
                        SkColor hovered_fill,
                        PressedCallback callback)
       : views::LabelButton(std::move(callback), text),
         fill_(fill),
         hovered_fill_(hovered_fill),
-        focus_color_(foreground) {
+        focus_color_(text_color) {
     SetHorizontalAlignment(gfx::ALIGN_CENTER);
-    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(9, 16)));
-    SetTextColor(views::Button::STATE_NORMAL, foreground);
-    SetTextColor(views::Button::STATE_HOVERED, foreground);
-    SetTextColor(views::Button::STATE_PRESSED, foreground);
-    views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::OFF);
-    // The stock focus ring is drawn from a native color id, which still tracks
-    // the OS light/dark setting in this tree — it lands as a loud violet halo
-    // on our permanently dark panel. Painted below in the panel's own ink
-    // instead. Removed, not disabled: focus stays visible for keyboard users.
-    views::FocusRing::Remove(this);
-    // The layer backs the press-scale transform. It can't fill its bounds
-    // opaquely (the fills are translucent and the corners are rounded), and
-    // subpixel text AA samples the r,g,b channels of whatever is underneath —
-    // which is garbage over a transparent layer. So LCD text has to go off for
-    // this button's own label, exactly as it is for the title and body labels.
+    SetEnabledTextColors(text_color);
+    SetTextColor(views::Button::STATE_HOVERED, text_color);
+    SetTextColor(views::Button::STATE_PRESSED, text_color);
+    SetMinSize(gfx::Size(0, 34));
+    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 16)));
+    SetAnimateOnStateChange(false);
     SetPaintToLayer();
     layer()->SetFillsBoundsOpaquely(false);
-    label()->SetSubpixelRenderingEnabled(false);
     UpdateFill();
   }
 
-  // views::Button:
   void StateChanged(views::Button::ButtonState old_state) override {
     views::LabelButton::StateChanged(old_state);
     UpdateFill();
     UpdatePressFeedback();
   }
 
-  // views::Button: OnPaint() is final; this is the paint hook it exposes.
   void PaintButtonContents(gfx::Canvas* canvas) override {
     views::LabelButton::PaintButtonContents(canvas);
     if (!HasFocus()) {
@@ -2338,8 +2448,8 @@ class ZephyrusDeleteWorkspaceContents : public views::View {
     // often near-black — where a drop shadow contributes nothing, so the
     // separation has to come from a lit edge instead.
     SetBorder(views::CreatePaddedBorder(
-        views::CreateRoundedRectBorder(1, kZephyrusDialogRadius,
-                                       SkColorSetA(foreground, 0x1F)),
+        views::CreateRoundedRectBorder(zephyrus::kHairline,
+                                       kZephyrusDialogRadius, zephyrus::Rule()),
         gfx::Insets::TLBR(23, 23, 19, 23)));
     auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets(), 6));
@@ -2606,13 +2716,16 @@ class ZephyrusGlassPill : public views::View {
     const float radius = height() / 2.0f;
     cc::PaintFlags fill;
     fill.setAntiAlias(true);
-    fill.setColor(SkColorSetA(SK_ColorWHITE, 0x24));
+    // Alphas of WHITE lifted the old dark chrome and are invisible on a light
+    // ground. Surface fill plus a hairline rule instead -- the pill is defined
+    // by its outline here, which is how this language raises anything.
+    fill.setColor(zephyrus::Surface());
     canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), radius, fill);
     cc::PaintFlags stroke;
     stroke.setAntiAlias(true);
     stroke.setStyle(cc::PaintFlags::kStroke_Style);
-    stroke.setStrokeWidth(1.0f);
-    stroke.setColor(SkColorSetA(SK_ColorWHITE, 0x2E));
+    stroke.setStrokeWidth(zephyrus::kHairline);
+    stroke.setColor(zephyrus::Rule());
     gfx::RectF hairline(GetLocalBounds());
     hairline.Inset(0.5f);
     canvas->DrawRoundRect(hairline, radius - 0.5f, stroke);
@@ -2631,6 +2744,13 @@ void ToolbarView::AddZephyrusWindowControls() {
       AddChildViewAt(std::make_unique<ZephyrusGlassPill>(), 0);
   zephyrus_controls_backdrop_ =
       AddChildViewAt(std::make_unique<ZephyrusGlassPill>(), 1);
+  // Sits to the LEFT of the window controls, and is created before them so it
+  // is behind them in paint order if their bounds ever overlap.
+  zephyrus_caption_separator_ =
+      AddChildView(std::make_unique<ZephyrusCaptionSeparator>());
+  zephyrus_caption_separator_->SetPreferredSize(
+      gfx::Size(kZephyrusCaptionSeparatorCell, 36));
+
   using Kind = ZephyrusWin11CaptionButton::Kind;
   auto add_button = [&](Kind kind, int accessible_name_id,
                         views::Button::PressedCallback callback) {
@@ -2816,9 +2936,30 @@ void ToolbarView::UpdateZephyrusNavButtonBackgrounds(SkColor titlebar_color) {
   // out against our fixed title bar, leaving the buttons with no press or hover
   // feedback at all.
   const SkColor ink = color_utils::GetColorWithMaxContrast(titlebar_color);
+  // The upstream buttons that come and go are in this list too, and they are
+  // the reason it exists.
+  //
+  // They only appear when something happens: an extension is installed, a file
+  // downloads, a tab starts playing audio. Each arrives carrying Chromium's own
+  // toolbar styling, so a row that was uniform a moment ago gains a button with
+  // different padding. The extensions one is worse than different, because
+  // ExtensionsToolbarButton is a ToolbarChipButton and draws a pill container,
+  // which reads as a larger icon sitting among smaller ones.
+  //
+  // Clearing the highlight is what suppresses that. ToolbarChipButton paints
+  // its container and computes its insets in UpdateColorsAndInsets(), keyed off
+  // the highlight, so dropping the highlight drops both the container and the
+  // extra padding it reserved.
   ToolbarButton* const nav_buttons[] = {
-      home_.get(), zephyrus_new_tab_button_.get(), zephyrus_pin_button_.get(),
-      zephyrus_adblock_button_.get()};
+      home_.get(),
+      zephyrus_new_tab_button_.get(),
+      zephyrus_pin_button_.get(),
+      zephyrus_adblock_button_.get(),
+      GetDownloadButton(),
+      media_button_.get(),
+      extensions_container_ ? extensions_container_->GetExtensionsButton()
+                            : nullptr,
+  };
   for (ToolbarButton* button : nav_buttons) {
     if (!button) {
       continue;
@@ -2839,7 +2980,8 @@ void ToolbarView::AddZephyrusPinButton() {
         }
       },
       base::Unretained(this)));
-  pin->SetVectorIcon(kZephyrusPinIcon);
+  // Placeholder only; UpdateZephyrusPinButton() below sets the state glyph.
+  pin->SetVectorIcon(kZephyrusTitlebarPinnedIcon);
   // Sit in the right cluster, immediately to the LEFT of the app menu
   // (three-dots), so the title-bar pin lives with the other window-level
   // controls rather than floating beside the centered omnibox.
@@ -2913,8 +3055,14 @@ void ToolbarView::UpdateZephyrusPinButton() {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
   const bool pinned =
       !browser_view || browser_view->IsZephyrusTitlebarPinned();
-  // Zephyrus: single custom pin glyph for both pinned and unpinned states.
-  zephyrus_pin_button_->SetVectorIcon(kZephyrusPinIcon);
+  // Zephyrus: the glyph now REPORTS the state instead of just offering the
+  // action. One icon for both states meant the button could only be understood
+  // by hovering it for the tooltip -- you could not tell from the title bar
+  // whether the bar was pinned or set to auto-hide.
+  //
+  // Filled top strip = pinned. Short stub = hidden/auto-hide.
+  zephyrus_pin_button_->SetVectorIcon(pinned ? kZephyrusTitlebarPinnedIcon
+                                             : kZephyrusTitlebarHiddenIcon);
   const std::u16string name =
       pinned ? u"Unpin title bar (auto-hide)" : u"Pin title bar";
   zephyrus_pin_button_->SetTooltipText(name);
@@ -2931,8 +3079,8 @@ void ToolbarView::AddZephyrusAdblockButton() {
   shield->GetViewAccessibility().SetName(name);
   // Place it in the left group, just after the workspace switcher.
   size_t index = children().size();
-  if (zephyrus_workspace_button_) {
-    index = GetIndexOf(zephyrus_workspace_button_).value() + 1;
+  if (zephyrus_workspace_strip_) {
+    index = GetIndexOf(zephyrus_workspace_strip_).value() + 1;
   } else if (zephyrus_new_tab_button_) {
     index = GetIndexOf(zephyrus_new_tab_button_).value() + 1;
   }
@@ -2999,19 +3147,15 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
   // workspace dropdown and the delete dialog, so all three cards are literally
   // the same material. The old hardcoded #18181C was a neutral grey that
   // belonged to no theme and read as a foreign panel next to them.
-  const SkColor kBase = BrowserView::kZephyrusThemeColor;
-  const SkColor kOverlay =
-      color_utils::IsDark(kBase) ? SK_ColorWHITE : SK_ColorBLACK;
-  auto lift = [&](SkAlpha a) {
-    return color_utils::AlphaBlend(kOverlay, kBase, a);
-  };
+  const SkColor kBase = zephyrus::Ground();
+  auto lift = [&](SkAlpha a) { return zephyrus::Raise(kBase, a); };
   const SkColor kCardBg = lift(0x22);       // Same level as the dropdown panel.
   const SkColor kInsetCard = lift(0x2E);    // Raised group inside the card.
   const SkColor kRowHover = lift(0x3A);     // Same hover level as menu rows.
   const SkColor kFg = color_utils::GetColorWithMaxContrast(kBase);
   const SkColor kMuted = SkColorSetA(kFg, 0xB0);  // System body alpha.
   const SkColor kFaint = SkColorSetA(kFg, 0x8A);
-  constexpr SkColor kAccent = zephyrus::kAccent;
+  const SkColor kAccent = zephyrus::Accent();
   constexpr int kWidth = 288;
 
   auto content = std::make_unique<views::View>();
@@ -3191,8 +3335,12 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
   content->SetPreferredSize(
       gfx::Size(kWidth, content->GetHeightForWidth(kWidth)));
 
+  // TOP_CENTER, not TOP_RIGHT: the nub sits at the middle of the popup's top
+  // edge, so the popup itself has to be centred under the shield for the nub to
+  // land on it. Anchoring by a corner put the popup off to one side and the nub
+  // wherever the corner happened to be.
   auto bubble = std::make_unique<views::BubbleDialogDelegate>(
-      zephyrus_adblock_button_, views::BubbleBorder::TOP_RIGHT,
+      zephyrus_adblock_button_, views::BubbleBorder::TOP_CENTER,
       views::BubbleBorder::STANDARD_SHADOW, /*autosize=*/true);
   bubble->SetShowCloseButton(false);
   bubble->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -3204,6 +3352,8 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
   views::Widget* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
       std::move(bubble), views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
   zephyrus::ApplyBubbleFrame(bubble_ptr);
+  // The shield popup hangs off the shield button, so it earns a nub.
+  zephyrus::ApplyAnchoredNub(bubble_ptr);
   widget->Show();
   AnimateZephyrusBubbleIn(widget);
 }
@@ -3292,7 +3442,9 @@ class ZephyrusEditCardView : public views::View {
 
  public:
   static constexpr int kMargin = 10;  // shadow bleed + overflow room.
-  static constexpr float kRadius = 7.0f;
+  // Holds content -> card radius. Was 7, mid-range.
+  static constexpr float kRadius =
+      static_cast<float>(zephyrus::kRadiusCard);
 
   explicit ZephyrusEditCardView(SkColor fill) : fill_(fill) {
     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(3, kMargin)));
@@ -3365,730 +3517,507 @@ class ZephyrusInlineNameField : public views::Textfield {
 BEGIN_METADATA(ZephyrusInlineNameField)
 END_METADATA
 
-// LabelButton with its label() accessor exposed (protected upstream), so the
-// menu can underline the "edit" link per the Figma mockup.
-// A compact text glyph button whose hover affordances match the Figma:
-// "edit" underlines only on hover; ✕ gets a rounded square fill only on hover.
-class ZephyrusGlyphButton : public views::LabelButton {
-  METADATA_HEADER(ZephyrusGlyphButton, views::LabelButton)
+
+// The workspace index, drawn as dots.
+//
+// This replaces the coloured swatch that used to identify a workspace. One
+// accent means hue is not available for identity, so count and position carry
+// it instead -- and the dots sit on the same grid the rest of the interface is
+// constructed on, which is the one place in browser chrome where the dot motif
+// is doing work rather than decoration.
+class ZephyrusWorkspaceDots : public views::View {
+  METADATA_HEADER(ZephyrusWorkspaceDots, views::View)
 
  public:
-  using views::LabelButton::LabelButton;
-  using views::LabelButton::label;
+  ZephyrusWorkspaceDots() { SetCanProcessEventsWithinSubtree(false); }
 
-  void SetUnderlineOnHover(bool on) {
-    underline_on_hover_ = on;
-    ApplyHoverState();
-  }
-  // |fill| is painted (radius |radius|) only while hovered/pressed.
-  void SetHoverFill(SkColor fill, float radius) {
-    hover_fill_ = fill;
-    hover_radius_ = radius;
-    has_hover_fill_ = true;
-    ApplyHoverState();
-  }
-
-  // views::LabelButton:
-  void StateChanged(views::Button::ButtonState old_state) override {
-    views::LabelButton::StateChanged(old_state);
-    ApplyHoverState();
-  }
-
- private:
-  bool IsHot() const {
-    return GetState() == views::Button::STATE_HOVERED ||
-           GetState() == views::Button::STATE_PRESSED;
-  }
-  void ApplyHoverState() {
-    const bool hot = IsHot();
-    if (underline_on_hover_) {
-      label()->SetFontList(hot ? label()->font_list().DeriveWithStyle(
-                                     gfx::Font::UNDERLINE)
-                               : label()->font_list().DeriveWithStyle(
-                                     gfx::Font::NORMAL));
-    }
-    if (has_hover_fill_) {
-      SetBackground(hot ? views::CreateRoundedRectBackground(hover_fill_,
-                                                             hover_radius_)
-                        : nullptr);
-    }
-  }
-
-  bool underline_on_hover_ = false;
-  bool has_hover_fill_ = false;
-  SkColor hover_fill_ = SK_ColorTRANSPARENT;
-  float hover_radius_ = 0.0f;
-};
-
-BEGIN_METADATA(ZephyrusGlyphButton)
-END_METADATA
-
-class ZephyrusWorkspaceMenu : public views::BubbleDialogDelegateView,
-                              public gfx::AnimationDelegate,
-                              public views::TextfieldController {
-  METADATA_HEADER(ZephyrusWorkspaceMenu, views::BubbleDialogDelegateView)
-
- public:
-  ZephyrusWorkspaceMenu(views::View* anchor,
-                        ZephyrusWorkspaceManager* manager,
-                        std::optional<SkColor> page_color,
-                        base::RepeatingClosure on_action,
-                        base::RepeatingClosure on_closed)
-      : views::BubbleDialogDelegateView(anchor,
-                                        views::BubbleBorder::TOP_LEFT),
-        manager_(manager),
-        on_action_(std::move(on_action)),
-        on_closed_(std::move(on_closed)) {
-    SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
-    set_margins(gfx::Insets(8));
-    zephyrus::ConfigureBubble(this);  // Figma Workspaces_dropdown card radius.
-    SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
-
-    // Figma Workspaces_dropdown, colored by the SAME dynamic-theme model as
-    // the title bar (page color + progressively stronger subtle overlay), so
-    // the card, its hover rows, and the lifted edit card all belong to the
-    // chameleon surface. Ink contrasts with the page.
-    const SkColor base = page_color.value_or(SkColorSetRGB(0x16, 0x16, 0x18));
-    const bool dark = color_utils::IsDark(base);
-    const SkColor overlay = dark ? SK_ColorWHITE : SK_ColorBLACK;
-    auto lift = [&](SkAlpha a) {
-      return color_utils::AlphaBlend(overlay, base, a);
-    };
-    panel_ = lift(dark ? 0x22 : 0x18);
-    foreground_ = color_utils::GetColorWithMaxContrast(base);
-    row_hover_ = lift(dark ? 0x3A : 0x2C);
-    edit_card_ = lift(dark ? 0x5A : 0x44);
-    SetBackgroundColor(panel_);
-
-    expand_animation_.SetSlideDuration(base::Milliseconds(220));
-    expand_animation_.SetTweenType(gfx::Tween::EASE_OUT_3);
-
-    RebuildList();
-  }
-
-  ~ZephyrusWorkspaceMenu() override {
-    if (on_closed_) {
-      on_closed_.Run();
-    }
-  }
-
-  // views::WidgetDelegate: the bubble frame exists by now, which is what
-  // ApplyBubbleFrame() needs.
-  void OnWidgetInitialized() override {
-    views::BubbleDialogDelegateView::OnWidgetInitialized();
-    zephyrus::ApplyBubbleFrame(this);
-  }
-
-  // The Figma "full width jump": the card starts at the anchor pill's width
-  // and glides to its full width (left edge fixed at the anchor).
-  void StartZephyrusEntrance(int anchor_width) {
-    views::Widget* widget = GetWidget();
-    if (!widget || !gfx::Animation::ShouldRenderRichAnimation()) {
+  void SetDots(int count, SkColor ink) {
+    if (count == count_ && ink == ink_) {
       return;
     }
-    final_bounds_ = widget->GetWindowBoundsInScreen();
-    start_width_ = std::min(final_bounds_.width(),
-                            std::max(anchor_width, 60));
-    expand_animation_.Show();
-    AnimationProgressed(&expand_animation_);
+    count_ = count;
+    ink_ = ink;
+    PreferredSizeChanged();
+    SchedulePaint();
   }
 
-  // gfx::AnimationDelegate:
-  void AnimationProgressed(const gfx::Animation* animation) override {
-    views::Widget* widget = GetWidget();
-    if (!widget) {
-      return;
-    }
-    gfx::Rect bounds = final_bounds_;
-    bounds.set_width(gfx::Tween::IntValueBetween(
-        animation->GetCurrentValue(), start_width_, final_bounds_.width()));
-    widget->SetBounds(bounds);
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available) const override {
+    // Whole numbers of device pixels at 100%: a 3px dot on a 5px pitch. Halves
+    // here blur at fractional scales, which is the failure this project has hit
+    // before with layer-rounded radii.
+    return gfx::Size(count_ * kPitch - (kPitch - kDot), kDot);
   }
-  void AnimationEnded(const gfx::Animation* animation) override {
-    if (views::Widget* widget = GetWidget()) {
-      widget->SetBounds(final_bounds_);
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(ink_);
+    const float r = kDot / 2.f;
+    for (int i = 0; i < count_; ++i) {
+      canvas->DrawCircle(gfx::PointF(i * kPitch + r, height() / 2.f), r, flags);
     }
   }
 
  private:
-  static constexpr int kRowWidth = 218;
-
-  // A small circular color swatch.
-  std::unique_ptr<views::View> MakeDot(SkColor color, int diameter) {
-    auto dot = std::make_unique<views::View>();
-    dot->SetPreferredSize(gfx::Size(diameter, diameter));
-    dot->SetBackground(views::CreateRoundedRectBackground(
-        SkColorSetA(color, SK_AlphaOPAQUE), diameter / 2.0f));
-    return dot;
-  }
-
-  // A compact glyph button ("edit" / ✕ / ✓) with adaptive foreground.
-  ZephyrusGlyphButton* AddGlyphButton(views::View* parent,
-                                      const std::u16string& glyph,
-                                      base::RepeatingClosure action) {
-    auto* button = parent->AddChildView(std::make_unique<ZephyrusGlyphButton>(
-        base::BindRepeating(
-            [](ZephyrusWorkspaceMenu* self, base::RepeatingClosure a,
-               const ui::Event&) { a.Run(); },
-            base::Unretained(this), std::move(action)),
-        glyph));
-    button->SetTextColor(views::Button::STATE_NORMAL,
-                         SkColorSetA(foreground_, 0xB0));
-    button->SetTextColor(views::Button::STATE_HOVERED, foreground_);
-    button->SetMinSize(gfx::Size(30, 30));
-    return button;
-  }
-
-  void Relayout() {
-    if (GetWidget()) {
-      SizeToContents();
-    }
-  }
-
-  // ---- List mode -----------------------------------------------------------
-  void RebuildList() {
-    edit_card_view_ = nullptr;
-    name_field_ = nullptr;
-    RemoveAllChildViews();
-
-    // In Private Workspace the dropdown offers exactly one thing: the way out.
-    // The normal workspaces belong to a different profile and must not be
-    // listed, switched to, edited, deleted, or created from here — the only
-    // door back to them is Exit.
-    if (ZephyrusPrivateWorkspace::IsPrivate(
-            manager_ ? manager_->browser() : nullptr)) {
-      auto* exit_row = AddChildView(std::make_unique<views::LabelButton>(
-          base::BindRepeating(&ZephyrusWorkspaceMenu::OnTogglePrivate,
-                              base::Unretained(this)),
-          u"←  " + l10n_util::GetStringUTF16(IDS_ZEPHYRUS_EXIT_PRIVATE_WORKSPACE)));
-      exit_row->SetTextColor(views::Button::STATE_NORMAL, foreground_);
-      exit_row->SetTextColor(views::Button::STATE_HOVERED, foreground_);
-      exit_row->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-      exit_row->SetMinSize(gfx::Size(kRowWidth, 34));
-      Relayout();
-      return;
-    }
-
-    const auto& workspaces = manager_->workspaces();
-    const bool can_delete = workspaces.size() > 1;
-    // Dynamic-theme hover pill + trailing "edit"/✕ appear on hover (always on
-    // the active row).
-    for (const ZephyrusWorkspaceManager::Workspace& ws : workspaces) {
-      const bool active = ws.id == manager_->current_workspace_id();
-      auto* row = AddChildView(
-          std::make_unique<ZephyrusHoverRevealRow>(row_hover_, active));
-      auto* layout = row->SetLayoutManager(std::make_unique<views::BoxLayout>(
-          views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(0, 8), 8));
-      layout->set_cross_axis_alignment(
-          views::BoxLayout::CrossAxisAlignment::kCenter);
-      row->SetPreferredSize(gfx::Size(kRowWidth, 30));
-
-      row->AddChildView(MakeDot(ws.color, 10));
-
-      const std::u16string text =
-          ws.emoji.empty() ? ws.name : (ws.emoji + u"  " + ws.name);
-      auto* switch_button =
-          row->AddChildView(std::make_unique<views::LabelButton>(
-              base::BindRepeating(
-                  &ZephyrusWorkspaceMenu::OnSwitch, base::Unretained(this),
-                  ws.id),
-              text));
-      switch_button->SetTextColor(views::Button::STATE_NORMAL, foreground_);
-      switch_button->SetTextColor(views::Button::STATE_HOVERED, foreground_);
-      switch_button->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-      layout->SetFlexForView(switch_button, 1);
-
-      // Figma: "edit" is a small grey link that underlines only on hover; ✕
-      // gets a rounded-3px square fill only on hover. Both appear on row hover.
-      ZephyrusGlyphButton* edit = AddGlyphButton(
-          row, u"edit",
-          base::BindRepeating(&ZephyrusWorkspaceMenu::RebuildEditor,
-                              base::Unretained(this), ws.id));
-      edit->SetUnderlineOnHover(true);
-      row->AddRevealView(edit);
-      if (can_delete) {
-        ZephyrusGlyphButton* close = AddGlyphButton(
-            row, u"✕",
-            base::BindRepeating(&ZephyrusWorkspaceMenu::OnDelete,
-                                base::Unretained(this), ws.id));
-        // Neutral square that reads on the card, appearing only on hover.
-        close->SetHoverFill(
-            color_utils::BlendTowardMaxContrast(panel_, 0x40), 3.0f);
-        close->SetMinSize(gfx::Size(22, 22));
-        row->AddRevealView(close);
-      }
-      row->FinishInit();
-    }
-
-    auto* add_row = AddChildView(std::make_unique<views::LabelButton>(
-        base::BindRepeating(&ZephyrusWorkspaceMenu::OnAddWorkspace,
-                            base::Unretained(this)),
-        u"＋  New workspace"));
-    add_row->SetTextColor(views::Button::STATE_NORMAL, foreground_);
-    add_row->SetTextColor(views::Button::STATE_HOVERED, foreground_);
-    add_row->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    add_row->SetMinSize(gfx::Size(kRowWidth, 34));
-
-    // Private Workspace is not one of the stored workspaces — it lives on the
-    // OTR profile, which has its own store entirely — so it is a synthetic row
-    // rather than an entry in `workspaces`. A hairline sets it apart, because
-    // choosing it changes which profile you are browsing in, not just which
-    // tabs you see.
-    auto* rule = AddChildView(std::make_unique<views::View>());
-    rule->SetPreferredSize(gfx::Size(kRowWidth, 1));
-    rule->SetProperty(views::kMarginsKey, gfx::Insets::VH(5, 0));
-    rule->SetBackground(
-        views::CreateSolidBackground(SkColorSetA(foreground_, 0x1F)));
-
-    Browser* const browser = manager_ ? manager_->browser() : nullptr;
-    const bool in_private = ZephyrusPrivateWorkspace::IsPrivate(browser);
-    auto* private_row = AddChildView(std::make_unique<views::LabelButton>(
-        base::BindRepeating(&ZephyrusWorkspaceMenu::OnTogglePrivate,
-                            base::Unretained(this)),
-        in_private ? l10n_util::GetStringUTF16(IDS_ZEPHYRUS_LEAVE_PRIVATE_WORKSPACE)
-                   : l10n_util::GetStringUTF16(IDS_ZEPHYRUS_PRIVATE_WORKSPACE)));
-    private_row->SetTextColor(views::Button::STATE_NORMAL, foreground_);
-    private_row->SetTextColor(views::Button::STATE_HOVERED, foreground_);
-    // Dedicated lock icon as the leading mark, replacing the 🔒 emoji.
-    private_row->SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(kZephyrusPrivateWorkspaceIcon,
-                                       foreground_, 14));
-    private_row->SetImageLabelSpacing(8);
-    private_row->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    private_row->SetMinSize(gfx::Size(kRowWidth, 34));
-
-    // The lock toggle sits directly under the row it governs, so the setting is
-    // found where the decision is made rather than buried in settings.
-    const bool lock_on =
-        browser && ZephyrusPrivateWorkspace::IsLockEnabled(browser->profile());
-    auto* lock_row = AddChildView(std::make_unique<views::LabelButton>(
-        base::BindRepeating(&ZephyrusWorkspaceMenu::OnToggleLock,
-                            base::Unretained(this)),
-        (lock_on ? u"✓  " : u"     ") +
-            l10n_util::GetStringUTF16(IDS_ZEPHYRUS_REQUIRE_UNLOCK)));
-    // Touch-ID/biometric lock as the leading mark; dimmed when the setting is
-    // off, matching the label's own on/off alpha.
-    const SkColor lock_ink = SkColorSetA(foreground_, lock_on ? 0xFF : 0xB0);
-    lock_row->SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(kZephyrusTouchIdIcon, lock_ink, 15));
-    lock_row->SetImageLabelSpacing(8);
-    lock_row->SetTextColor(views::Button::STATE_NORMAL, lock_ink);
-    lock_row->SetTextColor(views::Button::STATE_HOVERED, foreground_);
-    lock_row->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    lock_row->SetMinSize(gfx::Size(kRowWidth, 30));
-
-    // PW-6 experiment: opens a private tab IN THIS WINDOW instead of swapping
-    // to a second one. Kept alongside the working window-swap row rather than
-    // replacing it, so a fault here doesn't cost the feature that works.
-    auto* inline_row = AddChildView(std::make_unique<views::LabelButton>(
-        base::BindRepeating(&ZephyrusWorkspaceMenu::OnOpenPrivateTabInWindow,
-                            base::Unretained(this)),
-        u"⚗  Private tab here (test)"));
-    inline_row->SetTextColor(views::Button::STATE_NORMAL,
-                             SkColorSetA(foreground_, 0xB0));
-    inline_row->SetTextColor(views::Button::STATE_HOVERED, foreground_);
-    inline_row->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    inline_row->SetMinSize(gfx::Size(kRowWidth, 30));
-    Relayout();
-  }
-
-  // ---- Inline edit mode (Figma Edit_Workspace) ----------------------------
-  void RebuildEditor(int workspace_id) {
-    const ZephyrusWorkspaceManager::Workspace* ws =
-        manager_->GetWorkspace(workspace_id);
-    if (!ws) {
-      RebuildList();
-      return;
-    }
-    editing_id_ = workspace_id;
-    emoji_field_ = nullptr;
-    RemoveAllChildViews();
-
-    // Same list, but the edited row becomes an underlined name field with a
-    // dark square check to confirm - rename happens in place, per the mockup.
-    for (const ZephyrusWorkspaceManager::Workspace& item :
-         manager_->workspaces()) {
-      auto* row = AddChildView(std::make_unique<views::View>());
-      auto* layout = row->SetLayoutManager(std::make_unique<views::BoxLayout>(
-          views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(0, 8),
-          8));
-      layout->set_cross_axis_alignment(
-          views::BoxLayout::CrossAxisAlignment::kCenter);
-      row->SetPreferredSize(gfx::Size(kRowWidth, 30));
-      if (item.id != workspace_id) {
-        row->AddChildView(MakeDot(item.color, 10));
-        auto* label = row->AddChildView(std::make_unique<views::Label>(
-            item.emoji.empty() ? item.name
-                               : (item.emoji + u"  " + item.name)));
-        label->SetEnabledColor(SkColorSetA(foreground_, 0x8C));
-        label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-        label->SetAutoColorReadabilityEnabled(false);
-        label->SetSubpixelRenderingEnabled(false);
-        layout->SetFlexForView(label, 1);
-        continue;
-      }
-      // Figma Edit_Workspace: the edited row lifts into an elevated card that
-      // overflows wider than the dropdown with a real drop shadow, popping
-      // open from the row's small width and expanding. The card is a
-      // ZephyrusEditCardView (shadow + overflow margin) on its own layer.
-      row->SetUseDefaultFillLayout(true);
-      auto* card = row->AddChildView(
-          std::make_unique<ZephyrusEditCardView>(edit_card_));
-      edit_card_view_ = card;
-      card->SetPaintToLayer();
-      card->layer()->SetFillsBoundsOpaquely(false);
-      auto* card_layout =
-          card->SetLayoutManager(std::make_unique<views::BoxLayout>(
-              views::BoxLayout::Orientation::kHorizontal,
-              gfx::Insets::VH(0, 4), 8));
-      card_layout->set_cross_axis_alignment(
-          views::BoxLayout::CrossAxisAlignment::kCenter);
-      // Overflow: the card is wider than the row column so it "comes out".
-      row->SetPreferredSize(
-          gfx::Size(kRowWidth + 2 * ZephyrusEditCardView::kMargin, 40));
-
-      auto* field = card->AddChildView(
-          std::make_unique<ZephyrusInlineNameField>());
-      name_field_ = field;
-      field->SetText(item.name);
-      const SkColor ink = color_utils::GetColorWithMaxContrast(edit_card_);
-      field->SetZephyrusColors(ink, edit_card_);
-      field->SetBorder(views::CreateSolidSidedBorder(
-          gfx::Insets::TLBR(0, 0, 1, 0), SkColorSetA(ink, 0xC0)));
-      name_field_->set_controller(this);
-      name_field_->GetViewAccessibility().SetName(u"Workspace name");
-      card_layout->SetFlexForView(name_field_, 1);
-
-      auto* done = card->AddChildView(std::make_unique<views::LabelButton>(
-          base::BindRepeating(&ZephyrusWorkspaceMenu::OnDoneEditing,
-                              base::Unretained(this)),
-          u"✓"));
-      const SkColor done_fill = color_utils::BlendTowardMaxContrast(edit_card_,
-                                                                    0xC8);
-      done->SetTextColor(views::Button::STATE_NORMAL,
-                         color_utils::GetColorWithMaxContrast(done_fill));
-      done->SetTextColor(views::Button::STATE_HOVERED,
-                         color_utils::GetColorWithMaxContrast(done_fill));
-      done->SetBackground(views::CreateRoundedRectBackground(done_fill, 3.0f));
-      done->SetMinSize(gfx::Size(22, 22));
-      done->GetViewAccessibility().SetName(u"Confirm rename");
-    }
-
-    Relayout();
-    // Pop the edit card open: it expands from ~72% width (the hover-highlight
-    // footprint) about its left edge, with a quick fade — "comes out in a
-    // card" per the design.
-    if (edit_card_view_ && edit_card_view_->layer() &&
-        gfx::Animation::ShouldRenderRichAnimation()) {
-      ui::Layer* layer = edit_card_view_->layer();
-      gfx::Transform small;
-      small.Scale(0.72, 1.0);
-      layer->SetOpacity(0.0f);
-      layer->SetTransform(small);
-      ui::ScopedLayerAnimationSettings s(layer->GetAnimator());
-      s.SetTransitionDuration(base::Milliseconds(200));
-      s.SetTweenType(gfx::Tween::EASE_OUT_3);
-      layer->SetOpacity(1.0f);
-      layer->SetTransform(gfx::Transform());
-    }
-    if (name_field_) {
-      name_field_->RequestFocus();
-      name_field_->SelectAll(false);
-    }
-  }
-
-  // views::TextfieldController: Enter commits the inline rename.
-  bool HandleKeyEvent(views::Textfield* sender,
-                      const ui::KeyEvent& key_event) override {
-    if (key_event.type() == ui::EventType::kKeyPressed &&
-        key_event.key_code() == ui::VKEY_RETURN) {
-      OnDoneEditing(key_event);
-      return true;
-    }
-    return false;
-  }
-
-  // ---- Actions -------------------------------------------------------------
-  void OnSwitch(int workspace_id, const ui::Event&) {
-    manager_->SwitchToWorkspace(workspace_id);
-    Finish();
-  }
-
-  void OnOpenPrivateTabInWindow(const ui::Event&) {
-    Browser* const browser = manager_ ? manager_->browser() : nullptr;
-    if (!browser) {
-      return;
-    }
-    auto* controller =
-        ZephyrusPrivateWorkspace::GetForProfile(browser->profile());
-    if (!controller) {
-      return;
-    }
-    // Close the dropdown first — the new tab activates and rebuilds the strip.
-    Finish();
-    controller->OpenPrivateTabIn(browser);
-  }
-
-  void OnToggleLock(const ui::Event&) {
-    Browser* const browser = manager_ ? manager_->browser() : nullptr;
-    if (!browser) {
-      return;
-    }
-    Profile* profile = browser->profile();
-    ZephyrusPrivateWorkspace::SetLockEnabled(
-        profile, !ZephyrusPrivateWorkspace::IsLockEnabled(profile));
-    RebuildList();  // Reflect the new state without closing the dropdown.
-  }
-
-  void OnTogglePrivate(const ui::Event&) {
-    Browser* const browser = manager_ ? manager_->browser() : nullptr;
-    if (!browser) {
-      return;
-    }
-    auto* controller =
-        ZephyrusPrivateWorkspace::GetForProfile(browser->profile());
-    if (!controller) {
-      return;
-    }
-    const bool in_private = ZephyrusPrivateWorkspace::IsPrivate(browser);
-    // Close the dropdown before swapping windows: this bubble belongs to the
-    // window that is about to be hidden.
-    Finish();
-    if (in_private) {
-      controller->Leave();
-    } else {
-      controller->Enter(browser);
-    }
-  }
-
-  void OnAddWorkspace(const ui::Event&) {
-    manager_->AddWorkspace();
-    Finish();
-  }
-
-  void OnDelete(int workspace_id) {
-    // Deleting closes every tab in the workspace, so confirm first. Counting
-    // them lets the warning name the actual cost instead of a vague caution.
-    if (!manager_) {
-      return;
-    }
-    Browser* browser = manager_->browser();
-    int tab_count = 0;
-    if (browser) {
-      TabStripModel* model = browser->tab_strip_model();
-      for (int i = 0; i < model->count(); ++i) {
-        if (manager_->GetWorkspaceForContents(model->GetWebContentsAt(i)) ==
-            workspace_id) {
-          ++tab_count;
-        }
-      }
-    }
-    const ZephyrusWorkspaceManager::Workspace* workspace =
-        manager_->GetWorkspace(workspace_id);
-    const std::u16string name = workspace ? workspace->name : u"this workspace";
-    const SkColor panel = panel_;
-    const SkColor foreground = foreground_;
-    base::WeakPtr<ZephyrusWorkspaceManager> manager = manager_->GetWeakPtr();
-    // Close the dropdown first: the dialog is modal, and leaving the bubble
-    // open behind it traps focus. Finish() (not on_action_, which only
-    // refreshes the toolbar pill) is what actually closes the widget, so
-    // everything the dialog needs is copied out above, before this point.
-    Finish();
-    // Posted so the modal is created after the dropdown's widget teardown has
-    // finished, rather than during it. The Browser is re-resolved through the
-    // weak manager rather than captured raw, so a window closed in between
-    // can't be dereferenced.
-    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE,
-        base::BindOnce(
-            [](base::WeakPtr<ZephyrusWorkspaceManager> manager,
-               std::u16string name, int tab_count, SkColor panel,
-               SkColor foreground, int id) {
-              if (!manager || !manager->browser()) {
-                return;
-              }
-              ShowZephyrusDeleteWorkspaceDialog(
-                  manager->browser(), name, tab_count, panel, foreground,
-                  base::BindOnce(
-                      [](base::WeakPtr<ZephyrusWorkspaceManager> manager,
-                         int id) {
-                        if (manager) {
-                          manager->DeleteWorkspace(id);
-                        }
-                      },
-                      manager, id));
-            },
-            manager, name, tab_count, panel, foreground, workspace_id));
-  }
-
-  void OnPickColor(SkColor color) {
-    if (editing_id_) {
-      manager_->SetWorkspaceColor(editing_id_, color);
-      on_action_.Run();
-    }
-  }
-
-  void OnDoneEditing(const ui::Event&) {
-    if (editing_id_ && name_field_) {
-      std::u16string name(name_field_->GetText());
-      if (!name.empty()) {
-        manager_->RenameWorkspace(editing_id_, name);
-      }
-      if (emoji_field_) {
-        manager_->SetWorkspaceEmoji(editing_id_,
-                                    std::u16string(emoji_field_->GetText()));
-      }
-      on_action_.Run();
-    }
-    name_field_ = nullptr;
-    emoji_field_ = nullptr;
-    editing_id_ = 0;
-    RebuildList();
-  }
-
-  void Finish() {
-    on_action_.Run();
-    if (views::Widget* widget = GetWidget()) {
-      widget->CloseWithReason(views::Widget::ClosedReason::kUnspecified);
-    }
-  }
-
-  raw_ptr<ZephyrusWorkspaceManager> manager_;
-  base::RepeatingClosure on_action_;
-  base::RepeatingClosure on_closed_;
-  SkColor foreground_ = SK_ColorWHITE;
-  SkColor panel_ = SkColorSetRGB(0x28, 0x28, 0x2c);
-  SkColor row_hover_ = SkColorSetA(SK_ColorWHITE, 0x1A);
-  SkColor edit_card_ = SK_ColorWHITE;
-  int editing_id_ = 0;
-  raw_ptr<views::Textfield> name_field_ = nullptr;
-  raw_ptr<views::Textfield> emoji_field_ = nullptr;
-  raw_ptr<views::View> edit_card_view_ = nullptr;
-  // Figma full-width-jump entrance (see StartZephyrusEntrance).
-  gfx::SlideAnimation expand_animation_{this};
-  gfx::Rect final_bounds_;
-  int start_width_ = 0;
+  static constexpr int kDot = 3;
+  static constexpr int kPitch = 5;
+  int count_ = 1;
+  SkColor ink_ = SK_ColorBLACK;
 };
 
-BEGIN_METADATA(ZephyrusWorkspaceMenu)
+BEGIN_METADATA(ZephyrusWorkspaceDots)
 END_METADATA
+
 
 // Title-bar workspace switcher: workspace name followed by a trailing dropdown
 // chevron (views::LabelButton can't place an image after the label, so this is
 // a Button hosting a Label + trailing ImageView).
-class ZephyrusWorkspaceButton : public views::Button {
-  METADATA_HEADER(ZephyrusWorkspaceButton, views::Button)
+// Icon picker for a workspace, in the shape Zen uses: a grid you pick from,
+// not a text field you paste into.
+//
+// The editor already had an emoji FIELD, and a field is the wrong control for
+// this -- it asks the user to produce an emoji from somewhere (an OS picker, a
+// copy-paste) before they can use the feature at all. A grid makes the whole
+// interaction one click.
+//
+// The set is deliberately small and generic. A long list turns picking into
+// searching, and these have to read at 13px in a title bar, so anything
+// detailed is a smudge regardless of how good it looks in the picker.
+class ZephyrusIconPicker : public views::BubbleDialogDelegateView {
+  METADATA_HEADER(ZephyrusIconPicker, views::BubbleDialogDelegateView)
 
  public:
-  explicit ZephyrusWorkspaceButton(PressedCallback callback)
-      : views::Button(std::move(callback)) {
-    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(4, 12), 6));
-    layout->set_cross_axis_alignment(
-        views::BoxLayout::CrossAxisAlignment::kCenter);
-    // Leading mark. Only shown for Private Workspace, where it carries the
-    // dedicated lock icon in place of a prepended emoji.
-    lock_view_ = AddChildView(std::make_unique<views::ImageView>());
-    lock_view_->SetVisible(false);
-    label_ = AddChildView(std::make_unique<views::Label>());
-    label_->SetAutoColorReadabilityEnabled(false);
-    label_->SetSubpixelRenderingEnabled(false);
-    // Shown when a workspace you can't see is playing audio, so the noise is
-    // attributable without opening the sidebar.
-    audio_view_ = AddChildView(std::make_unique<views::ImageView>());
-    audio_view_->SetVisible(false);
-    chevron_ = AddChildView(std::make_unique<views::ImageView>());
-  }
+  using PickCallback = base::RepeatingCallback<void(const std::u16string&)>;
 
-  // Shows the dedicated Private Workspace lock icon as a leading mark.
-  void SetPrivateMark(bool active, SkColor foreground) {
-    lock_view_->SetVisible(active);
-    if (active) {
-      lock_view_->SetImage(ui::ImageModel::FromVectorIcon(
-          kZephyrusPrivateWorkspaceIcon, foreground, 13));
+  ZephyrusIconPicker(views::View* anchor,
+                     PickCallback on_pick,
+                     base::RepeatingClosure on_choose_photo)
+      : views::BubbleDialogDelegateView(anchor,
+                                        views::BubbleBorder::TOP_CENTER),
+        on_pick_(std::move(on_pick)),
+        on_choose_photo_(std::move(on_choose_photo)) {
+    SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
+    set_margins(gfx::Insets(10));
+    zephyrus::ConfigureBubble(this);
+    SetBackgroundColor(zephyrus::Surface());
+
+    // Every icon here has to read against a WHITE disc, because that is what
+    // the active workspace indicator is. Two of the original eighteen did not
+    // and were replaced: the envelope and the aeroplane are mostly white, so
+    // they vanished the moment their workspace became active.
+    //
+    // Screening them out here is the whole fix -- the strip does not need a
+    // special case for pale icons if a pale icon can never be chosen.
+    static constexpr const char16_t* kIcons[] = {
+        u"⭐", u"🔥", u"💼", u"📚", u"🎵",
+        u"🎮", u"🛒", u"💰", u"📦", u"📈",
+        u"🔧", u"🧪", u"🎨", u"🏃", u"🍽",
+        u"🚀", u"🏠", u"❤",
+    };
+    constexpr int kPerRow = 6;
+
+    // Rows of BoxLayout rather than a TableLayout: the grid is fixed-size and
+    // uniform, so a table buys nothing and TableLayout is not reachable from
+    // this translation unit.
+    auto* grid = AddChildView(std::make_unique<views::View>());
+    grid->SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
+    views::View* row = nullptr;
+    int in_row = 0;
+    for (const char16_t* icon : kIcons) {
+      if (!row || in_row == kPerRow) {
+        row = grid->AddChildView(std::make_unique<views::View>());
+        row->SetLayoutManager(std::make_unique<views::BoxLayout>(
+            views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 2));
+        in_row = 0;
+      }
+      const std::u16string glyph(icon);
+      auto* button = row->AddChildView(std::make_unique<views::LabelButton>(
+          base::BindRepeating(
+              [](ZephyrusIconPicker* self, std::u16string g,
+                 const ui::Event&) { self->Pick(g); },
+              base::Unretained(this), glyph),
+          glyph));
+      button->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+      button->SetMinSize(gfx::Size(28, 28));
+      button->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
+      ++in_row;
     }
-  }
 
-  void SetAudioActive(bool active, SkColor foreground) {
-    audio_view_->SetVisible(active);
-    if (active) {
-      audio_view_->SetImage(ui::ImageModel::FromVectorIcon(
-          vector_icons::kVolumeUpIcon, foreground, 12));
-      audio_view_->SetTooltipText(u"Another workspace is playing audio");
-    }
-  }
+    // The photo route. It sits BELOW the emoji grid rather than beside it
+    // because it is the slower path -- it opens a file dialog, and everything
+    // above it is one click. Putting a dialog-opening control in the middle of
+    // a grid of instant ones makes the grid feel inconsistent.
+    auto* photo = AddChildView(std::make_unique<views::LabelButton>(
+        base::BindRepeating(
+            [](ZephyrusIconPicker* self, const ui::Event&) {
+              self->ChoosePhoto();
+            },
+            base::Unretained(this)),
+        u"Choose a photo…"));
+    photo->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+    photo->SetEnabledTextColors(zephyrus::Ink());
+    photo->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(10, 0, 0, 0));
 
-  void SetContent(const std::u16string& text, SkColor foreground) {
-    label_->SetText(text);
-    label_->SetEnabledColor(foreground);
-    chevron_->SetImage(ui::ImageModel::FromVectorIcon(kZephyrusDropdownIcon,
-                                                      foreground, 10));
-    const std::u16string accessible =
-        text.empty() ? u"Switch workspace" : text;
-    GetViewAccessibility().SetName(accessible);
-    SetTooltipText(u"Switch workspace");
-  }
+    // Clearing is a first-class choice: a workspace that went back to being
+    // "3" should not require deleting and recreating it.
+    auto* clear = AddChildView(std::make_unique<views::LabelButton>(
+        base::BindRepeating(
+            [](ZephyrusIconPicker* self, const ui::Event&) {
+              self->Pick(std::u16string());
+            },
+            base::Unretained(this)),
+        u"Use the number instead"));
+    clear->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+    clear->SetEnabledTextColors(zephyrus::Muted());
+    clear->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(8, 0, 0, 0));
 
-  // Figma: the chevron points up while the dropdown is open.
-  void SetMenuOpen(bool open) {
-    if (menu_open_ == open) {
-      return;
-    }
-    menu_open_ = open;
-    if (!chevron_->layer()) {
-      chevron_->SetPaintToLayer();
-      chevron_->layer()->SetFillsBoundsOpaquely(false);
-    }
-    gfx::Transform flip;
-    if (open) {
-      flip.Translate(0, chevron_->height());
-      flip.Scale(1, -1);
-    }
-    chevron_->SetTransform(flip);
-  }
-
-  // Pill fills for each interaction state; the hover/pressed fills give the
-  // button the press feedback it previously lacked entirely.
-  void SetPillFills(SkColor normal, SkColor hovered, SkColor pressed) {
-    normal_fill_ = normal;
-    hovered_fill_ = hovered;
-    pressed_fill_ = pressed;
-    UpdatePill();
-  }
-
-  // views::Button:
-  void StateChanged(views::Button::ButtonState old_state) override {
-    views::Button::StateChanged(old_state);
-    UpdatePill();
+    SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
   }
 
  private:
-  void UpdatePill() {
-    SkColor fill = normal_fill_;
-    if (GetState() == views::Button::STATE_PRESSED) {
-      fill = pressed_fill_;
-    } else if (GetState() == views::Button::STATE_HOVERED) {
-      fill = hovered_fill_;
-    }
-    // Figma Workspaces button: 10px rounded rect (not a full pill).
-    SetBackground(views::CreateRoundedRectBackground(fill, 10.0f));
+  void Pick(const std::u16string& glyph) {
+    on_pick_.Run(glyph);
+    Close();
   }
 
-  raw_ptr<views::ImageView> lock_view_ = nullptr;
-  raw_ptr<views::Label> label_ = nullptr;
-  raw_ptr<views::ImageView> audio_view_ = nullptr;
-  raw_ptr<views::ImageView> chevron_ = nullptr;
-  SkColor normal_fill_ = SK_ColorTRANSPARENT;
-  SkColor hovered_fill_ = SK_ColorTRANSPARENT;
-  SkColor pressed_fill_ = SK_ColorTRANSPARENT;
-  bool menu_open_ = false;
+  // Closes FIRST, then opens the file dialog.
+  //
+  // Order matters: the file dialog is modal to the window, and leaving a bubble
+  // open behind it means the bubble loses activation and dismisses itself
+  // anyway -- but on some paths that dismissal destroys `this` while the
+  // callback below is still running. Closing deliberately, and running the
+  // callback afterwards through a copy, keeps the sequence under our control.
+  void ChoosePhoto() {
+    base::RepeatingClosure open = on_choose_photo_;
+    Close();
+    if (open) {
+      open.Run();
+    }
+  }
+
+  void Close() {
+    if (GetWidget()) {
+      GetWidget()->CloseWithReason(
+          views::Widget::ClosedReason::kAcceptButtonClicked);
+    }
+  }
+
+  PickCallback on_pick_;
+  base::RepeatingClosure on_choose_photo_;
 };
 
-BEGIN_METADATA(ZephyrusWorkspaceButton)
+BEGIN_METADATA(ZephyrusIconPicker)
 END_METADATA
+
+// One number in the strip.
+class ZephyrusWorkspaceCell : public views::Button,
+                              public views::ContextMenuController {
+  METADATA_HEADER(ZephyrusWorkspaceCell, views::Button)
+
+ public:
+  ZephyrusWorkspaceCell(const std::u16string& glyph,
+                        bool active,
+                        bool is_icon,
+                        SkColor ink,
+                        PressedCallback callback,
+                        base::RepeatingClosure on_context_menu = {},
+                        gfx::ImageSkia photo = gfx::ImageSkia())
+      : views::Button(std::move(callback)),
+        active_(active),
+        is_icon_(is_icon),
+        ink_(ink),
+        photo_(std::move(photo)),
+        on_context_menu_(std::move(on_context_menu)) {
+    SetAnimateOnStateChange(false);
+    if (on_context_menu_) {
+      set_context_menu_controller(this);
+    }
+    // A photo REPLACES the glyph rather than sitting behind it. The label is
+    // still created (Layout and the colour code below both assume it exists)
+    // but is left empty, which is cheaper than making every one of them
+    // null-check a pointer that is non-null in all but one case.
+    label_ = AddChildView(
+        std::make_unique<views::Label>(photo_.isNull() ? glyph
+                                                       : std::u16string()));
+    label_->SetAutoColorReadabilityEnabled(false);
+    label_->SetSubpixelRenderingEnabled(false);
+    // An icon fills the disc; a numeral sits in it. Same cell, different
+    // optical size -- an emoji at the numeral's point size looks lost.
+    label_->SetFontList(gfx::FontList({"Segoe UI"}, gfx::Font::NORMAL,
+                                      is_icon ? kPillFontSize + 2
+                                              : kPillFontSize,
+                                      gfx::Font::Weight::MEDIUM));
+    // Alignment belongs in the constructor, not Layout(): it never changes, and
+    // setting it during layout meant the FIRST paint used the default
+    // (left/baseline) before layout corrected it -- part of why the glyph
+    // looked off-centre.
+    label_->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+    label_->SetVerticalAlignment(gfx::ALIGN_MIDDLE);
+
+    // An EMOJI is an image: it cannot be recoloured, so it never takes the
+    // inverted ink. Only a numeral does.
+    if (!is_icon_) {
+      label_->SetEnabledColor(active_ ? zephyrus::Ground()
+                                      : SkColorSetA(ink_, 0x8C));
+    } else {
+      label_->SetEnabledColor(ink_);
+    }
+    SetPreferredSize(gfx::Size(kCell, kCell));
+  }
+
+  void Layout(PassKey) override { label_->SetBoundsRect(GetLocalBounds()); }
+
+  // The cell's edge length, for callers that need to ask for a photo at the
+  // right size. Exposed rather than duplicated: a photo requested at a size the
+  // cell does not use is either blurry or wasteful, and nothing would catch it.
+  static constexpr int size() { return kCell; }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    const bool hot =
+        GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
+    // An idle cell draws no disc -- but a photo cell still has its photo, which
+    // is the cell's entire content. Returning before PaintPhoto() here is what
+    // made photo workspaces invisible until you hovered them.
+    if (!active_ && !hot) {
+      PaintPhoto(canvas);
+      return;
+    }
+
+    gfx::RectF body(GetLocalBounds());
+    body.Inset(1.f);
+    const float radius = body.height() / 2.f;
+
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+
+    // ONE shape for every cell: a white disc, full strength when active and a
+    // faint wash on hover.
+    //
+    // Icon cells briefly drew a RING instead, to keep a white emoji from
+    // vanishing into a white disc. It solved that, and looked wrong doing it --
+    // a ring beside filled circles reads as an unfinished state rather than a
+    // deliberate variant, and inconsistency is more visible than the rare
+    // pale icon it was protecting.
+    //
+    // The pale-icon problem is fixed where it actually belongs: the picker no
+    // longer OFFERS an icon that disappears on white. Constraining the input is
+    // cheaper than special-casing the output.
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(active_ ? SK_ColorWHITE : SkColorSetA(SK_ColorWHITE, 0x2E));
+    canvas->DrawRoundRect(body, radius, flags);
+    PaintPhoto(canvas);
+  }
+
+  // Drawn in the BACKGROUND pass, after the disc above it, rather than in
+  // OnPaint -- View::OnPaint is final, and there is nothing to paint over: a
+  // photo cell has an empty label, so the background pass is the whole cell.
+  void PaintPhoto(gfx::Canvas* canvas) {
+    if (photo_.isNull()) {
+      return;
+    }
+    // Inset ALWAYS, active or not, so the disc painted behind it shows as a
+    // white rim when this workspace is current. Insetting only when active
+    // would make the photo change size as you switch workspaces, which reads as
+    // a glitch rather than as a state.
+    gfx::Rect body = GetLocalBounds();
+    body.Inset(kPhotoInset);
+    if (body.IsEmpty()) {
+      return;
+    }
+
+    // Clipped to a circle rather than drawn as a rounded square: the emoji
+    // cells beside it are circles, and one square among them is the kind of
+    // inconsistency that is more visible than whatever it was meant to solve.
+    const gfx::Point center = body.CenterPoint();
+    const SkPath clip =
+        SkPathBuilder()
+            .addCircle(SkPoint::Make(center.x(), center.y()), body.width() / 2.f)
+            .detach();
+    canvas->Save();
+    canvas->ClipPath(clip, /*do_anti_alias=*/true);
+    // The stored image is square and `body` is square, so this scales without
+    // distorting. Filtering is on because the stored size is deliberately
+    // larger than the cell -- see zephyrus_workspace_image.h.
+    canvas->DrawImageInt(photo_, 0, 0, photo_.width(), photo_.height(),
+                         body.x(), body.y(), body.width(), body.height(),
+                         /*filter=*/true);
+    canvas->Restore();
+  }
+
+ private:
+  // views::ContextMenuController:
+  void ShowContextMenuForViewImpl(views::View* source,
+                                  const gfx::Point& point,
+                                  ui::mojom::MenuSourceType source_type) override {
+    if (on_context_menu_) {
+      on_context_menu_.Run();
+    }
+  }
+
+  // Square, so the disc is a circle, and the same height as the Shield pill
+  // beside it. The disc is this minus the 1px inset on each side.
+  static constexpr int kCell = kPillHeight;
+  // Leaves a 2px rim of the disc showing around the photo when active.
+  static constexpr int kPhotoInset = 2;
+  bool active_;
+  bool is_icon_;
+  SkColor ink_;
+  gfx::ImageSkia photo_;
+  base::RepeatingClosure on_context_menu_;
+  raw_ptr<views::Label> label_ = nullptr;
+};
+
+BEGIN_METADATA(ZephyrusWorkspaceCell)
+END_METADATA
+
+// The workspace switcher, as a tiling window manager does it.
+//
+// A row of numbers, one per workspace, with the current one marked. Click a
+// number, go there. No dropdown, no chevron, no menu -- the whole state and the
+// whole control are the same few pixels, which is the entire appeal of the
+// pattern: you can see how many workspaces exist and which one you are in
+// without opening anything.
+//
+// This replaces a pill that showed only the CURRENT workspace's name and hid
+// the rest behind a menu. That is one more click to answer "where am I in the
+// set", and the set is small enough that it never needed hiding.
+class ZephyrusWorkspaceStrip : public views::View,
+                               public ui::SimpleMenuModel::Delegate {
+  METADATA_HEADER(ZephyrusWorkspaceStrip, views::View)
+
+ public:
+  using SwitchCallback = base::RepeatingCallback<void(int workspace_id)>;
+
+  using WorkspaceCallback = base::RepeatingCallback<void(int workspace_id)>;
+
+  ZephyrusWorkspaceStrip(SwitchCallback on_switch,
+                         base::RepeatingClosure on_add,
+                         WorkspaceCallback on_pick_icon,
+                         WorkspaceCallback on_delete)
+      : on_switch_(std::move(on_switch)),
+        on_add_(std::move(on_add)),
+        on_pick_icon_(std::move(on_pick_icon)),
+        on_delete_(std::move(on_delete)) {
+    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal,
+        gfx::Insets::VH(kPillPadV, kPillPadH), kCellGap));
+    layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+  }
+
+  // Rebuilt wholesale on change: the list is a handful of items, and diffing
+  // it would be more code than redrawing it.
+  // `image_for` resolves a workspace's photo. Passed as a callback rather than
+  // reaching for the manager here so the strip stays a pure view -- and because
+  // the lookup is what kicks off an async load, which is not something a
+  // rebuild-everything method should own.
+  using ImageLookup = base::RepeatingCallback<gfx::ImageSkia(int)>;
+
+  void SetWorkspaces(const std::vector<ZephyrusWorkspaceManager::Workspace>& ws,
+                     int current_id,
+                     SkColor ink,
+                     const ImageLookup& image_for) {
+    RemoveAllChildViews();
+    for (size_t i = 0; i < ws.size(); ++i) {
+      const auto& w = ws[i];
+      const bool active = w.id == current_id;
+      // What each cell shows, in order of precedence:
+      //   emoji, if the user set one -- that is the point of setting it
+      //   name,  if the user chose one
+      //   the POSITION, otherwise
+      //
+      // The position is computed here, from the list being drawn, so it can
+      // never disagree with the order on screen. Names that are purely digits
+      // are treated as unnamed: earlier builds baked the number INTO the name,
+      // and those stored values are what produced a strip reading "3 2 3".
+      // Ignoring them renumbers existing workspaces correctly with no
+      // migration step.
+      // A photo outranks everything: it is the most deliberate choice on
+      // offer, and the model already guarantees a workspace has a photo or an
+      // emoji but never both.
+      gfx::ImageSkia photo = image_for ? image_for.Run(w.id) : gfx::ImageSkia();
+      const bool numeric_name =
+          !w.name.empty() &&
+          std::ranges::all_of(w.name, [](char16_t c) {
+            return c >= u'0' && c <= u'9';
+          });
+      std::u16string glyph;
+      if (!w.emoji.empty()) {
+        glyph = w.emoji;
+      } else if (!w.name.empty() && !numeric_name) {
+        glyph = w.name;
+      } else {
+        glyph = base::NumberToString16(i + 1);
+      }
+      // Right-click opens the per-workspace menu. Deleting the LAST workspace
+      // is not offered: the browser always has one, and a menu item that
+      // silently does nothing is worse than an absent one.
+      const bool can_delete = ws.size() > 1;
+      auto* cell = AddChildView(std::make_unique<ZephyrusWorkspaceCell>(
+          glyph, active, /*is_icon=*/!w.emoji.empty(), ink,
+          base::BindRepeating(on_switch_, w.id),
+          base::BindRepeating(&ZephyrusWorkspaceStrip::ShowCellMenu,
+                              base::Unretained(this), w.id, can_delete),
+          std::move(photo)));
+      cell->SetTooltipText(u"Workspace " + base::NumberToString16(i + 1));
+    }
+
+    // Trailing +. Inline rather than behind a menu, for the same reason the
+    // numbers are: the whole control stays visible and one click deep.
+    auto* add = AddChildView(std::make_unique<ZephyrusWorkspaceCell>(
+        u"+", /*active=*/false, /*is_icon=*/false, ink,
+        base::BindRepeating(on_add_)));
+    add->SetTooltipText(u"New workspace");
+    PreferredSizeChanged();
+  }
+
+ private:
+  void ShowCellMenu(int workspace_id, bool can_delete) {
+    menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+    menu_workspace_id_ = workspace_id;
+    menu_model_->AddItem(kCommandPickIcon, u"Choose icon…");
+    if (can_delete) {
+      menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+      menu_model_->AddItem(kCommandDelete, u"Delete workspace");
+    }
+    menu_runner_ = std::make_unique<views::MenuRunner>(
+        menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
+    menu_runner_->RunMenuAt(GetWidget(), nullptr,
+                            GetBoundsInScreen(),
+                            views::MenuAnchorPosition::kTopLeft,
+                            ui::mojom::MenuSourceType::kMouse);
+  }
+
+  // ui::SimpleMenuModel::Delegate:
+  void ExecuteCommand(int command_id, int event_flags) override {
+    if (command_id == kCommandPickIcon) {
+      on_pick_icon_.Run(menu_workspace_id_);
+    } else if (command_id == kCommandDelete) {
+      on_delete_.Run(menu_workspace_id_);
+    }
+  }
+
+  static constexpr int kCommandPickIcon = 1;
+  static constexpr int kCommandDelete = 2;
+  // A touch more air than before -- 22px discs sitting 2px apart run
+  // together into one shape at a glance.
+  static constexpr int kCellGap = 3;
+  SwitchCallback on_switch_;
+  base::RepeatingClosure on_add_;
+  WorkspaceCallback on_pick_icon_;
+  WorkspaceCallback on_delete_;
+  int menu_workspace_id_ = 0;
+  std::unique_ptr<ui::SimpleMenuModel> menu_model_;
+  std::unique_ptr<views::MenuRunner> menu_runner_;
+};
+
+BEGIN_METADATA(ZephyrusWorkspaceStrip)
+END_METADATA
+
 
 // Circular avatar (the signed-in Google photo when available, else the default
 // silhouette) for `profile`, at `size` px.
@@ -4236,15 +4165,10 @@ class ZephyrusProfileMenu : public views::BubbleDialogDelegateView,
     SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
 
-    const SkColor base = page_color.value_or(SkColorSetRGB(0x16, 0x16, 0x18));
-    const bool dark = color_utils::IsDark(base);
-    const SkColor overlay = dark ? SK_ColorWHITE : SK_ColorBLACK;
-    auto lift = [&](SkAlpha a) {
-      return color_utils::AlphaBlend(overlay, base, a);
-    };
-    panel_ = lift(dark ? 0x22 : 0x18);
-    foreground_ = color_utils::GetColorWithMaxContrast(base);
-    row_hover_ = lift(dark ? 0x3A : 0x2C);
+    // Palette, not the page -- same reasoning as the workspace dropdown above.
+    panel_ = zephyrus::Surface();
+    foreground_ = zephyrus::Ink();
+    row_hover_ = zephyrus::Raise(zephyrus::Surface(), 0x3A);
     SetBackgroundColor(panel_);
 
     expand_animation_.SetSlideDuration(base::Milliseconds(220));
@@ -4383,17 +4307,39 @@ END_METADATA
 #endif  // ZEPHYRUS PROFILES FRONTEND - DISABLED
 
 void ToolbarView::AddZephyrusWorkspaceButton() {
-  auto button = std::make_unique<ZephyrusWorkspaceButton>(base::BindRepeating(
-      [](ToolbarView* toolbar) { toolbar->ShowZephyrusWorkspaceMenu(); },
-      base::Unretained(this)));
+  auto button = std::make_unique<ZephyrusWorkspaceStrip>(base::BindRepeating(
+      [](ToolbarView* toolbar, int workspace_id) {
+        if (BrowserView* view =
+                BrowserView::GetBrowserViewForBrowser(toolbar->browser_)) {
+          if (ZephyrusWorkspaceManager* m = view->zephyrus_workspace_manager()) {
+            m->SwitchToWorkspace(workspace_id);
+          }
+        }
+      },
+      base::Unretained(this)),
+      base::BindRepeating(
+          [](ToolbarView* toolbar) {
+            if (BrowserView* view =
+                    BrowserView::GetBrowserViewForBrowser(toolbar->browser_)) {
+              if (ZephyrusWorkspaceManager* m =
+                      view->zephyrus_workspace_manager()) {
+                m->AddWorkspace();
+              }
+            }
+          },
+          base::Unretained(this)),
+      base::BindRepeating(&ToolbarView::ShowZephyrusIconPicker,
+                          base::Unretained(this)),
+      base::BindRepeating(&ToolbarView::ConfirmZephyrusWorkspaceDelete,
+                          base::Unretained(this)));
   button->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 6));
   // Place it just to the right of the new-tab (+) button.
   std::optional<size_t> new_tab_index =
       zephyrus_new_tab_button_ ? GetIndexOf(zephyrus_new_tab_button_)
                                : std::nullopt;
   const size_t position = new_tab_index ? *new_tab_index + 1 : 0;
-  zephyrus_workspace_button_ =
-      AddChildViewAt<views::Button>(std::move(button), position);
+  zephyrus_workspace_strip_ =
+      AddChildViewAt<views::View>(std::move(button), position);
   // Follow the manager, not just the menu. The workspace can change without the
   // menu being involved (closing a workspace's last tab, moving a tab away,
   // switching by keyboard), and without this the pill keeps showing the old
@@ -4416,99 +4362,178 @@ void ToolbarView::AddZephyrusWorkspaceButton() {
       FROM_HERE, base::Seconds(5),
       base::BindRepeating(&ToolbarView::UpdateZephyrusWorkspaceButton,
                           base::Unretained(this)));
+  // Kick once on the next loop turn, by which time BrowserView has finished
+  // constructing and the workspace manager exists. Without this the first
+  // subscription waits for the 5-second poll, so switches in the opening
+  // seconds of a window would still lag. A member OneShotTimer cancels on
+  // destruction, so this is safe without a weak pointer.
+  zephyrus_workspace_subscribe_kick_.Start(
+      FROM_HERE, base::TimeDelta(), this,
+      &ToolbarView::UpdateZephyrusWorkspaceButton);
   UpdateZephyrusWorkspaceButton();
 }
 
-void ToolbarView::UpdateZephyrusWorkspaceButton() {
-  if (!zephyrus_workspace_button_) {
+void ToolbarView::ConfirmZephyrusWorkspaceDelete(int workspace_id) {
+  BrowserView* view = BrowserView::GetBrowserViewForBrowser(browser_);
+  ZephyrusWorkspaceManager* manager =
+      view ? view->zephyrus_workspace_manager() : nullptr;
+  if (!manager) {
     return;
   }
-  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
-  ZephyrusWorkspaceManager* manager =
-      browser_view ? browser_view->zephyrus_workspace_manager() : nullptr;
-  std::u16string label;
-  const bool is_private = ZephyrusPrivateWorkspace::IsPrivate(browser_);
-  if (is_private) {
-    // The private window has its own OTR workspace store, so `manager` here
-    // would report that store's default ("Workspace 1") — which would actively
-    // mislead about which profile you are browsing in. The lock icon is set
-    // separately below; the label is just the name now.
-    label = l10n_util::GetStringUTF16(IDS_ZEPHYRUS_PRIVATE_WORKSPACE);
-  } else if (manager) {
-    const ZephyrusWorkspaceManager::Workspace* current =
-        manager->GetWorkspace(manager->current_workspace_id());
-    label = manager->current_workspace_name();
-    if (current && !current->emoji.empty()) {
-      label = current->emoji + u"  " + label;
+  const ZephyrusWorkspaceManager::Workspace* ws =
+      manager->GetWorkspace(workspace_id);
+  if (!ws) {
+    return;
+  }
+
+  // Deleting a workspace closes its tabs, so it asks first.
+  //
+  // The confirmation dialog already existed -- it was the old dropdown's, and
+  // removing that dropdown left it with no callers. Wiring it here rather than
+  // deleting it means the strip's one destructive action is not a single
+  // unconfirmed right-click, and nothing has to be rebuilt to get there.
+  int tab_count = 0;
+  if (TabStripModel* model = browser_->tab_strip_model()) {
+    for (int i = 0; i < model->count(); ++i) {
+      if (manager->GetWorkspaceForContents(model->GetWebContentsAt(i)) ==
+          workspace_id) {
+        ++tab_count;
+      }
     }
   }
-  // Figma Workspaces button, colored by the SAME dynamic-theme model as the
-  // title bar's nav buttons (UpdateZephyrusNavButtonBackgrounds): the page
-  // color plus a subtle overlay — light on dark pages, dark on light — so the
-  // pill reads as a chip on the chameleon surface, with ink that contrasts
-  // with the page.
-  const SkColor base =
-      zephyrus_titlebar_color_.value_or(SkColorSetRGB(0x16, 0x16, 0x18));
-  const bool dark = color_utils::IsDark(base);
-  const SkColor overlay = dark ? SK_ColorWHITE : SK_ColorBLACK;
-  const SkColor surface =
-      color_utils::AlphaBlend(overlay, base, static_cast<SkAlpha>(dark ? 0x22 : 0x18));
-  const SkColor surface_hover =
-      color_utils::AlphaBlend(overlay, base, static_cast<SkAlpha>(dark ? 0x3A : 0x2C));
-  const SkColor surface_press =
-      color_utils::AlphaBlend(overlay, base, static_cast<SkAlpha>(dark ? 0x4C : 0x3A));
-  const SkColor ink = color_utils::GetColorWithMaxContrast(base);
-  auto* pill =
-      static_cast<ZephyrusWorkspaceButton*>(zephyrus_workspace_button_.get());
-  pill->SetContent(label, ink);
-  pill->SetPrivateMark(is_private, ink);
-  // Audio state changes don't route through the workspace manager's change
-  // notifications, so this is refreshed by a light poll (see the timer in
-  // AddZephyrusWorkspaceButton) rather than an event.
-  pill->SetAudioActive(manager && manager->HasBackgroundAudio(), ink);
-  static_cast<ZephyrusWorkspaceButton*>(zephyrus_workspace_button_.get())
-      ->SetPillFills(surface, surface_hover, surface_press);
+  const std::u16string label =
+      ws->name.empty() ? u"this workspace" : ws->name;
+  ShowZephyrusDeleteWorkspaceDialog(
+      browser_, label, tab_count, zephyrus::Surface(), zephyrus::Ink(),
+      base::BindOnce(
+          // Captures the BROWSER, not this toolbar. ToolbarView has no weak
+          // factory, and the dialog is browser-modal -- so the Browser is
+          // guaranteed to outlive it, while the toolbar is not obviously so.
+          // Looking the manager up again on confirm also means a workspace
+          // deleted by some other route in the meantime is simply not found.
+          [](Browser* browser, int id) {
+            if (BrowserView* v =
+                    BrowserView::GetBrowserViewForBrowser(browser)) {
+              if (ZephyrusWorkspaceManager* m =
+                      v->zephyrus_workspace_manager()) {
+                m->DeleteWorkspace(id);
+              }
+            }
+          },
+          browser_, workspace_id));
 }
 
-void ToolbarView::ShowZephyrusWorkspaceMenu() {
+void ToolbarView::ShowZephyrusIconPicker(int workspace_id) {
+  if (!zephyrus_workspace_strip_) {
+    return;
+  }
+  auto picker = std::make_unique<ZephyrusIconPicker>(
+      zephyrus_workspace_strip_,
+      base::BindRepeating(
+          [](ToolbarView* toolbar, int id, const std::u16string& glyph) {
+            if (BrowserView* view =
+                    BrowserView::GetBrowserViewForBrowser(toolbar->browser_)) {
+              if (ZephyrusWorkspaceManager* m =
+                      view->zephyrus_workspace_manager()) {
+                m->SetWorkspaceEmoji(id, glyph);
+              }
+            }
+          },
+          base::Unretained(this), workspace_id),
+      base::BindRepeating(&ToolbarView::ChooseZephyrusWorkspacePhoto,
+                          weak_ptr_factory_.GetWeakPtr(), workspace_id));
+  views::BubbleDialogDelegateView::CreateBubble(std::move(picker))->Show();
+}
+
+void ToolbarView::ChooseZephyrusWorkspacePhoto(int workspace_id) {
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
+  if (!browser_view || !browser_->profile()) {
+    return;
+  }
+  // Weak all the way through. The file dialog is the slowest thing in the
+  // browser -- it waits on a human browsing their disk -- so by the time it
+  // returns the window may well be gone, and this callback outlives more of the
+  // UI than almost any other.
+  // Workspace photos live under the window's profile, which is also where the
+  // store reads them back from. There is one profile now -- workspaces are
+  // partitions, not profiles -- so these cannot diverge.
+  zephyrus::PickWorkspaceImage(
+      browser_->profile(), workspace_id,
+      browser_view->GetWidget() ? browser_view->GetWidget()->GetNativeWindow()
+                                : gfx::NativeWindow(),
+      base::BindOnce(
+          [](base::WeakPtr<ToolbarView> toolbar, int id,
+             const std::string& name) {
+            // Empty means cancelled or undecodable. Cancelling must leave the
+            // existing icon alone, so there is nothing to do -- clearing is a
+            // separate, explicit choice in the picker.
+            if (!toolbar || name.empty()) {
+              return;
+            }
+            BrowserView* view =
+                BrowserView::GetBrowserViewForBrowser(toolbar->browser_);
+            ZephyrusWorkspaceManager* manager =
+                view ? view->zephyrus_workspace_manager() : nullptr;
+            if (manager) {
+              manager->SetWorkspaceImage(id, name);
+            }
+          },
+          weak_ptr_factory_.GetWeakPtr(), workspace_id));
+}
+
+void ToolbarView::UpdateZephyrusWorkspaceButton() {
+  if (!zephyrus_workspace_strip_) {
+    return;
+  }
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
   ZephyrusWorkspaceManager* manager =
       browser_view ? browser_view->zephyrus_workspace_manager() : nullptr;
-  if (!manager || !zephyrus_workspace_button_ ||
-      zephyrus::ConsumeReopenSuppression(zephyrus_workspace_button_)) {
+  if (!manager) {
     return;
   }
-  auto menu = std::make_unique<ZephyrusWorkspaceMenu>(
-      zephyrus_workspace_button_, manager, zephyrus_titlebar_color_,
-      base::BindRepeating(&ToolbarView::UpdateZephyrusWorkspaceButton,
-                          base::Unretained(this)),
-      base::BindRepeating(
-          [](ToolbarView* toolbar) {
-            if (toolbar->zephyrus_workspace_button_) {
-              static_cast<ZephyrusWorkspaceButton*>(
-                  toolbar->zephyrus_workspace_button_.get())
-                  ->SetMenuOpen(false);
-            }
-          },
-          base::Unretained(this)));
-  ZephyrusWorkspaceMenu* menu_ptr = menu.get();
-  views::Widget* menu_widget =
-      views::BubbleDialogDelegateView::CreateBubble(std::move(menu));
-  menu_widget->Show();
-  // Chevron flips up while open; the card plays the Figma width jump, plus a
-  // quick fade so the growth reads as an entrance rather than a resize.
-  static_cast<ZephyrusWorkspaceButton*>(zephyrus_workspace_button_.get())
-      ->SetMenuOpen(true);
-  if (ui::Layer* layer = menu_widget->GetLayer();
-      layer && gfx::Animation::ShouldRenderRichAnimation()) {
-    layer->SetOpacity(0.0f);
-    ui::ScopedLayerAnimationSettings fade(layer->GetAnimator());
-    fade.SetTransitionDuration(base::Milliseconds(120));
-    fade.SetTweenType(gfx::Tween::EASE_OUT);
-    layer->SetOpacity(1.0f);
+
+  // SUBSCRIBE HERE, not at construction.
+  //
+  // AddZephyrusWorkspaceButton() tries to register for workspace changes, and
+  // ALWAYS FAILS: BrowserView creates the toolbar (browser_view.cc:968) before
+  // it creates the workspace manager (:983), so the manager is null at that
+  // point and the subscription is silently never made.
+  //
+  // The strip was therefore never told about a switch. It only refreshed when
+  // the 5-second audio poll happened to fire -- which is exactly the "indicator
+  // lags behind the switch" symptom, and why instrumenting the switch showed
+  // notify=0.000ms: there was nothing subscribed to notify.
+  //
+  // This runs from that same poll, so the first tick after startup establishes
+  // the subscription and every switch after that is immediate.
+  if (!zephyrus_workspace_changed_subscription_) {
+    zephyrus_workspace_changed_subscription_ =
+        manager->RegisterChangedCallback(
+            base::BindRepeating(&ToolbarView::UpdateZephyrusWorkspaceButton,
+                                base::Unretained(this)));
   }
-  menu_ptr->StartZephyrusEntrance(zephyrus_workspace_button_->width());
+  // Private Workspace has its own store, so its numbering is its own; showing
+  // that store's list here would misrepresent which profile you are in. The
+  // strip is simply hidden there -- the lock in the title bar already says
+  // where you are, and a private window has one workspace by definition.
+  const bool is_private = ZephyrusPrivateWorkspace::IsPrivate(browser_);
+  zephyrus_workspace_strip_->SetVisible(!is_private);
+  if (is_private) {
+    return;
+  }
+  static_cast<ZephyrusWorkspaceStrip*>(zephyrus_workspace_strip_.get())
+      ->SetWorkspaces(
+          manager->workspaces(), manager->current_workspace_id(),
+          zephyrus::Ink(),
+          base::BindRepeating(
+              [](base::WeakPtr<ZephyrusWorkspaceManager> m,
+                 int id) -> gfx::ImageSkia {
+                return m ? m->GetWorkspaceImage(id, ZephyrusWorkspaceCell::size())
+                         : gfx::ImageSkia();
+              },
+              manager->GetWeakPtr()));
 }
+
 
 // --------------------------------------------------------------------------
 // ZEPHYRUS PROFILES FRONTEND - DISABLED
@@ -4531,8 +4556,8 @@ void ToolbarView::AddZephyrusProfileButton() {
   // Sit just to the LEFT of the Workspace pill — profile is the higher-level
   // context (who), the workspace is what you're doing within it.
   std::optional<size_t> ws_index =
-      zephyrus_workspace_button_ ? GetIndexOf(zephyrus_workspace_button_)
-                                 : std::nullopt;
+      zephyrus_workspace_strip_ ? GetIndexOf(zephyrus_workspace_strip_)
+                                : std::nullopt;
   const size_t position = ws_index.value_or(0);
   zephyrus_profile_button_ =
       AddChildViewAt<views::Button>(std::move(button), position);
@@ -4566,16 +4591,11 @@ void ToolbarView::UpdateZephyrusProfileButton() {
   }
   // Same dynamic-theme chip model as the Workspace pill.
   const SkColor base =
-      zephyrus_titlebar_color_.value_or(SkColorSetRGB(0x16, 0x16, 0x18));
-  const bool dark = color_utils::IsDark(base);
-  const SkColor overlay = dark ? SK_ColorWHITE : SK_ColorBLACK;
-  const SkColor surface = color_utils::AlphaBlend(
-      overlay, base, static_cast<SkAlpha>(dark ? 0x22 : 0x18));
-  const SkColor surface_hover = color_utils::AlphaBlend(
-      overlay, base, static_cast<SkAlpha>(dark ? 0x3A : 0x2C));
-  const SkColor surface_press = color_utils::AlphaBlend(
-      overlay, base, static_cast<SkAlpha>(dark ? 0x4C : 0x3A));
-  const SkColor ink = color_utils::GetColorWithMaxContrast(base);
+      zephyrus_titlebar_color_.value_or(zephyrus::Ground());
+  const SkColor surface = zephyrus::Surface();
+  const SkColor surface_hover = zephyrus::Raise(zephyrus::Surface(), 0x3A);
+  const SkColor surface_press = zephyrus::Raise(zephyrus::Surface(), 0x4C);
+  const SkColor ink = zephyrus::InkFor(base);
   auto* pill =
       static_cast<ZephyrusProfileButton*>(zephyrus_profile_button_.get());
   pill->SetContent(ZephyrusProfileAvatar(browser_->profile(), 20), ink);
@@ -4658,6 +4678,23 @@ void ToolbarView::LayoutCommon() {
   // `app_menu_button_`.
   if (avatar_) {
     SetRefreshMargins(avatar_, avatar_->IsLabelPresentAndVisible());
+  }
+
+  // Reserve the corner INSET only -- not the strip.
+  //
+  // The window controls and their separator are ordinary children, so the flex
+  // layout already allocates their cells; adding those here too reserved them
+  // twice and opened a ~100px hole. What the layout cannot know about is
+  // kZephyrusCaptionRightPad, the gap Layout() leaves between the close button
+  // and the window edge. Without it the browser controls stay put while the
+  // strip shifts, and the space between the two groups drifts by exactly the
+  // pad every time it is tuned.
+  //
+  // Adding just the pad keeps the whole right-hand cluster moving as one.
+  if (zephyrus_close_button_ && zephyrus_close_button_->GetVisible()) {
+    interior_margin.set_right(interior_margin.right() +
+                              kZephyrusCaptionRightPad -
+                              kZephyrusBrowserControlsRightShift);
   }
 
   layout_manager_->SetInteriorMargin(interior_margin);

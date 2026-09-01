@@ -38,10 +38,28 @@ void MenuConfig::InitPlatform() {
   // Inter is the design's family; Segoe UI is the fallback when it is absent.
   context_menu_font_list = font_list = gfx::FontList("Inter, Segoe UI, 13px");
 
-  // 8, not the design's 10: DWM rounds the menu window at the system radius
-  // (8dip), and a 10dip fill inside an 8dip clip gets its corners shaved.
-  corner_radius = 8;
-  item_corner_radius = 5;
+  // 16, DELIBERATELY less than the popups' radius.
+  //
+  // A menu is denser and narrower than a popup, and larger corners started
+  // competing with the content instead of framing it. The divergence is a
+  // choice, not drift; do not "fix" it back to zephyrus::kRadiusPopup.
+
+  //
+  // This used to be 8, forced by DWM clipping the menu window at the system
+  // radius and shaving any larger fill. menu_host.cc now asks for
+  // DWMWCP_DONOTROUND, so the window is no longer clipped and the fill decides
+  // the shape. Anything above 8 depends on that; put the rounding back and
+  // menus return to 8px corners regardless of this number.
+  corner_radius = 16;
+  // A PILL, which is what the comment above already called for. 28 exceeds half
+  // a 26px row, so it clamps to a stadium.
+  //
+  // This is also what lets the panel padding stay at 5. A square-cornered
+  // highlight has to be pushed clear of the panel's corner arc; a pill has
+  // already curved inward by the time it reaches the row's bottom edge, so it
+  // misses the arc on its own. With the panel now at 16 the arc is shallower
+  // still, so there is more clearance than when this was written against 28.
+  item_corner_radius = 28;
   item_horizontal_padding = 10;
   item_vertical_margin = 4;
 
@@ -54,6 +72,9 @@ void MenuConfig::InitPlatform() {
   // highlight from the panel edge — the design's highlight is a rounded pill
   // floating inside the panel, not a full-bleed band across it.
   menu_horizontal_border_size = 5;
+  // Back to 5, matching the horizontal padding. It was briefly 14 to push
+  // square-cornered highlights clear of the 28px corner arc; making the
+  // highlight a pill solves that at the source and costs no extra height.
   rounded_menu_vertical_border_size = 5;
 
   // A hairline divider with breathing room, rather than Windows' tall band:

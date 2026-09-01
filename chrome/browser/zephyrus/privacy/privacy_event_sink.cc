@@ -15,7 +15,14 @@ PrivacyEventSink::PrivacyEventSink() = default;
 PrivacyEventSink::~PrivacyEventSink() = default;
 
 bool PrivacyEventSink::Record(const RawEvent& event) {
+  if (disabled_.load(std::memory_order_relaxed)) {
+    return false;
+  }
   return ring_.Push(event);
+}
+
+void PrivacyEventSink::DisableForSession() {
+  disabled_.store(true, std::memory_order_relaxed);
 }
 
 size_t PrivacyEventSink::Drain(base::span<RawEvent> out) {

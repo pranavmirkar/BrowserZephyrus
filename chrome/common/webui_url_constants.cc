@@ -140,6 +140,7 @@ base::span<const base::cstring_view> ChromeURLHosts() {
 #endif
       kChromeUICrashesHost,
       kChromeUICreditsHost,
+      kChromeUICrossDeviceSigninQrBubbleHost,
       kChromeUIDeviceLogHost,
       kChromeUIDownloadInternalsHost,
       kChromeUIFamilyLinkUserInternalsHost,
@@ -300,6 +301,7 @@ base::span<const base::cstring_view> ChromeDebugURLs() {
       {blink::kChromeUIBadCastCrashURL,
        blink::kChromeUIBrowserCrashURL,
        blink::kChromeUIBrowserDcheckURL,
+       blink::kChromeUIBrowserUIHang,
        blink::kChromeUIBrowserHeapMemberDerefAfterFreeURL,
        blink::kChromeUIBrowserHeapOverflowURL,
        blink::kChromeUIBrowserHeapUaFURL,

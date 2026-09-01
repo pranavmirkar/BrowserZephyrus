@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_ZEPHYRUS_PRIVACY_FINGERPRINT_SEED_PROVIDER_H_
 #define CHROME_BROWSER_ZEPHYRUS_PRIVACY_FINGERPRINT_SEED_PROVIDER_H_
 
+#include <optional>
 #include <string>
 
 #include "base/supports_user_data.h"
@@ -14,6 +15,10 @@ namespace content {
 class BrowserContext;
 class RenderFrameHost;
 }  // namespace content
+
+namespace url {
+class Origin;
+}  // namespace url
 
 namespace zephyrus_privacy {
 
@@ -48,6 +53,22 @@ class FingerprintSeedProvider : public base::SupportsUserData::Data {
   // name its own origin here could ask for another site's seed and use it to
   // predict that site's noise.
   FingerprintSeed SeedForFrame(content::RenderFrameHost* rfh) const;
+
+  // The seed for a principal that has no frame at all — a service worker,
+  // which outlives every document it serves and is created by none of them.
+  //
+  // Correct BECAUSE the seed is keyed on the origin and nothing else: a service
+  // worker is origin-scoped, so deriving from its own origin necessarily lands
+  // on the same seed its documents hold. There is no "which parent?" question
+  // to answer, and no way for it to drift out of step with them — the session
+  // secret is generated once per BrowserContext and never rotates within a
+  // session, so "same origin, same session" holds across a principal whose
+  // lifetime does not match any page's.
+  //
+  // An opaque origin has no stable identity to key on and cannot host a service
+  // worker in the first place; it is refused rather than given the "no frame"
+  // key, so a caller cannot accidentally seed one.
+  std::optional<FingerprintSeed> SeedForOrigin(const url::Origin& origin) const;
 
  private:
   explicit FingerprintSeedProvider(FingerprintSessionSecret secret);

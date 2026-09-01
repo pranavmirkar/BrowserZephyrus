@@ -13,6 +13,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/profiles/profile.h"
+#include "base/feature_list.h"
 #include "chrome/browser/zephyrus/privacy/privacy_features.h"
 #include "chrome/browser/zephyrus/privacy/privacy_intelligence_service.h"
 #include "chrome/browser/zephyrus/privacy/privacy_intelligence_service_factory.h"
@@ -229,6 +230,15 @@ void HandleRequest(base::WeakPtr<Profile> profile,
 PrivacyInternalsUIConfig::PrivacyInternalsUIConfig()
     : DefaultWebUIConfig(content::kChromeUIScheme,
                          chrome::kChromeUIZephyrusPrivacyInternalsHost) {}
+
+bool PrivacyInternalsUIConfig::IsWebUIEnabled(
+    content::BrowserContext* browser_context) {
+  // Gated on its OWN flag, not on collection being enabled: the whole point of
+  // a diagnostic surface is to be reachable when the pipeline is off or broken,
+  // which is exactly when someone needs to see "Mode: Disabled" rather than a
+  // page that will not open.
+  return base::FeatureList::IsEnabled(kZephyrusPrivacyInternals);
+}
 
 PrivacyInternalsUI::PrivacyInternalsUI(content::WebUI* web_ui)
     : content::WebUIController(web_ui) {

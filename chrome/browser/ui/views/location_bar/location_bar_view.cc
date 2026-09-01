@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 
+#include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+
 #include <algorithm>
 #include <map>
 #include <memory>
@@ -273,10 +275,10 @@ LocationBarView::LocationBarView(Browser* browser,
                  !v->GetOmniboxController()->IsPopupOpen();
         }));
     views::FocusRing::Get(this)->SetOutsetFocusRingDisabled(true);
-    // Zephyrus: the focus ring must trace the bar's 10px rounded rect, not a
-    // full pill, so the purple highlight matches the search bar's corners.
-    views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
-                                                  /*corner_radius=*/10);
+    // Zephyrus: the focus ring traces the bar's corners, so it reads the same
+    // constant rather than repeating the number and drifting from it.
+    views::InstallRoundRectHighlightPathGenerator(
+        this, gfx::Insets(), /*corner_radius=*/zephyrus::kRadiusPopup);
 
 #if BUILDFLAG(OS_LEVEL_GEOLOCATION_PERMISSION_SUPPORTED)
     if (features::IsOsLevelGeolocationPermissionSupportEnabled()) {
@@ -645,17 +647,21 @@ bool LocationBarView::IsInitialized() const {
 }
 
 int LocationBarView::GetBorderRadius() const {
-  // Zephyrus (Figma Window/Search): the search bar is a 10px rounded rect, not
-  // a full pill.
-  return 10;
+  // Zephyrus: the shared popup radius.
+  //
+  // This replaces a documented 10px "rounded rect, not a full pill" from an
+  // earlier Figma pass. At the bar's height the new radius exceeds half the
+  // height, so Skia clamps it and the bar DOES become a pill. That is a real
+  // reversal of the old decision, not a side effect.
+  return zephyrus::kRadiusPopup;
 }
 
 // static
 int LocationBarView::ComputeBorderRadius(gfx::Size /*size*/) {
-  // Zephyrus (Figma Window/Search): the search bar is a fixed 10px rounded
-  // rect, not the full pill (Emphasis::kMaximum) Chromium uses. This is the
-  // radius actually painted by CreateRoundRectBackground / RefreshBackground.
-  return 10;
+  // The radius actually painted by CreateRoundRectBackground /
+  // RefreshBackground. Same value as GetBorderRadius() above, and same caveat:
+  // it clamps to a pill at the bar's height.
+  return zephyrus::kRadiusPopup;
 }
 
 // static
@@ -1642,7 +1648,14 @@ void LocationBarView::RefreshBackground() {
 
   // Zephyrus: no border on the clean search bar (the fill + purple focus ring
   // carry it). Only accessibility high-contrast mode still gets a stroke.
+  // Zephyrus: the search bar carries a wine outline on the warm theme. It is
+  // load-bearing, not decoration -- with a near-white fill on a near-white
+  // ground the outline is the only thing that separates the field from the
+  // title bar behind it.
   SkColor border_color = SK_ColorTRANSPARENT;
+  if (!color_utils::IsDark(background_color_)) {
+    border_color = zephyrus::Rule();
+  }
   if (high_contrast) {
     border_color =
         is_caret_visible
@@ -1686,17 +1699,31 @@ void LocationBarView::SetZephyrusTitlebarColor(std::optional<SkColor> color) {
 }
 
 // Zephyrus search palette: the bar and result card elevate off the permanent
-// theme base (BrowserView::kZephyrusThemeColor) using the same overlay model as
+// theme base (zephyrus::Ground()) using the same overlay model as
 // the nav buttons (ToolbarView), so the whole search UI sits on one fixed theme.
 namespace {
-// Elevates a base color into a card surface: a translucent white overlay on
-// dark bases, black on light — mirroring ToolbarView's nav-button treatment.
+// Elevates a base color into a card surface.
+//
+// On DARK bases a translucent white overlay lifts the surface, which is what
+// this always did. On LIGHT bases it used to overlay BLACK -- and that is
+// wrong here in a way that is easy to miss, because it still "works": it
+// darkens the search bar into a grey-brown smudge sitting on warm cream, which
+// looks like a rendering fault rather than a raised control.
+//
+// The warm theme cannot elevate by getting lighter either -- the ground is
+// already near-white. So on light bases this returns the ground essentially
+// unchanged and the OUTLINE does the elevating instead, which is exactly how
+// the reference raises its own controls: a near-white fill with a wine rule
+// around it, never a darker fill.
 SkColor ZephyrusElevate(SkColor base, bool hovered) {
-  const bool dark = color_utils::IsDark(base);
-  const SkAlpha a = hovered ? (dark ? 0x33 : 0x24) : (dark ? 0x26 : 0x1A);
-  const SkColor overlay =
-      dark ? SkColorSetA(SK_ColorWHITE, a) : SkColorSetA(SK_ColorBLACK, a);
-  return color_utils::GetResultingPaintColor(overlay, base);
+  if (!color_utils::IsDark(base)) {
+    return hovered ? color_utils::GetResultingPaintColor(
+                         SkColorSetA(zephyrus::Ink(), 0x0A), base)
+                   : base;
+  }
+  const SkAlpha a = hovered ? 0x33 : 0x26;
+  return color_utils::GetResultingPaintColor(SkColorSetA(SK_ColorWHITE, a),
+                                             base);
 }
 }  // namespace
 
@@ -1705,7 +1732,7 @@ SkColor LocationBarView::ZephyrusSurfaceColor(bool hovered) const {
   // same value down via SetZephyrusTitlebarColor; the fallback keeps the bar on
   // the identical theme during early init, so it never flashes another color.
   return ZephyrusElevate(
-      zephyrus_titlebar_color_.value_or(BrowserView::kZephyrusThemeColor),
+      zephyrus_titlebar_color_.value_or(zephyrus::Ground()),
       hovered);
 }
 
@@ -1713,7 +1740,7 @@ std::optional<SkColor> LocationBarView::GetZephyrusOmniboxTextColor() const {
   const SkColor surface = ZephyrusSurfaceColor();
   // Softened max-contrast ink so text reads clearly on any surface without the
   // harshness of pure black/white.
-  return color_utils::AlphaBlend(color_utils::GetColorWithMaxContrast(surface),
+  return color_utils::AlphaBlend(zephyrus::InkFor(surface),
                                  surface, SkAlpha{0xC8});
 }
 
@@ -1725,7 +1752,7 @@ std::optional<SkColor> LocationBarView::GetZephyrusOmniboxColor(
   // icons are softened max-contrast ink derived from the surface.
   const SkColor surface = ZephyrusSurfaceColor();
   const SkColor surface_hover = ZephyrusSurfaceColor(/*hovered=*/true);
-  const SkColor ink = color_utils::GetColorWithMaxContrast(surface);
+  const SkColor ink = zephyrus::InkFor(surface);
   const SkColor text = color_utils::AlphaBlend(ink, surface, SkAlpha{0xC8});
   const SkColor dim = color_utils::AlphaBlend(ink, surface, SkAlpha{0x85});
   switch (id) {
@@ -2339,7 +2366,9 @@ void LocationBarView::OnOmniboxFocused() {
   // The AI mode page action icon view should only be visible when the omnibox
   // is focused, so if there is a change in focus, refresh the icon.
   RefreshAiModePageActionIconView();
+}
 
+void LocationBarView::OpenOmniboxPopup() {
   if (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup) &&
       !in_popup_state_transition_) {
     if (auto* popup_view = GetOmniboxPopupView()) {
@@ -2414,6 +2443,10 @@ bool LocationBarView::ShouldChipOverrideLocationIcon() {
 
 bool LocationBarView::IsEditingOrEmpty() const {
   return omnibox_view_ && omnibox_view_->IsEditingOrEmpty();
+}
+
+bool LocationBarView::IsMouseHovered() const {
+  return views::View::IsMouseHovered();
 }
 
 bool LocationBarView::OpenContextMenu() {

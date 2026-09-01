@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/config/chrome_build.gni")
 import("//chrome/common/features.gni")
 import("//ui/webui/resources/tools/build_webui.gni")
 import("//ui/webui/webui_features.gni")
@@ -36,6 +37,12 @@ build_webui("build") {
     "modules/calendar/icons:build_grdp",
     "modules/tab_groups/icons:build_grdp",
   ]
+
+  if (is_chrome_branded) {
+    extra_grdp_files +=
+        [ "$target_gen_dir/icons/chrome_branded_resources.grdp" ]
+    extra_grdp_deps += [ "icons:chrome_branded_build_grdp" ]
+  }
 
   web_component_files = all_web_component_files
   ts_files = all_ts_files
@@ -121,14 +128,11 @@ build_webui("build") {
   optimize = optimize_webui
   if (optimize) {
     optimize_webui_host = "new-tab-page"
-    # The bundler supports at most 2 entry points. Zephyrus's new tab replaced
-    # the stock NTP app entirely (new_tab_page.html loads only zephyrus_newtab),
-    # so "lazy_load.js" — which is only ever fetched at runtime by the stock
-    # app's app.ts — is dead here and gives up its slot.
-    optimize_webui_in_files = [
-      "new_tab_page.js",
-      "zephyrus_newtab.js",
-    ]
+    # Zephyrus has no new-tab page: new_tab_page.html renders a flat colour and
+    # loads no script at all, so there is nothing to bundle beyond the stock
+    # entry point. "lazy_load.js" stays dead here — it is only ever fetched at
+    # runtime by the stock app's app.ts, which we never reach.
+    optimize_webui_in_files = [ "new_tab_page.js" ]
     optimize_webui_excludes = [
       "chrome://resources/cr_components/color_change_listener/color_change_listener.mojom-webui.js",
       "chrome://resources/cr_components/composebox/composebox.mojom-webui.js",

@@ -44,6 +44,34 @@ constexpr base::TimeDelta kActiveDrainInterval = base::Milliseconds(500);
 constexpr base::TimeDelta kIdleDrainInterval = base::Seconds(4);
 constexpr int kEmptyDrainsBeforeIdle = 6;
 
+// §13.3 kill-switch thresholds.
+//
+// Every one of these is set so that ONLY a pipeline that is already failing to
+// do its job can reach it. That asymmetry is deliberate: a false trip silently
+// costs the user their privacy history, while a missed trip costs some browsing
+// smoothness that the user can at least feel. Neither is free, so the bar is
+// "this is already broken", not "this looks slow".
+
+// A drain interval that loses more than a FULL RING is not a burst, it is a
+// consumer that cannot keep up: at 4096 events lost between drains, the events
+// being counted are already an arbitrary subset, so the numbers shown to the
+// user would be wrong anyway.
+constexpr uint64_t kOverflowDropsPerDrain = PrivacyRingBuffer::kCapacity;
+// Three intervals running, so one pathological page load cannot condemn the
+// session. At the active interval that is ~1.5 seconds of sustained loss.
+constexpr int kOverflowDrainsBeforeTrip = 3;
+
+// The drain round trip is one task hop to the privacy sequence and back. It is
+// normally sub-millisecond; two seconds means that sequence is starved or
+// blocked behind something far more important than this feature.
+constexpr base::TimeDelta kSlowDrainRoundTrip = base::Seconds(2);
+constexpr int kSlowDrainsBeforeTrip = 3;
+
+// Writes fail for reasons that do not clear up by themselves — a full disk, a
+// revoked keystore, a razed database. Five consecutive failures is past the
+// point where retrying forever helps.
+constexpr int kDbFailuresBeforeTrip = 5;
+
 // Bounded per-drain work, twice over: a batch is 1024 events, and a tick takes
 // at most kMaxBatchesPerTick of them. Without the second bound a page flooding
 // the ring (§11.3) could keep one USER_VISIBLE task running indefinitely,
@@ -411,8 +439,14 @@ void PrivacyIntelligenceService::OnRowsReady(
                   batch.lifetime.randomized);
   }
   if (!batch.rows.empty()) {
-    db_.AsyncCall(base::IgnoreResult(&PrivacyDatabase::FlushDailyRows))
-        .WithArgs(std::move(batch.rows));
+    // Observed, not ignored: repeated write failures are one of §13.3's three
+    // kill-switch triggers, and IgnoreResult made them invisible. Note the
+    // shape — AsyncCall on a bool-returning method needs EITHER IgnoreResult or
+    // a .Then() that takes the bool; neither one is optional.
+    db_.AsyncCall(&PrivacyDatabase::FlushDailyRows)
+        .WithArgs(std::move(batch.rows))
+        .Then(base::BindOnce(&PrivacyIntelligenceService::OnFlushResult,
+                             weak_factory_.GetWeakPtr()));
   }
 }
 
@@ -473,6 +507,11 @@ uint32_t PrivacyIntelligenceService::PageSignals::fingerprint_surface_count()
   return static_cast<uint32_t>(std::popcount(fingerprint_surface_mask));
 }
 
+uint32_t
+PrivacyIntelligenceService::PageSignals::fingerprint_randomized_count() const {
+  return static_cast<uint32_t>(std::popcount(fingerprint_randomized_mask));
+}
+
 // static
 std::string PrivacyIntelligenceService::SiteKeyFor(const GURL& page_url) {
   if (!page_url.is_valid() || !page_url.SchemeIsHTTPOrHTTPS()) {
@@ -503,7 +542,8 @@ void PrivacyIntelligenceService::AppendTimelineEvent(
 
 void PrivacyIntelligenceService::RecordFingerprintSurface(
     const GURL& page_url,
-    FingerprintSurface surface) {
+    FingerprintSurface surface,
+    bool randomized) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   const std::string site_key = SiteKeyFor(page_url);
   if (site_key.empty()) {
@@ -521,27 +561,47 @@ void PrivacyIntelligenceService::RecordFingerprintSurface(
   if (it->second.fingerprint_surface_mask & bit) {
     // Already seen on this site this session. Dropping the repeat is what
     // bounds a hostile renderer to one timeline row per surface per site.
+    //
+    // The randomized bit is still OR-ed in first: the same surface can be
+    // touched before and after a seed becomes available, and the honest answer
+    // to "was this perturbed on this site" is yes if it ever was.
+    if (randomized) {
+      it->second.fingerprint_randomized_mask |= bit;
+    }
     return;
   }
   if (it->second.first_surface_at.is_null()) {
     it->second.first_surface_at = base::TimeTicks::Now();
   }
   it->second.fingerprint_surface_mask |= bit;
+  if (randomized) {
+    it->second.fingerprint_randomized_mask |= bit;
+  }
 
   // §6.5's attempt heuristic decides the status. Before this, every surface
   // touch was recorded as kDetected — which accused a charting library that
   // read one canvas of fingerprinting, exactly the false positive §16 budgets
   // zero of.
   //
-  // kRandomized is still never claimed here: whether a value was perturbed is a
-  // fact about what the browser DID, and this function only knows what the page
-  // attempted. The two are reported separately on purpose.
   AttemptInputs inputs;
   inputs.distinct_surfaces =
       static_cast<uint32_t>(std::popcount(it->second.fingerprint_surface_mask));
   inputs.elapsed = base::TimeTicks::Now() - it->second.first_surface_at;
-  AppendTimelineEvent(site_key, EventType::kFingerprintAttempt,
-                      ClassifyFingerprintAttempt(inputs));
+  TrackerStatus status = ClassifyFingerprintAttempt(inputs);
+
+  // kRandomized means precisely "an API returned perturbed data instead of true
+  // values", so it may be claimed only when the browser actually did that — and
+  // `randomized` is the browser's own answer, not the renderer's.
+  //
+  // kPotential is deliberately NOT upgraded. §2.1 defines it as a heuristic
+  // match that is not certain and excludes it from headline numbers; turning an
+  // uncertain match into a confident protection claim would smuggle it back in
+  // through the reassuring door. Uncertainty about WHAT happened outranks
+  // certainty about what we did to it.
+  if (randomized && status == TrackerStatus::kDetected) {
+    status = TrackerStatus::kRandomized;
+  }
+  AppendTimelineEvent(site_key, EventType::kFingerprintAttempt, status);
 }
 
 void PrivacyIntelligenceService::RecordWebrtcAddressRequest(
@@ -919,6 +979,7 @@ void PrivacyIntelligenceService::OnDrainTimer() {
   if (shut_down_) {
     return;
   }
+  drain_issued_at_ = base::TimeTicks::Now();
   // WeakPtr, not Unretained: the reply arrives from another sequence and the
   // service can be destroyed at profile shutdown while it is in flight.
   consumer_.AsyncCall(&PrivacyEventConsumer::DrainNow)
@@ -931,6 +992,15 @@ void PrivacyIntelligenceService::OnDrained(size_t count) {
   if (shut_down_) {
     return;
   }
+  // §13.3, checked before the backoff below: a pipeline that is dropping
+  // events or answering slowly should not have that hidden by going idle.
+  if (!drain_issued_at_.is_null()) {
+    EvaluateDrainLatency(base::TimeTicks::Now() - drain_issued_at_);
+  }
+  EvaluateRingOverflow();
+  if (kill_switch_ != KillSwitchReason::kNone) {
+    return;
+  }
   if (count > 0) {
     consecutive_empty_drains_ = 0;
     SetDrainInterval(kActiveDrainInterval);
@@ -939,6 +1009,72 @@ void PrivacyIntelligenceService::OnDrained(size_t count) {
   if (++consecutive_empty_drains_ >= kEmptyDrainsBeforeIdle) {
     SetDrainInterval(kIdleDrainInterval);
   }
+}
+
+void PrivacyIntelligenceService::EvaluateRingOverflow() {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  const uint64_t total = sink_->dropped_count();
+  // Unsigned subtraction against a monotonic counter; the sink never resets it.
+  const uint64_t since_last = total - last_dropped_sample_;
+  last_dropped_sample_ = total;
+
+  if (since_last < kOverflowDropsPerDrain) {
+    consecutive_overflow_drains_ = 0;
+    return;
+  }
+  if (++consecutive_overflow_drains_ >= kOverflowDrainsBeforeTrip) {
+    TripKillSwitch(KillSwitchReason::kRingOverflow);
+  }
+}
+
+void PrivacyIntelligenceService::EvaluateDrainLatency(
+    base::TimeDelta round_trip) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (round_trip < kSlowDrainRoundTrip) {
+    consecutive_slow_drains_ = 0;
+    return;
+  }
+  if (++consecutive_slow_drains_ >= kSlowDrainsBeforeTrip) {
+    TripKillSwitch(KillSwitchReason::kFlushLatency);
+  }
+}
+
+void PrivacyIntelligenceService::OnFlushResult(bool ok) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (shut_down_) {
+    return;
+  }
+  if (ok) {
+    consecutive_db_failures_ = 0;
+    return;
+  }
+  if (++consecutive_db_failures_ >= kDbFailuresBeforeTrip) {
+    TripKillSwitch(KillSwitchReason::kDatabaseFailures);
+  }
+}
+
+void PrivacyIntelligenceService::TripKillSwitch(KillSwitchReason reason) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  if (kill_switch_ != KillSwitchReason::kNone) {
+    return;  // First reason wins; it is the one that describes the failure.
+  }
+  kill_switch_ = reason;
+
+  // Producer first. Until this lands, the network thread is still paying to
+  // push events that nothing will ever drain.
+  sink_->DisableForSession();
+
+  // Then stop our own timers, so an off pipeline is genuinely idle rather than
+  // merely quiet.
+  drain_timer_.Stop();
+  flush_timer_.Stop();
+
+  // Loud, once. §13.3's whole argument is that turning off silently is the
+  // failure mode to avoid; the reason is also in chrome://privacy-internals via
+  // GetStats(), which is where a user or a bug report can actually find it.
+  LOG(WARNING) << "Zephyrus privacy collection disabled for this session ("
+               << "§13.3 kill switch, reason="
+               << static_cast<int>(reason) << ")";
 }
 
 PipelineStats PrivacyIntelligenceService::GetStats() const {
@@ -958,6 +1094,7 @@ PipelineStats PrivacyIntelligenceService::GetStats() const {
   stats.dataset_age_days =
       DatasetAgeDaysFrom(dataset_published_, base::Time::Now());
   stats.persistence_ready = persistence_ready_;
+  stats.kill_switch = kill_switch_;
   stats.persistence_refused = persistence_refused_;
   stats.rows_flushed = rows_flushed_;
   stats.known_domain_strings = strings_ ? strings_->size() : 0;

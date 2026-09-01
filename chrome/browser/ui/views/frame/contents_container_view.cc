@@ -42,6 +42,7 @@
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/border.h"
 #include "ui/views/layout/delegating_layout_manager.h"
 #include "ui/views/layout/fill_layout.h"
@@ -61,9 +62,7 @@ namespace {
 // family. 20 rather than 21 on purpose — it stays a whole number of device
 // pixels at 125% and 150% display scaling (25 and 30), so the corner mask
 // doesn't land on fractional pixels. Was 6 upstream.
-constexpr float kContentCornerRadius = 20;
 constexpr int kSplitViewContentPadding = 4;
-
 constexpr int kNewTabFooterSeparatorHeight = 1;
 constexpr int kNewTabFooterHeight = 56;
 
@@ -103,6 +102,8 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
   devtools_scrim_view_ = AddChildView(std::make_unique<ScrimView>());
   devtools_scrim_view_->layer()->SetName("DevtoolsScrimView");
 
+  toast_anchor_view_ = AddChildView(std::make_unique<views::View>());
+
   contents_view_ = AddChildView(
       std::make_unique<ContentsWebView>(browser_view->GetProfile()));
   contents_view_->SetID(VIEW_ID_TAB_CONTAINER);
@@ -129,6 +130,7 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
 
   if (base::FeatureList::IsEnabled(features::kIndigo)) {
     indigo_overlay_view_ = AddChildView(indigo::CreateIndigoOverlayView());
+    indigo_overlay_view_->InsertBeforeInFocusList(contents_view_);
   }
 
   if (base::FeatureList::IsEnabled(features::kAiOverlayDialog)) {
@@ -226,7 +228,7 @@ void ContentsContainerView::UpdateBorderAndOverlay(bool is_in_split,
   if (!is_in_split) {
     if (split_changed) {
       SetBorder(nullptr);
-      ClearBorderRoundedCorners();
+      UpdateBorderRoundedCorners();
 
       mini_toolbar_->SetVisible(false);
       container_outline_->SetVisible(false);
@@ -253,21 +255,26 @@ void ContentsContainerView::UpdateBorderAndOverlay(bool is_in_split,
 #if BUILDFLAG(IS_CHROMEOS)
   if (split_changed) {
     // Ensures correct window rounded corners after updating contents rounded
-    // corners in UpdateBorderRoundedCorners()/ClearBorderRoundedCorners().
+    // corners in UpdateBorderRoundedCorners().
     GetWidget()->non_client_view()->frame_view()->UpdateWindowRoundedCorners();
   }
 #endif  //  BUILDFLAG(IS_CHROMEOS)
 }
 
 void ContentsContainerView::UpdateBorderRoundedCorners() {
-  // Zephyrus: split view keeps the radius it was tuned with; the single-pane
-  // floating card uses its own, smaller one. Everything below is shared —
-  // notably the devtools and footer logic, which is the reason this function is
-  // reused rather than the corners being set directly: a page rounded without
-  // regard to a docked devtools pane shows theme-coloured notches between the
-  // two, which is what a hand-rolled version got wrong.
-  const float corner_radius =
-      is_in_split_ ? kContentCornerRadius : kZephyrusContentRadius;
+  // Zephyrus: ONE radius, split or not.
+  //
+  // Split view used upstream's 20 while the single-pane card uses 8, so
+  // entering split silently changed the shape of the page -- two panes that
+  // looked like a different kind of object from the one they replaced. A split
+  // is the same card, twice; it should not be a restyle.
+  //
+  // Everything below is shared -- notably the devtools and footer logic, which
+  // is why this function is reused rather than the corners being set directly:
+  // a page rounded without regard to a docked devtools pane shows
+  // theme-coloured notches between the two, which is what a hand-rolled
+  // version got wrong.
+  const float corner_radius = kZephyrusContentRadius;
   const gfx::RoundedCornersF all_corners_rounded{corner_radius};
 
   // Update devtools rounded corners. Note, devtools exists behind the contents
@@ -421,12 +428,21 @@ void ContentsContainerView::UpdateZephyrusContentCorners() {
     return;
   }
   UpdateBorderRoundedCorners();
-  if (!is_in_split_) {
-    // No stroke outside split view. The frame is the margin of window
-    // background around the page; a light line on top of that was reading as a
-    // second, brighter edge rather than as definition.
-    container_outline_->SetVisible(false);
+  // No stroke, split or not. The frame is the margin of window background
+  // around the page; a light line on top of that reads as a second, brighter
+  // edge rather than as definition -- and that was as true of the two panes in
+  // a split as of the single card, where it had already been removed. Each
+  // pane carries its own margin, so the gutter between them is the same
+  // window background doing the same separating job.
+  container_outline_->SetVisible(false);
+}
+
+void ContentsContainerView::SetZephyrusSuppressedEdge(int edge) {
+  if (zephyrus_suppressed_edge_ == edge) {
+    return;
   }
+  zephyrus_suppressed_edge_ = edge;
+  InvalidateLayout();
 }
 
 gfx::Insets ContentsContainerView::GetZephyrusContentMargin() const {
@@ -457,9 +473,12 @@ gfx::Insets ContentsContainerView::GetZephyrusContentMargin() const {
   // the 4px gap is what separates it from the sidebar instead of the two sitting
   // flush. Only the TOP still drops, because the toolbar is genuinely attached
   // there.
+  const int leading =
+      zephyrus_suppressed_edge_ == 1 ? 0 : kZephyrusContentMargin;
+  const int trailing =
+      zephyrus_suppressed_edge_ == 2 ? 0 : kZephyrusContentMargin;
   return gfx::Insets::TLBR(ZephyrusTopIsAttached() ? 0 : kZephyrusContentMargin,
-                           kZephyrusContentMargin, kZephyrusContentMargin,
-                           kZephyrusContentMargin);
+                           leading, kZephyrusContentMargin, trailing);
 }
 
 bool ContentsContainerView::ZephyrusTopIsAttached() const {
@@ -595,6 +614,16 @@ void ContentsContainerView::SetTargetContentBounds(
   InvalidateLayout(/*avoid_propagate_during_layout=*/true);
 }
 
+void ContentsContainerView::SetRoundedCorners(
+    const gfx::RoundedCornersF& corner_radii) {
+  if (corner_radii == rounded_corner_radii_) {
+    return;
+  }
+
+  rounded_corner_radii_ = corner_radii;
+  UpdateBorderRoundedCorners();
+}
+
 void ContentsContainerView::UpdateContentsClip() {
   bool changed = false;
   if (auto* const layer = contents_view_->holder()->GetUILayer()) {
@@ -684,6 +713,10 @@ views::ProposedLayout ContentsContainerView::CalculateProposedLayout(
   const auto& contents_rect = GetMirroredRect(contents_view_bounds);
   layouts.child_layouts.emplace_back(
       contents_view_.get(), contents_view_->GetVisible(), contents_rect);
+
+  layouts.child_layouts.emplace_back(
+      toast_anchor_view_.get(), toast_anchor_view_->GetVisible(),
+      gfx::BoundingRect(contents_rect.origin(), contents_rect.top_right()));
 
   if (glic_border_) {
     // |glic_border_| should not be seen over devtools.

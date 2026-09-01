@@ -122,10 +122,25 @@ int GetLayoutConstant(LayoutConstant constant) {
       return 1;
     case LayoutConstant::kToolbarDividerHeight:
       return touch_ui ? 20 : 16;
+    // ZEPHYRUS: Chromium's toolbar dividers are removed. The title bar carries
+    // ONE separator, the red rule that divides the window controls from the
+    // browser controls, and a second grey rule in the same row competes with it
+    // for the same job.
+    //
+    // Zeroed here rather than hidden at each call site. There are three
+    // ToolbarDivider instances and one of them has its visibility toggled at
+    // runtime (glic_button_divider_), so hiding them individually would leave
+    // that one to reappear. Zero width and zero spacing removes the rule AND
+    // the gap it reserved, whatever any caller does with SetVisible().
+    //
+    // Every reader of these two constants is divider geometry, including the
+    // width sums in pinned_toolbar_actions_container and
+    // webui_pinned_toolbar_actions, so those shrink to match rather than
+    // leaving a hole where the divider was.
     case LayoutConstant::kToolbarDividerSpacing:
-      return 9;
+      return 0;
     case LayoutConstant::kToolbarDividerWidth:
-      return 2;
+      return 0;
     case LayoutConstant::kToolbarElementPadding:
       return touch_ui ? 0 : 4;
     case LayoutConstant::kToolbarIconDefaultMargin:

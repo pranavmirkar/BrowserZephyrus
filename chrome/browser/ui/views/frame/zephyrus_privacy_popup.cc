@@ -21,6 +21,7 @@
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service_factory.h"
 #include "chrome/browser/zephyrus/privacy/privacy_event.h"
@@ -170,7 +171,7 @@ struct Palette {
 };
 
 Palette MakePalette() {
-  const SkColor base = BrowserView::kZephyrusThemeColor;
+  const SkColor base = zephyrus::Ground();
   const SkColor overlay =
       color_utils::IsDark(base) ? SK_ColorWHITE : SK_ColorBLACK;
   auto lift = [&](SkAlpha a) {
@@ -179,10 +180,10 @@ Palette MakePalette() {
   Palette p;
   p.card = lift(0x22);
   p.inset = lift(0x2E);
-  p.fg = color_utils::GetColorWithMaxContrast(base);
+  p.fg = zephyrus::InkFor(base);
   p.muted = SkColorSetA(p.fg, 0xB0);
   p.faint = SkColorSetA(p.fg, 0x8A);
-  p.accent = zephyrus::kAccent;
+  p.accent = zephyrus::Accent();
 
   // §14.2: respect an increased-contrast preference, including Windows High
   // Contrast. What actually fails for those users is not the layout but the
@@ -492,9 +493,28 @@ class PrivacyPanel : public views::View {
     }
     inputs.cross_site_requests_blocked = analysis_.blocked;
     inputs.third_party_cookies_blocked = analysis_.cookies_blocked;
-    // referrers_stripped has no signal yet, and
-    // fingerprint_surfaces_randomized stays zero until Phase 4 actually
-    // randomizes. Detection does not license the claim (see ProtectionInputs).
+    // referrers_stripped still has no signal.
+    //
+    // fingerprint_surfaces_randomized comes from the RANDOMIZED mask, never
+    // from the reported-surface mask. A surface is reported whether or not it
+    // was perturbed — deliberately, so that turning randomization off does not
+    // also blind detection (see BaseRenderingContext2D::getImageData) — so
+    // counting reports here would put "Device fingerprint" under "What was
+    // protected" for surfaces that were only DETECTED. The browser derives the
+    // randomized bit itself in ZephyrusPrivacyReporterHost, so a compromised
+    // renderer cannot claim a protection that never happened.
+    //
+    // With Phase 4 off this is 0 and the row does not appear, which is the same
+    // behaviour as the hardcoded zero it replaces — but now for the right
+    // reason, and it becomes true on its own when randomization is enabled.
+    //
+    // The claim stays scoped to SURFACES. Shared workers are an open evasion
+    // (a page perturbed in the document can read true pixels from a
+    // SharedWorker) and fonts are not instrumented at all, so "these surfaces
+    // were randomized" is honest and anything implying the device cannot be
+    // identified is not.
+    inputs.fingerprint_surfaces_randomized =
+        signals_.fingerprint_randomized_count();
 
     const std::vector<ProtectedItem> items = ComputeWhatWasProtected(inputs);
     if (items.empty()) {
@@ -574,9 +594,16 @@ class PrivacyPanel : public views::View {
       return;
     }
     const bool allow = allow_toggle_->GetIsOn();
+    // The ACTIVE TAB's profile, not the window's.
+    //
+    // This popup already reads the site from the active tab, and used to write
+    // the result to the window -- so in a window holding two workspaces you
+    // could allow a site while looking at one profile's page and have the
+    // allowlist entry land in the other. Half-correct is harder to spot than
+    // wholly wrong: the popup showed the right site name the whole time.
     zephyrus_adblock::ZephyrusAdblockService* adblock =
         zephyrus_adblock::ZephyrusAdblockServiceFactory::GetForBrowserContext(
-            browser_->profile());
+            zephyrus::ActiveProfile(browser_.get()));
     if (!adblock) {
       return;
     }
@@ -598,7 +625,7 @@ class PrivacyPanel : public views::View {
     if (allow) {
       if (PrivacyIntelligenceService* service =
               PrivacyIntelligenceServiceFactory::GetForBrowserContext(
-                  browser_->profile())) {
+                  zephyrus::ActiveProfile(browser_.get()))) {
         service->RecordUserAllowedSite(contents->GetLastCommittedURL());
       }
     }
@@ -883,9 +910,13 @@ void ShowPrivacyPopup(Browser* browser, views::View* anchor) {
   // Null when the feature is off and for every off-the-record profile. Both
   // are legitimate states: incognito deliberately has no service at all, so
   // there is nothing to show and nothing was collected (§5.2).
+  //
+  // Resolved from the ACTIVE TAB, like everything else in this popup: the
+  // analysis being shown belongs to the page, so the service that produced it
+  // has to be the page's, not the window's.
   PrivacyIntelligenceService* service =
       PrivacyIntelligenceServiceFactory::GetForBrowserContext(
-          browser->profile());
+          zephyrus::ActiveProfile(browser));
   if (!service) {
     return;
   }
@@ -914,7 +945,7 @@ void ShowPrivacyPopup(Browser* browser, views::View* anchor) {
   bool blocking_off = false;
   if (auto* adblock =
           zephyrus_adblock::ZephyrusAdblockServiceFactory::GetForBrowserContext(
-              browser->profile())) {
+              zephyrus::ActiveProfile(browser))) {
     blocking_off = adblock->IsAllowlisted(page_url);
   }
 

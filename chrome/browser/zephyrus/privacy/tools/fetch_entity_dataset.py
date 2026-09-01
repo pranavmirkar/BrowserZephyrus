@@ -85,6 +85,17 @@ def fail(strict, message):
 
 
 def fetch(url, expected_sha256, strict):
+    # https ONLY. The URL comes from the built-in PIN or from --pin-file, so it
+    # is developer-supplied rather than attacker-supplied — but urlopen also
+    # speaks file:// and ftp://, and neither has any business here. A pin file
+    # carrying file:///etc/passwd would otherwise be read and hashed rather than
+    # rejected. Cheap to forbid, and it documents that this fetch is meant to
+    # reach exactly one kind of place.
+    #
+    # The sha256 check below is still the real guarantee: it is what stops a
+    # substituted URL from injecting content, whatever the scheme.
+    if not url.lower().startswith("https://"):
+        fail(strict, "refusing non-https dataset URL: %s" % url)
     print("fetching %s" % url)
     try:
         with urllib.request.urlopen(url, timeout=120) as response:

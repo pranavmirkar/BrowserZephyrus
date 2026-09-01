@@ -27,6 +27,35 @@ class ExecutionContext;
 CORE_EXPORT std::optional<std::array<uint8_t, 32>> ZephyrusFingerprintSeedFor(
     ExecutionContext* context);
 
+// COVERAGE, MEASURED — not inferred. Same 64x64 drawing hashed in four
+// contexts on one origin, out/Release, both features on, all within a single
+// browser session (the session secret is per launch, so hashes from two
+// launches are not comparable and a harness that restarts the browser per
+// context produces meaningless disagreement):
+//
+//   document          perturbed, and differs per origin
+//   dedicated worker  perturbed, byte-identical to its own document
+//   shared worker     UNPERTURBED — exactly the flag-off baseline
+//   service worker    UNPERTURBED — exactly the flag-off baseline
+//
+// Service workers are now covered, by fetching their own seed through their own
+// broker (see ZephyrusWorkerSeed in the .cc). Their origin is well defined and
+// the seed is keyed on origin alone, so they land on the same seed their
+// documents hold. Note they DO have a WebContentSettingsClient — a
+// ServiceWorkerContentSettingsProxy — it simply carries no seed, so the
+// accessors must check the self-fetch path first or that proxy answers nullopt
+// and shadows it.
+//
+// SHARED WORKERS REMAIN AN OPEN EVASION, recorded rather than fixed: a script
+// moves its canvas work into a SharedWorker and reads true pixels. They get a
+// SharedWorkerContentSettingsProxy that lives entirely in //content and carries
+// no seed, and //content exposes no embedder binder hook for them either, so
+// unlike service workers there is no seam to reach them through without
+// patching //content.
+//
+// Whatever the UI says must stay true while this holds: it may say specific
+// surfaces were randomized, never that the device cannot be identified.
+
 // A 64-bit value unique to (seed, surface). Every instrumented surface derives
 // its own, so reading one teaches a page nothing about the others: a site that
 // only touches audio must not thereby learn what our canvas answer will be.
@@ -42,6 +71,7 @@ inline constexpr uint32_t kZephyrusFpAudio = 1u << 1;
 inline constexpr uint32_t kZephyrusFpWebgl = 1u << 2;
 inline constexpr uint32_t kZephyrusFpNavigator = 1u << 3;
 inline constexpr uint32_t kZephyrusFpScreen = 1u << 4;
+inline constexpr uint32_t kZephyrusFpFonts = 1u << 5;
 
 // The seed for `context`, but only if `surface_bit` is currently enabled.
 // One call so no site can check the seed and forget the mask.

@@ -352,6 +352,15 @@ void OmniboxMatchCellView::OnMatchUpdate(const OmniboxResultView* result_view,
   // Zephyrus (Figma searchbar_resultdropdown): clean rows. A search suggestion
   // shows only the query — never the "- <engine> Search" suffix Chromium
   // appends. URL/navigation rows keep their URL description (shown in accent).
+  //
+  // RESTORE THE SEPARATOR FIRST. These views are RECYCLED between matches, so
+  // clearing the text below is permanent for that view: the next URL row it is
+  // reused for rendered its title and URL run together with nothing between
+  // them. The symptom moved from row to row depending on what had been shown
+  // there before, which is what made it look like a text bug rather than a
+  // state one.
+  separator_view_->SetText(
+      l10n_util::GetStringUTF16(IDS_AUTOCOMPLETE_MATCH_DESCRIPTION_SEPARATOR));
   if (AutocompleteMatch::IsSearchType(match.type) &&
       !match.answer_template.has_value()) {
     description_view_->SetText(std::u16string());

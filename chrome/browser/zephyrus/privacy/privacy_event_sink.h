@@ -8,6 +8,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <atomic>
+
 #include "base/containers/span.h"
 #include "base/memory/ref_counted.h"
 #include "chrome/browser/zephyrus/privacy/privacy_event.h"
@@ -36,7 +38,27 @@ class PrivacyEventSink : public base::RefCountedThreadSafe<PrivacyEventSink> {
 
   // Network thread (the single producer). Never blocks, never allocates. The
   // return value is for tests and internals; production callers ignore it.
+  //
+  // Returns false immediately once the §13.3 kill switch has tripped.
   bool Record(const RawEvent& event);
+
+  // §13.3 kill switch, producer side. Called once from the service sequence
+  // when the pipeline is judged to be degrading browsing; never reset, because
+  // "for the session" is the whole point — a switch that flapped back on would
+  // reintroduce the very cost it tripped over.
+  //
+  // Cutting collection HERE rather than at the drain is deliberate. Stopping
+  // the consumer would leave the producer still pushing into a ring nobody
+  // empties, so the network thread would keep paying for an event that is
+  // guaranteed to be discarded. §13.1's DISABLED state means "no interception
+  // hook, zero cost", and this is as close to it as a running session gets.
+  //
+  // The cost of the check itself is one relaxed atomic load on a line that is
+  // never written after startup, so it stays in every core's cache.
+  void DisableForSession();
+  bool disabled_for_session() const {
+    return disabled_.load(std::memory_order_relaxed);
+  }
 
   // Privacy sequence (the single consumer).
   size_t Drain(base::span<RawEvent> out);
@@ -51,6 +73,12 @@ class PrivacyEventSink : public base::RefCountedThreadSafe<PrivacyEventSink> {
   ~PrivacyEventSink();
 
   PrivacyRingBuffer ring_;
+
+  // Written once by the service sequence, read by the producer. Relaxed on
+  // both sides: there is nothing to synchronise WITH — no other memory is
+  // published by the flip, and the exact event on which the producer first
+  // observes it does not matter.
+  std::atomic<bool> disabled_{false};
 };
 
 // Milliseconds since a PROCESS-WIDE epoch, for RawEvent::ticks_delta_ms.

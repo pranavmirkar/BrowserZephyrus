@@ -91,7 +91,24 @@ inline constexpr uint32_t kFpSurfaceAudio = 1u << 1;
 inline constexpr uint32_t kFpSurfaceWebgl = 1u << 2;
 inline constexpr uint32_t kFpSurfaceNavigator = 1u << 3;
 inline constexpr uint32_t kFpSurfaceScreen = 1u << 4;
-inline constexpr uint32_t kFpSurfaceAll = 0x1fu;
+// Local font visibility. Unlike the five above it does not perturb a value the
+// page reads; it decides which locally-installed families a page is allowed to
+// discover. See CSSFontSelector::ShouldHideLocalFontFamily.
+inline constexpr uint32_t kFpSurfaceFonts = 1u << 5;
+// Every DEFINED bit. Used to reject nonsense values, not as a default -- see
+// kFpSurfaceDefault. Keeping the two separate is deliberate: this constant is
+// what a new surface must be added to, and if it were also the default, adding
+// a bit here would silently switch the new surface on for every user. That is
+// exactly what happened when the fonts bit was first added.
+inline constexpr uint32_t kFpSurfaceAll = 0x3fu;
+
+// What actually ships on. Fonts is excluded: the other five perturb a value the
+// page reads, whereas fonts changes which typefaces a page may use, so its
+// blast radius is page rendering rather than a measurement. It needs real-world
+// exposure before it becomes a default.
+inline constexpr uint32_t kFpSurfaceDefault =
+    kFpSurfaceCanvas | kFpSurfaceAudio | kFpSurfaceWebgl |
+    kFpSurfaceNavigator | kFpSurfaceScreen;
 
 // Which surfaces may perturb. Feature param "surfaces", a decimal bitmask;
 // absent means all. Example: --enable-features=ZephyrusPrivacyFingerprint\

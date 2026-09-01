@@ -495,6 +495,25 @@ void MenuScrollViewContainer::CreateBubbleBorder() {
   auto bubble_border = std::make_unique<BubbleBorder>(arrow_, shadow_type);
   bubble_border->SetColor(id);
 
+  // ZEPHYRUS: give the menu a nub when its root item asked for one.
+  //
+  // Only the app menu does. It hangs off a title-bar button and can point at
+  // it; a context menu opens at the cursor with nothing to aim at.
+  //
+  // The anchor is taken in SCREEN coordinates and converted at paint time,
+  // because this runs during construction, before the menu has a widget to
+  // convert against.
+  if (MenuItemView* const root = content_view_->GetMenuItem();
+      root && root->zephyrus_wants_nub()) {
+    if (MenuController* const controller = root->GetMenuController()) {
+      const gfx::Rect anchor = controller->GetZephyrusAnchorBounds();
+      if (!anchor.IsEmpty()) {
+        bubble_border->set_zephyrus_nub_screen_x(
+            static_cast<float>(anchor.CenterPoint().x()));
+      }
+    }
+  }
+
   const MenuConfig& menu_config = MenuConfig::instance();
   bubble_border->set_md_shadow_elevation(
       content_view_->GetMenuItem()->GetParentMenuItem()

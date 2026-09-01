@@ -49,7 +49,7 @@ BrowserViewLayoutDelegateImpl::~BrowserViewLayoutDelegateImpl() = default;
 
 int BrowserViewLayoutDelegateImpl::GetZephyrusSidebarTargetWidth() const {
   return browser_view().IsZephyrusSidebarAttached()
-             ? BrowserView::ZephyrusSidebarColumnWidth()
+             ? browser_view().ZephyrusSidebarColumnWidth()
              : 0;
 }
 

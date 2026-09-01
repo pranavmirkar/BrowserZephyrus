@@ -15,6 +15,11 @@
 #include "third_party/blink/renderer/platform/supplementable.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
+#include "third_party/blink/public/mojom/zephyrus/zephyrus_fingerprint_seed.mojom-blink.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
+#include "mojo/public/cpp/bindings/remote.h"
+
+#include <algorithm>
 
 namespace blink {
 
@@ -39,25 +44,166 @@ WebContentSettingsClient* SettingsClientFor(ExecutionContext* context) {
   return nullptr;
 }
 
-// The interface broker for either kind of context. There is no
-// ExecutionContext::GetBrowserInterfaceBroker(), so this branches — but it
-// branches in ONE place, like SettingsClientFor above, rather than at each
-// caller.
+// The interface broker to fetch PrivacyReporter from, or nullptr when this
+// context has no way to reach it.
+//
+// FRAMES ONLY, and this is a hard constraint rather than a simplification.
+// PrivacyReporter is registered in PopulateChromeFrameBinders and its browser
+// side is a content::DocumentService, which needs a RenderFrameHost. No worker
+// scope of any kind can bind it:
+//
+//   - dedicated and shared workers: content exposes NO embedder binder hook
+//     for them at all, so there is nowhere to register it even if we wanted to;
+//   - service workers: the hook exists
+//     (ContentBrowserClient::RegisterBrowserInterfaceBindersForServiceWorker)
+//     but Chrome does not register PrivacyReporter in it.
+//
+// Asking anyway is not a dropped message — it is FATAL. An unbound interface
+// request from a worker scope is treated as a bad Mojo message and the browser
+// kills the whole renderer process:
+//
+//   "Received bad user message: No binder found for interface
+//    zephyrus_privacy.mojom.PrivacyReporter for the dedicated worker scope"
+//
+// which takes the page down with it. Reached simply by a worker drawing to an
+// OffscreenCanvas and reading it back, with the randomization flag on.
+//
+// So worker fingerprinting is RANDOMIZED but not REPORTED — recorded as a
+// known gap rather than paid for with a tab crash. Randomization and reporting
+// are separate wirings; this is the seam between them.
 const BrowserInterfaceBrokerProxy* BrokerFor(ExecutionContext* context) {
-  if (auto* window = DynamicTo<LocalDOMWindow>(context)) {
-    return window->GetFrame() ? &window->GetFrame()->GetBrowserInterfaceBroker()
-                              : nullptr;
+  auto* window = DynamicTo<LocalDOMWindow>(context);
+  if (!window || !window->GetFrame()) {
+    return nullptr;
   }
-  if (auto* scope = DynamicTo<WorkerGlobalScope>(context)) {
-    return &scope->GetBrowserInterfaceBroker();
-  }
-  return nullptr;
+  return &window->GetFrame()->GetBrowserInterfaceBroker();
 }
 
 }  // namespace
 
+namespace {
+
+// A SERVICE WORKER's seed, fetched through its own interface broker and cached
+// for the life of the worker.
+//
+// Service workers are the one instrumented context that cannot be handed a seed
+// the way every other one is. A document reads it from its frame's content
+// settings client; a dedicated worker gets a copy of its creating frame's. A
+// service worker has no frame to copy from — it outlives every document it
+// serves and is created by none of them. It does have a
+// WebContentSettingsClient — a ServiceWorkerContentSettingsProxy — but that
+// proxy is built from a registration and carries no seed, which is why the
+// accessors below must consult this path before consulting it. Measured before
+// it was built: a canvas drawn inside a service worker read back the exact
+// unperturbed bytes, so a script could evade the whole feature by moving its
+// canvas work into one.
+//
+// It is still the SAME seed its documents hold, because the seed is keyed on
+// origin alone and a service worker is origin-scoped. The browser derives it
+// from the worker's own registration, so the renderer still never names an
+// origin — GetSeed() takes no arguments here exactly as it does for a frame.
+//
+// Synchronous for the same reason the frame path is: a service worker can read
+// a canvas in its very first turn, and an async seed would serve that read the
+// true values. It blocks only the worker's own thread.
+class ZephyrusWorkerSeed final : public GarbageCollected<ZephyrusWorkerSeed>,
+                                 public Supplement<ExecutionContext> {
+ public:
+  static constexpr char kSupplementName[] = "ZephyrusWorkerSeed";
+
+  static ZephyrusWorkerSeed& From(ExecutionContext& context) {
+    auto* self = Supplement<ExecutionContext>::From<ZephyrusWorkerSeed>(context);
+    if (!self) {
+      self = MakeGarbageCollected<ZephyrusWorkerSeed>(context);
+      Supplement<ExecutionContext>::ProvideTo(context, self);
+    }
+    return *self;
+  }
+
+  explicit ZephyrusWorkerSeed(ExecutionContext& context)
+      : Supplement<ExecutionContext>(context) {}
+
+  const std::optional<std::array<uint8_t, 32>>& Seed(ExecutionContext& context) {
+    EnsureFetched(context);
+    return seed_;
+  }
+
+  uint32_t SurfaceMask(ExecutionContext& context) {
+    EnsureFetched(context);
+    return surface_mask_;
+  }
+
+  void Trace(Visitor* visitor) const override {
+    Supplement<ExecutionContext>::Trace(visitor);
+  }
+
+ private:
+  void EnsureFetched(ExecutionContext& context) {
+    if (fetched_) {
+      return;
+    }
+    // Set BEFORE the call, not after: a failed fetch must not be retried on
+    // every canvas read, which would put a blocking IPC on a hot path.
+    fetched_ = true;
+
+    auto* scope = DynamicTo<WorkerGlobalScope>(context);
+    if (!scope) {
+      return;
+    }
+    mojo::Remote<zephyrus_privacy::mojom::blink::FingerprintSeedHost> host;
+    scope->GetBrowserInterfaceBroker().GetInterface(
+        host.BindNewPipeAndPassReceiver());
+
+    Vector<uint8_t> bytes;
+    uint32_t mask = 0;
+    if (!host->GetSeed(&bytes, &mask)) {
+      return;
+    }
+    // An empty seed is the browser saying "do not randomize" — the flag is off,
+    // or this principal has no stable origin to key on. Not an error.
+    if (bytes.size() != 32u) {
+      return;
+    }
+    std::array<uint8_t, 32> seed;
+    std::copy(bytes.begin(), bytes.end(), seed.begin());
+    seed_ = seed;
+    surface_mask_ = mask;
+  }
+
+  std::optional<std::array<uint8_t, 32>> seed_;
+  uint32_t surface_mask_ = 0;
+  bool fetched_ = false;
+};
+
+// Whether `context` must fetch its own seed instead of reading one from a
+// content settings client.
+//
+// STRICTLY service workers, and the strictness is a safety property rather than
+// tidiness. FingerprintSeedHost is registered for frames and for service
+// workers only. A dedicated or shared worker that asked for it would be making
+// an unbindable interface request, which the browser treats as a bad Mojo
+// message and answers by killing the renderer process. Widening this predicate
+// to "any worker" would turn a missing seed into a crashed tab.
+bool FetchesOwnSeed(ExecutionContext* context) {
+  return context && context->IsServiceWorkerGlobalScope();
+}
+
+}  // namespace
+
+// A service worker is checked FIRST, ahead of the content settings client.
+//
+// It has one — a ServiceWorkerContentSettingsProxy — but that proxy carries no
+// seed and never will: it is built in //content from a registration, with no
+// frame anywhere in the picture to take a seed from. Consulting it first is not
+// merely redundant, it is wrong: it answers nullopt authoritatively and the
+// self-fetch below is never reached, which is exactly how the first version of
+// this left service workers reading true pixels with the browser side fully
+// wired and waiting.
 std::optional<std::array<uint8_t, 32>> ZephyrusFingerprintSeedFor(
     ExecutionContext* context) {
+  if (FetchesOwnSeed(context)) {
+    return ZephyrusWorkerSeed::From(*context).Seed(*context);
+  }
   WebContentSettingsClient* settings = SettingsClientFor(context);
   return settings ? settings->GetZephyrusFingerprintSeed() : std::nullopt;
 }
@@ -65,6 +211,13 @@ std::optional<std::array<uint8_t, 32>> ZephyrusFingerprintSeedFor(
 std::optional<std::array<uint8_t, 32>> ZephyrusSeedForSurface(
     ExecutionContext* context,
     uint32_t surface_bit) {
+  if (FetchesOwnSeed(context)) {
+    ZephyrusWorkerSeed& worker = ZephyrusWorkerSeed::From(*context);
+    if (!(worker.SurfaceMask(*context) & surface_bit)) {
+      return std::nullopt;
+    }
+    return worker.Seed(*context);
+  }
   WebContentSettingsClient* settings = SettingsClientFor(context);
   if (!settings ||
       !(settings->GetZephyrusFingerprintSurfaceMask() & surface_bit)) {

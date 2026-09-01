@@ -142,17 +142,26 @@ namespace {
 // retry without new information; the menu fill is opaque for this reason.
 //
 // The shaping below DOES work, and is worth keeping:
-//   * DWMWCP_ROUND rounds at the system radius (8dip), so MenuConfig's corner
-//     radius is 8 to match, and DWM draws the shadow that the NO_SHADOW choice
-//     in MenuScrollViewContainer::CreateBubbleBorder gave up.
-//   * Rounding opts the window into a 1px system border that reads as a pale
-//     frame against our dark menu; DWMWA_COLOR_NONE turns it off and leaves the
-//     menu's own hairline (kColorMenuBorder) as the only edge.
+//   * DWMWCP_DONOTROUND, so the WINDOW is not clipped and the menu's own fill
+//     decides the shape. This reverses an earlier DWMWCP_ROUND: that clipped at
+//     the system radius (8dip) and shaved anything larger, which capped
+//     MenuConfig's corner radius at 8. The design's popups are 28.
+//
+//     The cost is DWM's shadow, which came with the rounding and which
+//     MenuScrollViewContainer::CreateBubbleBorder had given up by choosing
+//     NO_SHADOW. Menus now have no drop shadow at all. That is consistent with
+//     this design rather than a regression: separation here is a 1px hairline
+//     and a flat surface step, and the menu already draws its own edge
+//     (kColorMenuBorder). If a shadow is wanted back, it has to come from that
+//     bubble border, not from DWM.
+//   * DWMWA_COLOR_NONE stays. It suppressed the 1px system frame that rounding
+//     opted into; harmless now, and cheap insurance if the rounding ever
+//     returns.
 void ApplyWindowShaping(HWND hwnd) {
   if (base::win::GetVersion() < base::win::Version::WIN11) {
     return;
   }
-  DWM_WINDOW_CORNER_PREFERENCE corner_pref = DWMWCP_ROUND;
+  DWM_WINDOW_CORNER_PREFERENCE corner_pref = DWMWCP_DONOTROUND;
   ::DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner_pref,
                           sizeof(corner_pref));
   COLORREF border = DWMWA_COLOR_NONE;

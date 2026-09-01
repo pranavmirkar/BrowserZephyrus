@@ -102,6 +102,7 @@
 #include "chrome/grit/settings_resources_map.h"
 #include "components/account_manager_core/account_manager_facade.h"
 #include "components/autofill/content/browser/content_autofill_client.h"
+#include "components/autofill/core/browser/at_memory/at_memory_enablement_utils.h"
 #include "components/autofill/core/browser/data_manager/payments/payments_data_manager.h"
 #include "components/autofill/core/browser/integrators/personal_context/personal_context_autofill_util.h"
 #include "components/autofill/core/browser/payments/bnpl_manager.h"
@@ -640,6 +641,8 @@ SettingsUI::SettingsUI(content::WebUI* web_ui)
       {"showSkillsSettingPage",
        base::FeatureList::IsEnabled(features::kSkillsEnabled)},
       {"showIndigoControl", base::FeatureList::IsEnabled(features::kIndigo)},
+      {"showGoogleSearchAiModeWorkspaceControl",
+       base::FeatureList::IsEnabled(features::kGoogleSearchAiModeWorkspace)},
   };
 
   html_source->AddString("aiSuggestionsHelpCenterArticleLink",
@@ -689,10 +692,18 @@ SettingsUI::SettingsUI(content::WebUI* web_ui)
 
   personal_context::PersonalContextEnablementService* enablement_service =
       PersonalContextEnablementServiceFactory::GetForProfile(profile);
+  // Zephyrus: same null-checked |autofill_client| as above. Upstream 7922 also
+  // changed this callee to take a const AutofillClient& rather than a pointer,
+  // so it needs dereferencing as well — the null check is what keeps settings
+  // from crashing when it is hosted outside a browser tab.
+  html_source->AddBoolean("showSuggestionsFromGeminiSettings",
+                          autofill_client &&
+                              autofill::ShouldShowPersonalContextAutofillSetting(
+                                  *autofill_client, enablement_service));
   html_source->AddBoolean(
-      "showSuggestionsFromGeminiSettings",
-      autofill::ShouldShowPersonalContextAutofillSetting(
-          enablement_service,
+      "isAtMemoryEnabled",
+      autofill::MayPerformAtMemoryAction(
+          autofill::AtMemoryAction::kShowAtMemoryInSettings, enablement_service,
           subscription_eligibility::SubscriptionEligibilityServiceFactory::
               GetForProfile(profile),
           profile->GetPrefs(),

@@ -15,7 +15,9 @@
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "components/split_tabs/split_tab_id.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/cursor/cursor.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/animation/animation_delegate.h"
 #include "ui/gfx/animation/slide_animation.h"
@@ -58,6 +60,44 @@ class ZephyrusSidebarHotZone : public views::View {
   base::RepeatingClosure on_enter_;
 };
 
+// The draggable seam between the sidebar panel and the page.
+//
+// Owned by BrowserView, NOT by the sidebar, and that is the whole point. The
+// visible dividing line is not inside the panel: the content card is inset by
+// kZephyrusContentMargin (contents_container_view.cc), so the channel the user
+// aims at belongs to the contents container. A child of the sidebar is clipped
+// to the sidebar's bounds and can never receive an event out there -- which is
+// exactly why the first version of this showed no resize cursor at all.
+//
+// Reports width in ROOT coordinates. Measuring within this view instead would
+// drift, because the handle moves as the panel resizes, so every drag frame
+// would measure from a new origin and the panel would run away from the cursor.
+class ZephyrusSidebarResizeHandle : public views::View {
+  METADATA_HEADER(ZephyrusSidebarResizeHandle, views::View)
+
+ public:
+  ZephyrusSidebarResizeHandle(base::RepeatingCallback<int()> current_width,
+                              base::RepeatingCallback<void(int)> on_width,
+                              base::RepeatingClosure on_finished,
+                              base::RepeatingClosure on_reset);
+  ~ZephyrusSidebarResizeHandle() override;
+
+  // views::View:
+  ui::Cursor GetCursor(const ui::MouseEvent& event) override;
+  bool OnMousePressed(const ui::MouseEvent& event) override;
+  bool OnMouseDragged(const ui::MouseEvent& event) override;
+  void OnMouseReleased(const ui::MouseEvent& event) override;
+  void OnMouseCaptureLost() override;
+
+ private:
+  base::RepeatingCallback<int()> current_width_;
+  base::RepeatingCallback<void(int)> on_width_;
+  base::RepeatingClosure on_finished_;
+  base::RepeatingClosure on_reset_;
+  int press_root_x_ = 0;
+  int start_width_ = 0;
+};
+
 // Zephyrus: a floating vertical sidebar that lists the window's tabs (favicon +
 // title), highlights the active tab, and allows switching and closing tabs. It
 // is the foundation for the workspace switcher (added later). Lives as an
@@ -73,7 +113,34 @@ class ZephyrusSidebarView : public views::View,
 
  public:
   // 240 per the Zephyrus Browser Design Figma (sidebar "Example" component).
-  static constexpr int kSidebarWidth = 240;
+  // This is now only the STARTING width: the user resizes the panel by
+  // dragging its right edge, and the choice persists per profile.
+  static constexpr int kDefaultSidebarWidth = 240;
+
+  // The range the drag is clamped to. The lower bound is where a tab row stops
+  // being readable -- favicon, title, mute and close button all have to fit,
+  // and below this the title is elided to a couple of characters, which makes
+  // the sidebar useless rather than compact. The upper bound keeps the panel
+  // from eating a small laptop screen; at 480 it is already a third of a
+  // 1366-wide display.
+  static constexpr int kMinSidebarWidth = 180;
+  static constexpr int kMaxSidebarWidth = 480;
+
+  // Registered in browser_prefs.cc as a bare string literal, deliberately:
+  // //chrome/browser must not depend on //chrome/browser/ui/views (see the
+  // note beside the other Zephyrus prefs there). Keep the two spellings in
+  // sync -- a typo here means the pref silently reads as 0 and the width
+  // clamps to the minimum on every launch.
+  static constexpr char kWidthPrefName[] = "zephyrus.sidebar.width";
+
+  // The width to use right now: the live drag value while the user is
+  // resizing, otherwise the persisted pref. Always clamped, so a corrupt or
+  // hand-edited pref cannot produce an unusable panel.
+  //
+  // This is the single source of truth for the width. The panel's right edge
+  // and the page's left edge are the same seam, so the layout and the slide
+  // transform must both come from here -- see TransformForReveal().
+  int GetSidebarWidth() const;
 
   explicit ZephyrusSidebarView(BrowserView* browser_view);
   ZephyrusSidebarView(const ZephyrusSidebarView&) = delete;
@@ -82,6 +149,15 @@ class ZephyrusSidebarView : public views::View,
 
   // Slides the sidebar fully into view.
   void Reveal();
+
+  // Resize entry points, driven by ZephyrusSidebarResizeHandle (owned by
+  // BrowserView). Width is committed to prefs only when the drag ENDS: writing
+  // on every frame would push a pref change, its observers, and eventually a
+  // disk write through dozens of times a second for a value the user has not
+  // settled on yet.
+  void OnResizeDragged(int new_width);
+  void OnResizeFinished();
+  void ResetWidthToDefault();
 
   // Pinned: the sidebar stays out and never auto-tucks. Mirrors the title bar's
   // pin (BrowserView::ToggleZephyrusTitlebarPinned).
@@ -140,6 +216,21 @@ class ZephyrusSidebarView : public views::View,
   void ExecuteCommand(int command_id, int event_flags) override;
 
  private:
+  // Split view. Two tabs shown as one joined card with a break control between
+  // them; breaking keeps both tabs and activates whichever was in use more
+  // recently.
+  void BreakSplit(split_tabs::SplitTabId split_id);
+
+  // Drag-to-reorder, driven by the rows themselves.
+  //
+  // `y_in_container` is the cursor's position in tab_list_container_'s
+  // coordinate space, which is the space the rows are laid out in.
+  void OnRowDragged(views::View* row, int y_in_container);
+  void OnRowDragFinished();
+  void CancelRowDrag();
+  // Tucks the panel if the cursor ended the gesture outside it.
+  void TuckAwayIfCursorLeft();
+
   // Rebuilds the tab row list from the current TabStripModel state.
   //
   // DANGER: this destroys every row view, including whichever one the user is
@@ -173,7 +264,6 @@ class ZephyrusSidebarView : public views::View,
   void ExecuteBrowserCommand(int command);
   // Swaps this window for the Private Workspace window (or back out again if
   // this window already is the private one).
-  void EnterPrivateWorkspace();
 
   // Color helpers derived from the active page color (or dark defaults).
   // This window's base theme color (the Private Workspace variant when the
@@ -181,6 +271,14 @@ class ZephyrusSidebarView : public views::View,
   SkColor GetZephyrusBase() const;
   SkColor GetForegroundColor() const;
   SkColor GetPanelColor() const;
+
+  // Set only while a drag is in progress; GetSidebarWidth() prefers it.
+  std::optional<int> drag_width_;
+  // True for the duration of a resize drag. Suppresses the auto-tuck: the seam
+  // is at the panel's edge, so dragging rightward moves the cursor off the
+  // panel, which would otherwise fire MouseMovedOutOfHost and tuck the sidebar
+  // away mid-drag -- making the feature unusable.
+  bool resizing_ = false;
 
   raw_ptr<BrowserView> browser_view_;
   raw_ptr<TabStripModel> tab_strip_model_;
@@ -210,6 +308,36 @@ class ZephyrusSidebarView : public views::View,
   // page opens a tab), and a stale index would act on a different tab.
   raw_ptr<content::WebContents> context_menu_contents_ = nullptr;
   std::vector<int> context_menu_workspace_ids_;
+
+  // --- Drag-to-reorder state -------------------------------------------
+  // The tab being dragged, tracked by IDENTITY rather than by index -- the
+  // same rule the context menu follows a few members down, and for the same
+  // reason: the strip can change mid-gesture and a stale index would reorder
+  // a different tab than the one under the cursor.
+  raw_ptr<content::WebContents> drag_contents_ = nullptr;
+  bool dragging_row_ = false;
+  // True while the cursor has left the panel and is over the page. The drop
+  // then means "split with what is open" instead of "reorder the list" -- one
+  // gesture with two outcomes, chosen by where it ends.
+  bool drag_over_content_ = false;
+  // Overlay shown on the page while a tab is held over it. Parented into
+  // BrowserView so it can cover the web contents, and deliberately incapable
+  // of receiving events -- an input-transparent overlay cannot become the
+  // invisible sheet that swallowed the whole title bar during the omnibox
+  // experiment.
+  raw_ptr<views::View> split_drop_indicator_ = nullptr;
+  // The tab as it appears once it has left the panel: a stand-in parented into
+  // BrowserView so it can travel anywhere in the window.
+  raw_ptr<views::View> drag_proxy_ = nullptr;
+  gfx::Point drag_grab_offset_;
+  void UpdateSplitDropIndicator(bool visible);
+  void CreateDragProxy(views::View* row);
+  void MoveDragProxyTo(const gfx::Point& cursor_screen);
+  void DestroyDragProxy();
+  // A rebuild that arrived while a drag was in progress. Running it there
+  // would delete the row being dragged -- the use-after-free described on
+  // ScheduleRebuildTabList -- so it is held until the gesture ends.
+  bool rebuild_deferred_ = false;
 
   // Guards the posted rebuild against the sidebar being torn down first.
   base::WeakPtrFactory<ZephyrusSidebarView> weak_factory_{this};

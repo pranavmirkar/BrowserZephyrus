@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_engine_picker.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/history/core/browser/top_sites.h"
@@ -77,7 +78,8 @@ constexpr int kPanelGap = 20;
 // panel radius belongs to a surface that does not exist here.
 
 constexpr int kFieldHeight = 52;
-constexpr int kFieldRadius = 26;
+// Pressable -> pill. Was 26, a mid-range value the binary rule removes.
+constexpr int kFieldRadius = zephyrus::kPillRadius;
 constexpr int kFieldHPadding = 16;
 constexpr int kFieldGap = 12;
 // Figma specifies a background-blur of 25, paired with the 60% fill. Dialled
@@ -86,12 +88,12 @@ constexpr int kFieldGap = 12;
 // glass but keeps some sense of what is behind the card.
 constexpr float kFieldBlurSigma = 15.0f;
 
-constexpr int kEngineRadius = 14;
+constexpr int kEngineRadius = zephyrus::kPillRadius;
 constexpr int kEngineFaviconSize = 18;
 constexpr int kSearchGlyphSize = 17;
 constexpr int kDividerHeight = 24;
 
-constexpr int kChipRadius = 14;
+constexpr int kChipRadius = zephyrus::kPillRadius;
 constexpr int kChipFaviconSize = 16;
 constexpr int kMaxChips = 5;
 constexpr int kChipsInset = 76;
@@ -156,21 +158,36 @@ struct ChipFills {
   SkColor pressed;
 };
 
-// Lifted navy: the chip comes forward on hover rather than being washed white,
-// so the row keeps one material instead of gaining a second, lighter one.
-constexpr ChipFills kGlassFills = {
-    SkColorSetARGB(0x99, 0x0E, 0x11, 0x23),
-    SkColorSetARGB(0xB8, 0x1B, 0x20, 0x38),
-    SkColorSetARGB(0xB8, 0x14, 0x18, 0x2B),
-};
+// The shortcut chips.
+//
+// These were hardcoded NAVY (#1B2038 / #14182B) and faint WHITE alphas, left
+// over from the original dark theme -- they survived the move to the warm
+// palette untouched because nothing referenced the theme constant, so nothing
+// broke loudly. On a light ground they were a dark blue chip; on the monochrome
+// palette they would still be. Both now derive from the live palette, which is
+// also why they can no longer be constexpr.
+//
+// The chip comes FORWARD on hover rather than being washed lighter, so the row
+// keeps one material instead of gaining a second.
+ChipFills GlassFills() {
+  const SkColor base = zephyrus::Ground();
+  return {
+      SkColorSetA(base, 0x99),
+      SkColorSetA(zephyrus::Raise(base, 0x28), 0xB8),
+      SkColorSetA(zephyrus::Raise(base, 0x3C), 0xB8),
+  };
+}
 
-// The engine chip sits inside the field, on top of that same navy, so its
-// resting state is a faint white lift and hover simply deepens it.
-constexpr ChipFills kEngineFills = {
-    SkColorSetARGB(0x0A, 0xFF, 0xFF, 0xFF),
-    SkColorSetARGB(0x24, 0xFF, 0xFF, 0xFF),
-    SkColorSetARGB(0x33, 0xFF, 0xFF, 0xFF),
-};
+// The engine chip sits inside the field on that same material, so its resting
+// state is a faint lift of the ink and hover simply deepens it.
+ChipFills EngineFills() {
+  const SkColor ink = zephyrus::Ink();
+  return {
+      SkColorSetA(ink, 0x0A),
+      SkColorSetA(ink, 0x1C),
+      SkColorSetA(ink, 0x28),
+  };
+}
 
 SkColor FillForState(const ChipFills& fills, views::Button::ButtonState state) {
   switch (state) {
@@ -207,7 +224,7 @@ class EngineChip : public views::Button {
  private:
   void ApplyFill() {
     SetBackground(views::CreateRoundedRectBackground(
-        FillForState(kEngineFills, GetState()), kEngineRadius));
+        FillForState(EngineFills(), GetState()), kEngineRadius));
   }
 };
 
@@ -247,7 +264,7 @@ class GlassChip : public views::LabelButton {
  private:
   void ApplyFill() {
     SetBackground(views::CreateRoundedRectBackground(
-        FillForState(kGlassFills, GetState()), kChipRadius));
+        FillForState(GlassFills(), GetState()), kChipRadius));
   }
 };
 
@@ -302,7 +319,7 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
   field->layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kFieldRadius));
   field->layer()->SetBackgroundBlur(kFieldBlurSigma);
   field->SetBackground(views::CreateRoundedRectBackground(
-      SkColorSetARGB(0x99, 0x0E, 0x11, 0x23), kFieldRadius));
+      SkColorSetA(zephyrus::Ground(), 0x99), kFieldRadius));
   field->SetBorder(views::CreateRoundedRectBorder(
       1, kFieldRadius, SkColorSetARGB(0x08, 0x00, 0x00, 0x00)));
   field->SetPreferredSize(gfx::Size(kContentWidth, kFieldHeight));
@@ -539,7 +556,7 @@ void ZephyrusSearchOverlay::ShowEnginePicker() {
   // anchor. That was the crash when this was a bubble.
   SetChevronOpen(true);
   ZephyrusSearchEnginePicker::Show(
-      browser_view_->browser()->profile(), engine_chip_,
+      zephyrus::ActiveProfile(browser_view_->browser()), engine_chip_,
       base::BindOnce(&ZephyrusSearchOverlay::OnEnginePickerFinished,
                      weak_factory_.GetWeakPtr()));
 }
@@ -577,7 +594,7 @@ void ZephyrusSearchOverlay::SetChevronOpen(bool open) {
 }
 
 void ZephyrusSearchOverlay::RequestShortcuts() {
-  Profile* profile = browser_view_ ? browser_view_->browser()->profile()
+  Profile* profile = browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
                                    : nullptr;
   scoped_refptr<history::TopSites> top_sites =
       profile ? TopSitesFactory::GetForProfile(profile) : nullptr;
@@ -597,7 +614,7 @@ void ZephyrusSearchOverlay::OnShortcutsReady(
   }
   chips_row_->RemoveAllChildViews();
 
-  Profile* profile = browser_view_ ? browser_view_->browser()->profile()
+  Profile* profile = browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
                                    : nullptr;
   favicon::FaviconService* favicons =
       profile ? FaviconServiceFactory::GetForProfile(
@@ -692,12 +709,12 @@ void ZephyrusSearchOverlay::RefreshEngineLabel() {
     return;
   }
   const std::u16string name =
-      zephyrus::GetDefaultSearchEngineName(browser_view_->browser()->profile());
+      zephyrus::GetDefaultSearchEngineName(zephyrus::ActiveProfile(browser_view_->browser()));
 
   // The engine's own mark, if one is cached locally. Cancel any earlier lookup
   // so a previous engine's icon cannot land after a newer choice.
   favicon_tracker_.TryCancelAll();
-  Profile* profile = browser_view_->browser()->profile();
+  Profile* profile = zephyrus::ActiveProfile(browser_view_->browser());
   TemplateURLService* service =
       profile ? TemplateURLServiceFactory::GetForProfile(profile) : nullptr;
   const TemplateURL* def =
@@ -744,7 +761,7 @@ void ZephyrusSearchOverlay::OpenQuery(const std::u16string& text) {
   // anything else searches with the user's default engine.
   AutocompleteMatch match;
   AutocompleteClassifier* classifier =
-      AutocompleteClassifierFactory::GetForProfile(browser_view_->browser()->profile());
+      AutocompleteClassifierFactory::GetForProfile(zephyrus::ActiveProfile(browser_view_->browser()));
   if (!classifier) {
     return;
   }

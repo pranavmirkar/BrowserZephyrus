@@ -237,6 +237,7 @@ class LocationBarView
   bool IsVisible() const override;
   bool IsDrawn() const override;
   bool IsFullscreen() const override;
+  bool IsMouseHovered() const override;
   void InvalidateLayout() override;
   gfx::Rect Bounds() const override;
   gfx::Rect BoundsInScreen() const override;
@@ -292,6 +293,7 @@ class LocationBarView
   static int GetAvailableDecorationTextHeight();
 
   void OnOmniboxFocused();
+  void OpenOmniboxPopup();
   void OnOmniboxBlurred();
 
   // Called when omnibox view receives mouse notifications relevant to hover.

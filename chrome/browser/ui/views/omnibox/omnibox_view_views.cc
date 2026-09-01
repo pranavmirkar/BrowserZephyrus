@@ -38,6 +38,7 @@
 #include "chrome/browser/external_protocol/external_protocol_handler.h"
 #include "chrome/browser/history_clusters/history_clusters_tab_helper.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/search_engines/ai_mode_button_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/send_tab_to_self/send_tab_to_self_util.h"
 #include "chrome/browser/themes/theme_service.h"
@@ -47,8 +48,8 @@
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
-#include "chrome/browser/ui/omnibox/ai_mode_button_service_factory.h"
 #include "chrome/browser/ui/omnibox/clipboard_utils.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
@@ -59,7 +60,6 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_closer.h"
@@ -73,8 +73,6 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/contextual_tasks/public/features.h"
 #include "components/lens/lens_features.h"
-#include "components/omnibox/browser/ai_mode_button_config.h"
-#include "components/omnibox/browser/ai_mode_button_service.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/omnibox_client.h"
@@ -86,6 +84,8 @@
 #include "components/omnibox/common/omnibox_features.h"
 #include "components/prefs/pref_service.h"
 #include "components/search/search.h"
+#include "components/search_engines/ai_mode_button_config.h"
+#include "components/search_engines/ai_mode_button_service.h"
 #include "components/search_engines/search_engines_switches.h"
 #include "components/security_state/core/security_state.h"
 #include "components/send_tab_to_self/metrics_util.h"
@@ -217,10 +217,12 @@ std::u16string AimPlaceholderText(
 // OmniboxState ---------------------------------------------------------------
 OmniboxState::OmniboxState(const OmniboxEditModel::State& model_state,
                            const gfx::Range& selection,
-                           const gfx::Range& saved_selection_for_focus_change)
+                           const gfx::Range& saved_selection_for_focus_change,
+                           const bool show_full_url)
     : model_state(model_state),
       selection(selection),
-      saved_selection_for_focus_change(saved_selection_for_focus_change) {}
+      saved_selection_for_focus_change(saved_selection_for_focus_change),
+      show_full_url(show_full_url) {}
 
 OmniboxState::~OmniboxState() = default;
 
@@ -587,6 +589,9 @@ void OmniboxViewViews::SetFocus(bool is_user_initiated) {
   // |is_user_initiated| is true for focus events from keyboard accelerators.
   if (is_user_initiated) {
     controller()->edit_model()->StartZeroSuggestRequest();
+    if (location_bar_view_) {
+      location_bar_view_->OpenOmniboxPopup();
+    }
   }
 
   // Restore caret visibility if focus is explicitly requested. This is
@@ -1498,8 +1503,6 @@ bool OmniboxViewViews::OnMousePressed(const ui::MouseEvent& event) {
     next_double_click_selection_len_ = 0;
   }
 
-  bool is_double_click = false;
-
   if (!select_all_on_mouse_release_) {
     if (UnapplySteadyStateElisions(UnelisionGesture::kOther)) {
       // This ensures that when the user makes a double-click partial select, we
@@ -1507,7 +1510,6 @@ bool OmniboxViewViews::OnMousePressed(const ui::MouseEvent& event) {
       // selection, which is on mousedown.
       TextChanged();
       filter_drag_events_for_unelision_ = true;
-      is_double_click = true;
     } else if (event.GetClickCount() == 1 && event.IsLeftMouseButton()) {
       // Select the current word and record it for later. This is done to handle
       // an edge case where the wrong word is selected on a double click when
@@ -1538,21 +1540,8 @@ bool OmniboxViewViews::OnMousePressed(const ui::MouseEvent& event) {
         SetSelectedRange(gfx::Range(next_double_click_selection_offset_,
                                     next_double_click_selection_offset_ +
                                         next_double_click_selection_len_));
-        is_double_click = true;
       }
     }
-  }
-
-  // When mouse clicks are being forwarded from the WebUI popup to this native
-  // textfield, push the newly calculated selection range (e.g. word highlights)
-  // back to the WebUI searchbox so it maintains perfect visual sync. Whenever
-  // selection is set on the omnibox_view_views, it should be pushed to the
-  // popup.
-  if (location_bar_view_ && location_bar_view_->GetOmniboxPopupView() &&
-      base::FeatureList::IsEnabled(
-          omnibox::kWebUIOmniboxFullPopupDoubleClick)) {
-    location_bar_view_->GetOmniboxPopupView()->SyncNativeStateToWebUI(
-        is_double_click);
   }
 
   return handled;
@@ -1565,8 +1554,6 @@ bool OmniboxViewViews::OnMouseDragged(const ui::MouseEvent& event) {
     return true;
   }
 
-  // TODO(crbug.com/514810983): Figure out dragging behavior for full webui
-  // popup.
   if (HasTextBeingDragged()) {
     if (auto* popup_closer = controller()->client()->GetOmniboxPopupCloser()) {
       popup_closer->CloseWithReason(omnibox::PopupCloseReason::kTextDrag);
@@ -1618,6 +1605,17 @@ void OmniboxViewViews::OnMouseReleased(const ui::MouseEvent& event) {
   // case, in which we defer uneliding until mouse release.
   if (UnapplySteadyStateElisions(UnelisionGesture::kMouseRelease)) {
     TextChanged();
+  }
+
+  if (location_bar_view_) {
+    location_bar_view_->OpenOmniboxPopup();
+
+    // Transfer selection to the full webui popup.
+    if (location_bar_view_->GetOmniboxPopupView() &&
+        base::FeatureList::IsEnabled(
+            omnibox::kWebUIOmniboxFullPopupDoubleClick)) {
+      location_bar_view_->GetOmniboxPopupView()->SyncNativeStateToWebUI();
+    }
   }
 }
 
@@ -1781,6 +1779,13 @@ void OmniboxViewViews::OnBlur() {
   // Save the user's existing selection to restore it later.
   saved_selection_for_focus_change_ = GetSelectedRange();
 
+  // If focus is transferring to the WebUI popup widget, treat this as a
+  // logical focus transfer rather than a true blur. Keep the edit model's
+  // focus state active, and skip all reversion/blurring.
+  if (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup)) {
+    return;
+  }
+
   // If the view is showing text that's not user-text, revert the text to the
   // permanent display text. This usually occurs if Steady State Elisions is on
   // and the user has unelided, but not edited the URL.
@@ -1796,14 +1801,10 @@ void OmniboxViewViews::OnBlur() {
   // This should never exit keyword mode.
   if (GetWidget() && GetWidget()->IsActive() &&
       !controller()->edit_model()->is_keyword_selected()) {
-    // Bypass native RevertAll when Full WebUI V2 is enabled to prevent wiping
-    // out active WebUI drafting states.
-    if (!base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup) &&
-        ((!controller()->edit_model()->user_input_in_progress() &&
-          GetText() != controller()->edit_model()->GetPermanentDisplayText()) ||
-         (controller()->edit_model()->user_input_in_progress() &&
-          GetText() ==
-              controller()->edit_model()->GetPermanentDisplayText()))) {
+    if ((!controller()->edit_model()->user_input_in_progress() &&
+         GetText() != controller()->edit_model()->GetPermanentDisplayText()) ||
+        (controller()->edit_model()->user_input_in_progress() &&
+         GetText() == controller()->edit_model()->GetPermanentDisplayText())) {
       RevertAll();
     }
   }

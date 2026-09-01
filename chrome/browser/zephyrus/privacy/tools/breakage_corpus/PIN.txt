@@ -1,0 +1,25 @@
+Tranco top-50, pinned for reproducibility.
+
+list_id:    K9LYW
+created_on: 2026-08-18T22:00:02Z
+download:   https://tranco-list.eu/download/K9LYW/50
+providers:  crux, farsight, majestic, radar, umbrella (dowdall, filterPLD=on)
+window:     2026-07-20 .. 2026-08-18
+licence:    CC BY (Tranco). Chosen over Tracker Radar / Ghostery TrackerDB,
+            which are CC BY-NC-SA and therefore unusable here (spec §4).
+
+Re-download with the SAME list_id to reproduce a run. Do not re-fetch "latest"
+and call it the same corpus.
+
+COMPOSITION WARNING, measured 2026-08-19: about half of these 50 are not
+browsable pages. gtld-servers.net, akadns.net, apple-dns.net, akamai.net,
+akamaiedge.net, fastly.net, trafficmanager.net, domaincontrol.com,
+googleusercontent.com, gstatic.com, googleapis.com, amazonaws.com, fbcdn.net,
+googlevideo.com, aaplimg.com, whatsapp.net, appsflyersdk.com, doubleclick.net,
+googletagmanager.com and digicert.com are CDN/DNS/ad infrastructure that render
+nothing meaningful; goo.gl and youtu.be are redirectors; office.com,
+outlook.com, live.com, microsoftonline.com and sharepoint.com are login walls.
+
+That leaves roughly 18 sites that actually exercise a canvas. This is WHY the
+functional corpus exists and why it carries the weight of §12.6 — a clean run
+over these 50 is weak evidence on its own.

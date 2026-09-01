@@ -2335,8 +2335,8 @@ void RenderWidgetHostViewAura::OnBoundsChanged(const gfx::Rect& old_bounds,
   if (GetInputMethod()) {
     auto weak_this = weak_ptr_factory_.GetWeakPtr();
     GetInputMethod()->OnCaretBoundsChanged(this);
-    // `this` may have been deleted inside the IME callout.
     if (!weak_this) {
+      // `this` may have been deleted inside the IME callout.
       return;
     }
     UpdateInsetsWithVirtualKeyboardEnabled();
@@ -2391,6 +2391,8 @@ void RenderWidgetHostViewAura::OnDeviceScaleFactorChanged(
 }
 
 void RenderWidgetHostViewAura::OnWindowDestroying(aura::Window* window) {
+  event_handler_->set_window(nullptr);
+
   // Make sure that the input method no longer references to this object before
   // this object is removed from the root window (i.e. this object loses access
   // to the input method).
@@ -2586,7 +2588,10 @@ void RenderWidgetHostViewAura::OnMouseEvent(ui::MouseEvent* event) {
     StylusHandwritingControllerWin::Initialize();
   }
 #endif
-  last_pointer_type_ = ui::EventPointerType::kMouse;
+  last_pointer_type_ =
+      base::FeatureList::IsEnabled(features::kMouseEventPenPointerType)
+          ? event->pointer_details().pointer_type
+          : ui::EventPointerType::kMouse;
   event_handler_->OnMouseEvent(event);
 }
 
@@ -2639,8 +2644,13 @@ void RenderWidgetHostViewAura::FocusedNodeChanged(
   last_pointer_type_before_focus_ = last_pointer_type_;
 
   auto* input_method = GetInputMethod();
-  if (input_method)
+  if (input_method) {
+    auto weak_this = weak_ptr_factory_.GetWeakPtr();
     input_method->CancelComposition(this);
+    if (!weak_this) {
+      return;
+    }
+  }
   has_composition_text_ = false;
 
 #if BUILDFLAG(IS_WIN)
@@ -2862,7 +2872,11 @@ void RenderWidgetHostViewAura::OnWindowFocused(aura::Window* gained_focus,
     if (input_method) {
       // Ask the system-wide IME to send all TextInputClient messages to |this|
       // object.
+      auto weak_this = weak_ptr_factory_.GetWeakPtr();
       input_method->SetFocusedTextInputClient(this);
+      if (!weak_this) {
+        return;
+      }
     }
 
     ui::BrowserAccessibilityManager* manager =
@@ -3351,6 +3365,9 @@ void RenderWidgetHostViewAura::AddedToRootWindow() {
   window_->GetHost()->AddObserver(this);
   UpdateScreenInfo();
 
+  base::WeakPtr<RenderWidgetHostViewAura> weak_this(
+      weak_ptr_factory_.GetWeakPtr());
+
   aura::client::CursorClient* cursor_client =
       aura::client::GetCursorClient(window_->GetRootWindow());
   if (cursor_client) {
@@ -3359,15 +3376,17 @@ void RenderWidgetHostViewAura::AddedToRootWindow() {
   }
   if (HasFocus()) {
     ui::InputMethod* input_method = GetInputMethod();
-    if (input_method)
+    if (input_method) {
       input_method->SetFocusedTextInputClient(this);
+      if (!weak_this) {
+        return;
+      }
+    }
   }
 
 #if BUILDFLAG(IS_WIN)
   // `UpdateLegacyWin()` can spin a nested message loop on Windows, potentially
   // destroying `this`.
-  base::WeakPtr<RenderWidgetHostViewAura> weak_this(
-      weak_ptr_factory_.GetWeakPtr());
   UpdateLegacyWin();
   if (!weak_this) {
     return;
@@ -3403,7 +3422,11 @@ void RenderWidgetHostViewAura::RemovingFromRootWindow() {
 void RenderWidgetHostViewAura::DetachFromInputMethod(bool is_removed) {
   ui::InputMethod* input_method = GetInputMethod();
   if (input_method) {
+    auto weak_this = weak_ptr_factory_.GetWeakPtr();
     input_method->DetachTextInputClient(this);
+    if (!weak_this) {
+      return;
+    }
 #if BUILDFLAG(IS_CHROMEOS)
     if (!window_->is_destroying()) {
       wm::RestoreWindowBoundsOnClientFocusLost(window_->GetToplevelWindow());
@@ -3526,8 +3549,15 @@ void RenderWidgetHostViewAura::OnUpdateTextInputStateCalled(
   if (!GetInputMethod())
     return;
 
-  if (did_update_state)
+  auto weak_this = weak_ptr_factory_.GetWeakPtr();
+
+  if (did_update_state) {
     GetInputMethod()->OnTextInputTypeChanged(this);
+    if (!weak_this) {
+      // `this` may have been deleted inside the IME callout.
+      return;
+    }
+  }
 
   const ui::mojom::TextInputState* state =
       text_input_manager_->GetTextInputState();
@@ -3569,6 +3599,10 @@ void RenderWidgetHostViewAura::OnUpdateTextInputStateCalled(
   // Ensure that selection bounds changes are sent to the IME.
   if (state && state->type != ui::TEXT_INPUT_TYPE_NONE) {
     text_input_manager->NotifySelectionBoundsChanged(updated_view);
+    if (!weak_this) {
+      // `this` may have been deleted inside the IME callout.
+      return;
+    }
   }
 
   if (auto* render_widget_host = updated_view->host()) {
@@ -3587,8 +3621,14 @@ void RenderWidgetHostViewAura::OnImeCancelComposition(
   // TextInputManager::GetActiveWidget() as RenderWidgetHostViewAura can call
   // this method to finish any ongoing composition in response to a mouse down
   // event.
-  if (GetInputMethod())
+  if (GetInputMethod()) {
+    auto weak_this = weak_ptr_factory_.GetWeakPtr();
     GetInputMethod()->CancelComposition(this);
+    // `this` may have been deleted inside the IME callout.
+    if (!weak_this) {
+      return;
+    }
+  }
   has_composition_text_ = false;
 }
 
@@ -3622,8 +3662,14 @@ void RenderWidgetHostViewAura::OnTextSelectionChanged(
   // changed. e.g. When the rendered text is wider than the input field,
   // deleting the last character won't change the caret bounds but will change
   // the surrounding text.
-  if (GetInputMethod())
+  if (GetInputMethod()) {
+    auto weak_this = weak_ptr_factory_.GetWeakPtr();
     GetInputMethod()->OnCaretBoundsChanged(this);
+    if (!weak_this) {
+      // `this` may have been deleted inside the IME callout.
+      return;
+    }
+  }
 
   if (ui::Clipboard::IsSupportedClipboardBuffer(
           ui::ClipboardBuffer::kSelection)) {

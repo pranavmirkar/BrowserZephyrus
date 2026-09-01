@@ -85,6 +85,11 @@ struct PipelineStats {
   int dataset_age_days = -1;
   DatasetFreshness dataset_freshness = DatasetFreshness::kAbsent;
 
+  // §13.3. kNone while healthy. Surfaced by chrome://privacy-internals for the
+  // same reason persistence_refused is: a pipeline that turned itself off must
+  // not read as a quiet web.
+  KillSwitchReason kill_switch = KillSwitchReason::kNone;
+
   bool persistence_ready = false;
   bool persistence_refused = false;
   uint64_t rows_flushed = 0;
@@ -249,8 +254,13 @@ class PrivacyIntelligenceService : public KeyedService {
   // compromised renderer must not be able to inflate the user's numbers by
   // calling it a million times. This is the whole rate-limit — there is no
   // timer, because the set of surfaces is closed and small.
+  // `randomized` says whether this surface's value was actually perturbed for
+  // this document. Supplied by the caller that knows — the reporter host, which
+  // derives it from the browser's own surface mask rather than from anything
+  // the renderer said.
   void RecordFingerprintSurface(const GURL& page_url,
-                                FingerprintSurface surface);
+                                FingerprintSurface surface,
+                                bool randomized);
 
   // §9.2.1: the page constructed an RTCPeerConnection and can gather ICE
   // candidates. `local_addresses_withheld` records what the WebRTC IP handling
@@ -340,8 +350,27 @@ class PrivacyIntelligenceService : public KeyedService {
     // request that happened to be protected.
     bool local_addresses_withheld = true;
 
+    // Bit per FingerprintSurface whose value was actually PERTURBED, which is
+    // a strict subset of the mask above.
+    //
+    // The two must stay separate. A surface is reported whether or not it was
+    // perturbed — deliberately, so that turning randomization off does not also
+    // blind detection — so counting reports as protection would put "Device
+    // fingerprint" under "What was protected" for surfaces that were merely
+    // DETECTED. That is the §2 false claim IDS_ZEPHYRUS_PRIVACY_PROTECTED_
+    // FINGERPRINT's own description forbids.
+    //
+    // Decided by the BROWSER, never by the renderer: it is derived from the
+    // surface mask the browser itself enforces, so a compromised renderer
+    // cannot claim protection that was never applied.
+    uint32_t fingerprint_randomized_mask = 0;
+
     // Distinct fingerprinting surfaces, for IntensityInputs.
     uint32_t fingerprint_surface_count() const;
+
+    // Distinct surfaces actually perturbed. This is what licenses the
+    // "protected" claim; fingerprint_surface_count() does not.
+    uint32_t fingerprint_randomized_count() const;
   };
   PageSignals GetPageSignals(const GURL& page_url) const;
 
@@ -406,6 +435,19 @@ class PrivacyIntelligenceService : public KeyedService {
  private:
   void OnDrainTimer();
   void OnDrained(size_t count);
+
+  // §13.3. Evaluates the three trigger conditions after each drain and after
+  // each flush result, and trips at most once per session.
+  // The §13.3 evaluators are private but driven directly by tests: the
+  // conditions they detect (a starved sequence, a failing disk) cannot be
+  // produced reliably from outside, and a kill switch nobody can prove FIRES
+  // is no better than the missing one it replaced.
+  friend class PrivacyKillSwitchTest;
+
+  void EvaluateRingOverflow();
+  void EvaluateDrainLatency(base::TimeDelta round_trip);
+  void OnFlushResult(bool ok);
+  void TripKillSwitch(KillSwitchReason reason);
   void OnEncryptorReady(scoped_refptr<os_crypt_async::Encryptor> encryptor);
   void OnFlushTimer();
   void OnPruneTimer();
@@ -447,6 +489,17 @@ class PrivacyIntelligenceService : public KeyedService {
   scoped_refptr<DomainStringTable> strings_;
   scoped_refptr<PrivacyCnameCache> cname_cache_;
   base::SequenceBound<PrivacyEventConsumer> consumer_;
+
+  // §13.3 kill-switch state. All service-sequence only.
+  KillSwitchReason kill_switch_ = KillSwitchReason::kNone;
+  // Drops observed at the previous drain, so the check is on the RATE of loss
+  // rather than the lifetime total — a burst during one busy page load must
+  // not condemn the rest of the session.
+  uint64_t last_dropped_sample_ = 0;
+  int consecutive_overflow_drains_ = 0;
+  int consecutive_slow_drains_ = 0;
+  int consecutive_db_failures_ = 0;
+  base::TimeTicks drain_issued_at_;
   // Created only once an encryptor arrives. An unbound SequenceBound means
   // "no persistence", which is a legitimate steady state.
   base::SequenceBound<PrivacyDatabase> db_;

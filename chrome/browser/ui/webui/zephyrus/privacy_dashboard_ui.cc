@@ -4,6 +4,9 @@
 
 #include "chrome/browser/ui/webui/zephyrus/privacy_dashboard_ui.h"
 
+#include "base/feature_list.h"
+#include "chrome/browser/zephyrus/privacy/privacy_features.h"
+
 #include <algorithm>
 #include <limits>
 #include <string>
@@ -290,9 +293,14 @@ std::string EventTypeText(EventType type, TrackerStatus status) {
       if (status == TrackerStatus::kPotential) {
         return L(IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FINGERPRINT_POTENTIAL);
       }
-      // DETECTED, not randomized: Phase 2 observes fingerprinting and does not
-      // perturb it. Saying "randomized" would claim a protection that is not
-      // happening.
+      // kRandomized is recorded ONLY when the browser actually perturbed the
+      // values (see RecordFingerprintSurface), so this is the one place the
+      // stronger claim is earned. With Phase 4 off the status never takes that
+      // value and every row still reads "detected" — which is why this reads
+      // on the status rather than on a feature flag.
+      if (status == TrackerStatus::kRandomized) {
+        return L(IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FINGERPRINT_RANDOMIZED);
+      }
       return L(IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_FINGERPRINT);
     case EventType::kUserAllowedSite:
       return L(IDS_ZEPHYRUS_PRIVACY_DASH_EVENT_USER_ALLOWED);
@@ -498,6 +506,17 @@ void HandleRequest(base::WeakPtr<Profile> profile,
 PrivacyDashboardUIConfig::PrivacyDashboardUIConfig()
     : DefaultWebUIConfig(content::kChromeUIScheme,
                          chrome::kChromeUIZephyrusPrivacyHost) {}
+
+bool PrivacyDashboardUIConfig::IsWebUIEnabled(
+    content::BrowserContext* browser_context) {
+  // BOTH flags: the dashboard names sites and companies, so it must not open
+  // when collection is off — it could only ever show an empty page, and §5.3
+  // is about a degraded state being legible, not about offering a surface with
+  // nothing behind it. §13.2's own flag then allows turning just this off while
+  // collection keeps running.
+  return base::FeatureList::IsEnabled(kZephyrusPrivacyDashboard) &&
+         IsCollectionEnabled();
+}
 
 PrivacyDashboardUI::PrivacyDashboardUI(content::WebUI* web_ui)
     : content::WebUIController(web_ui) {

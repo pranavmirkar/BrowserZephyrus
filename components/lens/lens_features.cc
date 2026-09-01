@@ -31,8 +31,7 @@ BASE_FEATURE(kLensOverlayTranslateLanguages, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kLensOverlayImageContextMenuActions,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kLensOverlayContextualSearchbox,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kLensOverlayContextualSearchbox, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLensOverlaySuggestionsMigration,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -86,7 +85,7 @@ BASE_FEATURE(kLensSearchNotFoundOnPageToast,
              "kLensSearchNotFoundOnPageToast",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kLensSearchAimM3, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kLensSearchAimM3, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kLensSearchAimM3EnUs, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kLensSearchAimM3UseAimEligibility,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -151,7 +150,7 @@ BASE_FEATURE(kLensRestrictAnnotatedPageContentToSameSiteFramesForNextQueries,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kLensDeleteContextOnPageNavigation,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 const char kLensOverlayAndroidImplIntent[] = "intent";
 const char kLensOverlayAndroidImplWebUI[] = "webui";

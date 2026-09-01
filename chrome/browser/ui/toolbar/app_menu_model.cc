@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 
+#include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
+
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -46,6 +48,7 @@
 #include "chrome/browser/search/search.h"
 #include "chrome/browser/sharing_hub/sharing_hub_features.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync/sync_ui_util.h"
@@ -60,6 +63,7 @@
 #include "chrome/browser/ui/global_error/global_error_service.h"
 #include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "chrome/browser/ui/hats/trust_safety_sentiment_service_factory.h"
+#include "chrome/browser/ui/immersive/immersive_mode_controller.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/lens/lens_overlay_controller.h"
 #include "chrome/browser/ui/lens/lens_overlay_entry_point_controller.h"
@@ -83,7 +87,6 @@
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
-#include "chrome/browser/ui/views/frame/immersive_mode_controller.h"
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome_page_handler.h"
@@ -420,6 +423,7 @@ std::u16string GetOpenPWALabel(const Browser* browser) {
           gfx::CHARACTER_BREAK)));
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
 std::u16string GetSyncSectionTitle(Profile* profile,
                                    signin::IdentityManager* identity_manager) {
   const AccountInfo account = GetAccountInfoFromProfile(profile);
@@ -494,7 +498,6 @@ ProfileSubMenuModel::ProfileSubMenuModel(
       GetLayoutConstant(LayoutConstant::kAppMenuProfileRowAvatarIconSize);
   avatar_image_model_ = ui::ImageModel::FromVectorIcon(
       features::IsRoundedIconsEnabled()   ? kAccountCircleIcon
-      : features::IsRoundedIconsEnabled() ? vector_icons::kAccountCircleIcon
                                           : kAccountCircleChromeRefreshOldIcon,
       ui::kColorMenuIcon, avatar_icon_size);
   if (profile->IsIncognitoProfile()) {
@@ -531,10 +534,19 @@ ProfileSubMenuModel::ProfileSubMenuModel(
       // MenuItemView can re-color it on hover in forced-colors mode.
       if (!avatar_image.IsEmpty() &&
           icon_type != AvatarIconType::kPlaceholder) {
-        avatar_image_model_ =
+        ui::ImageModel avatar_model =
             ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
                 avatar_image, avatar_icon_size, avatar_icon_size,
                 profiles::SHAPE_CIRCLE));
+        // TODO(crbug.com/530147081): Clarify the AI ring may show up for users
+        // with a placeholder icon. Signed in users should have always an
+        // account_info and thus they will never have a placeholder icon.
+        if (IsAiSubscriptionRingEnabled(profile)) {
+          avatar_image_model_ = ui::ImageModel::FromImageSkia(AddAiRingToAvatar(
+              avatar_model, *color_provider, avatar_icon_size));
+        } else {
+          avatar_image_model_ = avatar_model;
+        }
       }
       profile_name_ = GetProfileMenuDisplayName(profile_attributes);
     }
@@ -726,19 +738,24 @@ bool ProfileSubMenuModel::BuildSyncSection() {
   if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync)) {
     AddItemWithStringIdAndVectorIcon(
         this, IDC_SHOW_SYNC_SETTINGS, IDS_PROFILE_ROW_SYNC_IS_ON,
-        features::IsRoundedIconsEnabled() ? kSyncIcon
-        : features::IsRoundedIconsEnabled()
-            ? vector_icons::kSyncIcon
+        features::IsRoundedIconsEnabled()
+            ? kSyncIcon
             : vector_icons::kSyncChromeRefreshOldIcon);
   } else {
     if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
       if (!identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
         AddItemWithStringIdAndVectorIcon(
             this, IDC_SHOW_SIGNIN, IDS_PROFILE_MENU_SIGNIN_PROMO_BUTTON,
-            features::IsRoundedIconsEnabled() ? kAccountCircleFilledIcon
-            : features::IsRoundedIconsEnabled()
-                ? vector_icons::kAccountCircleIcon
+            features::IsRoundedIconsEnabled()
+                ? kAccountCircleFilledIcon
                 : vector_icons::kAccountCircleOldIcon);
+        signin_metrics::LogSignInOffered(
+            signin_metrics::AccessPoint::kMenu,
+            signin_ui_util::GetSingleAccountForPromos(identity_manager)
+                    .IsEmpty()
+                ? signin_metrics::PromoAction::
+                      PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT
+                : signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT);
       }
     } else {
       AddItemWithStringIdAndVectorIcon(
@@ -763,9 +780,8 @@ void ProfileSubMenuModel::BuildCustomizeProfileRow(Profile* profile) {
   if (!profile->IsIncognitoProfile() && !profile->IsGuestSession()) {
     AddItemWithStringIdAndVectorIcon(
         this, IDC_CUSTOMIZE_CHROME, IDS_CUSTOMIZE_CHROME,
-        features::IsRoundedIconsEnabled() ? kEditIcon
-        : features::IsRoundedIconsEnabled()
-            ? vector_icons::kEditIcon
+        features::IsRoundedIconsEnabled()
+            ? kEditIcon
             : vector_icons::kEditChromeRefreshOldIcon);
   }
 }
@@ -797,6 +813,7 @@ void ProfileSubMenuModel::BuildManageGoogleAccountRow(Profile* profile) {
                                      manage_account_icon);
   }
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 class PasswordsAndAutofillSubMenuModel : public ui::SimpleMenuModel {
  public:
@@ -1083,35 +1100,30 @@ void ToolsMenuModel::Build(Browser* browser) {
       features::IsRoundedIconsEnabled() ? kWebAssetIcon : kNameWindowOldIcon);
 
   if (auto* controller = tabs::VerticalTabStripStateController::From(browser)) {
-    // TODO(crbug.com/475222200): When in immersive, swapping between tab
-    // strip types create duplicate tab strips. Until that is resolved,
-    // disable the ability to swap between tab strips while in immersive.
-    if (!ImmersiveModeController::From(browser)->IsEnabled()) {
-      if (controller->ShouldDisplayVerticalTabs()) {
-        AddItemWithStringIdAndVectorIcon(
-            this, IDC_TOGGLE_VERTICAL_TABS, IDS_SWITCH_TO_HORIZONTAL_TAB,
-            features::IsRoundedIconsEnabled() ? kToolbarIcon : kToolbarOldIcon);
-      } else {
-        AddItemWithStringIdAndVectorIcon(
-            this, IDC_TOGGLE_VERTICAL_TABS, IDS_SWITCH_TO_VERTICAL_TAB,
-            base::i18n::IsRTL() ? features::IsRoundedIconsEnabled()
-                                      ? kDockToLeftIcon
-                                      : kDockToRightOldIcon
-            : features::IsRoundedIconsEnabled() ? kDockToRightIcon
-                                                : kDockToLeftOldIcon);
-        const bool use_preview_badge =
-            base::FeatureList::IsEnabled(tabs::kVerticalTabsPreviewBadge);
-        const ui::NewBadgeType badge_type = use_preview_badge
-                                                ? ui::NewBadgeType::kPreview
-                                                : ui::NewBadgeType::kNew;
-        const user_education::DisplayNewBadge show_badge =
-            UserEducationService::MaybeShowNewBadge(
-                browser->GetProfile(), use_preview_badge
-                                           ? tabs::kVerticalTabsPreviewBadge
-                                           : tabs::kVerticalTabsNewBadge);
-        SetIsNewFeatureAt(GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS).value(),
-                          show_badge, badge_type);
-      }
+    if (controller->ShouldDisplayVerticalTabs()) {
+      AddItemWithStringIdAndVectorIcon(
+          this, IDC_TOGGLE_VERTICAL_TABS, IDS_SWITCH_TO_HORIZONTAL_TAB,
+          features::IsRoundedIconsEnabled() ? kToolbarIcon : kToolbarOldIcon);
+    } else {
+      AddItemWithStringIdAndVectorIcon(
+          this, IDC_TOGGLE_VERTICAL_TABS, IDS_SWITCH_TO_VERTICAL_TAB,
+          base::i18n::IsRTL() ? features::IsRoundedIconsEnabled()
+                                    ? kDockToLeftIcon
+                                    : kDockToRightOldIcon
+          : features::IsRoundedIconsEnabled() ? kDockToRightIcon
+                                              : kDockToLeftOldIcon);
+      const bool use_preview_badge =
+          base::FeatureList::IsEnabled(tabs::kVerticalTabsPreviewBadge);
+      const ui::NewBadgeType badge_type = use_preview_badge
+                                              ? ui::NewBadgeType::kPreview
+                                              : ui::NewBadgeType::kNew;
+      const user_education::DisplayNewBadge show_badge =
+          UserEducationService::MaybeShowNewBadge(
+              browser->GetProfile(), use_preview_badge
+                                         ? tabs::kVerticalTabsPreviewBadge
+                                         : tabs::kVerticalTabsNewBadge);
+      SetIsNewFeatureAt(GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS).value(),
+                        show_badge, badge_type);
     }
   }
 
@@ -1122,7 +1134,6 @@ void ToolsMenuModel::Build(Browser* browser) {
         this, IDC_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL,
         IDS_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL,
         features::IsRoundedIconsEnabled()   ? kEditIcon
-        : features::IsRoundedIconsEnabled() ? vector_icons::kEditIcon
                                             : kEditChromeRefreshOldIcon);
   }
 
@@ -1175,7 +1186,6 @@ void ToolsMenuModel::Build(Browser* browser) {
         AddItemWithStringIdAndVectorIcon(
             this, IDC_SHOW_CHROME_LABS, IDS_CHROMELABS,
             features::IsRoundedIconsEnabled()   ? kScienceIcon
-            : features::IsRoundedIconsEnabled() ? vector_icons::kScienceIcon
                                                 : kScienceOldIcon);
         SetElementIdentifierAt(
             GetIndexOfCommandId(IDC_SHOW_CHROME_LABS).value(),
@@ -2094,11 +2104,18 @@ void AppMenuModel::Build() {
   // This menu item is not visible in Guest Mode. If incognito mode is not
   // available, it will be shown in disabled state. (crbug.com/40703208)
   if (!browser_->profile()->IsGuestSession()) {
-    // Zephyrus: the command now enters Private Workspace (see
-    // BrowserCommandController), so the label must not still promise Incognito.
+    // Zephyrus: the command enters OR LEAVES Private Workspace (see
+    // BrowserCommandController), so the label must not still promise Incognito
+    // -- and must say which direction it goes. A single item reading "Private
+    // Workspace" in a window that is already private tells the user nothing
+    // about what clicking it does.
+    const bool in_private =
+        ZephyrusPrivateWorkspace::IsPrivate(browser_);
     AddItemWithIcon(
         IDC_NEW_INCOGNITO_WINDOW,
-        l10n_util::GetStringUTF16(IDS_ZEPHYRUS_PRIVATE_WORKSPACE),
+        l10n_util::GetStringUTF16(
+            in_private ? IDS_ZEPHYRUS_EXIT_PRIVATE_WORKSPACE
+                       : IDS_ZEPHYRUS_OPEN_PRIVATE_WORKSPACE),
         ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
                                            ? kIncognitoIcon
                                            : kIncognitoRefreshMenuOldIcon));
@@ -2109,21 +2126,14 @@ void AppMenuModel::Build() {
 
   AddSeparator(ui::NORMAL_SEPARATOR);
 
-#if !BUILDFLAG(IS_CHROMEOS)
-  sub_menus_.push_back(std::make_unique<ProfileSubMenuModel>(
-      this, browser()->profile(),
-      BrowserWindow::FromBrowser(browser())->GetColorProvider()));
-  auto* const profile_submenu_model =
-      static_cast<ProfileSubMenuModel*>(sub_menus_.back().get());
-  AddSubMenu(IDC_PROFILE_MENU_IN_APP_MENU,
-             profile_submenu_model->profile_name(), profile_submenu_model);
-  SetIconForCommandId(IDC_PROFILE_MENU_IN_APP_MENU,
-                      profile_submenu_model->avatar_image_model());
-  SetElementIdentifierAt(
-      GetIndexOfCommandId(IDC_PROFILE_MENU_IN_APP_MENU).value(),
-      kProfileMenuItem);
-  AddSeparator(ui::SPACING_SEPARATOR);
-#endif
+  // ZEPHYRUS: no profile row.
+  //
+  // Chrome puts the signed-in profile here with its avatar and a submenu of
+  // other profiles. Zephyrus has no user-facing profiles -- the frontend is
+  // withdrawn until Google auth lands (see zephyrus_profile_switcher) -- so the
+  // row advertised a feature that does not exist and opened a submenu of one.
+  //
+  // Identity in this browser is the WORKSPACE, and that lives in the title bar.
 
   if (!browser_->profile()->IsGuestSession()) {
     sub_menus_.push_back(
@@ -2147,9 +2157,7 @@ void AppMenuModel::Build() {
     sub_menus_.push_back(std::move(recent_tabs_sub_menu));
     AddSubMenuWithStringIdAndVectorIcon(
         this, IDC_RECENT_TABS_MENU, IDS_HISTORY_MENU, sub_menus_.back().get(),
-        features::IsRoundedIconsEnabled()   ? kHistoryIcon
-        : features::IsRoundedIconsEnabled() ? vector_icons::kHistoryIcon
-                                            : kHistoryOldIcon);
+        features::IsRoundedIconsEnabled() ? kHistoryIcon : kHistoryOldIcon);
     SetElementIdentifierAt(GetIndexOfCommandId(IDC_RECENT_TABS_MENU).value(),
                            kHistoryMenuItem);
   }

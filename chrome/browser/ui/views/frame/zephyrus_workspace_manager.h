@@ -19,6 +19,7 @@
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/gfx/image/image_skia.h"
 
 class Browser;
 class Profile;
@@ -37,6 +38,24 @@ struct ZephyrusWorkspace {
   SkColor color = SK_ColorTRANSPARENT;
   // Optional leading emoji/glyph (may be empty).
   std::u16string emoji;
+  // Basename of a custom photo in the profile's workspace-icon directory (may
+  // be empty). NOT a path the user chose -- see zephyrus_workspace_image.h for
+  // why the original file is copied rather than referenced. Untrusted on load:
+  // validate with zephyrus::IsValidWorkspaceImageName() before using it.
+  std::string image;
+  // StoragePartition name for this workspace, or EMPTY for the DEFAULT
+  // partition.
+  //
+  // Empty is not a missing value -- it is the upgrade state and the first
+  // workspace. Workspaces that predate isolation already have their cookies in
+  // the default jar and cannot be divided after the fact, so they keep sharing
+  // it; dividing them would just log the user out of everything.
+  //
+  // A partition, NOT a Profile: one profile means extensions, bookmarks,
+  // history, the adblock engine and its allowlist stay shared, while cookies
+  // and site data are separate. Proven by spike -- see
+  // zephyrus_workspace_partition.h.
+  std::string partition_name;
 };
 
 // Zephyrus: the workspace state that belongs to the PROFILE rather than to any
@@ -97,6 +116,25 @@ class ZephyrusWorkspaceStore : public base::SupportsUserData::Data {
   bool has_pending_restore() const { return !pending_restore_ids_.empty(); }
   // Consumes the next restored id, or 0 if none / it no longer exists.
   int TakePendingRestoreId();
+  // The next restored id WITHOUT consuming it, or 0.
+  //
+  // Restore needs the workspace before the tab exists, because the tab's
+  // StoragePartition is fixed at creation and cannot be changed afterwards --
+  // but the id is only consumed later, at insertion. Peeking at creation and
+  // consuming at insertion keeps one queue serving both.
+  //
+  // Relies on tabs being CREATED in the same order they are INSERTED, which
+  // browser_tabrestore.cc does (it creates each tab and adds it immediately).
+  // A tab created and then dropped would desync the queue and misfile every
+  // tab after it.
+  int PeekPendingRestoreId() const;
+
+  // The partition a tab about to be restored belongs in, or empty for the
+  // default. See PeekPendingRestoreId().
+  std::string PartitionNameForPendingRestore() const;
+
+  // The partition for a workspace id, or empty if the workspace is gone.
+  std::string PartitionNameForWorkspace(int workspace_id) const;
   // Drops the whole restore queue. Called once session restore is no longer in
   // progress so a later user-opened tab can't inherit a stale saved id.
   void ClearPendingRestore() { pending_restore_ids_.clear(); }
@@ -115,6 +153,17 @@ class ZephyrusWorkspaceStore : public base::SupportsUserData::Data {
   // discarded once the workspace has been away for kDiscardGrace. Pinned tabs
   // are exempt: they're visible in every workspace, so they're never background.
   void SetWindowWorkspace(const void* window, int workspace_id);
+
+  // The StoragePartition name a NEW tab in `window` should be created in, or
+  // empty for the default partition.
+  //
+  // `window` must be the same pointer SetWindowWorkspace() was called with --
+  // the Browser, not a BrowserWindowInterface view of it. Those can differ
+  // under multiple inheritance, and a mismatched key here silently returns the
+  // default partition, which is a workspace's cookies landing in the shared
+  // jar. Callers holding a BrowserWindowInterface must go through
+  // GetBrowserForMigrationOnly() first.
+  std::string PartitionNameForWindow(const void* window) const;
   void RemoveWindow(const void* window);
   bool IsWorkspaceDisplayed(int workspace_id) const;
   void ApplyResourcePolicy();
@@ -128,7 +177,20 @@ class ZephyrusWorkspaceStore : public base::SupportsUserData::Data {
       base::RepeatingClosure callback);
   void NotifyChanged();
 
+  // Decoded workspace photos, shared by every window on this profile so six
+  // windows do not each read and decode the same file.
+  //
+  // Returns an empty image while a load is in flight and fires the change
+  // notification when it lands, which is what makes the strip repaint with the
+  // photo instead of needing the caller to poll.
+  gfx::ImageSkia GetImage(const std::string& name, int size_dip);
+  // Drops a cached image so the next request re-reads it. Called when the file
+  // behind it is replaced or deleted.
+  void ForgetImage(const std::string& name);
+
  private:
+  void OnImageLoaded(const std::string& name, const gfx::ImageSkia& image);
+
   bool LoadState();
   std::string SerializeState() const;
 
@@ -157,11 +219,30 @@ class ZephyrusWorkspaceStore : public base::SupportsUserData::Data {
   std::map<int, base::TimeTicks> workspace_backgrounded_at_;
   std::set<content::WebContents*> muted_by_us_;
   base::RepeatingTimer resource_timer_;
+  // Runs ApplyResourcePolicy just after a workspace switch, rather than during
+  // it. A OneShotTimer cancels itself on destruction, so this needs no weak
+  // pointer to be safe.
+  base::OneShotTimer resource_kick_timer_;
 
   // Visit index: per workspace, a recency queue for eviction plus a set for
   // lookup, kept in step. Both are keyed by URL spec.
   std::map<int, std::deque<std::string>> visit_order_;
   std::map<int, std::set<std::string>> visit_lookup_;
+
+  // Workspace photos, keyed by basename. PRESENCE means resolved -- and an
+  // empty value means "tried, and there is nothing there". That distinction is
+  // the point: without it, a workspace whose file has been deleted would start
+  // a fresh read on every single paint.
+  std::map<std::string, gfx::ImageSkia> image_cache_;
+  // Names currently being read, so N repaints during one load do not start N
+  // reads of the same file.
+  std::set<std::string> image_pending_;
+  // The size the cache was populated at. A different request size clears it
+  // rather than storing per-size entries: every caller is the workspace strip,
+  // so the size only ever changes when the cell size does.
+  int image_size_dip_ = 0;
+
+  base::WeakPtrFactory<ZephyrusWorkspaceStore> weak_factory_{this};
 };
 
 // Zephyrus: Arc-style workspaces. All tabs live in the window's single
@@ -175,7 +256,13 @@ class ZephyrusWorkspaceManager : public TabStripModelObserver {
   using Workspace = ZephyrusWorkspace;
 
   // Palette used to auto-assign a distinct color to each new workspace.
+  // Always the ink now -- workspaces are distinguished by DotsForIndex, not by
+  // colour. Kept so stored per-workspace colours in existing prefs still
+  // resolve to something monochrome.
   static SkColor DefaultColorForIndex(size_t index);
+
+  // How many dots identify the workspace at `index`. 1-based, capped at 6.
+  static int DotsForIndex(size_t index);
 
   explicit ZephyrusWorkspaceManager(Browser* browser);
   ZephyrusWorkspaceManager(const ZephyrusWorkspaceManager&) = delete;
@@ -215,6 +302,28 @@ class ZephyrusWorkspaceManager : public TabStripModelObserver {
   void SetWorkspaceColor(int workspace_id, SkColor color);
   void SetWorkspaceEmoji(int workspace_id, const std::u16string& emoji);
 
+  // Sets (or, with an empty name, clears) a workspace's custom photo.
+  //
+  // A workspace has ONE identity mark, so this clears the emoji and vice
+  // versa. Letting both be set would make the strip's precedence order the
+  // thing that decides what you see, and the user would have no way to tell
+  // which of the two they were editing.
+  //
+  // The image file the workspace was previously using is deleted here: a
+  // replaced icon has no way back to being referenced, so keeping it only grows
+  // the profile directory forever.
+  void SetWorkspaceImage(int workspace_id, const std::string& image);
+
+  // Async-loads a workspace's photo at `size_dip`, then fires the change
+  // notification so any strip currently on screen redraws with it.
+  //
+  // Returns the already-loaded image immediately when there is one, so the
+  // common case (a repaint) costs a map lookup rather than a file read.
+  // A workspace with no photo, or one whose file has gone, yields an empty
+  // image and does NOT retry -- a missing file is a normal outcome, and
+  // retrying it on every paint would be an infinite loop against the disk.
+  gfx::ImageSkia GetWorkspaceImage(int workspace_id, int size_dip);
+
   // Returns the workspace with `id`, or nullptr.
   const Workspace* GetWorkspace(int workspace_id) const;
 
@@ -232,10 +341,6 @@ class ZephyrusWorkspaceManager : public TabStripModelObserver {
 
   // True when an off-screen workspace is playing audio (see the store).
   bool HasBackgroundAudio();
-
-  // Pinned tabs are global favourites: they show in EVERY workspace rather than
-  // only the one they were created in.
-  bool IsContentsPinned(content::WebContents* contents) const;
 
   // Workspace-isolated tab navigation (for Ctrl+Tab / Ctrl+Shift+Tab). Moves to
   // the next/previous tab within the current workspace, wrapping around.

@@ -1,0 +1,84 @@
+{
+ "arm": "on",
+ "when": "2026-08-19T18:01:49.999Z",
+ "out": {
+  "audio-correctness": {
+   "url": "about:blank",
+   "result": {
+    "renderedOutput": "b2d0864d",
+    "analyserData": "cbb781c"
+   }
+  },
+  "determinism": {
+   "url": "https://example.com/",
+   "result": {
+    "first": "de47cd76",
+    "stable": true
+   }
+  },
+  "threejs": {
+   "url": "https://threejs.org/examples/?q=keyframes#webgl_animation_keyframes",
+   "result": {
+    "canvas": false
+   }
+  },
+  "aquarium": {
+   "url": "https://webglsamples.org/aquarium/aquarium.html",
+   "result": {
+    "canvas": true,
+    "w": 1024,
+    "h": 1024,
+    "animating": false,
+    "a": "392762:db6VmZ+DFvl/AAAA//8LavVcAAAABklEQ",
+    "b": "392762:db6VmZ+DFvl/AAAA//8LavVcAAAABklEQ"
+   }
+  },
+  "pdfjs": {
+   "url": "https://mozilla.github.io/pdf.js/web/viewer.html",
+   "result": {
+    "textLayers": 2,
+    "chars": 11900,
+    "canvases": 3
+   }
+  },
+  "chartjs": {
+   "url": "https://www.chartjs.org/docs/latest/samples/bar/vertical.html",
+   "result": {
+    "canvas": true,
+    "w": 754,
+    "h": 377,
+    "animating": false,
+    "a": "129846:ZzCLOj9H8f8BAAD///k8LRwAAAAGSURBV",
+    "b": "129846:ZzCLOj9H8f8BAAD///k8LRwAAAAGSURBV"
+   }
+  },
+  "audio-analyser-page": {
+   "url": "https://mdn.github.io/webaudio-examples/audio-analyser/",
+   "result": {
+    "canvas": true,
+    "w": 512,
+    "h": 256,
+    "animating": false,
+    "a": "49878:ShPEcwW5+n8AAAD//wKCfiAAAAAGSURBVA",
+    "b": "49878:ShPEcwW5+n8AAAD//wKCfiAAAAAGSURBVA"
+   }
+  },
+  "squoosh": {
+   "url": "https://squoosh.app/",
+   "result": {
+    "canvas": true,
+    "w": 1245,
+    "h": 1032,
+    "animating": true,
+    "a": "541074:Y/C05qnx/wAAAP//hsEXewAAAAZJREFUA",
+    "b": "542066:vXsMkdYiNf4/AAAA///1Tl52AAAABklEQ"
+   }
+  },
+  "photopea": {
+   "url": "https://www.photopea.com/",
+   "result": {
+    "canvas": false
+   }
+  }
+ }
+}

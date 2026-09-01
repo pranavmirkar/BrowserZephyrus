@@ -63,6 +63,7 @@ source_set("adblock") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "adblock_matcher_perftest.cc",
     "zephyrus_adblock_updater_unittest.cc",
     "zephyrus_cname_harvester_unittest.cc",
   ]

@@ -43,6 +43,7 @@
 #include "components/component_updater/pref_names.h"
 #include "components/compose/buildflags.h"
 #include "components/content_settings/core/common/pref_names.h"
+#include "components/contextual_search/pref_names.h"
 #include "components/contextual_tasks/public/prefs.h"
 #include "components/dom_distiller/core/pref_names.h"
 #include "components/drive/drive_pref_names.h"
@@ -57,6 +58,7 @@
 #include "components/payments/core/payment_prefs.h"
 #include "components/performance_manager/public/user_tuning/prefs.h"
 #include "components/permissions/pref_names.h"
+#include "components/personal_context/core/personal_context_prefs.h"
 #include "components/prefs/pref_service.h"
 #include "components/privacy_sandbox/privacy_sandbox_prefs.h"
 #include "components/proxy_config/proxy_config_pref_names.h"
@@ -211,6 +213,12 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
   s_allowlist = new PrefsUtil::TypedPrefMap();
 
   // Zephyrus ad blocker settings (chrome://settings ad-blocker page).
+  // Zephyrus "Auto reset browser IDs". Lives in LOCAL STATE, not profile prefs;
+  // FindServiceForPref() falls through to local state when a name is not found
+  // in the profile, so settingsPrivate reaches it without special casing -- but
+  // it still has to be allowlisted here or the toggle silently reads as unset.
+  (*s_allowlist)["zephyrus.privacy.auto_reset_ids"] =
+      settings_api::PrefType::kBoolean;
   (*s_allowlist)["zephyrus.adblock.enabled"] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)["zephyrus.adblock.aggressive_popup"] =
@@ -254,6 +262,9 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[autofill::prefs::kAutofillAiTravelEntitiesEnabled] =
       settings_api::PrefType::kBoolean;
+  (*s_allowlist)[personal_context::prefs::
+                     kPersonalContextInAutofillSettingsToggleStatus] =
+      settings_api::PrefType::kBoolean;
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS)
   (*s_allowlist)[payments::kCanMakePaymentEnabled] =
@@ -291,6 +302,8 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
       settings_api::PrefType::kBoolean;
 #endif
   (*s_allowlist)[::prefs::kShowHomeButton] = settings_api::PrefType::kBoolean;
+  (*s_allowlist)[contextual_search::kDriveConsentState] =
+      settings_api::PrefType::kNumber;
   (*s_allowlist)[::prefs::kShowForwardButton] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[::prefs::kPinContextualTaskButton] =
@@ -1372,6 +1385,8 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
   (*s_allowlist)[glic::prefs::kGlicLauncherEnabled] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[glic::prefs::kGlicClosedCaptioningEnabled] =
+      settings_api::PrefType::kBoolean;
+  (*s_allowlist)[glic::prefs::kGlicMediaUnderstandingEnabled] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)[glic::prefs::kGlicGeolocationEnabled] =
       settings_api::PrefType::kBoolean;

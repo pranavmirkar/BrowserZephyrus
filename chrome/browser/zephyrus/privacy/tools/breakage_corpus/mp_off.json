@@ -1,0 +1,79 @@
+{
+ "arm": "off",
+ "when": "2026-08-19T18:00:12.561Z",
+ "out": {
+  "audio-correctness": {
+   "url": "about:blank",
+   "result": {
+    "renderedOutput": "b2d0864d",
+    "analyserData": "8f3aecb"
+   }
+  },
+  "determinism": {
+   "url": "https://example.com/",
+   "result": {
+    "first": "213b5085",
+    "stable": true
+   }
+  },
+  "threejs": {
+   "url": "https://threejs.org/examples/?q=keyframes#webgl_animation_keyframes",
+   "result": {
+    "canvas": false
+   }
+  },
+  "aquarium": {
+   "url": "https://webglsamples.org/aquarium/aquarium.html",
+   "result": {
+    "canvas": false
+   }
+  },
+  "pdfjs": {
+   "url": "https://mozilla.github.io/pdf.js/web/viewer.html",
+   "result": {
+    "textLayers": 2,
+    "chars": 11900,
+    "canvases": 3
+   }
+  },
+  "chartjs": {
+   "url": "https://www.chartjs.org/docs/latest/samples/bar/vertical.html",
+   "result": {
+    "canvas": true,
+    "w": 754,
+    "h": 377,
+    "animating": false,
+    "a": "34838:CECgDAj8fwAAAP//q4QmlQAAAAZJREFUAw",
+    "b": "34838:CECgDAj8fwAAAP//q4QmlQAAAAZJREFUAw"
+   }
+  },
+  "audio-analyser-page": {
+   "url": "https://mdn.github.io/webaudio-examples/audio-analyser/",
+   "result": {
+    "canvas": true,
+    "w": 512,
+    "h": 256,
+    "animating": false,
+    "a": "4826:NgECBNIF0vP/DwAA///YZYQWAAAABklEQVQ",
+    "b": "4826:NgECBNIF0vP/DwAA///YZYQWAAAABklEQVQ"
+   }
+  },
+  "squoosh": {
+   "url": "https://squoosh.app/",
+   "result": {
+    "canvas": true,
+    "w": 1245,
+    "h": 1032,
+    "animating": true,
+    "a": "103622:AgggMFaB/woAAP//dbYv/AAAAAZJREFUA",
+    "b": "105290:AggggMBQBf5/AAAA//90mJEbAAAABklEQ"
+   }
+  },
+  "photopea": {
+   "url": "https://www.photopea.com/",
+   "result": {
+    "canvas": false
+   }
+  }
+ }
+}

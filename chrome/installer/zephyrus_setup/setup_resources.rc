@@ -1,0 +1,9 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+#include "chrome/installer/zephyrus_setup/setup_resource_ids.h"
+
+IDR_FONT_INTER_REGULAR  RCDATA "fonts\Inter-Regular.ttf"
+IDR_FONT_INTER_SEMIBOLD RCDATA "fonts\Inter-SemiBold.ttf"
+IDR_LICENSE_INTER_OFL   RCDATA "fonts\OFL.txt"

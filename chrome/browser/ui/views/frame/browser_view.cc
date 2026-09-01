@@ -994,6 +994,49 @@ BrowserView::BrowserView(Browser* browser)
     zephyrus_sidebar_ =
         AddChildView(std::make_unique<ZephyrusSidebarView>(this));
 
+    // Added after the sidebar so it sits above the panel, and above the
+    // contents container it also overlaps -- the seam it grabs spans both.
+    zephyrus_sidebar_resize_handle_ =
+        AddChildView(std::make_unique<ZephyrusSidebarResizeHandle>(
+            base::BindRepeating(
+                [](BrowserView* bv) {
+                  return bv->zephyrus_sidebar_
+                             ? bv->zephyrus_sidebar_->GetSidebarWidth()
+                             : ZephyrusSidebarView::kDefaultSidebarWidth;
+                },
+                base::Unretained(this)),
+            base::BindRepeating(
+                [](BrowserView* bv, int w) {
+                  if (bv->zephyrus_sidebar_) {
+                    bv->zephyrus_sidebar_->OnResizeDragged(w);
+                  }
+                },
+                base::Unretained(this)),
+            base::BindRepeating(
+                [](BrowserView* bv) {
+                  if (bv->zephyrus_sidebar_) {
+                    bv->zephyrus_sidebar_->OnResizeFinished();
+                  }
+                },
+                base::Unretained(this)),
+            base::BindRepeating(
+                [](BrowserView* bv) {
+                  if (bv->zephyrus_sidebar_) {
+                    bv->zephyrus_sidebar_->ResetWidthToDefault();
+                  }
+                },
+                base::Unretained(this))));
+    // Right-clicking the panel edge must still open the sidebar menu. The
+    // handle now covers 9px of the panel, and without this that band would
+    // silently lose its context menu -- the handle is a child of BrowserView,
+    // so an unhandled press there does NOT fall through to the sidebar.
+    // ZephyrusSidebarView is itself the controller, and it degrades correctly
+    // for a non-row source: AsViewClass<ZephyrusTabRow> returns null and only
+    // the sidebar-level items are shown.
+    zephyrus_sidebar_resize_handle_->set_context_menu_controller(
+        zephyrus_sidebar_);
+    zephyrus_sidebar_resize_handle_->SetVisible(false);
+
     // The Ctrl+T search card. Added after the sidebar so it sits above it, and
     // it starts hidden: Show() toggles it. It sizes itself to the window when
     // revealed, so it needs no slot in BrowserView's layout.
@@ -1040,7 +1083,7 @@ BrowserView::BrowserView(Browser* browser)
 
     vertical_tab_strip_top_corner_ =
         AddChildView(std::make_unique<CustomFloatingCorner>(
-            *this, CustomFloatingCorner::CornerOrientation::kTopLeading,
+            *this, CornerOrientation::kTopLeading,
             views::ShapeContextTokens::kContentSeparatorRadius,
             CustomFloatingCorner::FrameTheme(), kColorVerticalTabStripShadow,
             /*is_vertical_window_edge=*/true));
@@ -1049,7 +1092,7 @@ BrowserView::BrowserView(Browser* browser)
         BrowserViewLayoutViews::kVerticalTabStripTopCornerElementId);
     vertical_tab_strip_bottom_corner_ =
         AddChildView(std::make_unique<CustomFloatingCorner>(
-            *this, CustomFloatingCorner::CornerOrientation::kBottomLeading,
+            *this, CornerOrientation::kBottomLeading,
             views::ShapeContextTokens::kContentSeparatorRadius,
             CustomFloatingCorner::FrameTheme(), kColorVerticalTabStripShadow,
             /*is_vertical_window_edge=*/true));
@@ -1085,7 +1128,7 @@ BrowserView::BrowserView(Browser* browser)
   // enough to be perceptible. It covers the whole client area, so the toolbar
   // and sidebar recede with the page.
   window_scrim_view_ = AddChildView(
-      std::make_unique<ScrimView>(SkColorSetA(kZephyrusThemeColor, 0xD9)));
+      std::make_unique<ScrimView>(SkColorSetA(zephyrus::Ground(), 0xD9)));
   window_scrim_view_->layer()->SetName("WindowScrimView");
 
 #if BUILDFLAG(IS_WIN)
@@ -3045,10 +3088,14 @@ SkColor BrowserView::GetZephyrusThemeColor() const {
   // bar, toolbar, omnibox, sidebar, and the contents notch together. That
   // whole-window shift is the point: a privacy mode you can mistake for normal
   // browsing is worse than no privacy mode.
-  if (browser_ && browser_->profile() && browser_->profile()->IsOffTheRecord()) {
-    return kZephyrusPrivateThemeColor;
-  }
-  return kZephyrusThemeColor;
+  const bool is_private =
+      browser_ && browser_->profile() && browser_->profile()->IsOffTheRecord();
+  // Private is the INVERTED theme rather than a different hue: a one-accent
+  // language has no second colour to spend on it, so value carries the
+  // distinction instead. A private window is dark while the browser is light,
+  // and light while it is dark -- which is a bigger, more obvious shift than
+  // the violet tint it replaces.
+  return ZephyrusGround(is_private);
 }
 
 void BrowserView::UpdateZephyrusTitlebarColor() {
@@ -3149,9 +3196,12 @@ double BrowserView::ZephyrusSidebarRevealAmount() const {
   return zephyrus_sidebar_ ? zephyrus_sidebar_->reveal_amount() : 0.0;
 }
 
-// static
-int BrowserView::ZephyrusSidebarColumnWidth() {
-  return kZephyrusSidebarGap + ZephyrusSidebarView::kSidebarWidth;
+int BrowserView::ZephyrusSidebarColumnWidth() const {
+  // Falls back to the default only before the sidebar exists (early layout
+  // during construction); once it does, its width is authoritative.
+  return kZephyrusSidebarGap +
+         (zephyrus_sidebar_ ? zephyrus_sidebar_->GetSidebarWidth()
+                            : ZephyrusSidebarView::kDefaultSidebarWidth);
 }
 
 void BrowserView::SetZephyrusSidebarAttached(bool attached) {
@@ -3240,11 +3290,46 @@ void BrowserView::UpdateZephyrusSidebarBounds() {
   // via a layer transform on the view itself.
   zephyrus_sidebar_->SetBounds(
       client_left + kZephyrusSidebarGap, content_bounds.y() + kZephyrusSidebarGap,
-      ZephyrusSidebarView::kSidebarWidth,
+      zephyrus_sidebar_->GetSidebarWidth(),
       std::max(0, content_bounds.height() - 2 * kZephyrusSidebarGap));
   if (zephyrus_sidebar_hotzone_) {
     zephyrus_sidebar_hotzone_->SetBounds(client_left, content_bounds.y(),
                                          kHotZoneWidth, content_bounds.height());
+  }
+
+  if (zephyrus_sidebar_resize_handle_) {
+    // Straddle the seam. The panel's right edge and the contents container's
+    // left edge are flush (kZephyrusSidebarGap is 0), but the web content card
+    // is inset another kZephyrusContentMargin inside that container, so the
+    // line the user actually sees and aims at is the channel just OUTSIDE the
+    // panel. A grab area sitting only inside the panel is invisible to them --
+    // that was the original bug.
+    //
+    // kSeamGrabOutside mirrors kZephyrusContentMargin (4) in
+    // contents_container_view.cc, plus a pixel of slack. It is duplicated
+    // rather than shared because that constant is file-local there; if the
+    // content margin changes, widen this to match.
+    // Inward is bounded by the panel's own padding: the sidebar's BoxLayout
+    // insets its children by 10, so the rightmost 10px is empty padding and a
+    // grab area up to that stays clear of every row's close and mute button.
+    // 9 leaves a pixel of margin against that limit.
+    //
+    // Outward is bounded by the page: past the 4px content-card margin lies
+    // real web content, and a grab strip over it would swallow clicks on links
+    // near the left edge. 6 covers the margin plus the card's own border, and
+    // no more.
+    constexpr int kSeamGrabInside = 9;
+    constexpr int kSeamGrabOutside = 6;
+    const int panel_right = client_left + kZephyrusSidebarGap +
+                            zephyrus_sidebar_->GetSidebarWidth();
+    zephyrus_sidebar_resize_handle_->SetBounds(
+        panel_right - kSeamGrabInside, content_bounds.y(),
+        kSeamGrabInside + kSeamGrabOutside, content_bounds.height());
+    // Only grabbable once the panel is all the way out. During the slide the
+    // seam is still moving, and a resize cursor over a panel that is animating
+    // invites a drag against a target that is not where it will end up.
+    zephyrus_sidebar_resize_handle_->SetVisible(
+        zephyrus_sidebar_attached_ && ZephyrusSidebarRevealAmount() >= 1.0);
   }
 }
 
@@ -3524,7 +3609,7 @@ ShowTranslateBubbleResult BrowserView::ShowTranslateBubble(
     bool is_user_gesture) {
   views::View* contents_view = GetActiveContentsWebView();
 
-  if (contents_view->HasFocus() && !GetLocationBarView()->IsMouseHovered() &&
+  if (contents_view->HasFocus() && !GetLocationBar()->IsMouseHovered() &&
       web_contents->IsFocusedElementEditable()) {
     return ShowTranslateBubbleResult::kEditableFieldIsActive;
   }
@@ -3867,10 +3952,18 @@ void BrowserView::OnSplitTabChanged(const SplitTabChange& change) {
           browser_->tab_strip_model()->GetActiveTab();
 
       if (active_tab->GetSplit() == change.split_id) {
-        if (change.GetVisualsChange()->new_visual_data() !=
-            change.GetVisualsChange()->old_visual_data()) {
-          multi_contents_view_->UpdateSplitVisualData(
-              change.GetVisualsChange()->new_visual_data());
+        multi_contents_view_->UpdateSplitVisualData(
+            change.GetVisualsChange()->new_visual_data());
+      }
+
+      if (change.GetVisualsChange()->reason() ==
+          SplitTabChange::SplitVisualChangeReason::kLayoutUpdated) {
+        gfx::Range split_indices_range = browser_->tab_strip_model()
+                                             ->GetSplitData(change.split_id)
+                                             ->GetIndexRange();
+        for (size_t i = split_indices_range.start();
+             i < split_indices_range.end(); ++i) {
+          UpdateAccessibleNameForTabAt(i);
         }
       }
       break;
@@ -4144,23 +4237,6 @@ std::u16string BrowserView::GetAccessibleWindowTitleForChannelAndProfile(
   }
 
   return title;
-}
-
-void BrowserView::UpdateAccessibleNameForAllTabs() {
-  for (int i = 0; i < browser()->tab_strip_model()->count(); ++i) {
-    std::u16string accessible_title = tabs::GetAccessibleTabLabel(
-        browser()->tab_strip_model()->GetTabAtIndex(i), /*is_for_tab=*/true);
-    views::View* tab = tab_strip_view()->GetTabAnchorViewAt(i);
-    CHECK(tab);
-    if (accessible_title.empty()) {
-      // Under the right conditions GetAccessibleTabLabel can return an empty
-      // string.
-      tab->GetViewAccessibility().SetName(
-          std::string(), ax::mojom::NameFrom::kAttributeExplicitlyEmpty);
-    } else {
-      tab->GetViewAccessibility().SetName(accessible_title);
-    }
-  }
 }
 
 std::vector<views::NativeViewHost*>
@@ -5010,11 +5086,12 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
     // content view.
     gfx::Point screen_point(point);
     View::ConvertPointToScreen(this, &screen_point);
-    if (tab_overlay_widget() &&
+    if (tab_overlay_widget() && tab_overlay_widget()->IsVisible() &&
         tab_overlay_widget()->GetWindowBoundsInScreen().Contains(
             screen_point)) {
       return HTCAPTION;
-    } else if (overlay_widget()->GetWindowBoundsInScreen().Contains(
+    } else if (overlay_widget() && overlay_widget()->IsVisible() &&
+               overlay_widget()->GetWindowBoundsInScreen().Contains(
                    screen_point)) {
       return HTCLIENT;
     }
@@ -6459,6 +6536,29 @@ void BrowserView::FrameColorsChanged() {
     web_app_window_title_->SetEnabledColor(caption_color);
   }
   GetWidget()->SetBackgroundColor(kColorToolbar);
+}
+
+void BrowserView::UpdateAccessibleNameForAllTabs() {
+  for (int i = 0; i < browser()->tab_strip_model()->count(); ++i) {
+    UpdateAccessibleNameForTabAt(i);
+  }
+}
+
+// TODO(crbug.com/529834985): See if we can consolidate the logic here and in
+// TabView::UpdateAccessibleName/TabView::UpdateAccessibleName.
+void BrowserView::UpdateAccessibleNameForTabAt(int index) {
+  std::u16string accessible_title = tabs::GetAccessibleTabLabel(
+      browser()->tab_strip_model()->GetTabAtIndex(index), /*is_for_tab=*/true);
+  views::View* tab = tab_strip_view()->GetTabAnchorViewAt(index);
+  CHECK(tab);
+  if (accessible_title.empty()) {
+    // Under the right conditions GetAccessibleTabLabel can return an empty
+    // string.
+    tab->GetViewAccessibility().SetName(
+        std::string(), ax::mojom::NameFrom::kAttributeExplicitlyEmpty);
+  } else {
+    tab->GetViewAccessibility().SetName(accessible_title);
+  }
 }
 
 void BrowserView::UpdateAccessibleNameForRootView() {

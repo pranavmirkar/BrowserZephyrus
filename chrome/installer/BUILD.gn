@@ -1,0 +1,24 @@
+# Copyright 2015 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//chrome/installer/installers.gni")
+
+# Meta-target that forwards to the installer of the correct type (if any).
+group("installer") {
+  if (enable_linux_installer) {
+    deps = [ "//chrome/installer/linux" ]
+  }
+
+  if (enable_mac_installer) {
+    deps = [ "//chrome/installer/mac" ]
+  }
+
+  # Zephyrus: the installer's user interface. Named here so it is reachable
+  # from the build graph at all -- GN only builds what the root can reach, and
+  # a target nothing depends on simply does not exist as far as the build is
+  # concerned.
+  if (is_win) {
+    deps = [ "//chrome/installer/zephyrus_setup" ]
+  }
+}

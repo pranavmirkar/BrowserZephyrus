@@ -188,6 +188,25 @@ python3 chrome/browser/zephyrus/privacy/tools/fetch_entity_dataset.py     --out-
 ```
 
 Release and CI pass `--strict`, so a silent loss of attribution cannot ship.
+
+### Verifying the release payload (do this before shipping an installer)
+
+```
+python3 chrome/browser/zephyrus/privacy/tools/verify_release_payload.py --out-dir out/Release
+```
+
+`--strict` only guards the FETCH. It cannot guard the step after it: if the
+fetch is never run at all, `create_installer_archive.py` silently skips the
+missing file (it only mentions it in verbose mode) and the installer is built
+without a dataset, reporting success. The browser then loads the null resolver
+and every tracker in the UI reads as unattributed -- with no error anywhere.
+
+The verifier closes that gap. It checks the three shipped data files exist and
+verifies the artifact's real Ed25519 signature against the public key parsed out
+of `entity_signing_key.h` -- parsed rather than copied, so it cannot drift from
+the key the browser actually trusts. An artifact signed with the WRONG key is
+the worst case: it looks correct everywhere and the browser refuses it on every
+load.
 Developer builds omit it: the script exits 0 on any failure and the browser
 starts with the null resolver showing bare domains. **A licensing-encumbered
 download must never be able to break a contributor's build.**

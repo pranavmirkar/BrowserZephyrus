@@ -34,12 +34,12 @@ source_set("privacy_core") {
     "fingerprint_attempt.h",
     "fingerprint_seed.cc",
     "fingerprint_seed.h",
-    "privacy_cross_site.cc",
-    "privacy_cross_site.h",
-    "privacy_cname_cache.cc",
-    "privacy_cname_cache.h",
     "privacy_aggregator.cc",
     "privacy_aggregator.h",
+    "privacy_cname_cache.cc",
+    "privacy_cname_cache.h",
+    "privacy_cross_site.cc",
+    "privacy_cross_site.h",
     "privacy_crypto.cc",
     "privacy_crypto.h",
     "privacy_crypto_impl.cc",
@@ -75,8 +75,6 @@ source_set("privacy_core") {
 # The profile-bound half: the KeyedService and its factory.
 source_set("privacy") {
   sources = [
-    "zephyrus_fingerprint_seed_host.cc",
-    "zephyrus_fingerprint_seed_host.h",
     "fingerprint_seed_provider.cc",
     "fingerprint_seed_provider.h",
     "privacy_intelligence_service.cc",
@@ -85,6 +83,10 @@ source_set("privacy") {
     "privacy_intelligence_service_factory.h",
     "privacy_tab_helper.cc",
     "privacy_tab_helper.h",
+    "zephyrus_fingerprint_seed_host.cc",
+    "zephyrus_fingerprint_seed_host.h",
+    "zephyrus_id_reset.cc",
+    "zephyrus_id_reset.h",
     "zephyrus_privacy_reporter_host.cc",
     "zephyrus_privacy_reporter_host.h",
     "zephyrus_webrtc_privacy_observer.cc",
@@ -93,12 +95,18 @@ source_set("privacy") {
     "zephyrus_webrtc_privacy_observer_factory.h",
   ]
   deps = [
+    # zephyrus_id_reset.cc names the identifier prefs owned by these.
+    "//components/autofill/core/common",
+    "//components/enterprise/browser/identifiers",
+    "//components/metrics",
     "//components/os_crypt/async/browser",
     "//components/os_crypt/async/common",
     "//components/prefs",
+    "//components/ukm",
     "//content/public/browser",
     "//net",
     "//sql",
+
     # blink::kWebRTCIPHandling* — the §9.2.1 policy values, read to decide
     # whether the "local addresses were withheld" claim is actually true.
     "//third_party/blink/public/common",
@@ -108,6 +116,7 @@ source_set("privacy") {
     "//base",
     "//chrome/browser/profiles:profile",
     "//components/keyed_service/core",
+
     # The renderer -> browser event channel (§9.2.1), declared under blink
     # because Blink cannot depend on //chrome.
     #
@@ -140,6 +149,7 @@ source_set("core_unit_tests") {
     "privacy_crypto_impl_unittest.cc",
     "privacy_database_unittest.cc",
     "privacy_failure_injection_unittest.cc",
+    "privacy_features_unittest.cc",
     "privacy_host_canon_unittest.cc",
     "privacy_hot_path_perftest.cc",
     "privacy_ring_buffer_unittest.cc",
@@ -160,16 +170,38 @@ source_set("core_unit_tests") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "no_unprompted_google_contact_unittest.cc",
     "privacy_intelligence_service_factory_unittest.cc",
+    "privacy_kill_switch_unittest.cc",
+    "privacy_no_upload_unittest.cc",
     "privacy_page_signals_unittest.cc",
     "privacy_tab_helper_unittest.cc",
+    "zephyrus_id_reset_unittest.cc",
   ]
   deps = [
     ":core_unit_tests",
     ":privacy",
     "//base/test:test_support",
+    "//build:branding_buildflags",
     "//chrome/test:test_support",
+
+    # §13.4 guard: privacy_no_upload_unittest.cc asserts the metrics endpoints
+    # are empty, so it needs the target that supplies them.
+    "//components/autofill/core/common",
+    "//components/metrics",
+
+    # no_unprompted_google_contact_unittest.cc pins the translate, optimization
+    # guide, API key and Cast/DIAL discovery defaults.
+    "//components/enterprise/browser/identifiers",
+    "//components/optimization_guide/core",
+    "//components/translate/core/browser",
+    "//components/translate/core/common",
+    "//components/ukm",
+    "//components/variations",
+    "//components/variations/net",
     "//content/test:test_support",
+    "//google_apis",
+    "//services/network/public/cpp",
     "//testing/gtest",
   ]
 }

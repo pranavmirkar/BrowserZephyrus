@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/omnibox/omnibox_result_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 
 #include <limits.h>
 
@@ -172,8 +173,14 @@ int ZephyrusHeroPillInset() {
   return std::max(0, ZephyrusCardInset() -
                          RoundedOmniboxResultsFrame::kZephyrusHeroOverhang);
 }
-constexpr float kZephyrusHoverPillRadius = 8.f;
-constexpr float kZephyrusHeroPillRadius = 10.f;
+// Both track the shared popup radius. They sit inside a 28px card, and a row
+// pill with visibly tighter corners than the surface holding it reads as a
+// different design rather than a smaller one. Clamped to a pill at row height,
+// which is the intent.
+constexpr float kZephyrusHoverPillRadius =
+    static_cast<float>(zephyrus::kRadiusPopup);
+constexpr float kZephyrusHeroPillRadius =
+    static_cast<float>(zephyrus::kRadiusPopup);
 
 // Zephyrus motion. The pill is a state indicator on a surface the user scans
 // constantly, so it stays well under the 300ms UI ceiling. Enter leads with a

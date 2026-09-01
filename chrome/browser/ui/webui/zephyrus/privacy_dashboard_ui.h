@@ -16,6 +16,11 @@ class PrivacyDashboardUIConfig
     : public content::DefaultWebUIConfig<PrivacyDashboardUI> {
  public:
   PrivacyDashboardUIConfig();
+
+  // §13.2 requires the dashboard be independently disableable without
+  // reverting the feature. It was not: the flag was declared, defined and
+  // never read, and this page registered unconditionally.
+  bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
 };
 
 // chrome://privacy — the user-facing dashboard.

@@ -901,13 +901,13 @@ class AppMenu::ZoomView : public AppMenuView, public views::WidgetObserver {
       decrement_button_->SetEnabled(zoom > contents->GetMinimumZoomPercent());
     }
     zoom_label_->SetText(base::FormatPercent(zoom));
+    zoom_label_max_width_.reset();
     if (!on_construction) {
       // An alert notification will ensure that the zoom label is always
       // announced even if is not focusable.
       zoom_label_->NotifyAccessibilityEventDeprecated(ax::mojom::Event::kAlert,
                                                       true);
     }
-    zoom_label_max_width_.reset();
   }
 
   void UpdateFullScreenButton() {
@@ -1088,6 +1088,11 @@ AppMenu::AppMenu(Browser* browser,
   DCHECK(!root_);
   auto root = std::make_unique<MenuItemView>(/*delegate=*/this);
   root_ = root.get();
+  // Zephyrus: this menu hangs off the title bar's three-dots button, so it gets
+  // a nub pointing at it, like the shield and downloads popups. Menus do not
+  // get one by default -- a context menu opens at the cursor and has nothing to
+  // point at.
+  root_->SetZephyrusWantsNub(true);
   PopulateMenu(root_, model);
 
   int32_t types = views::MenuRunner::HAS_MNEMONICS;
@@ -1113,6 +1118,35 @@ AppMenu::~AppMenu() {
   }
 }
 
+namespace {
+
+// Zephyrus: the menu's nub is drawn in a 10px margin reserved at the TOP of the
+// menu window, and MenuController puts that window's top edge flush against the
+// anchor. So the nub lands on top of the button instead of in the gap below it.
+//
+// Growing the anchor downward by the nub's height pushes the whole menu down by
+// exactly that much, which puts the nub in the gap and its tip at the button's
+// edge. Done here rather than in MenuController because only this menu has a
+// nub; every other menu should stay flush.
+//
+// Must match BubbleBorder::kVisibleArrowLength, which is what reserves the
+// margin. Not spelled as that constant because it is 10 there and this file
+// should not start depending on bubble geometry to position a menu.
+gfx::Rect ZephyrusNubAnchor(const gfx::Rect& anchor) {
+  // Drop: the nub's 10px plus 4 of breathing room, so the menu clears the
+  // button rather than just touching it.
+  constexpr int kDrop = 14;
+  // Nudge right. The menu anchors kTopRight, so its right edge follows the
+  // anchor's; moving the anchor moves the menu with it.
+  constexpr int kNudgeRight = 3;
+  gfx::Rect grown = anchor;
+  grown.set_height(grown.height() + kDrop);
+  grown.Offset(kNudgeRight, 0);
+  return grown;
+}
+
+}  // namespace
+
 void AppMenu::RunMenu(views::MenuButtonController* host) {
   base::RecordAction(UserMetricsAction("ShowAppMenu"));
   UMA_HISTOGRAM_ENUMERATION("WrenchMenu.MenuAction", MENU_ACTION_MENU_OPENED,
@@ -1120,7 +1154,7 @@ void AppMenu::RunMenu(views::MenuButtonController* host) {
 
   menu_runner_->RunMenuAt(
       host->button()->GetWidget(), host,
-      host->button()->GetAnchorBoundsInScreen(),
+      ZephyrusNubAnchor(host->button()->GetAnchorBoundsInScreen()),
       views::MenuAnchorPosition::kTopRight, ui::mojom::MenuSourceType::kNone,
       /*native_view_for_gestures=*/gfx::NativeView(), /*corners=*/std::nullopt,
       "Chrome.AppMenu.MenuHostInitToNextFramePresented");
@@ -1135,7 +1169,7 @@ void AppMenu::RunMenu(views::Widget* parent,
                             LIMIT_MENU_ACTION);
 
   menu_runner_->RunMenuAt(
-      parent, nullptr, anchor_screen_bounds,
+      parent, nullptr, ZephyrusNubAnchor(anchor_screen_bounds),
       views::MenuAnchorPosition::kTopRight, ui::mojom::MenuSourceType::kNone,
       /*native_view_for_gestures=*/gfx::NativeView(), /*corners=*/std::nullopt,
       "Chrome.AppMenu.MenuHostInitToNextFramePresented");

@@ -4,174 +4,21 @@
   <meta charset="utf-8">
   <title>New Tab</title>
   <style>
-    /* Zephyrus new tab — no NTP. A single floating search bar over the user's
-       desktop wallpaper, blurred. One easing for entrances (strong ease-out),
-       one accent. The page itself never moves on its own. */
-    :root {
-      --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-      /* Under-damped spring (back-out): overshoots ~5% then settles. */
-      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
-      --accent: #8b5cf6;
-      --bg: #0e0e10;   /* fallback when no wallpaper can be read */
-    }
-
-    *, *::before, *::after { box-sizing: border-box; }
+    /* Zephyrus has no new-tab page, and no second empty state.
+       The empty window is painted natively (zephyrus_empty_background.cc);
+       this page exists only so the chrome://newtab URL is not broken for
+       anything that still resolves it. It deliberately renders NOTHING but
+       the same flat colour that native paints before a wallpaper arrives --
+       #FFFAF0, the one permanent Zephyrus colour. No wallpaper layer, no
+       search field, no shortcuts, no branding, no script. */
     html, body {
-      margin: 0; padding: 0; height: 100%;
-      background: var(--bg);
-      color: #fafafa;
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      font-optical-sizing: auto;
-      -webkit-font-smoothing: antialiased;
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #fffaf0;
       overflow: hidden;
-    }
-    ::selection { background: rgba(139, 92, 246, 0.35); }
-
-    /* Desktop wallpaper, blurred. Served same-origin by the browser process at
-       a fixed path; if it fails to load the layer is transparent and the dark
-       --bg shows through — nothing breaks. Overfilled (inset + scale) so the
-       blur's soft edges never reveal the page background at the viewport rim. */
-    #wallpaper {
-      position: fixed; inset: -80px;
-      z-index: 0;
-      background-image: url('zephyrus-wallpaper.jpg');
-      background-size: cover;
-      background-position: center;
-      filter: blur(46px) saturate(1.12) brightness(0.92);
-      transform: scale(1.14);
-      /* quiet materialization once the bytes arrive */
-      animation: wallreveal 600ms var(--ease-out) both;
-    }
-    @keyframes wallreveal { from { opacity: 0; } to { opacity: 1; } }
-
-    /* Scrim: darken + vignette so the bar and chips stay legible over any
-       wallpaper (Apple's "dim to focus" material rule). */
-    #scrim {
-      position: fixed; inset: 0; z-index: 1; pointer-events: none;
-      background:
-        radial-gradient(120% 90% at 50% 42%, transparent 0%, rgba(8,9,12,0.42) 100%),
-        linear-gradient(180deg, rgba(8,9,12,0.34) 0%, rgba(8,9,12,0.52) 100%);
-    }
-
-    #root {
-      position: fixed; inset: 0; z-index: 2;
-      display: flex; align-items: center; justify-content: center;
-      padding: 24px;
-    }
-    #content {
-      display: flex; flex-direction: column; align-items: center;
-      width: 100%; max-width: 640px;
-    }
-
-    /* Entrance: one fast, quiet rise. New-tab is a many-times-a-day surface,
-       so this stays near-imperceptible — transform + opacity only. */
-    .rise {
-      opacity: 0;
-      transform: translateY(10px);
-      animation: rise 340ms var(--ease-out) forwards;
-    }
-    .rise-1 { animation-delay: 40ms; }
-    .rise-2 { animation-delay: 100ms; }
-    @keyframes rise {
-      60% { opacity: 1; transform: translateY(-2px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .rise { transform: none; animation: fade 200ms ease forwards; }
-      #wallpaper { animation: none; }
-      @keyframes fade { to { opacity: 1; } }
-    }
-
-    /* Floating search bar — glass pill over the wallpaper; lifts on focus. */
-    #searchbar {
-      width: 100%; max-width: 620px;
-      height: 58px;
-      display: flex; align-items: center; gap: 13px;
-      background: rgba(22, 22, 26, 0.62);
-      border: 1px solid rgba(255, 255, 255, 0.10);
-      border-radius: 999px;
-      padding: 0 24px;
-      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.40),
-                  inset 0 1px 0 rgba(255, 255, 255, 0.06);
-      -webkit-backdrop-filter: blur(22px) saturate(1.4);
-      backdrop-filter: blur(22px) saturate(1.4);
-      cursor: text;
-      transition: border-color 150ms ease, box-shadow 200ms var(--ease-out),
-                  transform 320ms var(--ease-spring);
-    }
-    #searchbar:focus-within {
-      border-color: rgba(139, 92, 246, 0.55);
-      transform: translateY(-2px) scale(1.011);
-      box-shadow: 0 22px 56px rgba(0, 0, 0, 0.46),
-                  0 0 0 4px rgba(139, 92, 246, 0.16),
-                  inset 0 1px 0 rgba(255, 255, 255, 0.07);
-    }
-    #searchbar svg { color: #a1a1aa; flex: 0 0 auto; transition: color 150ms ease; }
-    #searchbar:focus-within svg { color: var(--accent); }
-    #searchinput {
-      flex: 1; background: transparent; border: none; outline: none;
-      color: #fafafa; font-size: 16px;
-      font-family: inherit;
-      caret-color: var(--accent);
-    }
-    #searchinput::placeholder { color: #8a8a93; }
-    #searchhint {
-      font-size: 11px; color: #a1a1aa;
-      border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 999px;
-      padding: 3px 10px; flex: 0 0 auto;
-      font-family: monospace;
-      transition: opacity 150ms ease;
-    }
-    #searchbar:focus-within #searchhint { opacity: 0; }
-
-    /* Frequent-site chips — compact glass pills under the bar. */
-    #chips {
-      margin-top: 22px;
-      display: flex; flex-wrap: wrap; gap: 10px;
-      justify-content: center;
-    }
-    .chip {
-      display: flex; align-items: center; gap: 9px;
-      padding: 8px 15px 8px 9px;
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.07);
-      border: 1px solid rgba(255, 255, 255, 0.10);
-      -webkit-backdrop-filter: blur(14px);
-      backdrop-filter: blur(14px);
-      color: #e5e7eb; font-size: 13px; text-decoration: none;
-      cursor: pointer;
-      transition: transform 300ms var(--ease-spring),
-                  background 150ms ease, border-color 150ms ease;
-    }
-    @media (hover: hover) and (pointer: fine) {
-      .chip:hover {
-        transform: translateY(-2px);
-        background: rgba(255, 255, 255, 0.11);
-        border-color: rgba(255, 255, 255, 0.16);
-      }
-    }
-    .chip:active { transform: translateY(0) scale(0.97); transition: transform 110ms var(--ease-out); }
-    .chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-    .chip-icon {
-      width: 24px; height: 24px; border-radius: 8px;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 13px; font-weight: 700;
-      flex: 0 0 auto;
-      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.10);
-    }
-    @media (prefers-reduced-motion: reduce) {
-      .chip, #searchbar { transition-property: background, border-color, box-shadow; }
-      .chip:hover, .chip:active, #searchbar:focus-within { transform: none; }
     }
   </style>
 </head>
-<body>
-  <div id="wallpaper"></div>
-  <div id="scrim"></div>
-  <!-- Zephyrus has no new-tab page. Nothing navigates here any more (Ctrl+T
-       opens the native floating search overlay, startup and session restore
-       never produce one), but if something ever does land on this URL it must
-       not look like an NTP: only the same blurred backdrop an empty window
-       paints. No search field, no shortcuts, no branding. -->
-</body>
+<body></body>
 </html>

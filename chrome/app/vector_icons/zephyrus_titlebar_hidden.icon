@@ -1,0 +1,27 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// Title bar HIDDEN (auto-hide): the same rounded window, but the top strip is
+// reduced to a short centred stub rather than a full bar.
+//
+// The stub matters. An empty frame would read as "no window" or as a disabled
+// control; a partial mark reads as "the bar is there but withdrawn", which is
+// what auto-hide actually means. It also keeps the two states legible from
+// each other at 16px, where a filled bar vs an empty frame is a much smaller
+// difference than it looks at icon-design size.
+
+CANVAS_DIMENSIONS, 24,
+
+// Frame, identical to the pinned glyph so only the strip changes.
+ROUND_RECT, 3, 5, 18, 14, 3,
+CLOSE,
+NEW_PATH,
+PATH_MODE_CLEAR,
+ROUND_RECT, 4.6f, 6.6f, 14.8f, 10.8f, 1.8f,
+CLOSE,
+
+// Withdrawn bar: a short centred stub.
+NEW_PATH,
+ROUND_RECT, 9.5f, 7.4f, 5, 2.4f, 1.2f,
+CLOSE,

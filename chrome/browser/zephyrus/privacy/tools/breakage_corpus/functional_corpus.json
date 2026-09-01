@@ -1,0 +1,104 @@
+{
+  "_comment": [
+    "The set §12.6 actually names: canvas-heavy apps, WebGL, audio processing,",
+    "font-dependent layouts. This is where Phase 4 breakage will be, because a",
+    "top-sites list is mostly news, login walls and CDN infrastructure that never",
+    "reads a canvas back.",
+    "",
+    "'surfaces' records which instrumented surface each entry is here to exercise,",
+    "so a failure can be read against the per-surface mask rather than blamed on",
+    "the whole feature. 'why' must say what would visibly break, not just what the",
+    "site is — an entry nobody can judge the failure of is not a test.",
+    "",
+    "'manual' entries CANNOT be judged by the automated harness (it cannot tell",
+    "that an exported PNG is corrupt or a chart is subtly wrong). They are the",
+    "shortlist for the manual pass §12.6 requires."
+  ],
+
+  "sites": [
+    {
+      "url": "https://www.photopea.com/",
+      "surfaces": ["canvas", "webgl"],
+      "manual": true,
+      "why": "Full image editor. getImageData is load-bearing, not a fingerprint probe: filters, selections and export all read pixels back. If noise corrupts a real editing pipeline it shows here first. NOT AUTOMATABLE as of 2026-08-19: photopea.com now serves a marketing landing page and the editor boots only behind a click; the documented #{json} hash API did not launch it either (verified, canvases=[]). So run 1 tested NOTHING here. MANUAL ONLY: click through to the editor, open an image, apply a filter, export a PNG, confirm it opens."
+    },
+    {
+      "url": "https://jsfiddle.net/",
+      "surfaces": ["canvas"],
+      "manual": false,
+      "why": "Control for A/B DIFFERENCING, not for silence. Measured 2026-08-19: it requests /cdn-cgi/challenge-platform with the flag OFF, i.e. Cloudflare instrumentation is part of its normal load. So a raw signal count is meaningless here and only a signal present in the ON arm alone counts. If this ever appears as an A/B difference, the detector has become noisy."
+    },
+    {
+      "url": "https://mozilla.github.io/pdf.js/web/viewer.html",
+      "surfaces": ["canvas"],
+      "manual": true,
+      "why": "PDF.js renders every page to a canvas and reads back for text selection and printing. Font-dependent as well. MANUAL: scroll pages, select text, check glyphs are not mangled."
+    },
+    {
+      "url": "https://threejs.org/examples/#webgl_animation_keyframes",
+      "surfaces": ["webgl"],
+      "manual": true,
+      "why": "WebGL scene using extensions. §6.5 WITHHOLDS twelve extensions (WEBGL_debug_shaders, compressed textures, EXT_disjoint_timer_query, KHR_parallel_shader_compile, OVR_multiview2, WEBGL_multi_draw). Withholding a compressed-texture extension a renderer depends on is the most plausible real breakage in all of Phase 4. MANUAL: confirm the scene renders and animates."
+    },
+    {
+      "url": "https://webglsamples.org/aquarium/aquarium.html",
+      "surfaces": ["webgl"],
+      "manual": false,
+      "why": "Heavier WebGL with texture compression paths; second opinion on the withheld-extension risk."
+    },
+    {
+      "url": "https://www.chartjs.org/samples/latest/",
+      "surfaces": ["canvas"],
+      "manual": true,
+      "why": "Chart library drawing to canvas 2D. Charts are the classic 'looks fine but is subtly wrong' case. MANUAL: compare a rendered chart against the documented sample."
+    },
+    {
+      "url": "https://observablehq.com/@d3/gallery",
+      "surfaces": ["canvas"],
+      "manual": false,
+      "why": "D3 canvas renderers plus heavy text measurement."
+    },
+    {
+      "url": "https://www.openstreetmap.org/",
+      "surfaces": ["canvas", "webgl"],
+      "manual": false,
+      "why": "Map tiles composited and read back; maps are canvas-heavy and visually unforgiving."
+    },
+    {
+      "url": "https://mdn.github.io/webaudio-examples/audio-analyser/",
+      "surfaces": ["audio"],
+      "manual": true,
+      "why": "AnalyserNode is exactly what §6.5 perturbs. Perturbation must break the fingerprint hash WITHOUT altering audible output. MANUAL: confirm audio sounds normal and the visualiser still tracks it."
+    },
+    {
+      "url": "https://mdn.github.io/webaudio-examples/voice-change-o-matic/",
+      "surfaces": ["audio"],
+      "manual": false,
+      "why": "Second audio path: live analysis driving a visualiser."
+    },
+    {
+      "url": "https://fonts.google.com/",
+      "surfaces": ["canvas"],
+      "manual": false,
+      "why": "Font-dependent layout with heavy measureText. §6.5 names font probing as a surface that is NOT yet instrumented, so this is also the control proving that gap is still open."
+    },
+    {
+      "url": "https://squoosh.app/",
+      "surfaces": ["canvas"],
+      "manual": true,
+      "why": "Image compressor that does canvas work IN A WORKER. Dedicated workers are perturbed and must agree with their document; this is the real-world version of the #93 browsertest. Run 1 loaded the app shell only (drop-target screen, no image processed), so the worker pipeline was NOT exercised. MANUAL: drop an image, compress, confirm the output is not corrupted."
+    },
+    {
+      "url": "https://browserleaks.com/canvas",
+      "surfaces": ["canvas", "webgl", "audio", "navigator", "screen"],
+      "manual": false,
+      "why": "Adversarial control, not a breakage case. A fingerprinting probe that reports the values it reads, so it proves the flag is actually taking effect end to end. Its canvas signature MUST differ between the two arms; if it does not, the whole run is invalid."
+    },
+    {
+      "url": "https://webbrowsertools.com/canvas-fingerprint/",
+      "surfaces": ["canvas"],
+      "manual": false,
+      "why": "Second adversarial control, in case the first changes its reporting format."
+    }
+  ]
+}
