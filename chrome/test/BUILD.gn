@@ -1273,6 +1273,7 @@ source_set("platform_browser_tests") {
   sources = [
     "../browser/loadtimes_extension_bindings_browsertest.cc",
     "../browser/ui/webui/zephyrus/privacy_internals_ui_browsertest.cc",
+    "../browser/zephyrus/agent/agent_kernel_browsertest.cc",
     "../browser/zephyrus/privacy/privacy_clear_browsing_data_browsertest.cc",
     "../browser/zephyrus/privacy/privacy_webrtc_browsertest.cc",
     "../browser/zephyrus/privacy/fingerprint_seed_browsertest.cc",

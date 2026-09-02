@@ -1,0 +1,6 @@
+include_rules = [
+  # The kernel is a leaf Rust crate with no Chromium dependencies. It lives
+  # here rather than under //chrome/browser because it runs in this utility
+  # process, not in the browser.
+  "+chrome/services/zephyrus_agent",
+]

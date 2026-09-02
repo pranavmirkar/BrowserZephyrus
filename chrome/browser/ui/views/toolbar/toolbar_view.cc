@@ -79,7 +79,10 @@
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
+#include "base/command_line.h"
+#include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/zephyrus/agent/dev_model_client.h"
 #include "chrome/browser/ui/views/frame/zephyrus_privacy_popup.h"
 #include "chrome/browser/zephyrus/privacy/privacy_features.h"
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
@@ -843,6 +846,36 @@ void ToolbarView::Init() {
 
   overflow_button_ = AddChildView(std::make_unique<OverflowButton>());
   overflow_button_->SetVisible(false);
+
+  // Zephyrus: the agent button, immediately left of the app menu.
+  //
+  // On this side of the caption separator on purpose. The rule divides browser
+  // controls from window controls, and an agent is a browser control -- putting
+  // it beyond the rule would group it with minimise and close, and would sit in
+  // the 2px of air that separator's spacing was balanced on.
+  //
+  // Only present when a model is actually configured. An icon that opens a
+  // panel which can only say "no model configured" is worse than no icon, and
+  // in a normal build there is nothing behind it yet.
+  if (browser_->is_type_normal() &&
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          zephyrus::agent::kAgentModelEndpointSwitch) &&
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          zephyrus::agent::kAgentModelSwitch)) {
+    auto agent_button = std::make_unique<ToolbarButton>(base::BindRepeating(
+        [](Browser* browser) {
+          BrowserView* view = BrowserView::GetBrowserViewForBrowser(browser);
+          if (view && view->zephyrus_agent_panel()) {
+            view->zephyrus_agent_panel()->Toggle();
+          }
+        },
+        browser_));
+    agent_button->SetVectorIcon(vector_icons::kChatSparkIcon);
+    const std::u16string agent_name = u"Agent";
+    agent_button->SetTooltipText(agent_name);
+    agent_button->GetViewAccessibility().SetName(agent_name);
+    zephyrus_agent_button_ = AddChildView(std::move(agent_button));
+  }
 
   // WebUI app menu button handles these internally, so no need to set these
   // properties here, and the control is added as part of the WebUI toolbar.

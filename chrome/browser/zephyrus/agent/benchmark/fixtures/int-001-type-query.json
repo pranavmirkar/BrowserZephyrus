@@ -1,0 +1,49 @@
+{
+  "id": "int-001-type-query",
+  "class": "interaction",
+  "note": "Must pick the search field over the newsletter field. Two text inputs on purpose.",
+  "task": "Search this site for 'thermal throttling'",
+  "observation": {
+    "url": "https://example-docs.org/",
+    "title": "Docs",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Docs",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "e12",
+        "role": "textbox",
+        "name": "Search docs"
+      },
+      {
+        "id": "e13",
+        "role": "button",
+        "name": "Search"
+      },
+      {
+        "id": "e31",
+        "role": "textbox",
+        "name": "Email address"
+      },
+      {
+        "id": "e32",
+        "role": "button",
+        "name": "Subscribe"
+      }
+    ],
+    "text": "Documentation home. Browse guides and API reference."
+  },
+  "accept": [
+    {
+      "name": "page.type",
+      "arguments": {
+        "element_id": "e12",
+        "text": "thermal throttling"
+      }
+    }
+  ]
+}

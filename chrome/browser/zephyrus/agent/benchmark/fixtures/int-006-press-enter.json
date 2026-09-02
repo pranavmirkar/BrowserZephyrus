@@ -1,0 +1,45 @@
+{
+  "id": "int-006-press-enter",
+  "class": "interaction",
+  "note": "The query is already typed. Re-typing it is a wasted step but defensible; pressing Enter or clicking Search is the point.",
+  "task": "Run the search",
+  "observation": {
+    "url": "https://reviews.example.net/",
+    "title": "Reviews",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Reviews",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "q",
+        "role": "textbox",
+        "name": "Search reviews",
+        "value": "thermal throttling"
+      },
+      {
+        "id": "go",
+        "role": "button",
+        "name": "Search"
+      }
+    ],
+    "text": "Independent hardware reviews."
+  },
+  "accept": [
+    {
+      "name": "page.press",
+      "arguments": {
+        "key": "Enter"
+      }
+    },
+    {
+      "name": "page.click",
+      "arguments": {
+        "element_id": "go"
+      }
+    }
+  ]
+}

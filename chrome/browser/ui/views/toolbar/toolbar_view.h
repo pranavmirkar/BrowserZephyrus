@@ -440,6 +440,7 @@ class ToolbarView : public views::AccessiblePaneView,
   std::unique_ptr<WebUIToolbarWebView> detached_toolbar_webview_;
   raw_ptr<HomeButton> home_ = nullptr;
   raw_ptr<ToolbarButton> zephyrus_new_tab_button_ = nullptr;
+  raw_ptr<ToolbarButton> zephyrus_agent_button_ = nullptr;
   // The Linux-style numbered workspace strip. Replaces the pill + dropdown.
   raw_ptr<views::View> zephyrus_workspace_strip_ = nullptr;
   // Fires once just after construction, when the workspace manager finally

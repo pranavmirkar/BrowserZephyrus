@@ -1,0 +1,43 @@
+{
+  "id": "grn-002-similar-names",
+  "class": "grounding",
+  "note": "Three controls whose names differ by one word. Picking the plain 'Download' is grounded, well-formed and wrong, so this separates reading the page from pattern-matching the task.",
+  "task": "Download the beta build",
+  "observation": {
+    "url": "https://tool.example.dev/downloads",
+    "title": "Downloads",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Downloads",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "d1",
+        "role": "link",
+        "name": "Download"
+      },
+      {
+        "id": "d2",
+        "role": "link",
+        "name": "Download (beta)"
+      },
+      {
+        "id": "d3",
+        "role": "link",
+        "name": "Download older versions"
+      }
+    ],
+    "text": "Stable 3.2 and beta 3.3 are available."
+  },
+  "accept": [
+    {
+      "name": "page.click",
+      "arguments": {
+        "element_id": "d2"
+      }
+    }
+  ]
+}

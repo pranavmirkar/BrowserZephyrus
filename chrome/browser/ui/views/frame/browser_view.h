@@ -102,6 +102,9 @@ class ZephyrusSidebarHotZone;
 class ZephyrusSidebarResizeHandle;
 class ZephyrusSidebarView;
 class ZephyrusSearchOverlay;
+namespace zephyrus::agent {
+class ZephyrusAgentPanel;
+}
 class ZephyrusTabSwitcher;
 class ZephyrusWorkspaceManager;
 class TopControlsSlideController;
@@ -292,6 +295,15 @@ class BrowserView : public BrowserWindow,
   views::View* contents_container() { return contents_container_; }
 
   // Zephyrus: the Ctrl+T search card, owned as a child view of this window.
+  // The agent's conversation panel, on the right. Null in windows that do not
+  // get one (popups, app windows).
+  zephyrus::agent::ZephyrusAgentPanel* zephyrus_agent_panel() {
+    return zephyrus_agent_panel_;
+  }
+
+  // Width the layout should keep clear on the right for the panel, or zero.
+  int ZephyrusAgentPanelWidth() const;
+
   ZephyrusSearchOverlay* zephyrus_search_overlay() {
     return zephyrus_search_overlay_;
   }
@@ -774,6 +786,7 @@ class BrowserView : public BrowserWindow,
 
   // Zephyrus: positions the floating sidebar based on its reveal animation.
   void UpdateZephyrusSidebarBounds();
+  void UpdateZephyrusAgentPanelBounds();
 
 
 
@@ -1380,6 +1393,8 @@ class BrowserView : public BrowserWindow,
   // Ctrl+T search card. A view rather than a bubble so its backdrop blur has
   // the web contents to sample; see zephyrus_search_overlay.h.
   raw_ptr<ZephyrusSearchOverlay> zephyrus_search_overlay_ = nullptr;
+  raw_ptr<zephyrus::agent::ZephyrusAgentPanel> zephyrus_agent_panel_ =
+      nullptr;
   // Ctrl+Tab switcher. Also a view rather than a bubble, for the blur.
   raw_ptr<ZephyrusTabSwitcher> zephyrus_tab_switcher_ = nullptr;
   raw_ptr<ZephyrusSidebarHotZone> zephyrus_sidebar_hotzone_ = nullptr;

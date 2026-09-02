@@ -1,0 +1,38 @@
+{
+  "id": "nav-001-open-site",
+  "class": "navigation",
+  "note": "Baseline. If this fails nothing else is worth reading.",
+  "task": "Go to wikipedia.org",
+  "observation": {
+    "url": "about:blank",
+    "title": "New Tab",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "New Tab",
+        "active": true
+      }
+    ],
+    "elements": []
+  },
+  "accept": [
+    {
+      "name": "browser.navigate",
+      "arguments": {
+        "url": "https://wikipedia.org"
+      }
+    },
+    {
+      "name": "browser.navigate",
+      "arguments": {
+        "url": "https://www.wikipedia.org"
+      }
+    },
+    {
+      "name": "browser.navigate",
+      "arguments": {
+        "url": "https://en.wikipedia.org"
+      }
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  "id": "cmp-002-answer-is-on-the-page",
+  "class": "completion",
+  "note": "The number asked for is in the visible text. Continuing to browse is the failure.",
+  "task": "How many results were found?",
+  "observation": {
+    "url": "https://reviews.example.net/search?q=thermal",
+    "title": "Search: thermal",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Search: thermal",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "n1",
+        "role": "link",
+        "name": "Next page"
+      },
+      {
+        "id": "r1",
+        "role": "link",
+        "name": "Cooling on thin laptops"
+      }
+    ],
+    "text": "Showing 1-20 of 347 results for thermal."
+  },
+  "accept": [
+    {
+      "name": "task.complete"
+    }
+  ]
+}

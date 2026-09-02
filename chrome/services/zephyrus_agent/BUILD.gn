@@ -1,0 +1,51 @@
+# Copyright 2026 The Zephyrus Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//testing/test.gni")
+
+# The agent kernel service: hosts the Rust policy engine in a sandboxed utility
+# process. See
+# //chrome/browser/zephyrus/docs/adr/0001-agent-kernel-runs-in-its-own-process.md
+source_set("lib") {
+  sources = [
+    "agent_kernel_service.cc",
+    "agent_kernel_service.h",
+    "task_loop.cc",
+    "task_loop.h",
+  ]
+
+  deps = [
+    "//base",
+    "//chrome/services/zephyrus_agent/kernel",
+    "//chrome/services/zephyrus_agent/public/mojom",
+    "//mojo/public/cpp/bindings",
+    "//third_party/rust/cxx/v1:lib",
+  ]
+}
+
+# Exercises the service through a real mojo pipe rather than by calling the
+# implementation directly, so the generated serialization for our structs is
+# under test too.
+#
+#   autoninja -C out/Release zephyrus_agent_service_unittests
+test("zephyrus_agent_service_unittests") {
+  sources = [
+    "agent_kernel_service_unittest.cc",
+    "task_loop_unittest.cc",
+  ]
+
+  # Note //mojo/core/test:run_all_unittests rather than the usual
+  # //base/test:run_all_unittests. These tests drive a real mojo pipe and that
+  # main does not call mojo::core::Init(), so the process aborts on the first
+  # message with "Mojo has not been initialized in this process".
+  deps = [
+    ":lib",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/services/zephyrus_agent/public/mojom",
+    "//mojo/core/test:run_all_unittests",
+    "//mojo/public/cpp/bindings",
+    "//testing/gtest",
+  ]
+}

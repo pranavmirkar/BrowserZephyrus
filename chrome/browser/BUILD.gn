@@ -1335,6 +1335,7 @@ source_set("core") {
       "//chrome/browser/sharing_hub",
       "//chrome/browser/themes",
       "//chrome/browser/zephyrus/adblock",
+      "//chrome/browser/zephyrus/agent",
       "//chrome/browser/zephyrus/privacy",
       "//chrome/browser/ui/apps",
       "//chrome/browser/ui/apps:impl",

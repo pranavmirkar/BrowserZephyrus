@@ -1,0 +1,30 @@
+{
+  "id": "nav-003-go-back",
+  "class": "navigation",
+  "note": "A history move, not a URL. Navigating to a guessed search URL is the near miss.",
+  "task": "Go back to the search results",
+  "observation": {
+    "url": "https://shop.example.org/product/rtx-5070",
+    "title": "RTX 5070 laptop",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "RTX 5070 laptop",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "b1",
+        "role": "button",
+        "name": "Add to basket"
+      }
+    ],
+    "text": "RTX 5070 laptop, 16GB RAM."
+  },
+  "accept": [
+    {
+      "name": "browser.back"
+    }
+  ]
+}

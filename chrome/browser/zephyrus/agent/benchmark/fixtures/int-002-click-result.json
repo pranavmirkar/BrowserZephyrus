@@ -1,0 +1,41 @@
+{
+  "id": "int-002-click-result",
+  "class": "interaction",
+  "task": "Open the RTX 5070 laptop review",
+  "observation": {
+    "url": "https://example-search.org/?q=rtx+5070",
+    "title": "Search results",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Search results",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "r1",
+        "role": "link",
+        "name": "Best budget laptops 2026"
+      },
+      {
+        "id": "r2",
+        "role": "link",
+        "name": "RTX 5070 laptop review: tested"
+      },
+      {
+        "id": "r3",
+        "role": "link",
+        "name": "GPU price tracker"
+      }
+    ]
+  },
+  "accept": [
+    {
+      "name": "page.click",
+      "arguments": {
+        "element_id": "r2"
+      }
+    }
+  ]
+}

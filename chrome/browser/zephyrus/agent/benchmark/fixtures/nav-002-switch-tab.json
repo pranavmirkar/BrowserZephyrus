@@ -1,0 +1,35 @@
+{
+  "id": "nav-002-switch-tab",
+  "class": "navigation",
+  "task": "Go back to the tab with my email open",
+  "observation": {
+    "url": "https://news.example.org/",
+    "title": "Morning news",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Morning news",
+        "active": true
+      },
+      {
+        "id": 4,
+        "title": "Inbox (3) - Mail",
+        "active": false
+      },
+      {
+        "id": 7,
+        "title": "Weather",
+        "active": false
+      }
+    ],
+    "elements": []
+  },
+  "accept": [
+    {
+      "name": "tabs.switch",
+      "arguments": {
+        "tab_id": 4
+      }
+    }
+  ]
+}

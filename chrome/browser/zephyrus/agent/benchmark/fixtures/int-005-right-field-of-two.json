@@ -1,0 +1,44 @@
+{
+  "id": "int-005-right-field-of-two",
+  "class": "interaction",
+  "note": "Two text inputs, one of which is a newsletter signup. Typing the query into the wrong box is well-formed, grounded and useless -- exactly the GROUNDED-but-not-CORRECT gap the first run showed.",
+  "task": "Search this site for 'thermal throttling'",
+  "observation": {
+    "url": "https://reviews.example.net/",
+    "title": "Reviews",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Reviews",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "nl",
+        "role": "textbox",
+        "name": "Your email for our newsletter"
+      },
+      {
+        "id": "q",
+        "role": "textbox",
+        "name": "Search reviews"
+      },
+      {
+        "id": "sub",
+        "role": "button",
+        "name": "Subscribe"
+      }
+    ],
+    "text": "Independent hardware reviews."
+  },
+  "accept": [
+    {
+      "name": "page.type",
+      "arguments": {
+        "element_id": "q",
+        "text": "thermal throttling"
+      }
+    }
+  ]
+}

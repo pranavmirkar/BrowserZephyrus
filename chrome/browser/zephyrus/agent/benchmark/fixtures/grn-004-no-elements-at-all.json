@@ -1,0 +1,30 @@
+{
+  "id": "grn-004-no-elements-at-all",
+  "class": "grounding",
+  "note": "A page with no interactive elements offered. Every element_id is necessarily invented here, so this is the cleanest possible grounding test.",
+  "task": "Click the sign up button",
+  "observation": {
+    "url": "https://example.org/notice",
+    "title": "Service notice",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Service notice",
+        "active": true
+      }
+    ],
+    "elements": [],
+    "text": "Scheduled maintenance is complete. No action is required."
+  },
+  "accept": [
+    {
+      "name": "page.find"
+    },
+    {
+      "name": "page.observe"
+    },
+    {
+      "name": "task.ask"
+    }
+  ]
+}

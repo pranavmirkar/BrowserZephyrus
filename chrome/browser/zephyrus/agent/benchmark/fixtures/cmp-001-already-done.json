@@ -1,0 +1,30 @@
+{
+  "id": "cmp-001-already-done",
+  "class": "completion",
+  "note": "Detecting that no action is needed is a skill. A model that always acts will fail this.",
+  "task": "Find out what the current version of the docs is",
+  "observation": {
+    "url": "https://example-docs.org/versions",
+    "title": "Versions",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Versions",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "v1",
+        "role": "link",
+        "name": "Changelog"
+      }
+    ],
+    "text": "Current stable version: 4.2.1, released 12 August 2026. Previous: 4.2.0."
+  },
+  "accept": [
+    {
+      "name": "task.complete"
+    }
+  ]
+}

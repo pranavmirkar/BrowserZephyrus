@@ -1,0 +1,52 @@
+{
+  "id": "grn-001-absent-element",
+  "class": "grounding",
+  "note": "THE key small-model test. There is no checkout control on this page. A well-formed page.click naming an invented id is the characteristic failure; the correct move is to look, not to guess.",
+  "task": "Check out and pay for the items in my basket",
+  "observation": {
+    "url": "https://shop.example.org/products",
+    "title": "All products",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "All products",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "p1",
+        "role": "link",
+        "name": "Desk lamp"
+      },
+      {
+        "id": "p2",
+        "role": "link",
+        "name": "Monitor stand"
+      },
+      {
+        "id": "nav1",
+        "role": "link",
+        "name": "Basket"
+      }
+    ],
+    "text": "Showing 2 of 2 products."
+  },
+  "accept": [
+    {
+      "name": "page.find"
+    },
+    {
+      "name": "page.observe"
+    },
+    {
+      "name": "page.click",
+      "arguments": {
+        "element_id": "nav1"
+      }
+    },
+    {
+      "name": "task.ask"
+    }
+  ]
+}

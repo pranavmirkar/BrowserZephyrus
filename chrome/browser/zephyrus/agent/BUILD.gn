@@ -1,0 +1,62 @@
+# Copyright 2026 The Zephyrus Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//testing/test.gni")
+
+# The browser's handle on the agent kernel. The kernel itself lives in
+# //chrome/services/zephyrus_agent and runs in a utility process; nothing here
+# links it.
+source_set("agent") {
+  sources = [
+    "agent_kernel_client.cc",
+    "dev_model_client.cc",
+    "dev_model_client.h",
+    "agent_kernel_client.h",
+    "observation.cc",
+    "observation.h",
+    "tool_executor.cc",
+    "tool_runner_impl.cc",
+    "tool_runner_impl.h",
+    "tool_executor.h",
+    "tool_surface.h",
+  ]
+
+  deps = [
+    "//base",
+    "//content/public/browser",
+    "//net/traffic_annotation",
+    "//services/network/public/cpp",
+    "//ui/accessibility",
+    "//mojo/public/cpp/bindings",
+  ]
+
+  public_deps = [ "//chrome/services/zephyrus_agent/public/mojom" ]
+}
+
+# Drives the executor against the REAL kernel bound in-process, with a fake
+# browser underneath. Faking the kernel instead would test the executor against
+# rules nobody ships.
+#
+#   autoninja -C out/Release zephyrus_agent_unittests
+test("zephyrus_agent_unittests") {
+  sources = [
+    "dev_model_client_unittest.cc",
+    "observation_unittest.cc",
+    "tool_executor_unittest.cc",
+  ]
+
+  deps = [
+    ":agent",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/services/zephyrus_agent:lib",
+    "//mojo/core/test:run_all_unittests",
+    "//net",
+    "//services/network:test_support",
+    "//services/network/public/cpp",
+    "//mojo/public/cpp/bindings",
+    "//testing/gtest",
+    "//url",
+  ]
+}

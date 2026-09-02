@@ -1,0 +1,182 @@
+// Copyright 2026 The Zephyrus Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module zephyrus.agent.mojom;
+
+import "sandbox/policy/mojom/sandbox.mojom";
+
+// One interactive element, exactly as the browser described it in the
+// Observation the model was shown.
+struct ObservedElement {
+  // Opaque, issued by the browser, valid only for the Observation it came from.
+  string id;
+  string role;
+  string name;
+};
+
+// What the browser should do with a proposed call.
+enum Disposition {
+  kAllow = 0,
+  // Run it only after the user approves this specific call.
+  kAsk = 1,
+  kDeny = 2,
+};
+
+// A tool call the model proposed, plus the context needed to judge it.
+struct PolicyRequest {
+  // Tool name from the frozen contract, e.g. "page.click".
+  string tool;
+  // The model's arguments as JSON. Deliberately not parsed on the browser side:
+  // this is untrusted model output, and the kernel is where it gets validated.
+  string arguments_json;
+  // The user's own words. The only free text in this struct that is trusted.
+  string task;
+  string url;
+  array<ObservedElement> elements;
+};
+
+struct PolicyDecision {
+  Disposition disposition;
+  // Effective risk class: R0, R1, R2 or R3.
+  string risk;
+  // Shown to the user on kAsk, logged on kDeny. Empty when allowed.
+  string reason;
+};
+
+// What one tool call did. Mirrors ToolExecutor::Result on the browser side.
+enum ToolStatus {
+  kOk = 0,
+  // The kernel wants the user to approve this specific call. Nothing was done.
+  kNeedsApproval = 1,
+  kDenied = 2,
+  // Allowed, but it could not be carried out.
+  kFailed = 3,
+};
+
+struct ToolOutcome {
+  ToolStatus status;
+  string message;
+  // JSON the model reads on kOk. Empty for tools that produce nothing.
+  string value_json;
+  string risk;
+};
+
+// The browser, as far as a running task is concerned.
+//
+// Implemented in the browser process and handed to the kernel for the length of
+// one task. Note that Execute still goes through the browser's own policy check
+// -- the kernel does not get to tell the browser "just do this". Keeping one
+// gate means policy is enforced in exactly one place no matter who asked.
+interface ToolRunner {
+  // Take a fresh look at the active page. `level` follows the tool contract:
+  // 0 is url and title only, 1 adds elements and text.
+  Observe(int32 level) => (string observation_json);
+
+  Execute(string tool, string arguments_json) => (ToolOutcome outcome);
+
+  // Run a call the user has explicitly approved.
+  //
+  // Still goes through policy. Approval lifts an Ask, and nothing else: a call
+  // the kernel DENIES stays denied however emphatically it is approved, because
+  // those are the calls no answer makes safe.
+  ExecuteApproved(string tool, string arguments_json) => (ToolOutcome outcome);
+};
+
+// Whatever is answering as the model.
+//
+// Provided TO the kernel rather than owned by it, for now. ADR 0001 puts model
+// routing in the kernel and that is still the destination; until an in-process
+// inference runtime exists there is nothing to route, and this seam lets the
+// loop be built and tested against a scripted model in the meantime.
+interface AgentModel {
+  Propose(string system_prompt, string user_prompt) => (string response);
+};
+
+// The exact call a task stopped on, so the user can be asked about this and
+// only this.
+//
+// An approval is for one call with these arguments, not for a tool, not for a
+// site, and not for a session. There is deliberately no "remember this": the
+// thing being approved is an action, and the next one that looks like it is a
+// different action.
+struct PendingApproval {
+  string tool;
+  string arguments_json;
+  // The kernel's words, written to be read by a person deciding in one second.
+  string reason;
+  string risk;
+};
+
+// How a task ended. Every one of these is a stopping point -- the loop never
+// returns while it still intends to do something.
+enum TaskStatus {
+  // The model called task.complete. `message` is the answer.
+  kCompleted = 0,
+  // The model called task.ask. `message` is the question for the user.
+  kAskedTheUser = 1,
+  // A call needs the user's approval. `message` is the kernel's reason.
+  kNeedsApproval = 2,
+  // The step budget ran out. Not a failure so much as a decision not to keep
+  // going: an agent that cannot finish in its budget is usually looping.
+  kOutOfSteps = 3,
+  kFailed = 4,
+};
+
+struct TaskOutcome {
+  TaskStatus status;
+  string message;
+  // Set only when status is kNeedsApproval: what to ask the user about, and
+  // what to hand back to RunTask if they say yes.
+  PendingApproval? pending;
+  // How many steps were taken. Reported even on failure, because "failed on
+  // step 1" and "failed on step 20" are different problems.
+  uint32 steps;
+};
+
+// Decides whether a tool call the agent's model proposed is allowed to run.
+//
+// This runs in a sandboxed utility process rather than the browser for two
+// reasons. A model crash or a runaway inference loop must not be able to take
+// the browser down, and a process boundary forces every capability the kernel
+// has to be declared here, which is what keeps the Chromium-side patch small.
+//
+// Note what this interface does NOT carry: page text. Page content is where
+// prompt injections live and there is nothing useful the kernel can do with it,
+// so it is not part of the contract. Measured 2026-09-02, local models obey
+// injected instructions regardless of size, which is exactly why authorization
+// happens here and not in a prompt.
+// kService, not kUtility: the kernel is pure computation. It parses JSON and
+// compares strings, and it opens no files, makes no network requests and runs
+// no dynamic code. kUtility would allow all three on Windows for no reason.
+[ServiceSandbox=sandbox.mojom.Sandbox.kService]
+interface AgentKernel {
+  // Reports the tool contract the kernel is enforcing. An empty version means
+  // the kernel failed to load one, in which case it denies everything.
+  GetContractInfo() => (string version, uint32 tool_count);
+
+  // Judges one proposed call. Never fails: a malformed or unknown call is a
+  // kDeny decision with a reason, not an error.
+  Decide(PolicyRequest request) => (PolicyDecision decision);
+
+  // Runs one task to a stopping point: look at the page, ask the model, judge
+  // what it proposed, carry it out, repeat.
+  //
+  // The loop lives here rather than in the browser on purpose. ADR 0001's
+  // reason for this process is that a runaway inference loop must not be able
+  // to take the browser down with it -- which only holds if the loop is on this
+  // side of the boundary.
+  //
+  // `max_steps` is a hard budget. It is the only thing that stops a model that
+  // has decided to look at the same page forever.
+  //
+  // `approved` resumes a task that stopped for approval: the call runs first,
+  // before the model is asked for anything, and then the loop carries on. It is
+  // single use -- the loop does not remember it, so the next call that needs
+  // approval stops the task again.
+  RunTask(string task,
+          pending_remote<ToolRunner> runner,
+          pending_remote<AgentModel> model,
+          uint32 max_steps,
+          PendingApproval? approved) => (TaskOutcome outcome);
+};

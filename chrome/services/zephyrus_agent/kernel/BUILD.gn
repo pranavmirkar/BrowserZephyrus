@@ -1,0 +1,56 @@
+# Copyright 2026 The Zephyrus Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/rust/rust_static_library.gni")
+import("//testing/test.gni")
+
+# The agent kernel: decides whether a tool call the model proposed may run.
+#
+# Deliberately has no Chromium dependencies. It takes structured facts and
+# returns a decision, which keeps it testable without a browser and keeps the
+# authorization logic out of reach of anything that renders web content. See
+# //chrome/browser/zephyrus/docs/adr/0001-agent-kernel-runs-in-its-own-process.md
+rust_static_library("kernel") {
+  crate_name = "zephyrus_agent_kernel"
+  crate_root = "src/lib.rs"
+
+  # Listed for build-graph tracking; rustc reaches them all from crate_root.
+  sources = [
+    "src/contract.rs",
+    "src/extraction.rs",
+    "src/lib.rs",
+    "src/policy.rs",
+    "src/tests.rs",
+  ]
+
+  # Needed for the FFI that underpins the `cxx` crate. The modules holding the
+  # decision logic carry their own #[forbid(unsafe_code)], so this flag buys
+  # the generated bridge what it needs and nothing else.
+  allow_unsafe = true
+  cxx_bindings = [ "src/lib.rs" ]
+
+  # The frozen tool contract is compiled in with include_str!. Listing it here
+  # is what makes a change to the contract rebuild the kernel -- without it the
+  # kernel would keep enforcing whatever the contract said when it last built.
+  inputs = [ "//chrome/browser/zephyrus/agent/schemas/tools.v1.json" ]
+
+  deps = [ "//third_party/rust/serde_json/v1:lib" ]
+
+  # Produces the `kernel_unittests` executable.
+  build_native_rust_unit_tests = true
+}
+
+# The C++ half of the boundary. The Rust tests above cover the policy; this
+# covers that Chromium can reach it.
+#
+#   autoninja -C out/Release zephyrus_agent_kernel_unittests
+test("zephyrus_agent_kernel_unittests") {
+  sources = [ "kernel_bridge_unittest.cc" ]
+  deps = [
+    ":kernel",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//testing/gtest",
+  ]
+}

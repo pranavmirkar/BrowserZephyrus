@@ -173,6 +173,7 @@
 // ZEPHYRUS PROFILES FRONTEND - DISABLED.
 // #include "chrome/browser/ui/views/frame/zephyrus_profile_switcher.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
+#include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
 #include "chrome/browser/ui/views/frame/zephyrus_sidebar_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_tab_switcher.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
@@ -993,6 +994,12 @@ BrowserView::BrowserView(Browser* browser)
                 base::Unretained(this))));
     zephyrus_sidebar_ =
         AddChildView(std::make_unique<ZephyrusSidebarView>(this));
+
+    // The agent's panel mirrors the sidebar on the other edge. Added here
+    // so it shares the sidebar's lifetime and the same normal-window test:
+    // a popup or app window has neither.
+    zephyrus_agent_panel_ = AddChildView(
+        std::make_unique<zephyrus::agent::ZephyrusAgentPanel>(this));
 
     // Added after the sidebar so it sits above the panel, and above the
     // contents container it also overlaps -- the seam it grabs spans both.
@@ -3269,6 +3276,30 @@ void BrowserView::UpdateZephyrusSidebarPin() {
   contents->SetTargetContentBounds(gfx::Outsets::TLBR(0, open, 0, 0));
 }
 
+int BrowserView::ZephyrusAgentPanelWidth() const {
+  return zephyrus_agent_panel_ ? zephyrus_agent_panel_->GetReservedWidth() : 0;
+}
+
+void BrowserView::UpdateZephyrusAgentPanelBounds() {
+  if (!zephyrus_agent_panel_ || !contents_container_) {
+    return;
+  }
+  if (!zephyrus_agent_panel_->is_open()) {
+    return;
+  }
+  // The layout has already taken this width off the right of the contents, so
+  // the page's right edge IS the panel's left edge. Deriving it from the
+  // container rather than from the client area keeps the two in step at every
+  // scale factor, which is what the sidebar had to be corrected to do.
+  const gfx::Rect content_bounds = contents_container_->bounds();
+  zephyrus_agent_panel_->SetBounds(
+      content_bounds.right() + kZephyrusSidebarGap,
+      content_bounds.y() + kZephyrusSidebarGap,
+      std::max(0, zephyrus_agent_panel_->GetReservedWidth() -
+                      2 * kZephyrusSidebarGap),
+      std::max(0, content_bounds.height() - 2 * kZephyrusSidebarGap));
+}
+
 void BrowserView::UpdateZephyrusSidebarBounds() {
   if (!zephyrus_sidebar_ || !contents_container_) {
     return;
@@ -5322,6 +5353,7 @@ void BrowserView::Layout(PassKey) {
   // reads the contents container's static, fully-open position, which the
   // reveal below then shifts.
   UpdateZephyrusSidebarBounds();
+  UpdateZephyrusAgentPanelBounds();
   ApplyZephyrusSidebarReveal();
 
   // Zephyrus: stop here while the sidebar column is sliding.

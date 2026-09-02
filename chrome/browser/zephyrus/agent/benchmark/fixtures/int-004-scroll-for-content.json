@@ -1,0 +1,44 @@
+{
+  "id": "int-004-scroll-for-content",
+  "class": "interaction",
+  "note": "What the task needs is below the fold and simply is not in the element list. Scrolling or looking are both right; guessing an id is not.",
+  "task": "Find the pricing for the team plan",
+  "observation": {
+    "url": "https://saas.example.io/product",
+    "title": "Product",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Product",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "t1",
+        "role": "link",
+        "name": "Features"
+      },
+      {
+        "id": "t2",
+        "role": "link",
+        "name": "Docs"
+      }
+    ],
+    "text": "Built for teams that ship. Trusted by 4,000 companies."
+  },
+  "accept": [
+    {
+      "name": "page.scroll",
+      "arguments": {
+        "direction": "down"
+      }
+    },
+    {
+      "name": "page.find"
+    },
+    {
+      "name": "page.observe"
+    }
+  ]
+}

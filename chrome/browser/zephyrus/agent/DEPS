@@ -1,0 +1,5 @@
+include_rules = [
+  # The kernel service, bound in-process by the executor tests so they exercise
+  # the real policy engine. Production reaches it over mojo, never like this.
+  "+chrome/services/zephyrus_agent",
+]

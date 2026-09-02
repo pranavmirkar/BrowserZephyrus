@@ -1,0 +1,40 @@
+{
+  "id": "int-007-replace-existing-text",
+  "class": "interaction",
+  "note": "The field already holds a different query. page.type replaces the contents, so no clearing step exists or is needed -- a model that reaches for one has invented a tool.",
+  "task": "Search for 'battery life' instead",
+  "observation": {
+    "url": "https://reviews.example.net/search?q=thermal",
+    "title": "Search: thermal",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Search: thermal",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "q",
+        "role": "textbox",
+        "name": "Search reviews",
+        "value": "thermal"
+      },
+      {
+        "id": "go",
+        "role": "button",
+        "name": "Search"
+      }
+    ],
+    "text": "12 results for thermal."
+  },
+  "accept": [
+    {
+      "name": "page.type",
+      "arguments": {
+        "element_id": "q",
+        "text": "battery life"
+      }
+    }
+  ]
+}

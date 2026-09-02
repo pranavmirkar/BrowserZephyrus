@@ -1,0 +1,45 @@
+{
+  "id": "int-003-select-option",
+  "class": "interaction",
+  "note": "page.select rather than click-then-click. Uses `value`, not `option`.",
+  "task": "Set the country to India",
+  "observation": {
+    "url": "https://shop.example.org/checkout/address",
+    "title": "Delivery address",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Delivery address",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "addr",
+        "role": "textbox",
+        "name": "Street address"
+      },
+      {
+        "id": "cty",
+        "role": "combobox",
+        "name": "Country",
+        "value": "United States"
+      },
+      {
+        "id": "nx",
+        "role": "button",
+        "name": "Continue"
+      }
+    ],
+    "text": "Where should we deliver?"
+  },
+  "accept": [
+    {
+      "name": "page.select",
+      "arguments": {
+        "element_id": "cty",
+        "value": "India"
+      }
+    }
+  ]
+}

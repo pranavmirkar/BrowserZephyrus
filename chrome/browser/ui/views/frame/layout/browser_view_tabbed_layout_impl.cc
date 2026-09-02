@@ -1135,6 +1135,11 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   content_left += base::ClampFloor(delegate().GetZephyrusSidebarTargetWidth() *
                                    delegate().GetZephyrusSidebarRevealAmount());
 
+  // The agent panel takes its width off the other edge. Not animated, so no
+  // reveal factor and no content pin: it is open or it is not, and the page
+  // resizes once either way.
+  content_right -= delegate().GetZephyrusAgentPanelWidth();
+
   if (const int deficit = horizontal_layout.min_content_width -
                           params.visual_client_area.width();
       deficit > 0) {

@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "frozen": true,
+  "description": "The V1 Zephyrus browser tool contract. This file is the single source of truth for what a model may ask the browser to do. The benchmark harness validates against it today; the Rust tool runtime will validate against it later. Neither may define its own copy.",
+  "conventions": {
+    "risk": {
+      "R0": "Read-only. No browser state changes.",
+      "R1": "Reversible mutation. Navigation, tab and scroll state.",
+      "R2": "External side effect. Leaves the browser and is visible to someone else.",
+      "R3": "High impact. Irreversible, financial, or security relevant."
+    },
+    "element_id": "An opaque identifier issued by the browser in an Observation. A model may only use ids present in the Observation it was given. Ids are per-Observation and expire when the page changes; a stale id is rejected by the executor, not by the model.",
+    "additionalProperties": "Every tool sets this to false. A model that invents an argument is a failed call, not a call with extra data."
+  },
+  "tools": [
+    {
+      "name": "browser.navigate",
+      "description": "Load a URL in the active tab.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri", "description": "Absolute URL including scheme." }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "browser.back",
+      "description": "Go back one entry in the active tab's history.",
+      "risk": "R1",
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "browser.forward",
+      "description": "Go forward one entry in the active tab's history.",
+      "risk": "R1",
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "browser.reload",
+      "description": "Reload the active tab.",
+      "risk": "R1",
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "tabs.list",
+      "description": "List the tabs in the current workspace. Tabs in other workspaces are never returned.",
+      "risk": "R0",
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "tabs.open",
+      "description": "Open a new tab in the current workspace, optionally at a URL.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "url": { "type": "string", "format": "uri" }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "tabs.switch",
+      "description": "Make another tab in the current workspace active.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tab_id": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["tab_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "tabs.close",
+      "description": "Close a tab in the current workspace.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "tab_id": { "type": "integer", "minimum": 0 }
+        },
+        "required": ["tab_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.observe",
+      "description": "Request a fresh Observation of the active tab at a given detail level. Use this after an action to see its effect.",
+      "risk": "R0",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 2,
+            "description": "0 url and title only, 1 interactive elements and visible text, 2 adds a named page region."
+          },
+          "region": { "type": "string", "description": "Region name, only meaningful at level 2." }
+        },
+        "required": ["level"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.find",
+      "description": "Locate interactive elements on the active page matching a plain-language description. Returns element ids usable by click, type and select.",
+      "risk": "R0",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "minLength": 1 }
+        },
+        "required": ["query"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.click",
+      "description": "Click a visible interactive element on the active page.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "element_id": { "type": "string", "minLength": 1 }
+        },
+        "required": ["element_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.type",
+      "description": "Type text into a text input on the active page. Replaces the field's current value.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "element_id": { "type": "string", "minLength": 1 },
+          "text": { "type": "string" }
+        },
+        "required": ["element_id", "text"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.select",
+      "description": "Choose an option in a select control on the active page.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "element_id": { "type": "string", "minLength": 1 },
+          "value": { "type": "string" }
+        },
+        "required": ["element_id", "value"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.scroll",
+      "description": "Scroll the active page.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "direction": { "type": "string", "enum": ["up", "down"] },
+          "amount": { "type": "string", "enum": ["page", "half", "top", "bottom"] }
+        },
+        "required": ["direction", "amount"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.press",
+      "description": "Send a single named key to the active page.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key": { "type": "string", "enum": ["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "Backspace"] }
+        },
+        "required": ["key"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "selection.read",
+      "description": "Read the user's current text selection on the active page.",
+      "risk": "R0",
+      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+    },
+    {
+      "name": "task.complete",
+      "description": "Declare the task finished and report the answer. Use this instead of a browser action when the goal has been met.",
+      "risk": "R0",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "answer": { "type": "string", "minLength": 1 }
+        },
+        "required": ["answer"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "task.ask",
+      "description": "Stop and ask the user a question. Use this when the next action would be consequential, ambiguous, or when no safe action exists.",
+      "risk": "R0",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "question": { "type": "string", "minLength": 1 }
+        },
+        "required": ["question"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

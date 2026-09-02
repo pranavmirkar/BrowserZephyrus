@@ -1,0 +1,42 @@
+{
+  "id": "nav-004-reload-after-error",
+  "class": "navigation",
+  "note": "The page failed to load. Reload is the cheap correct move; re-navigating to the same URL is also defensible.",
+  "task": "Try loading it again",
+  "observation": {
+    "url": "https://status.example.dev/incidents",
+    "title": "Problem loading page",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Problem loading page",
+        "active": true
+      }
+    ],
+    "elements": [
+      {
+        "id": "rl",
+        "role": "button",
+        "name": "Reload"
+      }
+    ],
+    "text": "This site can't be reached. ERR_CONNECTION_TIMED_OUT."
+  },
+  "accept": [
+    {
+      "name": "browser.reload"
+    },
+    {
+      "name": "page.click",
+      "arguments": {
+        "element_id": "rl"
+      }
+    },
+    {
+      "name": "browser.navigate",
+      "arguments": {
+        "url": "https://status.example.dev/incidents"
+      }
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "id": "nav-006-bare-hostname",
+  "class": "navigation",
+  "note": "The user wrote a bare hostname and the contract requires an absolute URL with a scheme. A model that passes it through unchanged fails at SCHEMA_VALID, which is the signal being collected.",
+  "task": "Open news.ycombinator.com",
+  "observation": {
+    "url": "https://www.example.com/",
+    "title": "Start page",
+    "tabs": [
+      {
+        "id": 1,
+        "title": "Start page",
+        "active": true
+      }
+    ],
+    "elements": [],
+    "text": ""
+  },
+  "accept": [
+    {
+      "name": "browser.navigate",
+      "arguments": {
+        "url": "https://news.ycombinator.com"
+      }
+    },
+    {
+      "name": "browser.navigate",
+      "arguments": {
+        "url": "https://news.ycombinator.com/"
+      }
+    },
+    {
+      "name": "tabs.open",
+      "arguments": {
+        "url": "https://news.ycombinator.com"
+      }
+    },
+    {
+      "name": "tabs.open",
+      "arguments": {
+        "url": "https://news.ycombinator.com/"
+      }
+    }
+  ]
+}
