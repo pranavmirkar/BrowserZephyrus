@@ -109,7 +109,8 @@ class ZephyrusAgentTaskController : public mojom::AgentModel,
   // ToolRunnerImpl::Observer:
   void OnAgentLooked() override;
   void OnAgentToolStarted(const std::string& tool,
-                          const std::string& arguments_json) override;
+                          const std::string& arguments_json,
+                          const std::string& target) override;
   void OnAgentToolFinished(const std::string& tool,
                            const mojom::ToolOutcome& outcome) override;
 

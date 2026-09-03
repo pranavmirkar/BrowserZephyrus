@@ -16,6 +16,7 @@
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_tree.h"
 #include "ui/accessibility/ax_tree_update.h"
+#include "ui/gfx/geometry/rect_conversions.h"
 
 namespace zephyrus::agent {
 namespace {
@@ -58,12 +59,7 @@ constexpr RoleName kOfferedRoles[] = {
     {ax::mojom::Role::kSpinButton, "spinbutton"},
 };
 
-// True for the roles that hold typed text, which is what makes an unnamed one
-// still worth offering.
-bool IsTextEntry(std::string_view role) {
-  return role == "textbox" || role == "searchbox" || role == "combobox" ||
-         role == "password";
-}
+
 
 // The word for this node's role, or empty if it is not something we offer.
 std::string RoleNameFor(const ui::AXNode& node) {
@@ -86,7 +82,82 @@ std::string RoleNameFor(const ui::AXNode& node) {
   return std::string();
 }
 
-void Collect(const ui::AXNode& node,
+// The longest name the model is shown.
+//
+// Generous enough to tell two links apart, short enough that sixty of them do
+// not dominate the prompt. Cutting names is a SPEED setting as much as a
+// legibility one: every step sends the whole Observation to the model.
+constexpr size_t kMaxNameLength = 80;
+
+// A name a person could act on.
+//
+// An accessible name is often computed from everything inside the element, so a
+// link wrapping a card comes back as its entire contents run together --
+// measured on youtube.com: "Sidemen Verified @Sidemen*23.4M subscribers Welcome
+// to the official Sidemen channel. The home of #SidemenSundays - We post new
+// Sidemen videos every single Sunday!" for a single link. A model asked to pick
+// between a dozen of those is reading paragraphs, not labels, and it picked
+// badly.
+//
+// Truncation is safe here because the model acts on issued ids, never on names.
+// The name is only how it chooses, and the first few words are what a person
+// reads too.
+std::string Shorten(std::string name) {
+  // Newlines and runs of spaces come from the page's own layout and carry no
+  // meaning once the text is on one line.
+  //
+  // false, NOT true: the flag asks whether a whitespace run containing a line
+  // break should be removed ENTIRELY rather than collapsed to one space. True
+  // turns a newline between two words into nothing at all, welding them
+  // together --
+  // caught by CollapsesTheWhitespaceAPageLaidOutWith, which is why that test
+  // asserts the exact string rather than merely that it got shorter.
+  name = base::CollapseWhitespaceASCII(
+      name, /*trim_sequences_with_line_breaks=*/false);
+  if (name.size() <= kMaxNameLength) {
+    return name;
+  }
+
+  // On a character boundary, not a byte one. Cutting a UTF-8 sequence in half
+  // would produce a string the JSON writer cannot encode, and the model would
+  // lose the whole Observation rather than one long name.
+  std::string cut;
+  base::TruncateUTF8ToByteSize(name, kMaxNameLength, &cut);
+
+  // Back up to the last space so the label ends on a word. A name that stops
+  // mid-word reads as corruption and invites the model to distrust it.
+  const size_t space = cut.find_last_of(' ');
+  if (space != std::string::npos && space > kMaxNameLength / 2) {
+    cut.resize(space);
+  }
+  return cut + "...";
+}
+
+// What to call this control.
+//
+// A field with no accessible name is one the model cannot reason about, and on
+// a real page that is not hypothetical: YouTube offers an unnamed text input
+// alongside its named search box, and a model given both picked the anonymous
+// one and typed into it eight times running.
+//
+// So fall back the way a person reads a form -- the placeholder, then any
+// description. Chromium only populates kPlaceholder when it is NOT already the
+// name, so this adds information rather than repeating it.
+std::string DescribeNode(const ui::AXNode& node) {
+  std::string name = node.GetStringAttribute(ax::mojom::StringAttribute::kName);
+  if (!name.empty()) {
+    return Shorten(std::move(name));
+  }
+  name = node.GetStringAttribute(ax::mojom::StringAttribute::kPlaceholder);
+  if (!name.empty()) {
+    return Shorten(std::move(name));
+  }
+  return Shorten(
+      node.GetStringAttribute(ax::mojom::StringAttribute::kDescription));
+}
+
+void Collect(const ui::AXTree& tree,
+             const ui::AXNode& node,
              size_t max_elements,
              std::vector<ObservedNode>& out,
              bool& truncated) {
@@ -104,14 +175,15 @@ void Collect(const ui::AXNode& node,
 
   const std::string role = node.IsIgnored() ? std::string() : RoleNameFor(node);
   if (!role.empty()) {
-    std::string name =
-        node.GetStringAttribute(ax::mojom::StringAttribute::kName);
+    std::string name = DescribeNode(node);
     std::string value = node.GetValueForControl();
 
-    // An unnamed control is one the model cannot sensibly choose between, so it
-    // is left out -- unless it takes text, where the field itself is the thing
-    // being pointed at and a placeholder-less input is still usable.
-    if (!name.empty() || IsTextEntry(role)) {
+    // A control with nothing to call it is one the model cannot choose between.
+    // Text fields used to be offered anyway, on the theory that an input is
+    // identifiable by being the only one -- which is false on a real page, and
+    // cost a task eight steps of typing into an anonymous box. If nothing above
+    // could name it, it is not worth offering.
+    if (!name.empty()) {
       if (out.size() >= max_elements) {
         truncated = true;
       } else {
@@ -121,6 +193,21 @@ void Collect(const ui::AXNode& node,
         observed.name = std::move(name);
         observed.value = std::move(value);
         observed.ax_id = node.id();
+
+        // Where it is on screen. Only the browser ever sees this; it is what
+        // lets the executor put a real pointer on a field, which is the only
+        // way that has been made to focus one.
+        //
+        // Asking the tree rather than reading the node's own rect is the whole
+        // point: a node's bounds are relative to its offset container, so on a
+        // real page -- nested in scrollers and transformed ancestors -- the raw
+        // rect is not where the element is. GetTreeBounds walks that chain and
+        // applies the scroll offsets.
+        bool offscreen = false;
+        observed.bounds =
+            gfx::ToEnclosingRect(tree.GetTreeBounds(&node, &offscreen));
+        observed.offscreen = offscreen;
+
         out.push_back(std::move(observed));
       }
     }
@@ -128,12 +215,17 @@ void Collect(const ui::AXNode& node,
 
   for (const ui::AXNode* child : node.children()) {
     if (child) {
-      Collect(*child, max_elements, out, truncated);
+      Collect(tree, *child, max_elements, out, truncated);
     }
   }
 }
 
 }  // namespace
+
+bool IsTextEntryRole(std::string_view role) {
+  return role == "textbox" || role == "searchbox" || role == "combobox" ||
+         role == "password";
+}
 
 Observation::Observation() = default;
 Observation::Observation(Observation&&) = default;
@@ -178,6 +270,9 @@ std::string Observation::ToJson(int level) const {
       if (!node.value.empty()) {
         entry.Set("value", node.value);
       }
+      if (!focused_id.empty() && node.id == focused_id) {
+        entry.Set("focused", true);
+      }
       list.Append(std::move(entry));
     }
     root.Set("elements", std::move(list));
@@ -212,8 +307,19 @@ Observation BuildObservation(const ui::AXTreeUpdate& update,
     return observation;
   }
 
-  Collect(*tree.root(), max_elements, observation.elements,
+  Collect(tree, *tree.root(), max_elements, observation.elements,
           observation.truncated);
+
+  // Which of the issued ids, if any, the page has focused.
+  const ui::AXNodeID focused = update.tree_data.focus_id;
+  if (focused != ui::kInvalidAXNodeID) {
+    for (const ObservedNode& node : observation.elements) {
+      if (node.ax_id == focused) {
+        observation.focused_id = node.id;
+        break;
+      }
+    }
+  }
 
   observation.text = tree.root()->GetTextContentUTF8();
   if (observation.text.size() > max_text_length) {

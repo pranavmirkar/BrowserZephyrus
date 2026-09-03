@@ -4,7 +4,10 @@
 
 #include "chrome/browser/ui/views/frame/zephyrus_agent_tool_surface.h"
 
+#include <tuple>
+
 #include "base/functional/bind.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
@@ -20,15 +23,22 @@
 #include "content/public/browser/render_widget_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/scoped_accessibility_mode.h"
+#include "base/timer/timer.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "ui/gfx/geometry/point_conversions.h"
+#include "ui/gfx/geometry/point_f.h"
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_tree_update.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/events/base_event_utils.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/dom_key.h"
+#include "ui/events/keycodes/keyboard_code_conversion.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/events/types/event_type.h"
 #include "url/gurl.h"
@@ -62,31 +72,70 @@ struct NamedKey {
 //
 // A lookup rather than a table because ui::DomKey's constants are runtime
 // values, and a namespace-scope array of them would need a global constructor.
+//
+// Case-insensitive, because a model writes `enter` as readily as `Enter` and
+// being strict about it taught it nothing -- it just burned a step on a refusal
+// it could not act on. The list stays closed, which is where the security is.
 std::optional<NamedKey> KeyByName(const std::string& name) {
-  if (name == "Enter") {
+  if (base::EqualsCaseInsensitiveASCII(name, "Enter")) {
     return NamedKey{ui::VKEY_RETURN, ui::DomCode::ENTER, ui::DomKey::ENTER};
   }
-  if (name == "Escape") {
+  if (base::EqualsCaseInsensitiveASCII(name, "Escape")) {
     return NamedKey{ui::VKEY_ESCAPE, ui::DomCode::ESCAPE, ui::DomKey::ESCAPE};
   }
-  if (name == "Tab") {
+  if (base::EqualsCaseInsensitiveASCII(name, "Tab")) {
     return NamedKey{ui::VKEY_TAB, ui::DomCode::TAB, ui::DomKey::TAB};
   }
-  if (name == "ArrowUp") {
+  if (base::EqualsCaseInsensitiveASCII(name, "ArrowUp")) {
     return NamedKey{ui::VKEY_UP, ui::DomCode::ARROW_UP, ui::DomKey::ARROW_UP};
   }
-  if (name == "ArrowDown") {
+  if (base::EqualsCaseInsensitiveASCII(name, "ArrowDown")) {
     return NamedKey{ui::VKEY_DOWN, ui::DomCode::ARROW_DOWN,
                     ui::DomKey::ARROW_DOWN};
   }
-  if (name == "Backspace") {
+  if (base::EqualsCaseInsensitiveASCII(name, "Backspace")) {
     return NamedKey{ui::VKEY_BACK, ui::DomCode::BACKSPACE,
                     ui::DomKey::BACKSPACE};
   }
   return std::nullopt;
 }
 
+// How long a page gets to settle before it is observed anyway.
+//
+// A page that never stops loading is common -- a live stream, an ad that polls,
+// a site with a long-running request. Waiting forever would hang the task, so
+// the timeout is what keeps "wait for the page" from becoming "wait".
+constexpr base::TimeDelta kLoadSettleTimeout = base::Seconds(4);
+
 }  // namespace
+
+// Runs `done` when the page stops loading, or when it has waited long enough.
+class BrowserToolSurface::LoadWaiter : public content::WebContentsObserver {
+ public:
+  LoadWaiter(content::WebContents* contents, base::OnceClosure done)
+      : content::WebContentsObserver(contents), done_(std::move(done)) {
+    timer_.Start(FROM_HERE, kLoadSettleTimeout,
+                 base::BindOnce(&LoadWaiter::Finish, base::Unretained(this)));
+  }
+
+  void DidStopLoading() override { Finish(); }
+
+  // A tab that went away is not going to finish loading. Answering is still
+  // required: the Observation callback above it must run exactly once.
+  void WebContentsDestroyed() override { Finish(); }
+
+ private:
+  void Finish() {
+    timer_.Stop();
+    Observe(nullptr);
+    if (done_) {
+      std::move(done_).Run();
+    }
+  }
+
+  base::OnceClosure done_;
+  base::OneShotTimer timer_;
+};
 
 BrowserToolSurface::BrowserToolSurface(Browser* browser) : browser_(browser) {}
 
@@ -259,6 +308,35 @@ void BrowserToolSurface::Observe(ObserveCallback callback) {
     return;
   }
 
+  // Let a page in flight settle first. Observing mid-navigation hands the
+  // model element ids from a document that is about to be replaced, and by the
+  // time it has decided what to do with them they refer to nothing.
+  if (contents->IsLoading()) {
+    load_waiter_ = std::make_unique<LoadWaiter>(
+        contents, base::BindOnce(&BrowserToolSurface::TakeSnapshot,
+                                 weak_factory_.GetWeakPtr(),
+                                 std::move(callback)));
+    return;
+  }
+
+  TakeSnapshot(std::move(callback));
+}
+
+void BrowserToolSurface::TakeSnapshot(ObserveCallback callback) {
+  load_waiter_.reset();
+
+  content::WebContents* contents = ActiveContents();
+  if (!contents) {
+    std::move(callback).Run(Observation());
+    return;
+  }
+
+  // NOT RequestAXTreeSnapshotWithinBrowserProcess. That reads the trees the
+  // browser already holds, which would guarantee our ids are ids an action can
+  // address -- but what it returns is not a standalone serialisable tree, and
+  // feeding it to AXTree::Unserialize hits a NOTREACHED and yields an empty
+  // Observation. Measured, then reverted.
+  //
   // kAXModeWebContentsOnly rather than kAXModeComplete: we want the page's own
   // tree, not the platform-facing one, and asking for less keeps the snapshot
   // cheaper on pages with a lot of nodes.
@@ -300,25 +378,261 @@ bool BrowserToolSurface::PerformAction(ax::mojom::Action action,
   if (!contents || !contents->GetPrimaryMainFrame()) {
     return false;
   }
+  // Send to the frame the node actually belongs to.
+  //
+  // The Observation spans same-origin subframes (kSameOriginDirectDescendants),
+  // so a node can come from one -- and an action addressed to the main frame
+  // with a subframe's node id names nothing there. The renderer drops it
+  // without a word, which looks exactly like an action that ran and did
+  // nothing.
+  content::RenderFrameHost* target = contents->GetPrimaryMainFrame();
+  contents->GetPrimaryMainFrame()->ForEachRenderFrameHost(
+      [&](content::RenderFrameHost* frame) {
+        if (frame->GetAXTreeID() == node_tree_id_) {
+          target = frame;
+        }
+      });
+
   ui::AXActionData data;
   data.action = action;
   data.target_node_id = node;
-  data.target_tree_id = contents->GetPrimaryMainFrame()->GetAXTreeID();
+  data.target_tree_id = target->GetAXTreeID();
   data.value = value;
-  contents->GetPrimaryMainFrame()->AccessibilityPerformAction(data);
+  target->AccessibilityPerformAction(data);
   return true;
 }
 
-bool BrowserToolSurface::ClickNode(ui::AXNodeID node) {
-  // The default action, which is what assistive technology sends and what the
-  // page's own handlers are written to expect. Synthesising a mouse click at
-  // the node's screen position would also fire on whatever is drawn on top.
-  return PerformAction(ax::mojom::Action::kDoDefault, node, std::string());
+bool BrowserToolSurface::MoveAndClick(const gfx::Rect& bounds) {
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !contents->GetPrimaryMainFrame()) {
+    return false;
+  }
+  content::RenderWidgetHost* widget =
+      contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  if (!widget) {
+    return false;
+  }
+  // A click on a page that is not the focused thing is a click that focuses the
+  // page. Same reason PressKey does this.
+  contents->Focus();
+
+  // Accessibility bounds are in DEVICE pixels; a mouse event wants DIP.
+  //
+  // Measured, after the click missed on a real page twice: aiming at an element
+  // whose CSS position was 550,342 delivered a click at 825,513 -- exactly 1.5x
+  // on both axes, on a display running at 150% scaling. Every click was landing
+  // that far right and down, which on a real page is a different element or no
+  // element at all.
+  //
+  // It survived two rounds of testing because the earlier test's field sat at
+  // the top-left of the page, where 1.5x of a small coordinate is still inside
+  // the element. A test whose subject is near the origin cannot see a scale
+  // error; ClickLandsOnTheElementNotNearIt exists to make sure one always can.
+  const content::RenderWidgetHostView* view = contents->GetRenderWidgetHostView();
+  const float scale = view ? view->GetDeviceScaleFactor() : 1.0f;
+  const gfx::Point at = gfx::ToRoundedPoint(gfx::ScalePoint(
+      gfx::PointF(bounds.CenterPoint()), scale > 0 ? 1.0f / scale : 1.0f));
+
+  const gfx::Rect container = contents->GetContainerBounds();
+  const base::TimeTicks now = ui::EventTimeForNow();
+
+  auto at_target = [&](blink::WebInputEvent::Type type) {
+    blink::WebMouseEvent event(type, blink::WebInputEvent::kNoModifiers, now);
+    event.button = blink::WebMouseEvent::Button::kLeft;
+    event.click_count = 1;
+    // Widget coordinates, which is what the tree's bounds are already in: both
+    // are the frame's own space with scroll offsets applied.
+    event.SetPositionInWidget(at.x(), at.y());
+    event.SetPositionInScreen(at.x() + container.x(), at.y() + container.y());
+    return event;
+  };
+
+  // Move, then press, then release -- all three, in that order.
+  //
+  // The move is not decoration. A page that reveals its real control on hover,
+  // or that tracks the pointer to decide what a press means, has to see the
+  // cursor arrive before the press does; a press out of nowhere lands on
+  // whatever the page last thought was under the pointer. And a press without
+  // its release leaves the page believing a button is still held down.
+  blink::WebMouseEvent move =
+      at_target(blink::WebInputEvent::Type::kMouseMove);
+  move.button = blink::WebMouseEvent::Button::kNoButton;
+  move.click_count = 0;
+  widget->ForwardMouseEvent(move);
+  widget->ForwardMouseEvent(at_target(blink::WebInputEvent::Type::kMouseDown));
+  widget->ForwardMouseEvent(at_target(blink::WebInputEvent::Type::kMouseUp));
+  return true;
 }
 
-bool BrowserToolSurface::SetNodeValue(ui::AXNodeID node,
+bool BrowserToolSurface::ClickNode(const ObservedNode& node) {
+  // A real pointer, NOT kDoDefault -- because the node id we hold does not
+  // address the node we mean.
+  //
+  // `RequestAXTreeSnapshot` runs its result through `ui::AXTreeCombiner`, and
+  // `AXTreeCombiner::MapId` renumbers EVERY node sequentially (`next_id_++`) as
+  // it assembles the combined tree. The ids in an Observation are therefore
+  // combiner-local counters with no relationship to the renderer's real ids, so
+  // an accessibility action addressed with one acts on whatever node happens to
+  // hold that number.
+  //
+  // On a real page that is not subtle: asking to click "Search" on youtube.com
+  // activated the Copyright link in the footer. On a small test page the
+  // renumbering comes out as the identity, which is why every browsertest here
+  // passed while real sites behaved at random -- and why this looked for weeks
+  // like a bad model rather than a bug.
+  //
+  // Bounds do not have this problem. They are per-node data that the combiner
+  // carries across correctly, so a coordinate is the one thing in an
+  // Observation that still means something after the renumbering.
+  if (node.offscreen || node.bounds.IsEmpty()) {
+    return false;
+  }
+  return MoveAndClick(node.bounds);
+}
+
+bool BrowserToolSurface::SendKey(content::RenderWidgetHost* widget,
+                                 ui::KeyboardCode key_code,
+                                 ui::DomCode dom_code,
+                                 ui::DomKey dom_key,
+                                 int flags) {
+  // Both halves, always: some handlers run on keyup, and a press with no
+  // release leaves the page believing a key is still held.
+  const base::TimeTicks now = ui::EventTimeForNow();
+  const ui::KeyEvent press(ui::EventType::kKeyPressed, key_code, dom_code,
+                           flags, dom_key, now);
+  const ui::KeyEvent release(ui::EventType::kKeyReleased, key_code, dom_code,
+                             flags, dom_key, now);
+  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(press));
+  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(release));
+  return true;
+}
+
+bool BrowserToolSurface::TypeCharacter(content::RenderWidgetHost* widget,
+                                       char16_t character) {
+  const ui::DomKey dom_key = ui::DomKey::FromCharacter(character);
+  const ui::DomCode dom_code = ui::UsLayoutDomKeyToDomCode(dom_key);
+
+  // Shift for a capital, so the keystroke reads the way a real one would to a
+  // page that inspects modifiers before deciding whether to swallow a key.
+  int flags = ui::EF_NONE;
+  if (base::IsAsciiUpper(character)) {
+    flags |= ui::EF_SHIFT_DOWN;
+  }
+
+  // Recover the legacy key code from the physical key. Pages still read
+  // event.keyCode, and a zero there is a keystroke that does not look real.
+  ui::DomKey unused = dom_key;
+  ui::KeyboardCode key_code = ui::VKEY_UNKNOWN;
+  if (dom_code != ui::DomCode::NONE) {
+    std::ignore =
+        ui::DomCodeToUsLayoutDomKey(dom_code, flags, &unused, &key_code);
+  }
+
+  const base::TimeTicks now = ui::EventTimeForNow();
+  const ui::KeyEvent press(ui::EventType::kKeyPressed, key_code, dom_code,
+                           flags, dom_key, now);
+  // The character event is the one that actually inserts. The press and
+  // release around it are what the page's own handlers listen for, and a page
+  // that only ever sees an insertion is a page that thinks nobody typed.
+  const ui::KeyEvent typed =
+      ui::KeyEvent::FromCharacter(character, key_code, dom_code, flags, now);
+  const ui::KeyEvent release(ui::EventType::kKeyReleased, key_code, dom_code,
+                             flags, dom_key, now);
+
+  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(press));
+  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(typed));
+  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(release));
+  return true;
+}
+
+bool BrowserToolSurface::TypeIntoNode(const ObservedNode& node,
+                                      const std::string& text) {
+  // Type, rather than assign a value. This is the third attempt at this bug and
+  // the first that stops using the accessibility layer to ACT.
+  //
+  // Measured on youtube.com: kSetValue put the text in the field and fired the
+  // page's `input` event, and the search box still reported itself empty and
+  // refused to submit -- because a search box built as a framework component
+  // watches its own key events rather than reading .value. No keydown ever
+  // happened, so as far as it was concerned nobody had typed. The synthetic
+  // test missed this for two rounds because a bare <input> has no such opinion.
+  //
+  // There is a second reason, found while proving the first. The click and the
+  // accessibility action travel DIFFERENT mojo channels, so they were
+  // unordered: the test page recorded `value:` before `focus:`. Keystrokes and
+  // the click share the input channel, which is ordered, so the race is gone
+  // rather than merely unlikely.
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !contents->GetPrimaryMainFrame()) {
+    return false;
+  }
+  content::RenderWidgetHost* widget =
+      contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  if (!widget) {
+    return false;
+  }
+
+  // Nowhere to aim means no way to focus, and keystrokes sent at an unfocused
+  // page land on the document. Failing is the honest answer; the executor
+  // refuses an offscreen element before it ever gets here, and this is the same
+  // rule for a node with no bounds at all.
+  if (node.offscreen || node.bounds.IsEmpty() || !MoveAndClick(node.bounds)) {
+    return false;
+  }
+
+  // Select what is already in the field so the text replaces it -- but ONLY if
+  // there is something to replace.
+  //
+  // Ctrl+A is safe inside a focused field and destructive outside one: if the
+  // click missed, it selects the whole document instead. That is exactly what a
+  // real run on youtube.com did, and the page turning entirely blue is how the
+  // missed click was finally spotted. Sending it only when the field actually
+  // holds text keeps the common case (an empty search box) from ever reaching
+  // for it.
+  if (!node.value.empty()) {
+    SendKey(widget, ui::VKEY_A, ui::DomCode::US_A,
+            ui::DomKey::FromCharacter('a'), ui::EF_CONTROL_DOWN);
+  }
+
+  for (const char16_t character : base::UTF8ToUTF16(text)) {
+    TypeCharacter(widget, character);
+  }
+  return true;
+}
+
+bool BrowserToolSurface::SetNodeValue(const ObservedNode& node,
                                       const std::string& value) {
-  return PerformAction(ax::mojom::Action::kSetValue, node, value);
+  // page.select: choose one of a fixed set of values.
+  //
+  // This used to be an accessibility action, which meant it addressed the node
+  // by id -- and the id in an Observation is a counter invented by
+  // ui::AXTreeCombiner, not the renderer's node id (see ClickNode). So it could
+  // set a value on an entirely unrelated element, silently. That is fixed the
+  // same way clicking was: coordinates, then the input pipeline.
+  //
+  // A <select> matches options by typed prefix once it has focus, and Enter
+  // commits the highlighted one. Whether those keys actually reach the popup
+  // Chromium opens is a platform question, not a guess worth making -- see
+  // SelectingChoosesTheOptionByName, which is what decides it.
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !contents->GetPrimaryMainFrame()) {
+    return false;
+  }
+  content::RenderWidgetHost* widget =
+      contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  if (!widget) {
+    return false;
+  }
+  if (node.offscreen || node.bounds.IsEmpty() || !MoveAndClick(node.bounds)) {
+    return false;
+  }
+
+  for (const char16_t character : base::UTF8ToUTF16(value)) {
+    TypeCharacter(widget, character);
+  }
+  SendKey(widget, ui::VKEY_RETURN, ui::DomCode::ENTER, ui::DomKey::ENTER,
+          ui::EF_NONE);
+  return true;
 }
 
 bool BrowserToolSurface::ScrollPage(bool down, const std::string& amount) {
@@ -336,6 +650,9 @@ bool BrowserToolSurface::PressKey(const std::string& key) {
   if (!contents) {
     return false;
   }
+  // Same reason as SetNodeValue: the key has to arrive at a page that is
+  // actually the focused thing, not at one sitting behind a focused panel.
+  contents->Focus();
 
   // An unknown name is a refusal, not a guess. The kernel already checked this
   // against the contract's enum, so reaching here with something else means the

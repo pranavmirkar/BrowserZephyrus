@@ -128,6 +128,21 @@ class ToolExecutor {
                   ExecuteCallback callback,
                   Observation observation);
 
+  // Checks that entering text actually did something, and says so if it did
+  // not.
+  //
+  // Every element action here is fire-and-forget: the browser sends a click or
+  // a keystroke and nothing tells it what the page made of them. That is how a
+  // typed search term could vanish while the model was told "ok" -- it then
+  // pressed Enter on an empty box and spent the rest of its budget wondering
+  // why nothing happened. A tool that reports success it has not checked is
+  // worse than one that fails, because the model builds its next step on it.
+  void VerifyEntered(std::string text, ExecuteCallback callback);
+  void LookToVerify(std::string text, ExecuteCallback callback);
+  void OnVerified(std::string text,
+                  ExecuteCallback callback,
+                  Observation fresh);
+
   Observation observation_;
 
   raw_ptr<AgentKernelClient> kernel_;

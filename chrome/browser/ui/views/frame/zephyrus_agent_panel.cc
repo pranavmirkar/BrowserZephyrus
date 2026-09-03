@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/json/json_reader.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -35,6 +36,38 @@ constexpr int kLineGap = 6;
 // will watch without wondering whether it has hung.
 constexpr uint32_t kMaxSteps = 12;
 
+// Lines kept in the log.
+//
+// Generous, because the log scrolls: this is only here so a very long session
+// cannot grow views without bound. An earlier version capped at 14 to survive
+// without scrolling, and that silently ate the first half of a conversation
+// while leaving most of the panel empty.
+constexpr size_t kMaxLines = 300;
+
+// Upper bound handed to ClipHeightTo. Any large number works; what matters is
+// that a bound EXISTS.
+constexpr int kUnboundedHeight = 100000;
+
+// The plain text out of a task.complete / task.ask payload.
+//
+// The loop hands these back as the tool's own JSON, which is right for a model
+// reading it and wrong for a person: the panel was showing
+// {"answer":"..."} verbatim. Falls back to the raw string, because an ugly
+// answer beats a missing one.
+std::string PlainAnswer(const std::string& value_json) {
+  std::optional<base::DictValue> parsed =
+      base::JSONReader::ReadDict(value_json, base::JSON_PARSE_RFC);
+  if (!parsed) {
+    return value_json;
+  }
+  for (const char* field : {"answer", "question"}) {
+    if (const std::string* text = parsed->FindString(field)) {
+      return *text;
+    }
+  }
+  return value_json;
+}
+
 }  // namespace
 
 ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
@@ -51,9 +84,23 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
 
   // The log takes whatever height is left, so the input stays pinned to the
   // bottom however long the conversation gets.
+  //
+  // **ClipHeightTo is the load-bearing call, and leaving it out is why two
+  // earlier attempts at this rendered nothing at all.**
+  //
+  // ScrollView::Layout only sizes its contents to the viewport width inside
+  // `if (is_bounded() && contents_)`, and `is_bounded()` is simply
+  // `max_height_ >= 0 && min_height_ >= 0` -- which nothing but ClipHeightTo
+  // sets. Without it the contents keep their PREFERRED width, and a multi-line
+  // Label's preferred width is its whole unwrapped text, so the column laid
+  // itself out far wider than the panel and every line sat off-screen to the
+  // right. The panel still drew its title, input and button, so it looked alive
+  // with an empty log.
   log_scroll_ = AddChildView(std::make_unique<views::ScrollView>());
+  log_scroll_->ClipHeightTo(0, kUnboundedHeight);
   log_scroll_->SetDrawOverflowIndicator(false);
   log_scroll_->SetBackgroundColor(std::nullopt);
+
   auto log = std::make_unique<views::BoxLayoutView>();
   log->SetOrientation(views::BoxLayout::Orientation::kVertical);
   log->SetBetweenChildSpacing(kLineGap);
@@ -88,10 +135,22 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
                           base::Unretained(this), false),
       u"Not now"));
 
-  input_ = AddChildView(std::make_unique<views::Textfield>());
+  // Input row: field plus a Send button. Two ways in on purpose -- if Enter
+  // is swallowed by something up the view tree there is still a way to submit,
+  // and a visible button says the panel is for typing into.
+  auto* input_row = AddChildView(std::make_unique<views::BoxLayoutView>());
+  input_row->SetOrientation(views::BoxLayout::Orientation::kHorizontal);
+  input_row->SetBetweenChildSpacing(kLineGap);
+
+  input_ = input_row->AddChildView(std::make_unique<views::Textfield>());
   input_->set_controller(this);
   input_->SetPlaceholderText(u"Ask the agent to do something");
   input_->GetViewAccessibility().SetName(u"Agent task");
+  input_row->SetFlexForView(input_, 1);
+
+  input_row->AddChildView(std::make_unique<views::LabelButton>(
+      base::BindRepeating(&ZephyrusAgentPanel::Submit, base::Unretained(this)),
+      u"Send"));
 
   ApplyPalette();
 }
@@ -149,13 +208,17 @@ bool ZephyrusAgentPanel::HandleKeyEvent(views::Textfield* sender,
     return false;
   }
 
+  Submit();
+  return true;
+}
+
+void ZephyrusAgentPanel::Submit() {
   const std::string task = base::UTF16ToUTF8(input_->GetText());
   if (task.empty() || task_running_) {
-    return true;
+    return;
   }
   input_->SetText(std::u16string());
   StartTask(task);
-  return true;
 }
 
 void ZephyrusAgentPanel::StartTask(const std::string& task) {
@@ -195,7 +258,7 @@ void ZephyrusAgentPanel::OnTaskFinished(mojom::TaskOutcomePtr outcome) {
   switch (outcome->status) {
     case mojom::TaskStatus::kCompleted:
     case mojom::TaskStatus::kAskedTheUser:
-      AddLine(outcome->message, /*emphasis=*/true);
+      AddLine(PlainAnswer(outcome->message), /*emphasis=*/true);
       break;
     case mojom::TaskStatus::kOutOfSteps:
       AddLine("Stopped after " + base::NumberToString(outcome->steps) +
@@ -229,10 +292,17 @@ void ZephyrusAgentPanel::AddLine(const std::string& text, bool emphasis) {
   label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   label->SetEnabledColor(emphasis ? palette.ink : palette.muted);
 
-  // Follow the newest line. A log that has to be scrolled to be read is a log
-  // that stops being read.
-  log_->InvalidateLayout();
-  log_scroll_->ScrollByOffset(gfx::PointF(0, log_->GetPreferredSize().height()));
+  // The whole panel, not just the column: a new line changes how much height
+  // the log wants, which is a question for the parent's layout.
+  InvalidateLayout();
+
+  while (log_->children().size() > kMaxLines) {
+    log_->RemoveChildViewT(log_->children().front());
+  }
+
+  // Follow the newest line. A running task writes one every few seconds and the
+  // interesting one is always the last.
+  label->ScrollViewToVisible();
 }
 
 void ZephyrusAgentPanel::ShowApprovalCard(

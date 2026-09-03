@@ -20,6 +20,8 @@
 #include "ui/accessibility/ax_node_data.h"
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_update.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace zephyrus::agent {
 namespace {
@@ -90,16 +92,53 @@ TEST(ObservationTest, LeavesOutRolesThatAreNotControls) {
   EXPECT_EQ(observation.elements[0].name, "Buy now");
 }
 
-TEST(ObservationTest, SkipsAnUnnamedControlButKeepsAnUnnamedTextField) {
-  // An unnamed button is one the model cannot sensibly choose between. An
-  // unnamed input still is: the field itself is the thing being pointed at.
+TEST(ObservationTest, ANamelessControlIsNotOffered) {
+  // Neither is worth putting in front of a model: it has nothing to choose by.
+  //
+  // Text fields used to be an exception, on the theory that an input is
+  // identifiable by being the only one. That is false on a real page -- YouTube
+  // offers an unnamed input beside its named search box -- and a real task
+  // spent eight steps typing into the anonymous one.
   Observation observation = Build({
       MakeNode(2, ax::mojom::Role::kButton),
       MakeNode(3, ax::mojom::Role::kTextField),
   });
 
+  EXPECT_TRUE(observation.elements.empty());
+}
+
+TEST(ObservationTest, AFieldIsNamedByItsPlaceholderWhenItHasNoName) {
+  // How a person reads a form when there is no label.
+  ui::AXNodeData field = MakeNode(2, ax::mojom::Role::kTextField);
+  field.AddStringAttribute(ax::mojom::StringAttribute::kPlaceholder,
+                           "Search YouTube");
+
+  Observation observation = Build({std::move(field)});
+
   ASSERT_EQ(observation.elements.size(), 1u);
-  EXPECT_EQ(observation.elements[0].role, "textbox");
+  EXPECT_EQ(observation.elements[0].name, "Search YouTube");
+}
+
+TEST(ObservationTest, ADescriptionIsTheLastResort) {
+  ui::AXNodeData field = MakeNode(2, ax::mojom::Role::kTextField);
+  field.AddStringAttribute(ax::mojom::StringAttribute::kDescription,
+                           "Where to go");
+
+  Observation observation = Build({std::move(field)});
+
+  ASSERT_EQ(observation.elements.size(), 1u);
+  EXPECT_EQ(observation.elements[0].name, "Where to go");
+}
+
+TEST(ObservationTest, TheRealNameWinsOverAPlaceholder) {
+  ui::AXNodeData field = MakeNode(2, ax::mojom::Role::kTextField, "Search");
+  field.AddStringAttribute(ax::mojom::StringAttribute::kPlaceholder,
+                           "Type here");
+
+  Observation observation = Build({std::move(field)});
+
+  ASSERT_EQ(observation.elements.size(), 1u);
+  EXPECT_EQ(observation.elements[0].name, "Search");
 }
 
 TEST(ObservationTest, AProtectedFieldIsCalledAPassword) {
@@ -235,6 +274,136 @@ TEST(ObservationTest, DoesNotShowTheModelRealNodeIds) {
 
   const std::string json = observation.ToJson(1);
   EXPECT_EQ(json.find("4242"), std::string::npos) << json;
+}
+
+// Where an element is, which is what the pointer is aimed at.
+//
+// These matter more than they look. page.type clicks the field before filling
+// it, because accessibility focus actions do not work here -- so bounds that
+// came back empty, or a visible field wrongly called offscreen, would silently
+// turn the click back off and put the caret nowhere. That failure is invisible
+// from the outside: the text still lands, and only a later Enter goes missing.
+//
+// The tree is built by hand rather than through MakeTree because the numbers
+// are the subject: a viewport that clips its children, and a control placed in
+// it deliberately.
+ui::AXTreeUpdate MakeViewport(std::vector<ui::AXNodeData> children) {
+  ui::AXNodeData root = MakeNode(1, ax::mojom::Role::kRootWebArea);
+  root.relative_bounds.bounds = gfx::RectF(0, 0, 800, 600);
+  // Without this the tree does no clipping at all, and "offscreen" would never
+  // be true no matter where a node sat -- a test that could not fail.
+  root.AddBoolAttribute(ax::mojom::BoolAttribute::kClipsChildren, true);
+  for (const ui::AXNodeData& child : children) {
+    root.child_ids.push_back(child.id);
+  }
+
+  ui::AXTreeUpdate update;
+  update.root_id = root.id;
+  update.nodes.push_back(root);
+  for (ui::AXNodeData& child : children) {
+    update.nodes.push_back(std::move(child));
+  }
+  update.has_tree_data = true;
+  update.tree_data.tree_id = ui::AXTreeID::CreateNewAXTreeID();
+  return update;
+}
+
+ui::AXNodeData MakeNodeAt(int id,
+                          ax::mojom::Role role,
+                          const std::string& name,
+                          const gfx::RectF& bounds) {
+  ui::AXNodeData node = MakeNode(id, role, name);
+  node.relative_bounds.bounds = bounds;
+  return node;
+}
+
+TEST(ObservationTest, ReportsWhereAVisibleControlIs) {
+  Observation observation = BuildObservation(
+      MakeViewport({MakeNodeAt(2, ax::mojom::Role::kSearchBox, "Search",
+                               gfx::RectF(100, 200, 120, 40))}),
+      "https://example.org/page", "A page", kMaxObservedElements,
+      kMaxObservedTextLength);
+
+  ASSERT_EQ(observation.elements.size(), 1u);
+  EXPECT_EQ(observation.elements[0].bounds, gfx::Rect(100, 200, 120, 40));
+  EXPECT_FALSE(observation.elements[0].offscreen);
+  // The centre is the point that gets clicked, so say it outright.
+  EXPECT_EQ(observation.elements[0].bounds.CenterPoint(), gfx::Point(160, 220));
+}
+
+TEST(ObservationTest, MarksAControlScrolledOutOfViewAsOffscreen) {
+  // Far below the fold. Its bounds get clipped to the edge it went behind, so
+  // they no longer name a point on it -- clicking their centre would press on
+  // whatever is at that edge instead. The flag is what stops that.
+  Observation observation = BuildObservation(
+      MakeViewport({MakeNodeAt(2, ax::mojom::Role::kButton, "Subscribe",
+                               gfx::RectF(100, 5000, 120, 40))}),
+      "https://example.org/page", "A page", kMaxObservedElements,
+      kMaxObservedTextLength);
+
+  ASSERT_EQ(observation.elements.size(), 1u);
+  EXPECT_TRUE(observation.elements[0].offscreen);
+}
+
+TEST(ObservationTest, DoesNotShowTheModelWhereThingsAre) {
+  // Bounds are internal for the same reason node ids are, and more so: this is
+  // the point a real pointer is sent to. A model that could name one could
+  // click anywhere on the page while claiming to click a button.
+  Observation observation = BuildObservation(
+      MakeViewport({MakeNodeAt(2, ax::mojom::Role::kButton, "Buy now",
+                               gfx::RectF(317, 429, 120, 40))}),
+      "https://example.org/page", "A page", kMaxObservedElements,
+      kMaxObservedTextLength);
+
+  const std::string json = observation.ToJson(1);
+  EXPECT_EQ(json.find("317"), std::string::npos) << json;
+  EXPECT_EQ(json.find("429"), std::string::npos) << json;
+}
+
+TEST(ObservationTest, ShortensARunOnNameToSomethingChoosable) {
+  // Measured on youtube.com. A link wrapping the channel card came back named
+  // with everything inside it, because an accessible name is computed from the
+  // element's contents. A model choosing between a dozen of those is reading
+  // paragraphs rather than labels, and it chose badly.
+  const std::string run_on =
+      "Sidemen Verified @Sidemen 23.4M subscribers Welcome to the official "
+      "Sidemen channel. The home of #SidemenSundays - We post new Sidemen "
+      "videos every single Sunday!";
+  Observation observation = Build({
+      MakeNode(2, ax::mojom::Role::kLink, run_on),
+  });
+
+  ASSERT_EQ(observation.elements.size(), 1u);
+  const std::string& name = observation.elements[0].name;
+  EXPECT_LT(name.size(), run_on.size());
+  EXPECT_LE(name.size(), 84u) << name;
+  // The front is kept, because that is the part a person reads to choose.
+  EXPECT_EQ(name.rfind("Sidemen Verified", 0), 0u) << name;
+  // And it stops on a word, not mid-way through one.
+  EXPECT_NE(name.find("..."), std::string::npos) << name;
+}
+
+TEST(ObservationTest, KeepsAShortNameExactlyAsItIs) {
+  // The other half: shortening must not touch a name that was already usable,
+  // or every label in the Observation would end in an ellipsis.
+  Observation observation = Build({
+      MakeNode(2, ax::mojom::Role::kButton, "Subscribe"),
+  });
+
+  ASSERT_EQ(observation.elements.size(), 1u);
+  EXPECT_EQ(observation.elements[0].name, "Subscribe");
+}
+
+TEST(ObservationTest, CollapsesTheWhitespaceAPageLaidOutWith) {
+  // Markup indentation reaches the accessible name as runs of spaces and
+  // newlines. They mean nothing on one line and cost prompt space on every
+  // step.
+  Observation observation = Build({
+      MakeNode(2, ax::mojom::Role::kLink, "Watch\n   later   now"),
+  });
+
+  ASSERT_EQ(observation.elements.size(), 1u);
+  EXPECT_EQ(observation.elements[0].name, "Watch later now");
 }
 
 }  // namespace

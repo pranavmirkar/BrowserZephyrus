@@ -273,12 +273,17 @@ void ZephyrusAgentTaskController::OnAgentLooked() {
 
 void ZephyrusAgentTaskController::OnAgentToolStarted(
     const std::string& tool,
-    const std::string& arguments_json) {
+    const std::string& arguments_json,
+    const std::string& target) {
   // page.observe is already reported by OnAgentLooked; saying it twice per step
   // would fill the log with the least interesting thing the agent does.
-  if (tool != "page.observe") {
-    Report(PlainName(tool));
+  if (tool == "page.observe") {
+    return;
   }
+  // Name the target. Watching a browser act on its own, "Clicking something" is
+  // the moment you most want to know WHAT.
+  Report(target.empty() ? PlainName(tool)
+                        : PlainName(tool) + ": " + target);
 }
 
 void ZephyrusAgentTaskController::OnAgentToolFinished(

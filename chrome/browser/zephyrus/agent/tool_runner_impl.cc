@@ -9,7 +9,9 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/strings/strcat.h"
+#include "base/json/json_reader.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/values.h"
 
 namespace zephyrus::agent {
 namespace {
@@ -35,6 +37,42 @@ mojom::ToolOutcomePtr ToMojo(ToolExecutor::Result result) {
   outcome->value_json = std::move(result.value_json);
   outcome->risk = std::move(result.risk);
   return outcome;
+}
+
+// What this call points at, in words a person would use.
+std::string DescribeTarget(const ToolExecutor& executor,
+                           const std::string& arguments_json) {
+  std::optional<base::DictValue> parsed =
+      base::JSONReader::ReadDict(arguments_json, base::JSON_PARSE_RFC);
+  if (!parsed) {
+    return std::string();
+  }
+  if (const std::string* url = parsed->FindString("url")) {
+    return *url;
+  }
+  if (const std::string* id = parsed->FindString("element_id")) {
+    // The element's own name, resolved through the Observation the model was
+    // shown -- which is the only place an issued id means anything.
+    if (const ObservedNode* node = executor.observation().Find(*id)) {
+      // For a field, say what it currently holds.
+      //
+      // This is the datum that separates "the typing is not landing" from "the
+      // model cannot tell that it did". A real task typed the same text into
+      // the same box eight times; with the field's own value in the log, the
+      // next run says which of those it was without anyone guessing.
+      if (IsTextEntryRole(node->role)) {
+        return node->name + (node->value.empty()
+                                 ? " (currently empty)"
+                                 : " (currently: " + node->value + ")");
+      }
+      return node->name;
+    }
+    return *id;
+  }
+  if (const std::string* text = parsed->FindString("text")) {
+    return *text;
+  }
+  return std::string();
 }
 
 }  // namespace
@@ -78,7 +116,8 @@ void ToolRunnerImpl::Execute(const std::string& tool,
                              const std::string& arguments_json,
                              ExecuteCallback callback) {
   if (observer_) {
-    observer_->OnAgentToolStarted(tool, arguments_json);
+    observer_->OnAgentToolStarted(tool, arguments_json,
+                                  DescribeTarget(*executor_, arguments_json));
   }
   executor_->Execute(
       tool, arguments_json, task_,
@@ -100,7 +139,8 @@ void ToolRunnerImpl::ExecuteApproved(const std::string& tool,
                                      const std::string& arguments_json,
                                      ExecuteApprovedCallback callback) {
   if (observer_) {
-    observer_->OnAgentToolStarted(tool, arguments_json);
+    observer_->OnAgentToolStarted(tool, arguments_json,
+                                  DescribeTarget(*executor_, arguments_json));
   }
   executor_->ExecuteApproved(
       tool, arguments_json, task_,

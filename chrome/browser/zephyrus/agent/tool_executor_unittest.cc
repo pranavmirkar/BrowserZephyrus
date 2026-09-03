@@ -87,13 +87,41 @@ class FakeToolSurface : public ToolSurface {
 
   ui::AXTreeID CurrentTreeId() override { return live_tree_id; }
 
-  bool ClickNode(ui::AXNodeID node) override {
-    clicked = node;
+  bool ClickNode(const ObservedNode& node) override {
+    clicked = node.ax_id;
     return true;
   }
-  bool SetNodeValue(ui::AXNodeID node, const std::string& value) override {
-    filled = node;
+  bool TypeIntoNode(const ObservedNode& node,
+                    const std::string& text) override {
+    filled = node.ax_id;
+    filled_with = text;
+    typed = true;
+    // A real browser cannot promise the text arrived, so neither does this.
+    // When `typing_silently_fails` is set the call still reports success and
+    // the page is left unchanged -- which is exactly the shape of the bug the
+    // verification exists to catch.
+    if (!typing_silently_fails) {
+      for (ObservedNode& element : page_elements) {
+        if (element.ax_id == node.ax_id) {
+          element.value = text;
+        }
+      }
+    }
+    return true;
+  }
+  bool SetNodeValue(const ObservedNode& node,
+                    const std::string& value) override {
+    filled = node.ax_id;
     filled_with = value;
+    // Same as TypeIntoNode: model a browser where the value actually lands,
+    // because the executor now looks again to check that it did.
+    if (!typing_silently_fails) {
+      for (ObservedNode& element : page_elements) {
+        if (element.ax_id == node.ax_id) {
+          element.value = value;
+        }
+      }
+    }
     return true;
   }
   bool ScrollPage(bool down, const std::string& amount) override {
@@ -139,6 +167,10 @@ class FakeToolSurface : public ToolSurface {
   bool scrolled_down = false;
   ui::AXNodeID clicked = ui::kInvalidAXNodeID;
   ui::AXNodeID filled = ui::kInvalidAXNodeID;
+  // True when the text went through the typing path rather than being
+  // assigned. page.type must type; page.select must not.
+  bool typed = false;
+  bool typing_silently_fails = false;
   std::string filled_with;
   std::string pressed;
 };
@@ -473,6 +505,125 @@ TEST_F(ToolExecutorTest, ApprovalIsCheckedAgainstPolicyNow) {
 
   EXPECT_EQ(result.status, Status::kDenied);
   EXPECT_EQ(surface_.clicked, ui::kInvalidAXNodeID);
+}
+
+
+TEST_F(ToolExecutorTest, RefusesToTypeIntoSomethingThatIsNotAField) {
+  // The bug that stalled a real task on YouTube: a page can have a text field
+  // and a button with the SAME accessible name -- a search box and its
+  // magnifying glass are both "Search". Setting a value on the button does
+  // nothing, the accessibility action reports no result, and the executor used
+  // to say "ok" while the box stayed empty.
+  // Two things with the SAME name, which is the shape that caused the bug.
+  // The consequential-verb rule only escalates page.click, so policy allows
+  // typing into a button and the executor is the one that has to notice.
+  surface_.page_elements = {Node("e1", "button", "Search", 31),
+                            Node("e2", "searchbox", "Search", 32)};
+  ObserveFirst();
+
+  // Naming the button now resolves to the field, because "type into Search"
+  // has exactly one sensible reading when only one thing called Search holds
+  // text. Refusing here cost a real run several steps and then sent it to CLICK
+  // the button, which submitted an empty search and invalidated every element
+  // id it was holding.
+  ToolExecutor::Result on_button =
+      Run("page.type", R"({"element_id":"e1","text":"sidemen"})");
+  EXPECT_EQ(on_button.status, Status::kOk) << on_button.message;
+  EXPECT_EQ(surface_.filled, 32) << "it did not fall through to the field";
+
+  // The field with the same name still works.
+  ToolExecutor::Result on_field =
+      Run("page.type", R"({"element_id":"e2","text":"sidemen"})");
+  EXPECT_EQ(on_field.status, Status::kOk) << on_field.message;
+  EXPECT_EQ(surface_.filled, 32);
+}
+
+TEST_F(ToolExecutorTest, RefusesToTypeIntoAFieldScrolledOutOfView) {
+  // Typing into an offscreen field is the one case that would half-work, which
+  // is worse than failing. kSetValue does not care where an element is, so the
+  // text would land -- but the pointer click that focuses it is skipped,
+  // because the bounds of an offscreen element name the edge it went behind
+  // rather than the element. The model would be told "ok" and then find that
+  // Enter did nothing, with no way to learn why.
+  ObservedNode below = Node("e1", "searchbox", "Search", 41);
+  below.offscreen = true;
+  surface_.page_elements = {below};
+  ObserveFirst();
+
+  ToolExecutor::Result result =
+      Run("page.type", R"({"element_id":"e1","text":"sidemen"})");
+  EXPECT_EQ(result.status, Status::kFailed);
+  // The message has to name the way out, not just the problem. page.scroll
+  // works, so "scroll to it first" is a step the model can actually take.
+  EXPECT_NE(result.message.find("scroll"), std::string::npos)
+      << result.message;
+  EXPECT_EQ(surface_.filled, ui::kInvalidAXNodeID)
+      << "it filled a field it could not focus";
+}
+
+TEST_F(ToolExecutorTest, TypingTypesWhileSelectingAssigns) {
+  // Two tools, two mechanisms, and the difference is not cosmetic. Assigning a
+  // value to a framework-built search box leaves it convinced it is empty,
+  // because it watches its own key events rather than reading .value -- that is
+  // what stalled a real task on YouTube. A native <select> has the opposite
+  // problem: there is nothing to type into it.
+  surface_.page_elements = {Node("e1", "searchbox", "Search", 51),
+                            Node("e2", "combobox", "Country", 52)};
+  ObserveFirst();
+
+  ASSERT_EQ(Run("page.type", R"({"element_id":"e1","text":"sidemen"})").status,
+            Status::kOk);
+  EXPECT_TRUE(surface_.typed) << "page.type assigned a value instead of typing";
+  EXPECT_EQ(surface_.filled_with, "sidemen");
+
+  surface_.typed = false;
+  ASSERT_EQ(Run("page.select", R"({"element_id":"e2","value":"India"})").status,
+            Status::kOk);
+  EXPECT_FALSE(surface_.typed) << "page.select typed instead of choosing";
+  EXPECT_EQ(surface_.filled_with, "India");
+}
+
+TEST_F(ToolExecutorTest, StillRefusesWhenNothingWithThatNameTakesText) {
+  // The fallback above only applies when something with the SAME name can hold
+  // text. A lone button keeps its refusal, because silently retargeting to some
+  // unrelated field would be the executor inventing an intention.
+  surface_.page_elements = {Node("e1", "button", "Search", 61),
+                            Node("e2", "searchbox", "Ask a question", 62)};
+  ObserveFirst();
+
+  ToolExecutor::Result result =
+      Run("page.type", R"({"element_id":"e1","text":"sidemen"})");
+  EXPECT_EQ(result.status, Status::kFailed);
+  EXPECT_NE(result.message.find("button"), std::string::npos) << result.message;
+  EXPECT_EQ(surface_.filled, ui::kInvalidAXNodeID)
+      << "it typed into an unrelated field";
+}
+
+TEST_F(ToolExecutorTest, SaysSoWhenTypedTextDoesNotActuallyLand) {
+  // The failure this exists for: the browser reports that it typed, the page is
+  // unchanged, and the model is told "ok". It then presses Enter on an empty
+  // box and spends the rest of its budget wondering why nothing happened. That
+  // is worse than a plain failure, because it builds the next step on a lie.
+  surface_.typing_silently_fails = true;
+  surface_.page_elements = {Node("e1", "searchbox", "Search", 71)};
+  ObserveFirst();
+
+  ToolExecutor::Result result =
+      Run("page.type", R"({"element_id":"e1","text":"sidemen"})");
+  EXPECT_EQ(result.status, Status::kFailed) << result.message;
+  EXPECT_NE(result.message.find("sidemen"), std::string::npos)
+      << "the message does not say what was checked: " << result.message;
+}
+
+TEST_F(ToolExecutorTest, TypingThatLandsIsReportedAsSuccess) {
+  // The other half. Without this the test above passes just as well with
+  // verification that always fails.
+  surface_.page_elements = {Node("e1", "searchbox", "Search", 72)};
+  ObserveFirst();
+
+  ToolExecutor::Result result =
+      Run("page.type", R"({"element_id":"e1","text":"sidemen"})");
+  EXPECT_EQ(result.status, Status::kOk) << result.message;
 }
 
 }  // namespace

@@ -4,6 +4,9 @@
 
 #include "chrome/browser/zephyrus/agent/tool_executor.h"
 
+#include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
+
 #include <utility>
 
 #include "base/check.h"
@@ -285,7 +288,78 @@ void ToolExecutor::Perform(const std::string& tool,
     return;
   }
 
-  std::move(callback).Run(PerformOnElement(tool, arguments));
+  Result result = PerformOnElement(tool, arguments);
+
+  // Entering text is the one action whose effect can be checked cheaply, and
+  // the one that has silently failed most. If it claims to have worked, look
+  // again before saying so.
+  if (result.status == Result::Status::kOk &&
+      (tool == "page.type" || tool == "page.select")) {
+    const std::string* text =
+        arguments.FindString(tool == "page.type" ? "text" : "value");
+    if (text && !text->empty()) {
+      VerifyEntered(*text, std::move(callback));
+      return;
+    }
+  }
+
+  std::move(callback).Run(std::move(result));
+}
+
+void ToolExecutor::VerifyEntered(std::string text, ExecuteCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Give the renderer a moment before looking.
+  //
+  // The keystrokes went out on the input pipe and the snapshot request goes out
+  // on another, and nothing orders one against the other. Looking immediately
+  // would sometimes photograph the page before it had read its own mail, and a
+  // verification that reports failure at random is worse than none.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&ToolExecutor::LookToVerify, weak_factory_.GetWeakPtr(),
+                     std::move(text), std::move(callback)),
+      base::Milliseconds(250));
+}
+
+void ToolExecutor::LookToVerify(std::string text, ExecuteCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  surface_->Observe(base::BindOnce(&ToolExecutor::OnVerified,
+                                   weak_factory_.GetWeakPtr(), std::move(text),
+                                   std::move(callback)));
+}
+
+void ToolExecutor::OnVerified(std::string text,
+                              ExecuteCallback callback,
+                              Observation fresh) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  // This look is DISCARDED. `observation_` is deliberately left alone.
+  //
+  // The model is holding element ids from the Observation it was last shown,
+  // and those ids are only meaningful against that Observation. Quietly
+  // swapping in a newer one would leave every id it holds pointing at whatever
+  // took the same slot -- which is precisely the bug that had the agent
+  // clicking a footer link when it asked for a search box. A check is not a
+  // look, and must not behave like one.
+  bool landed = false;
+  for (const ObservedNode& node : fresh.elements) {
+    if (!node.value.empty() && node.value.find(text) != std::string::npos) {
+      landed = true;
+      break;
+    }
+  }
+
+  if (landed) {
+    std::move(callback).Run(Ok());
+    return;
+  }
+
+  // Say what was checked, not just that it failed. "It did not go in" sends the
+  // model to try the same thing again; naming the field and the text gives it
+  // something to change.
+  std::move(callback).Run(
+      Failed("that did not go in -- nothing on the page holds \"" + text +
+             "\" now. Look at the page and check you picked the right field."));
 }
 
 ToolExecutor::Result ToolExecutor::PerformOnElement(
@@ -341,7 +415,7 @@ ToolExecutor::Result ToolExecutor::PerformOnElement(
   }
 
   if (tool == "page.click") {
-    return surface_->ClickNode(node->ax_id)
+    return surface_->ClickNode(*node)
                ? Ok()
                : Failed("that could not be clicked");
   }
@@ -352,9 +426,63 @@ ToolExecutor::Result ToolExecutor::PerformOnElement(
     if (!text) {
       return Failed("nothing was given to enter");
     }
-    return surface_->SetNodeValue(node->ax_id, *text)
-               ? Ok()
-               : Failed("that could not be filled in");
+
+    // Refuse a target that cannot hold text, and say what it is.
+    //
+    // This is what stalled a real task. A page can have a text field and a
+    // button with the SAME accessible name -- a search box and its magnifying
+    // glass are both "Search" -- and setting a value on the button does
+    // nothing at all. The accessibility action reports no result, so the
+    // executor said "ok" every time while the box stayed empty, and the model
+    // had no way to learn it had picked the wrong one. Naming the role turns a
+    // silent no-op into something it can act on.
+    if (!IsTextEntryRole(node->role)) {
+      // Before refusing, look for something with the SAME NAME that can hold
+      // text, and use that instead.
+      //
+      // This is not guesswork, it is disambiguation. YouTube offers a button
+      // and a search box both called "Search", so "type into Search" has
+      // exactly one sensible reading and the model has no way to express which
+      // one it meant beyond the name it was given. Refusing cost a real run
+      // several steps, and worse: the model then CLICKED the button, which
+      // submitted an empty search, changed the page, and invalidated every
+      // element id it was holding.
+      const ObservedNode* typeable = nullptr;
+      for (const ObservedNode* candidate : observation_.Matching(node->name)) {
+        if (candidate->name == node->name && IsTextEntryRole(candidate->role)) {
+          typeable = candidate;
+          break;
+        }
+      }
+      if (!typeable) {
+        return Failed("\"" + node->name + "\" is a " + node->role +
+                      ", not something you can type into");
+      }
+      node = typeable;
+    }
+
+    // Refuse a field that is scrolled out of view, and say why.
+    //
+    // Filling one would half-work, which is the worst outcome available. The
+    // value would land, because kSetValue does not care where the element is --
+    // but the pointer click that focuses it would be skipped, because an
+    // offscreen element's bounds have been clipped to the edge it went behind
+    // and clicking them would press on something else. The model would be told
+    // "ok", type its search term, press Enter, and watch nothing happen.
+    //
+    // Scrolling first is a step it can actually take, and page.scroll works.
+    if (node->offscreen) {
+      return Failed("\"" + node->name +
+                    "\" is scrolled out of view -- scroll to it first");
+    }
+
+    // page.type types; page.select picks. Two mechanisms, because a native
+    // <select> cannot be typed into and a framework search box cannot be
+    // assigned to.
+    const bool done = tool == "page.type"
+                          ? surface_->TypeIntoNode(*node, *text)
+                          : surface_->SetNodeValue(*node, *text);
+    return done ? Ok() : Failed("that could not be filled in");
   }
 
   // Unreachable for the V1 contract: all eighteen tools are handled above. It

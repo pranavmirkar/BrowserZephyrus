@@ -13,11 +13,17 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/zephyrus/agent/tool_surface.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
+#include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_update_forward.h"
+#include "ui/events/keycodes/dom/dom_code.h"
+#include "ui/events/keycodes/dom/dom_key.h"
+#include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/gfx/geometry/rect.h"
 
 class Browser;
 
 namespace content {
+class RenderWidgetHost;
 class ScopedAccessibilityMode;
 class WebContents;
 }  // namespace content
@@ -54,8 +60,11 @@ class BrowserToolSurface : public ToolSurface {
   bool CloseTab(int tab_id) override;
   void Observe(ObserveCallback callback) override;
   ui::AXTreeID CurrentTreeId() override;
-  bool ClickNode(ui::AXNodeID node) override;
-  bool SetNodeValue(ui::AXNodeID node, const std::string& value) override;
+  bool ClickNode(const ObservedNode& node) override;
+  bool TypeIntoNode(const ObservedNode& node,
+                    const std::string& text) override;
+  bool SetNodeValue(const ObservedNode& node,
+                    const std::string& value) override;
   bool ScrollPage(bool down, const std::string& amount) override;
   bool PressKey(const std::string& key) override;
   std::string ReadSelection() override;
@@ -71,6 +80,19 @@ class BrowserToolSurface : public ToolSurface {
 
   // True if `contents` belongs to the workspace the window is showing.
   bool InCurrentWorkspace(content::WebContents* contents) const;
+
+  // Waits for a still-loading tab to settle, then snapshots it.
+  //
+  // Observing mid-navigation is what made a real task fail: the loop observes,
+  // spends several seconds asking the model, and acts -- and if the page
+  // committed a new document in that window, every element id it was shown
+  // belongs to a page that is gone. The staleness rule then correctly refuses
+  // the action, the model re-navigates, and the task loops until its budget
+  // runs out. Waiting here removes the churn at the source rather than
+  // loosening the rule that caught it.
+  class LoadWaiter;
+
+  void TakeSnapshot(ObserveCallback callback);
 
   // Turns on accessibility for the active tab, and keeps it on.
   //
@@ -90,6 +112,27 @@ class BrowserToolSurface : public ToolSurface {
                      ui::AXNodeID node,
                      const std::string& value);
 
+  // Puts the pointer on `bounds` and clicks, as a person's hand would: move,
+  // press, release. `bounds` comes from an Observation this browser took, never
+  // from the agent, so there is no way to ask for a click at an arbitrary point.
+  //
+  // This is a genuinely different route into the page from PerformAction. It
+  // goes through Blink's ordinary input handling rather than the accessibility
+  // action path, which matters because that path is where focus is lost.
+  bool MoveAndClick(const gfx::Rect& bounds);
+
+  // One keystroke, press and release, with whatever modifiers are given.
+  bool SendKey(content::RenderWidgetHost* widget,
+               ui::KeyboardCode key_code,
+               ui::DomCode dom_code,
+               ui::DomKey dom_key,
+               int flags);
+
+  // One printable character, as the three events a real key produces: press,
+  // the character itself, release. The character event is what inserts; the
+  // other two are what the page's handlers watch for.
+  bool TypeCharacter(content::RenderWidgetHost* widget, char16_t character);
+
   void OnSnapshot(ObserveCallback callback,
                   std::string url,
                   std::string title,
@@ -98,8 +141,14 @@ class BrowserToolSurface : public ToolSurface {
   raw_ptr<Browser> browser_;
 
   // The tab `accessibility_` was turned on for, so a tab switch re-scopes it.
+  // The tree the last Observation's ids came from.
+  ui::AXTreeID node_tree_id_;
+
   raw_ptr<content::WebContents> accessible_contents_ = nullptr;
   std::unique_ptr<content::ScopedAccessibilityMode> accessibility_;
+
+  // Non-null only while an Observation is waiting for a page to settle.
+  std::unique_ptr<LoadWaiter> load_waiter_;
   base::WeakPtrFactory<BrowserToolSurface> weak_factory_{this};
 };
 

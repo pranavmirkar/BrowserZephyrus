@@ -68,6 +68,15 @@ pub struct Tool {
     pub floor: Risk,
     pub required: Vec<String>,
     pub properties: Vec<String>,
+    /// Property name -> the values the contract allows for it.
+    ///
+    /// The contract declares these and the kernel used to ignore them, which
+    /// meant a call could be "well formed" here and meaningless to the
+    /// executor: `page.press` with key "Return" passed policy and then failed
+    /// with "the key had no effect", which tells the model nothing it can act
+    /// on. A constraint the contract states and the kernel does not enforce is
+    /// the same drift the single-source-of-truth rule exists to prevent.
+    pub allowed: HashMap<String, Vec<String>>,
 }
 
 impl Tool {
@@ -92,6 +101,28 @@ impl Tool {
         for name in map.keys() {
             if !self.properties.contains(name) {
                 return Err(format!("unexpected argument `{name}`"));
+            }
+        }
+
+        // Values the contract restricts. The message names what IS allowed,
+        // because the model reads refusals and a list it can choose from is
+        // worth far more than being told it was wrong.
+        //
+        // Matched case-insensitively. A real run refused `enter` and spent a
+        // step on it, which bought nothing: the closed list is the security
+        // property, and `enter` versus `Enter` is not part of it.
+        for (name, allowed) in &self.allowed {
+            let Some(value) = map.get(name).and_then(Value::as_str) else {
+                continue;
+            };
+            if !allowed
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(value))
+            {
+                return Err(format!(
+                    "`{name}` must be one of {}, not `{value}`",
+                    allowed.join(", ")
+                ));
             }
         }
         Ok(())
@@ -154,11 +185,28 @@ impl Contract {
                 ));
             }
 
-            let properties = parameters
-                .get("properties")
-                .and_then(Value::as_object)
+            let property_map = parameters.get("properties").and_then(Value::as_object);
+
+            let properties: Vec<String> = property_map
                 .map(|m| m.keys().cloned().collect())
                 .unwrap_or_default();
+
+            let mut allowed: HashMap<String, Vec<String>> = HashMap::new();
+            if let Some(map) = property_map {
+                for (property, schema) in map {
+                    let Some(values) = schema.get("enum").and_then(Value::as_array) else {
+                        continue;
+                    };
+                    allowed.insert(
+                        property.clone(),
+                        values
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect(),
+                    );
+                }
+            }
 
             let required = parameters
                 .get("required")
@@ -183,6 +231,7 @@ impl Contract {
                     Tool {
                         name: name.to_string(),
                         description,
+                        allowed,
                         floor,
                         required,
                         properties,

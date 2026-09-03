@@ -35,8 +35,13 @@ class ToolRunnerImpl : public mojom::ToolRunner {
    public:
     virtual ~Observer() = default;
     virtual void OnAgentLooked() {}
+    // `target` names the thing being acted on in the user's terms -- the
+    // element's accessible name, or the destination URL. Empty when the call
+    // does not point at anything. "Clicking something" is not a useful thing
+    // to read while a browser clicks things on its own.
     virtual void OnAgentToolStarted(const std::string& tool,
-                                    const std::string& arguments_json) {}
+                                    const std::string& arguments_json,
+                                    const std::string& target) {}
     virtual void OnAgentToolFinished(const std::string& tool,
                                      const mojom::ToolOutcome& outcome) {}
   };

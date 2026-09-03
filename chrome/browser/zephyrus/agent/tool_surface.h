@@ -77,10 +77,35 @@ class ToolSurface {
   // the model holds refers to something that no longer exists.
   virtual ui::AXTreeID CurrentTreeId() = 0;
 
-  // Element actions. `node` is a real accessibility node id that the executor
-  // resolved from an issued element id -- the model never supplies one.
-  virtual bool ClickNode(ui::AXNodeID node) = 0;
-  virtual bool SetNodeValue(ui::AXNodeID node, const std::string& value) = 0;
+  // Element actions. `node` is one the executor resolved from an issued element
+  // id against its own Observation -- the model never supplies one, and never
+  // supplies the position inside it, which is the point the pointer goes to.
+  //
+  // These take the whole ObservedNode rather than a bare id because the two
+  // ways to reach an element -- the accessibility action and the pointer --
+  // need different parts of it, and which one is used is this layer's decision
+  // to make. A caller that had to pick would eventually pick wrong.
+  virtual bool ClickNode(const ObservedNode& node) = 0;
+
+  // Types text into a field, as a person would: put the pointer on it, then
+  // send real keystrokes.
+  //
+  // Separate from SetNodeValue because they are different mechanisms for
+  // different things, and the split is the lesson from three failures. A page
+  // whose search box is a framework component decides whether it has content
+  // by watching its own key events -- assigning a value leaves it convinced it
+  // is still empty, so it never submits. Keystrokes go through the input
+  // pipeline, which a page cannot tell apart from a person typing.
+  virtual bool TypeIntoNode(const ObservedNode& node,
+                            const std::string& text) = 0;
+
+  // Chooses a value on a control that offers a fixed set of them.
+  //
+  // This one stays an accessibility action, because that is the right tool for
+  // it: there is no way to "type" into a native <select>, and picking an option
+  // is exactly what the accessibility API is for.
+  virtual bool SetNodeValue(const ObservedNode& node,
+                            const std::string& value) = 0;
 
   virtual bool ScrollPage(bool down, const std::string& amount) = 0;
   virtual bool PressKey(const std::string& key) = 0;

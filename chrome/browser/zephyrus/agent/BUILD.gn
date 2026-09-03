@@ -55,6 +55,7 @@ test("zephyrus_agent_unittests") {
     "//net",
     "//services/network:test_support",
     "//services/network/public/cpp",
+    "//ui/gfx:test_support",
     "//mojo/public/cpp/bindings",
     "//testing/gtest",
     "//url",

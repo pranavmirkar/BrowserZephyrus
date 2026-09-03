@@ -392,3 +392,40 @@ fn the_prompt_listing_comes_from_the_contract() {
     assert!(listing.contains("url?"), "tabs.open's url is optional:\n{listing}");
     assert!(listing.contains("args: element_id, text"), "{listing}");
 }
+
+
+// --- values the contract restricts --------------------------------------
+
+#[test]
+fn a_key_outside_the_contract_is_denied_with_the_list() {
+    // Seen for real: the model sent a key the contract does not define, policy
+    // waved it through because nothing checked enums, and the executor came
+    // back with "the key had no effect" -- which tells the model nothing.
+    let decision = assert_denied(&request("page.press", r#"{"key":"Return"}"#));
+    assert!(
+        decision.reason.contains("Enter"),
+        "the refusal should name what IS allowed: {}",
+        decision.reason
+    );
+}
+
+#[test]
+fn the_keys_the_contract_does_define_are_allowed() {
+    for key in ["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "Backspace"] {
+        let arguments = format!(r#"{{"key":"{key}"}}"#);
+        assert_allowed(&request("page.press", &arguments));
+    }
+}
+
+#[test]
+fn a_scroll_outside_the_contract_is_denied() {
+    // page.scroll restricts both of its arguments, so both are checked.
+    assert_denied(&request(
+        "page.scroll",
+        r#"{"direction":"sideways","amount":"page"}"#,
+    ));
+    assert_denied(&request(
+        "page.scroll",
+        r#"{"direction":"down","amount":"lots"}"#,
+    ));
+}

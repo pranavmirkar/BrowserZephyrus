@@ -68,6 +68,11 @@ class ZephyrusAgentPanel : public views::View,
 
   bool HasQuestionForTesting() const { return !approval_answer_.is_null(); }
 
+  // The running log, so a test can check its lines are actually laid out
+  // inside the panel. Two attempts at a ScrollView here rendered NOTHING, and
+  // neither was caught by anything but a person looking at the window.
+  const views::BoxLayoutView* log_for_testing() const { return log_; }
+
   // ZephyrusAgentTaskController::Delegate:
   void OnAgentProgress(const std::string& line) override;
   void OnAgentApprovalNeeded(const std::string& reason,
@@ -77,6 +82,10 @@ class ZephyrusAgentPanel : public views::View,
   // views::TextfieldController:
   bool HandleKeyEvent(views::Textfield* sender,
                       const ui::KeyEvent& key_event) override;
+
+  // Submits whatever is in the input. Enter and the Send button both land here,
+  // so neither is the only way in.
+  void Submit();
 
   // views::View:
   void OnThemeChanged() override;
