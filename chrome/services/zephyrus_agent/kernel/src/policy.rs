@@ -271,7 +271,23 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
 
 /// The first consequential verb in an element's accessible name, if any.
 fn consequential_verb(name: &str) -> Option<&'static str> {
-    let lowered = name.to_ascii_lowercase();
+    // Only the beginning of the name, because only that part is a LABEL.
+    //
+    // An accessible name is often computed from everything inside the element,
+    // so a link wrapping a channel card carries its whole description. On
+    // youtube.com that description reads "We post new Sidemen videos every
+    // single Sunday!" -- and "post" is on this list, so clicking the channel
+    // stopped and asked the user to approve it. Twice, in one run.
+    //
+    // A control that genuinely commits something says so at the front: "Send",
+    // "Place order", "Confirm and pay". Sixty characters keeps those and stops
+    // reading before a paragraph can put a verb in the way.
+    const LABEL_WINDOW: usize = 60;
+    let label = match name.char_indices().nth(LABEL_WINDOW) {
+        Some((end, _)) => &name[..end],
+        None => name,
+    };
+    let lowered = label.to_ascii_lowercase();
     CONSEQUENTIAL_VERBS.iter().copied().find(|verb| {
         // Whole words, so "Sender" and "Sendai" do not match "send".
         // Substring matching here would escalate most of the web; the words
@@ -306,9 +322,31 @@ fn task_names_host(task: &str, host: &str) -> bool {
     if host.is_empty() {
         return false;
     }
+
+    // People write "youtube", not "www.youtube.com".
+    //
+    // Whole-host equality asked the user to approve going to youtube.com in a
+    // task that began "go to youtube" -- a permission prompt for the one thing
+    // they had just said out loud. So the bare name counts too.
+    //
+    // Matched against the REGISTRABLE label only -- the one before the final
+    // suffix -- and deliberately not against every label in the host. Otherwise
+    // a task mentioning "google" would treat google.evil.com as expected, which
+    // is precisely the shape an exfiltration takes. Getting this wrong in the
+    // other direction only costs a prompt.
+    let labels: Vec<&str> = host.split('.').collect();
+    let registrable = if labels.len() >= 2 {
+        labels[labels.len() - 2]
+    } else {
+        host
+    };
+
     task.to_ascii_lowercase()
         .split(|c: char| !(c.is_ascii_alphanumeric() || c == '.' || c == '-'))
-        .any(|token| token.trim_matches('.') == host)
+        .any(|token| {
+            let token = token.trim_matches('.');
+            !token.is_empty() && (token == host || token == registrable)
+        })
 }
 
 /// `scheme://host` of `url`, lowercased, or None if it cannot be determined.

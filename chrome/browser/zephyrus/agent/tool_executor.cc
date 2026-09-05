@@ -12,6 +12,7 @@
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
+#include "base/strings/string_util.h"
 #include "base/json/json_writer.h"
 #include "base/values.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
@@ -19,6 +20,39 @@
 
 namespace zephyrus::agent {
 namespace {
+
+// True if two addresses name the same place.
+//
+// Lenient on purpose. youtube.com redirecting to www.youtube.com/ is the site
+// working normally, not a failed navigation, and reporting it as one would teach
+// the model to distrust a tool that had done exactly what it asked.
+bool SameDestination(const GURL& wanted, const GURL& actual) {
+  if (!wanted.is_valid() || !actual.is_valid()) {
+    return false;
+  }
+  // GURL hands back string_view in this tree, so these are explicit copies.
+  const std::string want_host(wanted.host());
+  const std::string got_host(actual.host());
+  const bool same_host = want_host == got_host ||
+                         base::EndsWith(got_host, "." + want_host) ||
+                         base::EndsWith(want_host, "." + got_host);
+
+  std::string want_path(wanted.path());
+  std::string got_path(actual.path());
+  while (want_path.size() > 1 && want_path.back() == '/') {
+    want_path.pop_back();
+  }
+  while (got_path.size() > 1 && got_path.back() == '/') {
+    got_path.pop_back();
+  }
+  if (want_path == "/") {
+    want_path.clear();
+  }
+  if (got_path == "/") {
+    got_path.clear();
+  }
+  return same_host && want_path == got_path;
+}
 
 ToolExecutor::Result Failed(std::string message) {
   ToolExecutor::Result result;
@@ -180,9 +214,28 @@ void ToolExecutor::Perform(const std::string& tool,
           Failed("that is not a web address this browser will open"));
       return;
     }
-    std::move(callback).Run(surface_->Navigate(*url)
-                                ? Ok()
-                                : Failed("the page did not load"));
+    // Already there. Going again cannot change anything.
+    //
+    // A real run navigated to the same search page TEN TIMES in a row while
+    // standing on it, because nothing said no and every attempt reported
+    // success. The repeat guard in the loop did not catch it: it needs the
+    // Observation to be identical, and a page like a results list is never
+    // quite identical between loads.
+    //
+    // This does not need the pages to match, only the addresses -- which is
+    // exactly the case that is provably pointless.
+    if (SameDestination(GURL(surface_->GetActiveUrl()), *url)) {
+      std::move(callback).Run(
+          Failed("you are already on that page. Look at what it shows and act "
+                 "on something that is on it."));
+      return;
+    }
+
+    if (!surface_->Navigate(*url)) {
+      std::move(callback).Run(Failed("the page did not load"));
+      return;
+    }
+    VerifyArrived(url->spec(), std::move(callback));
     return;
   }
 
@@ -304,6 +357,36 @@ void ToolExecutor::Perform(const std::string& tool,
   }
 
   std::move(callback).Run(std::move(result));
+}
+
+void ToolExecutor::VerifyArrived(std::string wanted, ExecuteCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Looking settles, so this waits for the load rather than racing it.
+  surface_->Observe(base::BindOnce(&ToolExecutor::OnArrived,
+                                   weak_factory_.GetWeakPtr(),
+                                   std::move(wanted), std::move(callback)));
+}
+
+void ToolExecutor::OnArrived(std::string wanted,
+                             ExecuteCallback callback,
+                             Observation fresh) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Discarded, like every other check: replacing observation_ would move every
+  // element id the model is holding out from under it.
+  const GURL asked(wanted);
+  const GURL landed(fresh.url);
+
+  if (SameDestination(asked, landed)) {
+    std::move(callback).Run(Ok());
+    return;
+  }
+
+  // Say where it actually is, and say what to do instead. A model that guessed
+  // an address needs to learn that guessing is what failed, or it guesses again.
+  std::move(callback).Run(Failed(
+      "that address did not open -- you are on " + fresh.url +
+      " instead. Addresses cannot be guessed. Open a page by clicking a link "
+      "that is actually on the page."));
 }
 
 void ToolExecutor::VerifyEntered(std::string text, ExecuteCallback callback) {

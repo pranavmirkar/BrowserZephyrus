@@ -59,6 +59,10 @@ class FakeToolSurface : public ToolSurface {
 
   bool Navigate(const GURL& url) override {
     navigated_to = url;
+    // A real browser can land somewhere else -- a redirect, a 404 handler, a
+    // site bouncing an unknown path to its home page. The fake can too, or the
+    // check that catches it cannot be tested.
+    active_url = lands_on.empty() ? url.spec() : lands_on;
     return true;
   }
   bool GoBack() override {
@@ -143,6 +147,8 @@ class FakeToolSurface : public ToolSurface {
     return false;
   }
 
+  // Where a navigation actually ends up, when that differs from the request.
+  std::string lands_on;
   std::string active_url = "https://docs.example.com/laptops/x1";
   std::string page_title = "Laptop X1";
   std::string page_text = "Specifications for the X1.";
@@ -623,6 +629,77 @@ TEST_F(ToolExecutorTest, TypingThatLandsIsReportedAsSuccess) {
 
   ToolExecutor::Result result =
       Run("page.type", R"({"element_id":"e1","text":"sidemen"})");
+  EXPECT_EQ(result.status, Status::kOk) << result.message;
+}
+
+TEST_F(ToolExecutorTest, SaysSoWhenAnAddressDoesNotOpen) {
+  // The failure this exists for. Asked to play a video, a model guessed
+  // youtube.com/c/Sidemen/videos, was bounced to the home page, and was told
+  // "ok" -- so it guessed another address, and another, until its budget was
+  // gone. Navigating reported that a load STARTED, which an address that does
+  // not exist does just as well as one that does.
+  surface_.lands_on = "https://www.youtube.com/";
+  ToolExecutor::Result result =
+      Run("browser.navigate",
+          R"({"url":"https://www.youtube.com/c/Sidemen/videos"})");
+
+  EXPECT_EQ(result.status, Status::kFailed);
+  EXPECT_NE(result.message.find("www.youtube.com/"), std::string::npos)
+      << "it does not say where the browser actually is: " << result.message;
+  // And it has to say what to do instead, or the model just guesses again.
+  EXPECT_NE(result.message.find("clicking a link"), std::string::npos)
+      << result.message;
+}
+
+TEST_F(ToolExecutorTest, ARedirectIsNotAFailedNavigation) {
+  // The other half, and the way this check could do harm. A site sending
+  // youtube.com to www.youtube.com/ is working normally. Calling that a failure
+  // would teach the model to distrust a tool that did exactly what was asked.
+  surface_.lands_on = "https://www.youtube.com/";
+  ToolExecutor::Result result =
+      Run("browser.navigate", R"({"url":"https://youtube.com"})");
+
+  EXPECT_EQ(result.status, Status::kOk) << result.message;
+}
+
+TEST_F(ToolExecutorTest, ArrivingWhereAskedIsSuccess) {
+  surface_.lands_on = "https://example.org/docs/spec";
+  ToolExecutor::Result result =
+      Run("browser.navigate", R"({"url":"https://example.org/docs/spec"})");
+
+  EXPECT_EQ(result.status, Status::kOk) << result.message;
+}
+
+TEST_F(ToolExecutorTest, RefusesToNavigateToThePageItIsAlreadyOn) {
+  // A real run navigated to the same search page TEN TIMES while standing on
+  // it. Every attempt reported success, so nothing told the model to stop, and
+  // the whole budget went on it.
+  //
+  // The loop's repeat guard could not catch this: it needs the Observation to
+  // be identical, and a results page is never quite identical between loads.
+  // Comparing ADDRESSES needs no such luck.
+  surface_.active_url = "https://www.youtube.com/results?search_query=sidemen";
+
+  ToolExecutor::Result result =
+      Run("browser.navigate",
+          R"({"url":"https://www.youtube.com/results?search_query=sidemen"})");
+
+  EXPECT_EQ(result.status, Status::kFailed);
+  EXPECT_NE(result.message.find("already on that page"), std::string::npos)
+      << result.message;
+  // And it must say what to do instead, or the model simply tries again.
+  EXPECT_NE(result.message.find("act on"), std::string::npos) << result.message;
+}
+
+TEST_F(ToolExecutorTest, GoingSomewhereElseIsStillFine) {
+  // The other half: this must not turn into a ban on navigating.
+  surface_.active_url = "https://www.youtube.com/";
+  surface_.lands_on = "https://www.youtube.com/results?search_query=sidemen";
+
+  ToolExecutor::Result result =
+      Run("browser.navigate",
+          R"({"url":"https://www.youtube.com/results?search_query=sidemen"})");
+
   EXPECT_EQ(result.status, Status::kOk) << result.message;
 }
 

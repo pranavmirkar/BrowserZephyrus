@@ -5,6 +5,7 @@
 #include "chrome/browser/zephyrus/agent/observation.h"
 
 #include <string_view>
+#include <vector>
 #include <utility>
 
 #include "base/json/json_writer.h"
@@ -84,10 +85,18 @@ std::string RoleNameFor(const ui::AXNode& node) {
 
 // The longest name the model is shown.
 //
-// Generous enough to tell two links apart, short enough that sixty of them do
-// not dominate the prompt. Cutting names is a SPEED setting as much as a
-// legibility one: every step sends the whole Observation to the model.
-constexpr size_t kMaxNameLength = 80;
+// Long enough to keep the ANSWER, not just the label.
+//
+// 80 was a mistake and it cost a task. YouTube writes a video's whole card into
+// the link's name -- "SIDEMEN SLEEPOVER (USA EDITION) by Sidemen 5.8M views 4
+// days ago" -- so cutting at 80 threw away the channel, the view count and the
+// upload age. Asked to play the LATEST video, the model was handed titles with
+// the dates trimmed off, which is the one field the question turns on.
+//
+// Still bounded, because every element is read by the model on every step. The
+// element cap came down from sixty to thirty to pay for this: fewer things,
+// each actually worth reading.
+constexpr size_t kMaxNameLength = 140;
 
 // A name a person could act on.
 //
@@ -156,11 +165,36 @@ std::string DescribeNode(const ui::AXNode& node) {
       node.GetStringAttribute(ax::mojom::StringAttribute::kDescription));
 }
 
+// True for the parts of a page that are the same on every page of the site.
+//
+// Navigation rails, headers and footers. A person skips these without noticing;
+// a model reading a flat list cannot tell them from the content it was asked
+// about. On a YouTube results page they contribute roughly forty links -- Home,
+// Shorts, Subscriptions, About, Press, Copyright, Terms, Privacy -- competing
+// for the same sixty slots as the actual videos.
+//
+// That is not hypothetical. Asked to play a video, a model clicked "Copyright"
+// and landed on YouTube's copyright policy page, repeatedly. The element it
+// picked was a real one and the click was accurate: the Observation simply
+// offered it as though it were as relevant as a search result.
+bool IsPageChrome(ax::mojom::Role role) {
+  switch (role) {
+    case ax::mojom::Role::kNavigation:
+    case ax::mojom::Role::kBanner:
+    case ax::mojom::Role::kContentInfo:
+    case ax::mojom::Role::kComplementary:
+    case ax::mojom::Role::kFooter:
+      return true;
+    default:
+      return false;
+  }
+}
+
 void Collect(const ui::AXTree& tree,
              const ui::AXNode& node,
-             size_t max_elements,
-             std::vector<ObservedNode>& out,
-             bool& truncated) {
+             bool inside_chrome,
+             std::vector<ObservedNode>& content,
+             std::vector<ObservedNode>& chrome) {
   // Invisible and ignored are NOT the same thing, and treating them the same
   // was a bug that made this return nothing at all on real pages.
   //
@@ -173,6 +207,8 @@ void Collect(const ui::AXTree& tree,
     return;
   }
 
+  inside_chrome = inside_chrome || IsPageChrome(node.GetRole());
+
   const std::string role = node.IsIgnored() ? std::string() : RoleNameFor(node);
   if (!role.empty()) {
     std::string name = DescribeNode(node);
@@ -184,11 +220,11 @@ void Collect(const ui::AXTree& tree,
     // cost a task eight steps of typing into an anonymous box. If nothing above
     // could name it, it is not worth offering.
     if (!name.empty()) {
-      if (out.size() >= max_elements) {
-        truncated = true;
-      } else {
+      {
         ObservedNode observed;
-        observed.id = base::StrCat({"e", base::NumberToString(out.size() + 1)});
+        // The id is issued later, once content and chrome have been put in
+        // order. Numbering here would number them in the order they appear in
+        // the document, which is the order this exists to stop using.
         observed.role = role;
         observed.name = std::move(name);
         observed.value = std::move(value);
@@ -208,14 +244,14 @@ void Collect(const ui::AXTree& tree,
             gfx::ToEnclosingRect(tree.GetTreeBounds(&node, &offscreen));
         observed.offscreen = offscreen;
 
-        out.push_back(std::move(observed));
+        (inside_chrome ? chrome : content).push_back(std::move(observed));
       }
     }
   }
 
   for (const ui::AXNode* child : node.children()) {
     if (child) {
-      Collect(tree, *child, max_elements, out, truncated);
+      Collect(tree, *child, inside_chrome, content, chrome);
     }
   }
 }
@@ -307,8 +343,32 @@ Observation BuildObservation(const ui::AXTreeUpdate& update,
     return observation;
   }
 
-  Collect(tree, *tree.root(), max_elements, observation.elements,
-          observation.truncated);
+  // Content first, then the navigation and footer links.
+  //
+  // The cap therefore falls on the parts of the page that are the same
+  // everywhere, rather than on the part the task is about. Before this, a
+  // YouTube results page could spend most of its sixty slots on the guide rail
+  // and the footer, and a model asked to play a video picked "Copyright".
+  //
+  // Order, not exclusion. Chrome is still offered -- "Sign in" and "Home" are
+  // real things to click -- just after the content, and it is what gets dropped
+  // when there is too much.
+  std::vector<ObservedNode> content;
+  std::vector<ObservedNode> chrome;
+  Collect(tree, *tree.root(), /*inside_chrome=*/false, content, chrome);
+
+  for (std::vector<ObservedNode>* group : {&content, &chrome}) {
+    for (ObservedNode& node : *group) {
+      if (observation.elements.size() >= max_elements) {
+        observation.truncated = true;
+        break;
+      }
+      // Issued here, so the numbers run in the order the model is shown them.
+      node.id = base::StrCat(
+          {"e", base::NumberToString(observation.elements.size() + 1)});
+      observation.elements.push_back(std::move(node));
+    }
+  }
 
   // Which of the issued ids, if any, the page has focused.
   const ui::AXNodeID focused = update.tree_data.focus_id;

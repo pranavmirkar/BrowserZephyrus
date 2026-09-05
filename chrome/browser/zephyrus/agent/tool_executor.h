@@ -137,6 +137,16 @@ class ToolExecutor {
   // pressed Enter on an empty box and spent the rest of its budget wondering
   // why nothing happened. A tool that reports success it has not checked is
   // worse than one that fails, because the model builds its next step on it.
+  // Checks that a navigation went where it was asked to go.
+  //
+  // Navigating reports that a load STARTED, so an address that does not exist
+  // looked exactly like one that does. A model that guessed a URL was told "ok",
+  // saw it had not worked, guessed another, and spent an entire budget that way.
+  void VerifyArrived(std::string wanted, ExecuteCallback callback);
+  void OnArrived(std::string wanted,
+                 ExecuteCallback callback,
+                 Observation fresh);
+
   void VerifyEntered(std::string text, ExecuteCallback callback);
   void LookToVerify(std::string text, ExecuteCallback callback);
   void OnVerified(std::string text,

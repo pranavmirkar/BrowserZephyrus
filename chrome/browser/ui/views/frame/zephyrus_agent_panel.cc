@@ -34,7 +34,13 @@ constexpr int kLineGap = 6;
 // Small on purpose. At roughly four seconds a step, a budget of twenty is over
 // a minute of a browser doing things on its own, which is longer than anyone
 // will watch without wondering whether it has hung.
-constexpr uint32_t kMaxSteps = 12;
+// Twelve was too few for any real task, and a wasted step is expensive: at
+// roughly forty seconds of model time each, the budget IS the time limit.
+//
+// Raised, but not far. The answer to a slow loop is fewer wasted steps -- the
+// repeat guard, verification that reports what actually happened, an
+// Observation worth reading -- not more of them.
+constexpr uint32_t kMaxSteps = 20;
 
 // Lines kept in the log.
 //

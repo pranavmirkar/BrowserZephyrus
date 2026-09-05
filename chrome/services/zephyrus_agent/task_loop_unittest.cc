@@ -19,6 +19,8 @@
 #include <vector>
 
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "chrome/services/zephyrus_agent/kernel/src/lib.rs.h"
@@ -68,6 +70,13 @@ class FakeToolRunner : public mojom::ToolRunner {
 
   void Observe(int32_t level, ObserveCallback callback) override {
     ++observations;
+    if (change_page_each_time) {
+      // A page that moves under the agent, which is the normal case and the
+      // one where repeating a call is legitimate.
+      observation_json = base::StrCat(
+          {R"({"url":"https://docs.example.com/x","title":"X","scroll":)",
+           base::NumberToString(observations), R"(,"elements":[]})"});
+    }
     std::move(callback).Run(observation_json);
   }
 
@@ -102,6 +111,7 @@ class FakeToolRunner : public mojom::ToolRunner {
   std::string next_message;
   std::string next_value_json;
 
+  bool change_page_each_time = false;
   int observations = 0;
   std::vector<std::string> executed;
   std::vector<std::string> executed_arguments;
@@ -181,16 +191,65 @@ TEST_F(TaskLoopTest, StopsWhenAToolCallNeedsApproval) {
 }
 
 TEST_F(TaskLoopTest, TheStepBudgetIsNotAdvisory) {
-  // A model that will never stop. This is the only thing standing between that
-  // and a browser that looks at the same page forever.
+  // A model that will never stop. This is the last thing standing between that
+  // and a browser that works forever.
+  //
+  // The calls differ on purpose. A model repeating ONE call is caught earlier
+  // and more cheaply by the repeat guard below; this test is about the budget
+  // itself, so it gives the model something new to ask for every time and
+  // checks that running out of steps still ends it.
   mojom::TaskOutcomePtr outcome =
-      Run({R"({"name":"page.observe","arguments":{"level":1}})"},
+      Run({R"({"name":"page.find","arguments":{"query":"one"}})",
+           R"({"name":"page.find","arguments":{"query":"two"}})",
+           R"({"name":"page.find","arguments":{"query":"three"}})"},
           /*max_steps=*/3);
 
   ASSERT_TRUE(outcome);
   EXPECT_EQ(outcome->status, mojom::TaskStatus::kOutOfSteps);
   EXPECT_EQ(outcome->steps, 3u);
   EXPECT_EQ(runner_.executed.size(), 3u);
+}
+
+TEST_F(TaskLoopTest, StopsRepeatingACallThatChangedNothing) {
+  // A real run navigated to an invented URL EIGHT TIMES and spent its whole
+  // budget on it. History alone did not help: the model could read what
+  // happened and ask for it again anyway.
+  //
+  // The page here never changes, so the second identical call cannot produce
+  // anything the first did not. It is refused without touching the browser,
+  // and the model is told why.
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://a.example/x"}})"},
+      /*max_steps=*/5);
+
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(runner_.executed.size(), 1u)
+      << "the same call ran against an unchanged page more than once";
+  // Any prompt, not a fixed index: the refusal is written into history as the
+  // repeat is caught, so it first reaches the model on the turn AFTER that.
+  bool told = false;
+  for (const std::string& prompt : model_->user_prompts) {
+    if (prompt.find("did not change") != std::string::npos) {
+      told = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(told) << "the model was never told why the repeat was refused";
+}
+
+TEST_F(TaskLoopTest, RepeatingACallIsFineWhenThePageMoved) {
+  // The other half, and the reason the guard needs both conditions. Repeating a
+  // call is often exactly right -- scrolling twice is how scrolling works. Only
+  // a repeat against an unchanged page is provably pointless.
+  runner_.change_page_each_time = true;
+
+  mojom::TaskOutcomePtr outcome =
+      Run({R"({"name":"page.scroll","arguments":{"direction":"down","amount":"page"}})"},
+          /*max_steps=*/3);
+
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(runner_.executed.size(), 3u)
+      << "a repeat was blocked even though the page changed under it";
 }
 
 TEST_F(TaskLoopTest, ProseCostsAStepInsteadOfLoopingForever) {
@@ -353,6 +412,27 @@ TEST_F(TaskLoopTest, AnApprovalIsSingleUse) {
   // Exactly one call went down the approved path, however many ran after it.
   EXPECT_EQ(runner_.approved_executions.size(), 1u);
   EXPECT_GT(runner_.executed.size(), 1u);
+}
+
+TEST_F(TaskLoopTest, TheModelIsToldItMayGoStraightToASearchPage) {
+  // The fastest route to a video is one navigation, not four steps of finding
+  // the search box, clicking it, typing and pressing Enter. At roughly nine
+  // seconds of model time per step, that difference is most of a 45-second
+  // budget.
+  //
+  // The earlier rule banned constructing ANY address, which was too blunt: it
+  // was written to stop the model inventing watch?v=... ids, and it also talked
+  // it out of the one URL pattern that is safe to build.
+  Run({R"({"name":"task.complete","arguments":{"answer":"done"}})"});
+
+  ASSERT_FALSE(model_->system_prompts.empty());
+  const std::string& prompt = model_->system_prompts[0];
+  EXPECT_NE(prompt.find("search_query"), std::string::npos)
+      << "the model is not told the search pattern is allowed: " << prompt;
+
+  // And the part that still has to hold: a specific item is reached by clicking
+  // it, because its address contains an id no one can derive from the title.
+  EXPECT_NE(prompt.find("clicking its link"), std::string::npos) << prompt;
 }
 
 }  // namespace

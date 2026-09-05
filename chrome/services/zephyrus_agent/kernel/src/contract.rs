@@ -250,6 +250,35 @@ impl Contract {
         Ok(Contract { version, tools })
     }
 
+    /// Wrap a bare argument in the property the tool actually expects.
+    ///
+    /// A model that means `browser.navigate("https://...")` writes exactly that,
+    /// and the shape check refused it with "arguments are not a JSON object" --
+    /// true, unhelpful, and a whole step gone. In a real run it happened twice
+    /// out of twelve steps.
+    ///
+    /// Only when the tool takes exactly ONE required argument, so there is no
+    /// question which one was meant. Anything else is returned untouched, and
+    /// the shape check still has the final say.
+    pub fn normalize_arguments(&self, name: &str, arguments_json: &str) -> String {
+        let untouched = || arguments_json.to_string();
+        let Some(tool) = self.tool(name) else {
+            return untouched();
+        };
+        let Ok(value) = serde_json::from_str::<Value>(arguments_json) else {
+            return untouched();
+        };
+        if value.is_object() || value.is_null() {
+            return untouched();
+        }
+        if tool.required.len() != 1 {
+            return untouched();
+        }
+        let mut wrapped = serde_json::Map::new();
+        wrapped.insert(tool.required[0].clone(), value);
+        Value::Object(wrapped).to_string()
+    }
+
     pub fn tool(&self, name: &str) -> Option<&Tool> {
         self.tools.get(name)
     }
@@ -273,6 +302,19 @@ impl Contract {
 
         let mut out = String::new();
         for name in names {
+            // page.observe is deliberately NOT offered.
+            //
+            // The loop looks at the page before every single turn and puts the
+            // result in the prompt, so asking for it buys nothing and costs a
+            // whole step. A real run spent TEN of its seventeen steps calling
+            // it in a row, on a page that already had what it needed on screen.
+            //
+            // It stays in the contract -- the executor still answers it, and
+            // removing a tool from a frozen contract is a different decision --
+            // but a model cannot spend steps on a tool it was never shown.
+            if name == "page.observe" {
+                continue;
+            }
             let tool = &self.tools[name];
             let mut args: Vec<String> = tool
                 .properties

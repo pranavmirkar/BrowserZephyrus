@@ -376,7 +376,10 @@ TEST(ObservationTest, ShortensARunOnNameToSomethingChoosable) {
   ASSERT_EQ(observation.elements.size(), 1u);
   const std::string& name = observation.elements[0].name;
   EXPECT_LT(name.size(), run_on.size());
-  EXPECT_LE(name.size(), 84u) << name;
+  EXPECT_LE(name.size(), 144u) << name;
+  // The cap is 140 rather than 80 because a video's link name carries the
+  // channel, the view count and the upload age after the title, and cutting at
+  // 80 threw away the very field a question like "the latest one" turns on.
   // The front is kept, because that is the part a person reads to choose.
   EXPECT_EQ(name.rfind("Sidemen Verified", 0), 0u) << name;
   // And it stops on a word, not mid-way through one.
@@ -404,6 +407,95 @@ TEST(ObservationTest, CollapsesTheWhitespaceAPageLaidOutWith) {
 
   ASSERT_EQ(observation.elements.size(), 1u);
   EXPECT_EQ(observation.elements[0].name, "Watch later now");
+}
+
+// A page laid out like a real one: a navigation rail, then the content, then a
+// footer. This is the shape that made an agent click "Copyright".
+ui::AXTreeUpdate MakeSiteShapedPage(int nav_links,
+                                    int content_links,
+                                    int footer_links) {
+  ui::AXNodeData root = MakeNode(1, ax::mojom::Role::kRootWebArea);
+  std::vector<ui::AXNodeData> nodes;
+  int next = 2;
+
+  ui::AXNodeData nav = MakeNode(next++, ax::mojom::Role::kNavigation);
+  for (int i = 0; i < nav_links; ++i) {
+    ui::AXNodeData link = MakeNode(next++, ax::mojom::Role::kLink,
+                                   "Nav " + base::NumberToString(i));
+    nav.child_ids.push_back(link.id);
+    nodes.push_back(std::move(link));
+  }
+
+  ui::AXNodeData main = MakeNode(next++, ax::mojom::Role::kMain);
+  for (int i = 0; i < content_links; ++i) {
+    ui::AXNodeData link = MakeNode(next++, ax::mojom::Role::kLink,
+                                   "Video " + base::NumberToString(i));
+    main.child_ids.push_back(link.id);
+    nodes.push_back(std::move(link));
+  }
+
+  ui::AXNodeData footer = MakeNode(next++, ax::mojom::Role::kContentInfo);
+  for (int i = 0; i < footer_links; ++i) {
+    ui::AXNodeData link = MakeNode(
+        next++, ax::mojom::Role::kLink,
+        i == 0 ? std::string("Copyright") : "Foot " + base::NumberToString(i));
+    footer.child_ids.push_back(link.id);
+    nodes.push_back(std::move(link));
+  }
+
+  root.child_ids = {nav.id, main.id, footer.id};
+
+  ui::AXTreeUpdate update;
+  update.root_id = root.id;
+  update.nodes.push_back(root);
+  update.nodes.push_back(std::move(nav));
+  update.nodes.push_back(std::move(main));
+  update.nodes.push_back(std::move(footer));
+  for (ui::AXNodeData& n : nodes) {
+    update.nodes.push_back(std::move(n));
+  }
+  update.has_tree_data = true;
+  update.tree_data.tree_id = ui::AXTreeID::CreateNewAXTreeID();
+  return update;
+}
+
+TEST(ObservationTest, OffersTheContentBeforeTheNavigation) {
+  // The nav comes FIRST in the document, so in document order it would take the
+  // early ids and, on a real page, most of the cap. What the task is about has
+  // to come first instead.
+  Observation observation = BuildObservation(
+      MakeSiteShapedPage(/*nav_links=*/5, /*content_links=*/3,
+                         /*footer_links=*/4),
+      "https://example.org/results", "Results", kMaxObservedElements,
+      kMaxObservedTextLength);
+
+  ASSERT_GE(observation.elements.size(), 3u);
+  EXPECT_EQ(observation.elements[0].name, "Video 0");
+  EXPECT_EQ(observation.elements[1].name, "Video 1");
+  EXPECT_EQ(observation.elements[2].name, "Video 2");
+  // Chrome is still offered -- "Sign in" is a real thing to click -- just after.
+  EXPECT_NE(observation.ToJson(1).find("Copyright"), std::string::npos);
+}
+
+TEST(ObservationTest, TheCapFallsOnNavigationNotOnContent) {
+  // The actual failure. With forty navigation and footer links ahead of them in
+  // the document, a page's real content used to be pushed past the cap entirely
+  // -- so a model asked to play a video was offered "Copyright" and not one
+  // video. It clicked Copyright.
+  Observation observation = BuildObservation(
+      MakeSiteShapedPage(/*nav_links=*/40, /*content_links=*/6,
+                         /*footer_links=*/14),
+      "https://example.org/results", "Results", /*max_elements=*/10,
+      kMaxObservedTextLength);
+
+  ASSERT_EQ(observation.elements.size(), 10u);
+  EXPECT_TRUE(observation.truncated);
+  for (int i = 0; i < 6; ++i) {
+    EXPECT_EQ(observation.elements[i].name, "Video " + base::NumberToString(i))
+        << "content lost its place to the navigation";
+  }
+  // And the ids run in the order the model is shown them, not document order.
+  EXPECT_EQ(observation.elements[0].id, "e1");
 }
 
 }  // namespace

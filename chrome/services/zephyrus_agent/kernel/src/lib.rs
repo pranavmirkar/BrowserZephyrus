@@ -125,6 +125,14 @@ mod ffi {
 
         fn decide(self: &Kernel, request: &PolicyRequest) -> PolicyDecision;
 
+        /// Wrap a bare argument in the property its tool expects. See
+        /// Contract::normalize_arguments.
+        fn normalize_arguments(
+            self: &Kernel,
+            tool: &str,
+            arguments_json: &str,
+        ) -> String;
+
         /// Recover a tool call from whatever the model emitted.
         ///
         /// Free function rather than a Kernel method: it needs no contract, and
@@ -178,6 +186,15 @@ impl Kernel {
             .as_ref()
             .map(Contract::prompt_listing)
             .unwrap_or_default()
+    }
+
+    fn normalize_arguments(&self, tool: &str, arguments_json: &str) -> String {
+        // No contract means no opinion about what the argument should be called,
+        // so hand it back untouched and let the shape check speak.
+        match &self.contract {
+            Some(contract) => contract.normalize_arguments(tool, arguments_json),
+            None => arguments_json.to_string(),
+        }
     }
 
     fn decide(&self, request: &ffi::PolicyRequest) -> ffi::PolicyDecision {

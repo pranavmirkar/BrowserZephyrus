@@ -11,6 +11,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
 #include "chrome/browser/zephyrus/agent/tool_surface.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_tree_id.h"
@@ -18,6 +19,8 @@
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/dom_key.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "ui/gfx/geometry/rect.h"
 
 class Browser;
@@ -91,6 +94,7 @@ class BrowserToolSurface : public ToolSurface {
   // runs out. Waiting here removes the churn at the source rather than
   // loosening the rule that caught it.
   class LoadWaiter;
+  class FetchWatcher;
 
   void TakeSnapshot(ObserveCallback callback);
 
@@ -133,10 +137,32 @@ class BrowserToolSurface : public ToolSurface {
   // other two are what the page's handlers watch for.
   bool TypeCharacter(content::RenderWidgetHost* widget, char16_t character);
 
+  // Takes a picture of the page, downscaled and JPEG-encoded, or nothing at
+  // all when vision is switched off. Asynchronous: it goes to the compositor.
+  void CaptureScreenshot(Observation observation, ObserveCallback callback);
+  void OnScreenshot(Observation observation,
+                    ObserveCallback callback,
+                    const content::CopyFromSurfaceResult& result);
+
   void OnSnapshot(ObserveCallback callback,
                   std::string url,
                   std::string title,
                   ui::AXTreeUpdate& update);
+
+  // When the agent last did something to the page.
+  //
+  // Looking at a page the agent has just acted on has to wait for it to react;
+  // looking at one nobody touched does not. Without this every observation
+  // would pay the settle floor, including the consecutive looks a model takes
+  // while thinking.
+  base::TimeTicks last_action_at_;
+
+  // Settling state: the last look's signature and how many looks it has taken.
+  // Reset at the start of every Observe, so a previous settle cannot leak into
+  // the next one.
+  std::unique_ptr<FetchWatcher> fetch_watcher_;
+  std::string settle_signature_;
+  int settle_rounds_ = 0;
 
   raw_ptr<Browser> browser_;
 

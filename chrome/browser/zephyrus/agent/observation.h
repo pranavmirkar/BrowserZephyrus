@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_ZEPHYRUS_AGENT_OBSERVATION_H_
 #define CHROME_BROWSER_ZEPHYRUS_AGENT_OBSERVATION_H_
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "ui/accessibility/ax_tree_id.h"
 #include "ui/accessibility/ax_tree_update_forward.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace zephyrus::agent {
 
@@ -80,6 +82,28 @@ struct Observation {
   std::vector<ObservedNode> elements;
   std::string text;
 
+  // A picture of the page, as JPEG bytes. Empty unless vision is switched on.
+  //
+  // The SECOND channel, not a replacement for the first. Measured across the
+  // field: a page costs roughly ten times more as an image than as an
+  // accessibility tree, and the strongest agents layer a screenshot OVER the
+  // tree rather than choosing between them. The tree stays the precise,
+  // cheap way to name and reach an element; the picture is for what the tree
+  // gets wrong -- which on a modern app is plenty, since it was designed for
+  // screen readers and most sites expose it poorly.
+  //
+  // Kept out of ToJson deliberately. This never becomes prompt text; it
+  // travels as an image or not at all.
+  std::vector<uint8_t> screenshot_jpeg;
+
+  // The viewport the element bounds were measured in.
+  //
+  // The picture is downscaled to bound its cost, so masking it needs to know
+  // what the bounds were relative to. Without this the black rectangles land in
+  // the wrong place -- which on a form means covering the label and leaving the
+  // value beside it in plain sight.
+  gfx::Size viewport;
+
   // The tree this came from. Compared before acting: if the page has been
   // replaced, every id in here refers to something that no longer exists, and
   // acting on a matching id in the new tree would act on the wrong thing.
@@ -134,8 +158,19 @@ bool IsTextEntryRole(std::string_view role);
 // prompt dominates the time per step -- measured at roughly four seconds with
 // qwen2.5:7b, and worse as the page grows. Cut hard enough that a task feels
 // like it is moving; a model that needs more can call page.find.
-inline constexpr size_t kMaxObservedElements = 60;
-inline constexpr size_t kMaxObservedTextLength = 1500;
+// Measured on a real run: 8 minutes 40 seconds for twelve steps, which is
+// FORTY-THREE SECONDS PER STEP. A tool call costs about 3ms, so all of that is
+// the model reading. What it reads is this Observation, every single step.
+//
+// Sixty elements at roughly a hundred bytes each, plus 1500 characters of page
+// text, plus the growing history, is several thousand tokens per turn -- and a
+// local 7B pays for every one of them. Halving what it reads roughly halves the
+// wall-clock cost of the whole task, which matters far more than any code here.
+//
+// Thirty is enough because content now comes before navigation chrome, so the
+// cut falls on the site's furniture rather than on what the task is about.
+inline constexpr size_t kMaxObservedElements = 30;
+inline constexpr size_t kMaxObservedTextLength = 700;
 
 }  // namespace zephyrus::agent
 

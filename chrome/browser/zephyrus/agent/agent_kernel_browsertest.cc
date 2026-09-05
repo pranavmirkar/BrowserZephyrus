@@ -37,6 +37,10 @@
 #include "content/public/browser/service_process_info.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "base/task/sequenced_task_runner.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "services/network/public/mojom/url_loader.mojom.h"
+#include "content/public/test/url_loader_interceptor.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
@@ -1158,6 +1162,259 @@ IN_PROC_BROWSER_TEST_F(ZephyrusAgentKernelBrowserTest,
   const std::string after = run("page.observe", R"({"level":1})").value_json;
   EXPECT_NE(after.find("chose:India"), std::string::npos)
       << "the option was not chosen. what the page saw: " << after;
+}
+
+// Does looking at the page wait for the page to finish reacting?
+//
+// Every wait here keys off a LOAD. A single-page app never loads: clicking a
+// result on youtube.com swaps the DOM and fetches in the background, and
+// content->IsLoading() is false the whole time. So the snapshot is taken of the
+// page as it was BEFORE the click had any effect, and the model is handed a
+// photograph of the past while being told it is the present.
+//
+// Everything downstream inherits that. The model picks an element that is gone,
+// or concludes its click did nothing and tries something else. No amount of
+// model quality survives being shown the wrong page.
+IN_PROC_BROWSER_TEST_F(ZephyrusAgentKernelBrowserTest,
+                       LookingWaitsForThePageToReact) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  // Content that arrives by fetch, with no navigation of any kind.
+  //
+  // This is what a single-page app does and what a load-based wait cannot see:
+  // IsLoading() is false the whole time, so looking immediately photographs the
+  // page before its own answer has arrived.
+  //
+  // The work is started from JavaScript rather than by clicking, deliberately.
+  // An earlier version drove it with page.click and spent several rounds
+  // failing for reasons that had nothing to do with settling. What is under
+  // test here is whether LOOKING waits, so nothing else belongs in the way.
+  const GURL page = embedded_test_server()->GetURL("/zephyrus-spa.html");
+  const GURL fetched = embedded_test_server()->GetURL("/zephyrus-data");
+  content::URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+      [&](content::URLLoaderInterceptor::RequestParams* params) {
+        if (params->url_request.url == fetched) {
+          // Answered LATE, on purpose.
+          //
+          // Measured: a bare look costs 90-250ms by itself, so a fetch served
+          // instantly came back before the browser had finished looking and the
+          // test passed with settling switched OFF -- proving nothing. 300ms is
+          // above that and inside the 400ms floor, so the two cases differ.
+          auto client = std::move(params->client);
+          base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+              FROM_HERE,
+              base::BindOnce(
+                  [](mojo::Remote<network::mojom::URLLoaderClient> late) {
+                    content::URLLoaderInterceptor::WriteResponse(
+                        "HTTP/1.1 200 OK\nContent-Type: text/plain\n\n",
+                        "ready", late.get());
+                  },
+                  std::move(client)),
+              base::Milliseconds(300));
+          return true;
+        }
+        if (params->url_request.url != page) {
+          return false;
+        }
+        content::URLLoaderInterceptor::WriteResponse(
+            "HTTP/1.1 200 OK\nContent-Type: text/html\n\n",
+            "<title>start</title><body style='margin:0'>"
+            "<div id='out'></div>"
+            "<script>"
+            "function go(){"
+            "fetch('/zephyrus-data').then(function(r){return r.text();})"
+            ".then(function(){"
+            "var a=document.createElement('a');"
+            "a.href='https://example.com/one';"
+            "a.setAttribute('aria-label','Result one');"
+            "a.textContent='Result one';"
+            "document.getElementById('out').appendChild(a);"
+            "});}"
+            "</script>",
+            params->client.get());
+        return true;
+      }));
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), page));
+
+  AgentKernelClient kernel;
+  BrowserToolSurface surface(browser());
+  ToolExecutor executor(&kernel, &surface);
+
+  std::string timings;
+  auto run = [&](const std::string& tool, const std::string& args) {
+    const base::TimeTicks began = base::TimeTicks::Now();
+    ToolExecutor::Result result;
+    base::RunLoop loop;
+    executor.Execute(tool, args, "Open the first result",
+                     base::BindLambdaForTesting([&](ToolExecutor::Result got) {
+                       result = std::move(got);
+                       loop.Quit();
+                     }));
+    loop.Run();
+    timings += " " + tool + "=" +
+               base::NumberToString(
+                   (base::TimeTicks::Now() - began).InMilliseconds()) +
+               "ms";
+    return result;
+  };
+
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  // A real tool call first, because the settle floor is spent only after the
+  // agent has acted -- which is the real case, and the only one where the
+  // browser has any reason to expect the page to move.
+  ASSERT_EQ(run("page.scroll", R"({"direction":"down","amount":"page"})").status,
+            ToolExecutor::Result::Status::kOk);
+
+  // Then the page starts fetching and returns immediately, the way a real app
+  // responds to being acted on.
+  ASSERT_TRUE(content::ExecJs(contents, "go()"));
+
+  // Straight to looking, with no sleep. This is exactly what the loop does.
+  const std::string after = run("page.observe", R"({"level":1})").value_json;
+
+  const std::string dom =
+      content::EvalJs(contents, "document.getElementById('out').innerHTML")
+          .ExtractString();
+
+  // An ELEMENT with that name, never the text anywhere in the JSON: the
+  // Observation carries the page URL, and searching all of it once matched the
+  // page's own script source and passed while proving nothing.
+  EXPECT_FALSE(IdForName(after, "Result one").empty())
+      << "the page was photographed before its fetch came back. timings:"
+      << timings << " DOM now: [" << dom << "] what was seen: " << after;
+}
+
+// Does page.click reach a listener on an ordinary served page?
+//
+// Written because it did not, once, and the reason was never established. While
+// building the settling test, a <button> on an http:// page never ran its click
+// handler -- the DOM did not even show the marker the handler sets on its first
+// line -- while the same mechanism demonstrably works on a data: URL with an
+// <input>. That was set aside to stop it derailing a different test; this is the
+// test that settles it.
+//
+// The JS click at the end is the control. If our click fails and that one
+// works, the page is fine and the browser is at fault, which is the answer that
+// matters here.
+IN_PROC_BROWSER_TEST_F(ZephyrusAgentKernelBrowserTest,
+                       ClickingReachesAListenerOnAServedPage) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  const GURL page = embedded_test_server()->GetURL("/zephyrus-click.html");
+  content::URLLoaderInterceptor interceptor(base::BindLambdaForTesting(
+      [&](content::URLLoaderInterceptor::RequestParams* params) {
+        if (params->url_request.url != page) {
+          return false;
+        }
+        content::URLLoaderInterceptor::WriteResponse(
+            "HTTP/1.1 200 OK\nContent-Type: text/html\n\n",
+            "<title>start</title><body style='margin:0'>"
+            "<div style='height:200px'></div>"
+            "<div style='margin-left:250px'>"
+            "<button aria-label='Load'>Load</button></div>"
+            "<div id='out'></div>"
+            "<script>"
+            "document.querySelector('button').addEventListener('click',"
+            "function(){document.getElementById('out').textContent='CLICKED';});"
+            // Records every click the document sees, with where it landed and
+            // what it hit. Aimed-at beside landed-on is what turned the last
+            // coordinate bug from a guess into a ratio.
+            "window.saw='none';"
+            // Each stage separately. A click is synthesised by Blink from a
+            // down and an up on the same node, so knowing which of the three
+            // arrived says whether the events are being delivered at all or
+            // only failing to combine.
+            "['mousedown','mouseup','click'].forEach(function(k){"
+            "document.addEventListener(k,function(e){"
+            "window.saw=(window.saw==='none'?'':window.saw+' ')+k+'@'"
+            "+Math.round(e.clientX)+','+Math.round(e.clientY)"
+            "+':'+e.target.tagName;});});"
+            "</script>",
+            params->client.get());
+        return true;
+      }));
+
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), page));
+
+  AgentKernelClient kernel;
+  BrowserToolSurface surface(browser());
+  ToolExecutor executor(&kernel, &surface);
+
+  auto run = [&](const std::string& tool, const std::string& args) {
+    ToolExecutor::Result result;
+    base::RunLoop loop;
+    executor.Execute(tool, args, "Press the button",
+                     base::BindLambdaForTesting([&](ToolExecutor::Result got) {
+                       result = std::move(got);
+                       loop.Quit();
+                     }));
+    loop.Run();
+    return result;
+  };
+
+  ToolExecutor::Result seen = run("page.observe", R"({"level":1})");
+  ASSERT_EQ(seen.status, ToolExecutor::Result::Status::kOk);
+  const std::string button = IdForName(seen.value_json, "Load");
+  ASSERT_FALSE(button.empty()) << seen.value_json;
+
+  ASSERT_EQ(run("page.click", R"({"element_id":")" + button + R"("})").status,
+            ToolExecutor::Result::Status::kOk);
+  run("page.observe", R"({"level":1})");
+
+  content::WebContents* contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  const std::string after_our_click =
+      content::EvalJs(contents, "document.getElementById('out').textContent")
+          .ExtractString();
+
+  // Read BEFORE the control runs. A programmatic .click() reports 0,0, so
+  // reading these afterwards measured the control and not our click -- which is
+  // exactly the mistake that made the first run of this probe meaningless.
+  const std::string landed =
+      content::EvalJs(contents, "String(window.saw)").ExtractString();
+  const std::string wanted =
+      content::EvalJs(
+          contents,
+          "var r=document.querySelector('button').getBoundingClientRect();"
+          "Math.round(r.left+r.width/2)+','+Math.round(r.top+r.height/2)")
+          .ExtractString();
+
+  // Chromium's own injector, at the same point, before the JS control.
+  //
+  // This is the discriminator. If our events produce nothing and these produce
+  // a click, the fault is in how we synthesise them. If neither arrives, the
+  // window in this test cannot receive input at all and the whole comparison is
+  // about the harness for the test rather than the browser.
+  content::SimulateMouseClickAt(contents, 0,
+                                blink::WebMouseEvent::Button::kLeft,
+                                gfx::Point(273, 211));
+  run("page.observe", R"({"level":1})");
+  const std::string after_chromium_click =
+      content::EvalJs(contents, "String(window.saw)").ExtractString();
+
+  // The control: the page's own listener, invoked directly.
+  ASSERT_TRUE(content::ExecJs(contents,
+                              "document.getElementById('out').textContent='';"
+                              "document.querySelector('button').click()"));
+  const std::string after_js_click =
+      content::EvalJs(contents, "document.getElementById('out').textContent")
+          .ExtractString();
+
+  ASSERT_EQ(after_js_click, "CLICKED")
+      << "the page's own listener does not work, so this test cannot judge ours";
+  EXPECT_EQ(after_our_click, "CLICKED")
+      << "page.click did not reach a listener that a JS click does reach."
+      << " aimed at roughly " << wanted << ", the page saw [" << landed << "]"
+      << ", window active: " << browser()->window()->IsActive()
+      << ", Chromium's own injector saw [" << after_chromium_click << "]"
+      << ", viewport "
+      << content::EvalJs(contents,
+                         "window.innerWidth+'x'+window.innerHeight+' dpr'+"
+                         "window.devicePixelRatio")
+             .ExtractString();
 }
 
 }  // namespace

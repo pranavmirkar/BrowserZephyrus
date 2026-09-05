@@ -97,6 +97,14 @@ class TaskLoop {
   const std::string task_;
   const uint32_t max_steps_;
 
+  // The last call actually executed, and the page as it looked when it was.
+  // Together they answer "would doing this again change anything" -- see the
+  // guard in OnProposed. Neither is enough alone: the same call on a changed
+  // page is often the right move, and a changed call on the same page always
+  // is.
+  std::string last_call_;
+  std::string observation_at_last_call_;
+
   mojo::Remote<mojom::ToolRunner> runner_;
   mojo::Remote<mojom::AgentModel> model_;
   DoneCallback done_;

@@ -6,6 +6,12 @@
 
 #include <tuple>
 
+#include "base/command_line.h"
+#include "chrome/browser/zephyrus/agent/dev_model_client.h"
+#include "chrome/browser/zephyrus/agent/sanitizer.h"
+#include "third_party/skia/include/core/SkCanvas.h"
+#include "third_party/skia/include/core/SkPaint.h"
+#include "ui/gfx/codec/jpeg_codec.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
@@ -21,12 +27,17 @@
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/scoped_accessibility_mode.h"
 #include "base/timer/timer.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/time/time.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/global_request_id.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "third_party/blink/public/mojom/loader/resource_load_info.mojom.h"
 #include "ui/gfx/geometry/point_conversions.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/accessibility/ax_action_data.h"
@@ -107,7 +118,91 @@ std::optional<NamedKey> KeyByName(const std::string& name) {
 // the timeout is what keeps "wait for the page" from becoming "wait".
 constexpr base::TimeDelta kLoadSettleTimeout = base::Seconds(4);
 
+// How the browser decides a page has finished reacting.
+//
+// Every wait used to key off a LOAD, and a single-page app never loads: on
+// youtube.com a click swaps the DOM and fetches in the background while
+// IsLoading() stays false throughout. The snapshot was therefore taken of the
+// page as it had been BEFORE the click, and the model was handed a photograph
+// of the past labelled as the present. Measured -- see
+// LookingWaitsForThePageToReact.
+//
+// So look more than once and stop when two consecutive looks agree. Stability
+// is the signal, because it is the one that does not depend on the page
+// announcing anything.
+//
+// The floor is the load-bearing part, and stability only refines it.
+//
+// Stability alone answers too early, because a page that has not STARTED
+// reacting is perfectly stable -- two identical looks 150ms apart prove nothing
+// while the answer is still in flight. Chromium offers no per-WebContents
+// signal for a request that is merely outstanding (ResourceLoadComplete fires
+// when one FINISHES), so there is nothing to wait on and the wait has to be
+// chosen rather than derived.
+//
+// 400ms, spent only after the agent has acted. Consecutive looks at an
+// untouched page pay nothing, and a tool call itself costs about 3ms against a
+// model call of several seconds, so this is a small fraction of a step.
+//
+// A page that reacts later than this is not lost. The Observation says whether
+// it was still changing when the browser stopped waiting, so the model can look
+// again -- which is the recoverable version of the failure, and much better
+// than a confident photograph of the wrong moment.
+constexpr base::TimeDelta kSettleFloor = base::Milliseconds(400);
+constexpr base::TimeDelta kSettleInterval = base::Milliseconds(150);
+constexpr base::TimeDelta kActionIsRecent = base::Seconds(3);
+
+// A page that never stops moving -- a carousel, a clock, a live view -- would
+// otherwise be waited on forever. At this point take what is there and go.
+constexpr int kMaxSettleRounds = 8;
+
+// What "the page changed" means for settling: the things the model is shown.
+// Pixels move constantly and mean nothing here.
+std::string SignatureOf(const Observation& observation) {
+  // Plain separators, not control bytes: this string exists to be compared, and
+  // a source file carrying invisible characters is a source file nobody can
+  // read. Collisions would only cost an early stop, never a wrong action.
+  std::string signature = observation.url + " >< " + observation.title;
+  for (const ObservedNode& node : observation.elements) {
+    signature += " >< " + node.role + " :: " + node.name + " :: " + node.value;
+  }
+  return signature;
+}
+
 }  // namespace
+
+// Notices the page fetching things.
+//
+// Stability alone is not enough to know a page has finished reacting, and the
+// reason is simple once seen: a page that has not STARTED reacting is perfectly
+// stable. Two identical looks 150ms apart prove nothing if the answer is still
+// on its way.
+//
+// A real single-page app tells us anyway, just not through anything that looks
+// like a page load. Clicking a result on youtube.com issues a fetch, and a
+// finished subresource is a signal that more is probably about to change. So
+// settling waits while the page is still talking to the network, and stability
+// decides only once it has gone quiet.
+class BrowserToolSurface::FetchWatcher : public content::WebContentsObserver {
+ public:
+  explicit FetchWatcher(content::WebContents* contents)
+      : content::WebContentsObserver(contents) {}
+
+  void ResourceLoadComplete(
+      content::RenderFrameHost*,
+      const content::GlobalRequestID&,
+      const blink::mojom::ResourceLoadInfo&) override {
+    last_fetch_at_ = base::TimeTicks::Now();
+  }
+
+  bool BusyWithin(base::TimeDelta window) const {
+    return !last_fetch_at_.is_null() &&
+           base::TimeTicks::Now() - last_fetch_at_ < window;
+  }
+
+ private:
+  base::TimeTicks last_fetch_at_;
+};
 
 // Runs `done` when the page stops loading, or when it has waited long enough.
 class BrowserToolSurface::LoadWaiter : public content::WebContentsObserver {
@@ -205,6 +300,7 @@ content::WebContents* BrowserToolSurface::FindTabInCurrentWorkspace(
 }
 
 bool BrowserToolSurface::Navigate(const GURL& url) {
+  last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents) {
     return false;
@@ -216,6 +312,7 @@ bool BrowserToolSurface::Navigate(const GURL& url) {
 }
 
 bool BrowserToolSurface::GoBack() {
+  last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents || !contents->GetController().CanGoBack()) {
     return false;
@@ -225,6 +322,7 @@ bool BrowserToolSurface::GoBack() {
 }
 
 bool BrowserToolSurface::GoForward() {
+  last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents || !contents->GetController().CanGoForward()) {
     return false;
@@ -234,6 +332,7 @@ bool BrowserToolSurface::GoForward() {
 }
 
 bool BrowserToolSurface::Reload() {
+  last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents) {
     return false;
@@ -244,6 +343,7 @@ bool BrowserToolSurface::Reload() {
 }
 
 bool BrowserToolSurface::OpenTab(const GURL& url) {
+  last_action_at_ = base::TimeTicks::Now();
   // An empty URL means a blank new tab, which is what the contract's optional
   // url argument asks for.
   NavigateParams params(browser_, url.is_empty() ? GURL("about:blank") : url,
@@ -254,6 +354,7 @@ bool BrowserToolSurface::OpenTab(const GURL& url) {
 }
 
 bool BrowserToolSurface::SwitchToTab(int tab_id) {
+  last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = FindTabInCurrentWorkspace(tab_id);
   if (!contents) {
     return false;
@@ -311,11 +412,30 @@ void BrowserToolSurface::Observe(ObserveCallback callback) {
   // Let a page in flight settle first. Observing mid-navigation hands the
   // model element ids from a document that is about to be replaced, and by the
   // time it has decided what to do with them they refer to nothing.
+  settle_rounds_ = 0;
+  settle_signature_.clear();
+  // Starts listening now, which is enough: the fetches that matter are the ones
+  // the agent's own action just caused.
+  fetch_watcher_ = std::make_unique<FetchWatcher>(contents);
+
   if (contents->IsLoading()) {
     load_waiter_ = std::make_unique<LoadWaiter>(
         contents, base::BindOnce(&BrowserToolSurface::TakeSnapshot,
                                  weak_factory_.GetWeakPtr(),
                                  std::move(callback)));
+    return;
+  }
+
+  // If the agent has just acted, give the page a moment before the first look.
+  // Sampling immediately catches it before it has started, and a page that has
+  // not started is indistinguishable from one that has finished.
+  const base::TimeDelta since = base::TimeTicks::Now() - last_action_at_;
+  if (since < kSettleFloor && since < kActionIsRecent) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&BrowserToolSurface::TakeSnapshot,
+                       weak_factory_.GetWeakPtr(), std::move(callback)),
+        kSettleFloor - since);
     return;
   }
 
@@ -354,9 +474,144 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
                                     std::string url,
                                     std::string title,
                                     ui::AXTreeUpdate& update) {
-  std::move(callback).Run(BuildObservation(update, url, title,
-                                           kMaxObservedElements,
-                                           kMaxObservedTextLength));
+  Observation observation = BuildObservation(
+      update, url, title, kMaxObservedElements, kMaxObservedTextLength);
+
+  // Look again unless this look matched the last one. The first look never
+  // matches, so a page is always seen at least twice before it is believed.
+  const std::string signature = SignatureOf(observation);
+  const bool still_fetching =
+      fetch_watcher_ && fetch_watcher_->BusyWithin(kSettleInterval * 2);
+  if ((signature != settle_signature_ || still_fetching) &&
+      settle_rounds_ < kMaxSettleRounds) {
+    settle_signature_ = signature;
+    ++settle_rounds_;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&BrowserToolSurface::TakeSnapshot,
+                       weak_factory_.GetWeakPtr(), std::move(callback)),
+        kSettleInterval);
+    return;
+  }
+
+  settle_rounds_ = 0;
+  settle_signature_.clear();
+  fetch_watcher_.reset();
+
+  // The page has stopped moving, so this is the moment worth photographing.
+  CaptureScreenshot(std::move(observation), std::move(callback));
+}
+
+// The widest a screenshot is allowed to be, in pixels.
+//
+// A model charges by the pixel, roughly, and a 2000px-wide capture buys nothing
+// a 1024px one does not -- the text a page uses for labels is still legible and
+// the layout, which is the reason to look at all, is unchanged. Bounding this is
+// what keeps the second channel from undoing the prompt cut that took a step
+// from 43 seconds to 9.
+constexpr int kMaxScreenshotWidth = 1024;
+
+// Quality for the JPEG. High enough that small text survives, low enough that
+// the bytes stay sane; screenshots compress well because they are mostly flat.
+constexpr int kScreenshotQuality = 72;
+
+void BrowserToolSurface::CaptureScreenshot(Observation observation,
+                                           ObserveCallback callback) {
+  // Off unless asked for. When it is off this costs one flag read, and the
+  // Observation goes out exactly as it did before vision existed.
+  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+          kAgentVisionSwitch)) {
+    std::move(callback).Run(std::move(observation));
+    return;
+  }
+
+  content::WebContents* contents = ActiveContents();
+  content::RenderWidgetHostView* view =
+      contents ? contents->GetRenderWidgetHostView() : nullptr;
+  if (!view || !view->IsSurfaceAvailableForCopy()) {
+    // No picture is not an error. The Observation still describes the page, and
+    // a task that stops because a screenshot was unavailable would be worse
+    // than one that carries on with the channel that does work.
+    std::move(callback).Run(std::move(observation));
+    return;
+  }
+
+  const gfx::Size full = view->GetVisibleViewportSize();
+  // Kept so the masks can be scaled to the downscaled picture later.
+  observation.viewport = full;
+  gfx::Size wanted = full;
+  if (full.width() > kMaxScreenshotWidth && full.width() > 0) {
+    wanted = gfx::Size(
+        kMaxScreenshotWidth,
+        std::max(1, full.height() * kMaxScreenshotWidth / full.width()));
+  }
+
+  view->CopyFromSurface(
+      gfx::Rect(), wanted, base::Seconds(2),
+      base::BindOnce(&BrowserToolSurface::OnScreenshot,
+                     weak_factory_.GetWeakPtr(), std::move(observation),
+                     std::move(callback)));
+}
+
+void BrowserToolSurface::OnScreenshot(
+    Observation observation,
+    ObserveCallback callback,
+    const content::CopyFromSurfaceResult& result) {
+  if (!result.has_value() || result.value().bitmap.drawsNothing()) {
+    // No picture is not an error; the Observation still describes the page.
+    std::move(callback).Run(std::move(observation));
+    return;
+  }
+
+  SkBitmap bitmap = result.value().bitmap;
+
+  // Paint over the private parts BEFORE encoding, so no unredacted image ever
+  // exists as bytes anywhere -- not in a buffer, not in a temporary, not on the
+  // wire. Masking after encoding would mean the whole picture had already been
+  // made once.
+  //
+  // The regions come from the same classification that redacts the text, so the
+  // two channels cannot disagree about what is private. A picture that still
+  // showed an address the JSON had masked would be worse than sending neither.
+  const std::vector<Redaction> redactions = FindRedactions(observation);
+  if (!redactions.empty()) {
+    // Element bounds are in the page's own pixels; the capture was scaled down
+    // to bound its cost. Without this the masks would land in the wrong place,
+    // which on a form means covering a label while leaving the value beside it.
+    const gfx::Size full = observation.viewport;
+    const double scale_x =
+        full.width() > 0 ? static_cast<double>(bitmap.width()) / full.width()
+                         : 1.0;
+    const double scale_y =
+        full.height() > 0 ? static_cast<double>(bitmap.height()) / full.height()
+                          : 1.0;
+
+    SkCanvas canvas(bitmap);
+    SkPaint paint;
+    paint.setColor(SK_ColorBLACK);
+    paint.setStyle(SkPaint::kFill_Style);
+    for (const Redaction& redaction : redactions) {
+      if (redaction.bounds.IsEmpty()) {
+        continue;
+      }
+      const SkRect over = SkRect::MakeXYWH(
+          static_cast<float>(redaction.bounds.x() * scale_x),
+          static_cast<float>(redaction.bounds.y() * scale_y),
+          static_cast<float>(redaction.bounds.width() * scale_x),
+          static_cast<float>(redaction.bounds.height() * scale_y));
+      canvas.drawRect(over, paint);
+    }
+  }
+
+  SkPixmap pixmap;
+  if (bitmap.peekPixels(&pixmap)) {
+    std::optional<std::vector<uint8_t>> encoded =
+        gfx::JPEGCodec::Encode(pixmap, kScreenshotQuality);
+    if (encoded) {
+      observation.screenshot_jpeg = std::move(*encoded);
+    }
+  }
+  std::move(callback).Run(std::move(observation));
 }
 
 ui::AXTreeID BrowserToolSurface::CurrentTreeId() {
@@ -370,6 +625,7 @@ ui::AXTreeID BrowserToolSurface::CurrentTreeId() {
 bool BrowserToolSurface::PerformAction(ax::mojom::Action action,
                                        ui::AXNodeID node,
                                        const std::string& value) {
+  last_action_at_ = base::TimeTicks::Now();
   // An action sent to a tab with no live accessibility tree is dropped by the
   // renderer without a word, so this is what makes the difference between
   // clicking something and only appearing to.
@@ -403,18 +659,39 @@ bool BrowserToolSurface::PerformAction(ax::mojom::Action action,
 }
 
 bool BrowserToolSurface::MoveAndClick(const gfx::Rect& bounds) {
+  last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents || !contents->GetPrimaryMainFrame()) {
     return false;
   }
+  // The VIEW's widget, not the main frame's.
+  //
+  // Measured: forwarding to the main frame's RenderWidgetHost delivered nothing
+  // at all on an ordinary served page -- no mousedown, no mouseup, no click --
+  // while Chromium's own SimulateMouseClickAt at the identical point delivered
+  // all three to the right element. The coordinates were never the problem; the
+  // widget was. Chromium's helper targets the view, so this does too.
+  content::RenderWidgetHostView* host_view = contents->GetRenderWidgetHostView();
   content::RenderWidgetHost* widget =
-      contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+      host_view ? host_view->GetRenderWidgetHost() : nullptr;
   if (!widget) {
     return false;
   }
-  // A click on a page that is not the focused thing is a click that focuses the
-  // page. Same reason PressKey does this.
-  contents->Focus();
+  // NO Focus() HERE, and it took a long time to learn why.
+  //
+  // Calling WebContents::Focus() immediately before dispatching SWALLOWS the
+  // mouse events. Measured, with a control both ways: with it, an ordinary
+  // served page received no mousedown, no mouseup and no click at all, while
+  // Chromium's own SimulateMouseClickAt at the identical point delivered all
+  // three; without it, ours delivers. On Windows that call moves native focus,
+  // and events dispatched into that transition are lost.
+  //
+  // It was intermittent, which is what made it expensive: the same test passed
+  // under parallel load and failed when run alone and fast, because it is a
+  // race rather than a rejection. Nothing in ForwardMouseEvent drops them.
+  //
+  // Focusing was never needed anyway. A click is what focuses a page -- that is
+  // what clicking DOES -- so the call was doing no work and costing the events.
 
   // Accessibility bounds are in DEVICE pixels; a mouse event wants DIP.
   //
@@ -428,8 +705,8 @@ bool BrowserToolSurface::MoveAndClick(const gfx::Rect& bounds) {
   // the top-left of the page, where 1.5x of a small coordinate is still inside
   // the element. A test whose subject is near the origin cannot see a scale
   // error; ClickLandsOnTheElementNotNearIt exists to make sure one always can.
-  const content::RenderWidgetHostView* view = contents->GetRenderWidgetHostView();
-  const float scale = view ? view->GetDeviceScaleFactor() : 1.0f;
+  const float scale =
+      host_view ? host_view->GetDeviceScaleFactor() : 1.0f;
   const gfx::Point at = gfx::ToRoundedPoint(gfx::ScalePoint(
       gfx::PointF(bounds.CenterPoint()), scale > 0 ? 1.0f / scale : 1.0f));
 
@@ -646,6 +923,7 @@ bool BrowserToolSurface::ScrollPage(bool down, const std::string& amount) {
 }
 
 bool BrowserToolSurface::PressKey(const std::string& key) {
+  last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents) {
     return false;

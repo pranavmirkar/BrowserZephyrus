@@ -32,6 +32,20 @@ inline constexpr char kAgentModelEndpointSwitch[] =
     "zephyrus-agent-model-endpoint";
 inline constexpr char kAgentModelSwitch[] = "zephyrus-agent-model";
 
+// Send the model a picture of the page as well as a description of it.
+//
+//   --zephyrus-agent-vision
+//
+// Off by default, and deliberately so. An image costs roughly ten times what
+// the accessibility tree costs for the same page, and prompt size is what sets
+// the wall-clock cost of a step -- measured at 43 seconds per step before the
+// text was cut back, 9 after. Vision buys sight of what the tree gets wrong; it
+// is not free, and it is not a replacement.
+//
+// Only useful with a model that can actually see. Pointing this at a text-only
+// model wastes the bytes and, on some runtimes, the whole request.
+inline constexpr char kAgentVisionSwitch[] = "zephyrus-agent-vision";
+
 // A development stand-in for the model that does not exist yet.
 //
 // Talks to a local Ollama-compatible server so the whole agent -- kernel,
