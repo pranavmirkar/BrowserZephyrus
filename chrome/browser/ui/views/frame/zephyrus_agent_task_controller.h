@@ -128,6 +128,12 @@ class ZephyrusAgentTaskController : public mojom::AgentModel,
   // reset, approving a call would hand the agent a fresh allowance, and a task
   // could run forever by asking often enough.
   uint32_t steps_remaining_ = 0;
+
+  // Whether anything actually happened between two looks. The loop looks once
+  // per step, so a look with no action behind it means the step was spent on a
+  // reply that carried no usable tool call.
+  bool looked_before_ = false;
+  bool acted_since_look_ = false;
   std::optional<bool> auto_answer_;
 
   // The call waiting on an answer, kept so the answer applies to that call and

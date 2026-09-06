@@ -15,6 +15,7 @@
 #include "base/functional/bind.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -611,6 +612,56 @@ void BrowserToolSurface::OnScreenshot(
       observation.screenshot_jpeg = std::move(*encoded);
     }
   }
+
+  DescribeScreenshot(std::move(observation), std::move(callback));
+}
+
+void BrowserToolSurface::DescribeScreenshot(Observation observation,
+                                            ObserveCallback callback) {
+  // Built once. In the ordinary case this is null and stays null, so the whole
+  // vision path costs one bool after the first Observation.
+  if (!vision_checked_) {
+    vision_checked_ = true;
+    vision_ = LocalVisionClient::CreateIfConfigured(
+        browser_->profile()->GetURLLoaderFactory());
+  }
+
+  if (!vision_ || observation.screenshot_jpeg.empty()) {
+    std::move(callback).Run(std::move(observation));
+    return;
+  }
+
+  // Described on EVERY step that has a picture, rather than only when the
+  // accessibility tree looks thin.
+  //
+  // Thinness was the obvious trigger and it is the wrong one: the cases where
+  // sight actually helps are not the sparse pages but the busy ones -- a dialog
+  // sitting over a full page, a video playing behind a banner, a form that is
+  // really an image. Those have plenty of elements, so a thin-tree test would
+  // skip exactly the pages worth looking at.
+  //
+  // The switch is the gate instead. Someone who asked for vision gets vision,
+  // and pays a predictable cost per step rather than an unpredictable one.
+  std::vector<uint8_t> jpeg = observation.screenshot_jpeg;
+  vision_->Describe(
+      jpeg, base::BindOnce(&BrowserToolSurface::OnDescribed,
+                           weak_factory_.GetWeakPtr(), std::move(observation),
+                           std::move(callback)));
+}
+
+void BrowserToolSurface::OnDescribed(Observation observation,
+                                     ObserveCallback callback,
+                                     std::string summary) {
+  observation.vision_summary = std::move(summary);
+
+  // The picture has done its work and is dropped here.
+  //
+  // Everything downstream of this point -- the mojo hop to the kernel, the
+  // prompt, the cloud model -- receives the DESCRIPTION and never the image.
+  // Clearing it is what makes that structural rather than a promise about who
+  // reads which field: there is nothing left to send.
+  observation.screenshot_jpeg.clear();
+
   std::move(callback).Run(std::move(observation));
 }
 

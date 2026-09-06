@@ -12,6 +12,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
+#include "chrome/browser/zephyrus/agent/local_vision_client.h"
 #include "chrome/browser/zephyrus/agent/tool_surface.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/ax_tree_id.h"
@@ -144,6 +145,13 @@ class BrowserToolSurface : public ToolSurface {
                     ObserveCallback callback,
                     const content::CopyFromSurfaceResult& result);
 
+  // Asks the LOCAL model what the page looks like, then finishes the
+  // Observation with its answer. Skipped entirely when vision is off.
+  void DescribeScreenshot(Observation observation, ObserveCallback callback);
+  void OnDescribed(Observation observation,
+                   ObserveCallback callback,
+                   std::string summary);
+
   void OnSnapshot(ObserveCallback callback,
                   std::string url,
                   std::string title,
@@ -160,6 +168,11 @@ class BrowserToolSurface : public ToolSurface {
   // Settling state: the last look's signature and how many looks it has taken.
   // Reset at the start of every Observe, so a previous settle cannot leak into
   // the next one.
+  // Built on first use and kept, because it is null in the ordinary case and
+  // building it per step would mean re-reading the command line every time.
+  std::unique_ptr<LocalVisionClient> vision_;
+  bool vision_checked_ = false;
+
   std::unique_ptr<FetchWatcher> fetch_watcher_;
   std::string settle_signature_;
   int settle_rounds_ = 0;

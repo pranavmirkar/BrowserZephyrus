@@ -85,6 +85,9 @@ class FakeToolRunner : public mojom::ToolRunner {
                ExecuteCallback callback) override {
     executed.push_back(tool);
     executed_arguments.push_back(arguments_json);
+    if (on_execute) {
+      on_execute.Run();
+    }
 
     auto outcome = mojom::ToolOutcome::New();
     outcome->status = next_status;
@@ -110,6 +113,10 @@ class FakeToolRunner : public mojom::ToolRunner {
   mojom::ToolStatus next_status = mojom::ToolStatus::kOk;
   std::string next_message;
   std::string next_value_json;
+
+  // Lets a test make an action land somewhere new, which is what the arrival
+  // note exists to report.
+  base::RepeatingClosure on_execute;
 
   bool change_page_each_time = false;
   int observations = 0;
@@ -264,8 +271,59 @@ TEST_F(TaskLoopTest, ProseCostsAStepInsteadOfLoopingForever) {
   EXPECT_TRUE(runner_.executed.empty())
       << "prose must not be turned into a tool call";
   ASSERT_GE(model_->user_prompts.size(), 2u);
-  EXPECT_NE(model_->user_prompts[1].find("no tool call"), std::string::npos)
+  // It is shown its own words rather than told the rule again. A model that
+  // ignored "reply with ONE JSON object" will ignore it a second time; what it
+  // can act on is seeing what it actually wrote.
+  EXPECT_NE(model_->user_prompts[1].find("was not a tool call"),
+            std::string::npos)
       << model_->user_prompts[1];
+  EXPECT_NE(model_->user_prompts[1].find("I think I should probably"),
+            std::string::npos)
+      << "it was not shown what it actually said: " << model_->user_prompts[1];
+}
+
+TEST_F(TaskLoopTest, RepeatedProseDoesNotStackUpInTheHistory) {
+  // The self-poisoning loop. Every failed reply used to add another identical
+  // line to the history, so the prompt grew fastest exactly when the model was
+  // already struggling -- measured at twelve wasted steps in one run, with the
+  // step time drifting from 9s to 12s as it went.
+  mojom::TaskOutcomePtr outcome =
+      Run({"I think I should probably look at the page first."},
+          /*max_steps=*/6);
+
+  ASSERT_TRUE(outcome);
+  ASSERT_GE(model_->user_prompts.size(), 5u);
+
+  const std::string& late = model_->user_prompts[4];
+  size_t count = 0;
+  for (size_t at = late.find("was not a tool call"); at != std::string::npos;
+       at = late.find("was not a tool call", at + 1)) {
+    ++count;
+  }
+  EXPECT_EQ(count, 1u)
+      << "the same complaint accumulated in the history: " << late;
+}
+
+TEST_F(TaskLoopTest, TheHistoryShownToTheModelIsBounded) {
+  // An unbounded history is a prompt that grows every step. The older entries
+  // are not lost, they are just not re-read: what the model needs is what it
+  // just did, not everything it has ever done.
+  mojom::TaskOutcomePtr outcome =
+      Run({R"({"name":"page.scroll","arguments":{"direction":"down","amount":"page"}})"},
+          /*max_steps=*/14);
+
+  ASSERT_TRUE(outcome);
+  ASSERT_FALSE(model_->user_prompts.empty());
+
+  const std::string& last = model_->user_prompts.back();
+  size_t lines = 0;
+  for (size_t at = last.find("- You called"); at != std::string::npos;
+       at = last.find("- You called", at + 1)) {
+    ++lines;
+  }
+  EXPECT_LE(lines, 8u) << "the history is unbounded: " << last;
+  EXPECT_NE(last.find("earlier steps not shown"), std::string::npos)
+      << "it does not say that older steps exist: " << last;
 }
 
 TEST_F(TaskLoopTest, TellsTheModelWhyACallWasRefused) {
@@ -433,6 +491,78 @@ TEST_F(TaskLoopTest, TheModelIsToldItMayGoStraightToASearchPage) {
   // And the part that still has to hold: a specific item is reached by clicking
   // it, because its address contains an id no one can derive from the title.
   EXPECT_NE(prompt.find("clicking its link"), std::string::npos) << prompt;
+}
+
+TEST_F(TaskLoopTest, ItIsToldWhenAnActionLandedSomewhereNew) {
+  // The failure this exists for. A real run clicked the correct video, did not
+  // realise it, and spent the rest of its budget still hunting for it. The
+  // browser knew the task was done and had no way of saying so: the history
+  // read "You called page.click. Result: ok" and nothing else.
+  runner_.observation_json =
+      R"({"url":"https://www.youtube.com/","title":"YouTube","elements":[]})";
+
+  // The click lands somewhere new, which is exactly what has to be reported.
+  runner_.on_execute = base::BindLambdaForTesting([&] {
+    runner_.observation_json =
+        R"({"url":"https://www.youtube.com/watch?v=abc","title":)"
+        R"("SIDEMEN LAST TO FALL ASLEEP - YouTube","elements":[]})";
+  });
+
+  Run({R"({"name":"page.click","arguments":{"element_id":"e1"}})"},
+      /*max_steps=*/3);
+
+  ASSERT_GE(model_->user_prompts.size(), 2u);
+  const std::string& after = model_->user_prompts[1];
+  EXPECT_NE(after.find("took you to a new page"), std::string::npos) << after;
+  EXPECT_NE(after.find("SIDEMEN LAST TO FALL ASLEEP"), std::string::npos)
+      << "it is not told WHAT it arrived at: " << after;
+  // And told what to do about it, not merely informed.
+  EXPECT_NE(after.find("task.complete"), std::string::npos) << after;
+}
+
+TEST_F(TaskLoopTest, StayingOnTheSamePageIsNotAnnounced) {
+  // The other half: a note on every turn would be noise, and noise in a prompt
+  // costs the same as anything else.
+  mojom::TaskOutcomePtr outcome =
+      Run({R"({"name":"page.scroll","arguments":{"direction":"down","amount":"page"}})"},
+          /*max_steps=*/3);
+
+  ASSERT_TRUE(outcome);
+  ASSERT_GE(model_->user_prompts.size(), 2u);
+  EXPECT_EQ(model_->user_prompts.back().find("took you to a new page"),
+            std::string::npos)
+      << model_->user_prompts.back();
+}
+
+TEST_F(TaskLoopTest, TheLastThingItReadsIsWhetherToStop) {
+  // Salience, not information. A run was told three separate times that it had
+  // arrived somewhere new and carried on hunting anyway -- the instruction to
+  // stop was in the system prompt, thousands of tokens earlier. This puts it
+  // last, where recency actually helps.
+  Run({R"({"name":"page.scroll","arguments":{"direction":"down","amount":"page"}})"},
+      /*max_steps=*/3);
+
+  ASSERT_FALSE(model_->user_prompts.empty());
+  const std::string& prompt = model_->user_prompts[0];
+  const size_t now = prompt.rfind("NOW:");
+  ASSERT_NE(now, std::string::npos) << prompt;
+  EXPECT_GT(now, prompt.rfind("OBSERVATION:"))
+      << "the closing instruction is not the last thing read";
+  EXPECT_NE(prompt.find("task.complete"), std::string::npos) << prompt;
+}
+
+TEST_F(TaskLoopTest, ItIsToldHowMuchBudgetIsLeft) {
+  // A reason to finish. Ten minutes were once spent carrying on past a
+  // completed task; "steps left" is the cheapest possible pressure to stop.
+  Run({R"({"name":"page.scroll","arguments":{"direction":"down","amount":"page"}})"},
+      /*max_steps=*/5);
+
+  ASSERT_GE(model_->user_prompts.size(), 2u);
+  EXPECT_NE(model_->user_prompts[0].find("steps left"), std::string::npos)
+      << model_->user_prompts[0];
+  // And it counts DOWN, or it is just a constant.
+  EXPECT_NE(model_->user_prompts[0], model_->user_prompts[1])
+      << "the remaining budget never changes";
 }
 
 }  // namespace

@@ -268,6 +268,20 @@ void ZephyrusAgentTaskController::Propose(const std::string& system_prompt,
 }
 
 void ZephyrusAgentTaskController::OnAgentLooked() {
+  // A step that did nothing is the most important thing in this log, and it
+  // used to be the only thing that left no trace.
+  //
+  // The loop looks once per step, so two looks with no action between them mean
+  // a whole step was spent and nothing happened -- the model replied with no
+  // usable tool call. A real run spent EIGHT of twenty steps that way and the
+  // panel showed a column of identical "Looking at the page" lines, which reads
+  // as the browser being slow rather than the model saying nothing.
+  if (looked_before_ && !acted_since_look_) {
+    Report("The model did not choose an action -- step wasted");
+  }
+  looked_before_ = true;
+  acted_since_look_ = false;
+
   Report("Looking at the page");
 }
 
@@ -275,9 +289,16 @@ void ZephyrusAgentTaskController::OnAgentToolStarted(
     const std::string& tool,
     const std::string& arguments_json,
     const std::string& target) {
-  // page.observe is already reported by OnAgentLooked; saying it twice per step
-  // would fill the log with the least interesting thing the agent does.
+  acted_since_look_ = true;
+
+  // page.observe IS reported now, unlike before.
+  //
+  // It is no longer offered in the prompt -- the loop looks before every turn
+  // anyway -- so a model asking for it is asking for a tool it was never shown,
+  // and that is worth seeing rather than hiding. Silently swallowing it is what
+  // made a wasted step look like a slow one.
   if (tool == "page.observe") {
+    Report("Asked to look again (not needed -- the page is already shown)");
     return;
   }
   // Name the target. Watching a browser act on its own, "Clicking something" is

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/zephyrus/agent/observation.h"
 
+#include <map>
 #include <string_view>
 #include <vector>
 #include <utility>
@@ -243,6 +244,8 @@ void Collect(const ui::AXTree& tree,
         observed.bounds =
             gfx::ToEnclosingRect(tree.GetTreeBounds(&node, &offscreen));
         observed.offscreen = offscreen;
+        observed.parent_ax_id =
+            node.parent() ? node.parent()->id() : ui::kInvalidAXNodeID;
 
         (inside_chrome ? chrome : content).push_back(std::move(observed));
       }
@@ -252,6 +255,98 @@ void Collect(const ui::AXTree& tree,
   for (const ui::AXNode* child : node.children()) {
     if (child) {
       Collect(tree, *child, inside_chrome, content, chrome);
+    }
+  }
+}
+
+// Every visible node with its position, in document order.
+//
+// Gathered once and reused, because the alternative -- asking the tree for
+// bounds per element per candidate -- walks the ancestor chain thousands of
+// times over for the same answer.
+struct PlacedNode {
+  const ui::AXNode* node;
+  gfx::Rect bounds;
+};
+
+void PlaceAll(const ui::AXTree& tree,
+              const ui::AXNode& node,
+              std::vector<PlacedNode>& out) {
+  if (node.data().IsInvisible()) {
+    return;
+  }
+  const gfx::Rect bounds = gfx::ToEnclosingRect(tree.GetTreeBounds(&node));
+  if (!bounds.IsEmpty()) {
+    out.push_back({&node, bounds});
+  }
+  for (const ui::AXNode* child : node.children()) {
+    if (child) {
+      PlaceAll(tree, *child, out);
+    }
+  }
+}
+
+bool IsSelfOrAncestorOf(const ui::AXNode* maybe_ancestor,
+                        const ui::AXNode* node) {
+  for (const ui::AXNode* walk = node; walk; walk = walk->parent()) {
+    if (walk == maybe_ancestor) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// True if something else is drawn over the middle of `element`.
+//
+// Approximates paint order by DOCUMENT order: of everything covering that
+// point, the one latest in the document is the one on top. That is how the web
+// behaves without explicit z-index, and it is how banners and modals work --
+// they are appended at the end of the body precisely so they land on top.
+//
+// It is an approximation, and worth naming as one: an element lifted by
+// z-index from earlier in the document will be missed. The case that matters
+// is caught, which is a cookie banner or dialog swallowing a click.
+bool IsCoveredAt(const std::vector<PlacedNode>& placed,
+                 const ui::AXNode* element,
+                 const gfx::Point& point) {
+  const ui::AXNode* topmost = nullptr;
+  for (const PlacedNode& candidate : placed) {
+    if (candidate.bounds.Contains(point)) {
+      topmost = candidate.node;
+    }
+  }
+  if (!topmost) {
+    return false;
+  }
+  // Its own children are not "on top of" it in any sense that matters -- the
+  // text inside a button is part of the button.
+  return !IsSelfOrAncestorOf(element, topmost);
+}
+
+// Labels sets of elements that are repetitions of the same thing.
+//
+// Same parent, same role, three or more of them. Three because two of anything
+// is a pair rather than a pattern, and a pair is as likely to be Cancel/OK as
+// a list.
+void FindGroups(std::vector<ObservedNode>& elements) {
+  std::map<std::pair<ui::AXNodeID, std::string>, std::vector<size_t>> sets;
+  for (size_t i = 0; i < elements.size(); ++i) {
+    if (elements[i].parent_ax_id == ui::kInvalidAXNodeID) {
+      continue;
+    }
+    sets[{elements[i].parent_ax_id, elements[i].role}].push_back(i);
+  }
+
+  int next = 1;
+  for (const auto& [key, members] : sets) {
+    if (members.size() < 3) {
+      continue;
+    }
+    const std::string label =
+        base::StrCat({"set", base::NumberToString(next++)});
+    for (const size_t index : members) {
+      elements[index].group = label;
+      elements[index].group_size = members.size();
     }
   }
 }
@@ -309,10 +404,27 @@ std::string Observation::ToJson(int level) const {
       if (!focused_id.empty() && node.id == focused_id) {
         entry.Set("focused", true);
       }
+      if (node.obscured) {
+        // Said plainly, because "covered" and "missing" call for completely
+        // different next steps and the model cannot see the difference.
+        entry.Set("covered_by_something", true);
+      }
+      if (!node.group.empty()) {
+        // Which repeated set this belongs to, and how big it is. This is what
+        // tells a search result apart from the filter chip beside it.
+        entry.Set("set", node.group);
+        entry.Set("set_size", static_cast<int>(node.group_size));
+      }
       list.Append(std::move(entry));
     }
     root.Set("elements", std::move(list));
     root.Set("text", text);
+    if (!vision_summary.empty()) {
+      // Named "looks_like" rather than "vision" so the model reads it as a
+      // second opinion about appearance, not as the authoritative list. The
+      // elements above are what it can actually name and act on.
+      root.Set("looks_like", vision_summary);
+    }
     if (truncated) {
       // Said plainly, because "these are the elements" and "these are the
       // first hundred" lead the model to different next steps.
@@ -380,6 +492,23 @@ Observation BuildObservation(const ui::AXTreeUpdate& update,
       }
     }
   }
+
+  // What is actually on top, and what is a repetition of what.
+  //
+  // Both are facts the browser can state and a screenshot-driven agent has to
+  // infer from pixels. Neither costs a step: they ride along with the
+  // Observation the model is already shown.
+  std::vector<PlacedNode> placed;
+  PlaceAll(tree, *tree.root(), placed);
+  for (ObservedNode& element : observation.elements) {
+    if (element.offscreen || element.bounds.IsEmpty()) {
+      continue;
+    }
+    element.obscured =
+        IsCoveredAt(placed, tree.GetFromId(element.ax_id),
+                    element.bounds.CenterPoint());
+  }
+  FindGroups(observation.elements);
 
   observation.text = tree.root()->GetTextContentUTF8();
   if (observation.text.size() > max_text_length) {

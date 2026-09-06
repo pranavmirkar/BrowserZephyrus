@@ -498,5 +498,162 @@ TEST(ObservationTest, TheCapFallsOnNavigationNotOnContent) {
   EXPECT_EQ(observation.elements[0].id, "e1");
 }
 
+// --- what is on top, and what is a repetition ---------------------------
+
+// A page with a banner appended last, covering part of what is underneath.
+// This is how cookie banners and modals actually work: added at the end of the
+// document precisely so they land on top.
+ui::AXTreeUpdate MakePageWithBanner() {
+  ui::AXNodeData root = MakeNode(1, ax::mojom::Role::kRootWebArea);
+  root.relative_bounds.bounds = gfx::RectF(0, 0, 800, 600);
+
+  ui::AXNodeData buried = MakeNode(2, ax::mojom::Role::kButton, "Accept order");
+  buried.relative_bounds.bounds = gfx::RectF(100, 400, 200, 40);
+
+  ui::AXNodeData clear = MakeNode(3, ax::mojom::Role::kButton, "Search");
+  clear.relative_bounds.bounds = gfx::RectF(100, 100, 200, 40);
+
+  // Appended AFTER, and covering the lower part of the page.
+  ui::AXNodeData banner = MakeNode(4, ax::mojom::Role::kGenericContainer);
+  banner.relative_bounds.bounds = gfx::RectF(0, 350, 800, 250);
+
+  ui::AXNodeData agree = MakeNode(5, ax::mojom::Role::kButton, "I agree");
+  agree.relative_bounds.bounds = gfx::RectF(600, 500, 100, 40);
+  banner.child_ids = {agree.id};
+
+  root.child_ids = {buried.id, clear.id, banner.id};
+
+  ui::AXTreeUpdate update;
+  update.root_id = root.id;
+  update.nodes = {root, buried, clear, banner, agree};
+  update.has_tree_data = true;
+  update.tree_data.tree_id = ui::AXTreeID::CreateNewAXTreeID();
+  return update;
+}
+
+TEST(ObservationTest, SaysWhenSomethingIsDrawnOverAnElement) {
+  // The commonest reason a click does nothing, and the question vision was
+  // going to be needed for. Being inside the browser, it is a fact instead.
+  Observation observation = BuildObservation(
+      MakePageWithBanner(), "https://example.org/", "Shop",
+      kMaxObservedElements, kMaxObservedTextLength);
+
+  const ObservedNode* buried = nullptr;
+  const ObservedNode* clear = nullptr;
+  const ObservedNode* on_top = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    if (node.name == "Accept order") buried = &node;
+    if (node.name == "Search") clear = &node;
+    if (node.name == "I agree") on_top = &node;
+  }
+
+  ASSERT_TRUE(buried && clear && on_top) << observation.ToJson(1);
+  EXPECT_TRUE(buried->obscured)
+      << "a button under a banner was reported as clickable";
+  EXPECT_FALSE(clear->obscured)
+      << "a button nowhere near the banner was reported as covered";
+  // The banner's own button is on top, so it is not covered by anything.
+  EXPECT_FALSE(on_top->obscured)
+      << "the thing doing the covering was reported as covered";
+}
+
+TEST(ObservationTest, TheModelIsToldWhichThingIsCovered) {
+  Observation observation = BuildObservation(
+      MakePageWithBanner(), "https://example.org/", "Shop",
+      kMaxObservedElements, kMaxObservedTextLength);
+
+  // "Covered" and "missing" call for completely different next steps, and the
+  // model cannot tell them apart unless it is said.
+  EXPECT_NE(observation.ToJson(1).find("covered_by_something"),
+            std::string::npos)
+      << observation.ToJson(1);
+}
+
+// A results page: a row of filter chips, then a list of results. Both are
+// links; only one of them is what a task is ever about.
+ui::AXTreeUpdate MakeResultsPage() {
+  ui::AXNodeData root = MakeNode(1, ax::mojom::Role::kRootWebArea);
+  root.relative_bounds.bounds = gfx::RectF(0, 0, 800, 2000);
+
+  ui::AXNodeData chips = MakeNode(2, ax::mojom::Role::kGenericContainer);
+  ui::AXNodeData results = MakeNode(3, ax::mojom::Role::kMain);
+
+  std::vector<ui::AXNodeData> nodes;
+  int next = 10;
+  for (const char* name : {"Latest", "Popular", "Oldest"}) {
+    ui::AXNodeData chip = MakeNode(next++, ax::mojom::Role::kButton, name);
+    chip.relative_bounds.bounds = gfx::RectF(10, 10, 80, 30);
+    chips.child_ids.push_back(chip.id);
+    nodes.push_back(std::move(chip));
+  }
+  for (int i = 0; i < 5; ++i) {
+    ui::AXNodeData video =
+        MakeNode(next++, ax::mojom::Role::kLink,
+                 "SIDEMEN VIDEO " + base::NumberToString(i));
+    video.relative_bounds.bounds = gfx::RectF(10, 100 + i * 200, 400, 180);
+    results.child_ids.push_back(video.id);
+    nodes.push_back(std::move(video));
+  }
+
+  root.child_ids = {chips.id, results.id};
+
+  ui::AXTreeUpdate update;
+  update.root_id = root.id;
+  update.nodes = {root, chips, results};
+  for (ui::AXNodeData& node : nodes) {
+    update.nodes.push_back(std::move(node));
+  }
+  update.has_tree_data = true;
+  update.tree_data.tree_id = ui::AXTreeID::CreateNewAXTreeID();
+  return update;
+}
+
+TEST(ObservationTest, RepetitionsAreLabelledAsASet) {
+  // The failure this exists for. On youtube.com the videos and the filter chips
+  // arrived as one undifferentiated list of links and buttons, and the model
+  // clicked "Latest" and "Videos" over and over while the videos sat beside
+  // them looking exactly as important.
+  Observation observation = BuildObservation(
+      MakeResultsPage(), "https://example.org/results", "Results",
+      kMaxObservedElements, kMaxObservedTextLength);
+
+  const ObservedNode* video = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    if (node.name == "SIDEMEN VIDEO 0") {
+      video = &node;
+    }
+  }
+  ASSERT_TRUE(video) << observation.ToJson(1);
+
+  EXPECT_FALSE(video->group.empty()) << "the results were not seen as a set";
+  EXPECT_EQ(video->group_size, 5u);
+
+  // The chips are a set too -- three of them under one parent -- but a
+  // DIFFERENT one, which is the whole point: the model can now tell that these
+  // are two kinds of thing rather than one list of nine.
+  const ObservedNode* chip = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    if (node.name == "Latest") {
+      chip = &node;
+    }
+  }
+  ASSERT_TRUE(chip);
+  EXPECT_NE(chip->group, video->group)
+      << "filter chips and results were put in the same set";
+}
+
+TEST(ObservationTest, APairIsNotASet) {
+  // Two of anything is a pair, not a pattern -- and a pair is as likely to be
+  // Cancel and OK as a list. Labelling those as a set would be noise.
+  Observation observation = Build({
+      MakeNode(2, ax::mojom::Role::kButton, "Cancel"),
+      MakeNode(3, ax::mojom::Role::kButton, "OK"),
+  });
+
+  ASSERT_EQ(observation.elements.size(), 2u);
+  EXPECT_TRUE(observation.elements[0].group.empty());
+  EXPECT_TRUE(observation.elements[1].group.empty());
+}
+
 }  // namespace
 }  // namespace zephyrus::agent

@@ -102,6 +102,10 @@ class TaskLoop {
   // guard in OnProposed. Neither is enough alone: the same call on a changed
   // page is often the right move, and a changed call on the same page always
   // is.
+  // The page the model was last shown, so a move to a new one can be pointed
+  // out. Knowing it ARRIVED somewhere is what tells it the job is finished.
+  std::string last_seen_url_;
+
   std::string last_call_;
   std::string observation_at_last_call_;
 

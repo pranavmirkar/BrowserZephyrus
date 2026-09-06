@@ -56,6 +56,33 @@ struct ObservedNode {
   // anywhere on the page regardless of what it claimed to be clicking.
   gfx::Rect bounds;
 
+  // True if something is drawn ON TOP of this element.
+  //
+  // The question vision was going to answer, answered as a fact instead. A
+  // cookie banner covering a button is the commonest reason a click does
+  // nothing, and a screenshot-driven agent has to squint at pixels to notice.
+  // We are inside the browser: we can ask what is actually at that point.
+  //
+  // Being inside also means this is knowable BEFORE acting rather than
+  // afterwards, which turns "the click did nothing" into "that is covered,
+  // deal with the thing on top first".
+  bool obscured = false;
+
+  // A label shared by elements that are repetitions of the same thing, or
+  // empty. `group_size` is how many are in that set.
+  //
+  // A results page is a TABLE -- a dozen cards with the same shape -- and
+  // flattening it into loose links threw that away. A model then cannot tell a
+  // search result from the filter chip sitting next to it, which is exactly the
+  // failure watched on youtube.com: it clicked "Latest" and "Videos" repeatedly
+  // while the videos themselves sat in the same undifferentiated list.
+  std::string group;
+  size_t group_size = 0;
+
+  // The node this element hangs off, used only to work out the groups above.
+  // Never shown, and meaningless outside this Observation like every other id.
+  ui::AXNodeID parent_ax_id = ui::kInvalidAXNodeID;
+
   // True if the element is scrolled out of view.
   //
   // Its bounds have been clipped to the edge of an ancestor, which means they
@@ -95,6 +122,18 @@ struct Observation {
   // Kept out of ToJson deliberately. This never becomes prompt text; it
   // travels as an image or not at all.
   std::vector<uint8_t> screenshot_jpeg;
+
+  // What a local model said the page looks like, or empty.
+  //
+  // This is what the vision channel actually delivers. The screenshot is
+  // described on this machine and only the DESCRIPTION travels onward -- the
+  // picture itself never leaves, so there is no image to leak rather than a
+  // filter hoping to catch one.
+  //
+  // Kept short on purpose. It covers what the accessibility tree cannot say --
+  // a dialog covering the page, a video playing, a region that is an image of a
+  // form rather than a form -- and nothing the tree already says precisely.
+  std::string vision_summary;
 
   // The viewport the element bounds were measured in.
   //
