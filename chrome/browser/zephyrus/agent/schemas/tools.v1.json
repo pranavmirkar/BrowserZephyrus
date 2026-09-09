@@ -21,9 +21,15 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "url": { "type": "string", "format": "uri", "description": "Absolute URL including scheme." }
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Absolute URL including scheme."
+          }
         },
-        "required": ["url"],
+        "required": [
+          "url"
+        ],
         "additionalProperties": false
       }
     },
@@ -31,25 +37,41 @@
       "name": "browser.back",
       "description": "Go back one entry in the active tab's history.",
       "risk": "R1",
-      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "browser.forward",
       "description": "Go forward one entry in the active tab's history.",
       "risk": "R1",
-      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "browser.reload",
       "description": "Reload the active tab.",
       "risk": "R1",
-      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "tabs.list",
       "description": "List the tabs in the current workspace. Tabs in other workspaces are never returned.",
       "risk": "R0",
-      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "tabs.open",
@@ -58,7 +80,10 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "url": { "type": "string", "format": "uri" }
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
         },
         "required": [],
         "additionalProperties": false
@@ -71,9 +96,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "tab_id": { "type": "integer", "minimum": 0 }
+          "tab_id": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
-        "required": ["tab_id"],
+        "required": [
+          "tab_id"
+        ],
         "additionalProperties": false
       }
     },
@@ -84,9 +114,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "tab_id": { "type": "integer", "minimum": 0 }
+          "tab_id": {
+            "type": "integer",
+            "minimum": 0
+          }
         },
-        "required": ["tab_id"],
+        "required": [
+          "tab_id"
+        ],
         "additionalProperties": false
       }
     },
@@ -103,9 +138,14 @@
             "maximum": 2,
             "description": "0 url and title only, 1 interactive elements and visible text, 2 adds a named page region."
           },
-          "region": { "type": "string", "description": "Region name, only meaningful at level 2." }
+          "region": {
+            "type": "string",
+            "description": "Region name, only meaningful at level 2."
+          }
         },
-        "required": ["level"],
+        "required": [
+          "level"
+        ],
         "additionalProperties": false
       }
     },
@@ -116,9 +156,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "query": { "type": "string", "minLength": 1 }
+          "query": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "required": ["query"],
+        "required": [
+          "query"
+        ],
         "additionalProperties": false
       }
     },
@@ -129,9 +174,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "element_id": { "type": "string", "minLength": 1 }
+          "element_id": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "required": ["element_id"],
+        "required": [
+          "element_id"
+        ],
         "additionalProperties": false
       }
     },
@@ -142,10 +192,18 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "element_id": { "type": "string", "minLength": 1 },
-          "text": { "type": "string" }
+          "element_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string"
+          }
         },
-        "required": ["element_id", "text"],
+        "required": [
+          "element_id",
+          "text"
+        ],
         "additionalProperties": false
       }
     },
@@ -156,10 +214,18 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "element_id": { "type": "string", "minLength": 1 },
-          "value": { "type": "string" }
+          "element_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "value": {
+            "type": "string"
+          }
         },
-        "required": ["element_id", "value"],
+        "required": [
+          "element_id",
+          "value"
+        ],
         "additionalProperties": false
       }
     },
@@ -170,10 +236,27 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "direction": { "type": "string", "enum": ["up", "down"] },
-          "amount": { "type": "string", "enum": ["page", "half", "top", "bottom"] }
+          "direction": {
+            "type": "string",
+            "enum": [
+              "up",
+              "down"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "enum": [
+              "page",
+              "half",
+              "top",
+              "bottom"
+            ]
+          }
         },
-        "required": ["direction", "amount"],
+        "required": [
+          "direction",
+          "amount"
+        ],
         "additionalProperties": false
       }
     },
@@ -184,9 +267,21 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "key": { "type": "string", "enum": ["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "Backspace"] }
+          "key": {
+            "type": "string",
+            "enum": [
+              "Enter",
+              "Escape",
+              "Tab",
+              "ArrowUp",
+              "ArrowDown",
+              "Backspace"
+            ]
+          }
         },
-        "required": ["key"],
+        "required": [
+          "key"
+        ],
         "additionalProperties": false
       }
     },
@@ -194,18 +289,24 @@
       "name": "selection.read",
       "description": "Read the user's current text selection on the active page.",
       "risk": "R0",
-      "parameters": { "type": "object", "properties": {}, "additionalProperties": false }
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
     },
     {
       "name": "task.complete",
-      "description": "Declare the task finished and report the answer. Use this instead of a browser action when the goal has been met.",
+      "description": "Declare the task finished and report the answer. Use this instead of a browser action when the goal has been met. The answer is optional: say what was achieved if you can, but finishing without a summary is still finishing.",
       "risk": "R0",
       "parameters": {
         "type": "object",
         "properties": {
-          "answer": { "type": "string", "minLength": 1 }
+          "answer": {
+            "type": "string"
+          }
         },
-        "required": ["answer"],
+        "required": [],
         "additionalProperties": false
       }
     },
@@ -216,9 +317,14 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "question": { "type": "string", "minLength": 1 }
+          "question": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "required": ["question"],
+        "required": [
+          "question"
+        ],
         "additionalProperties": false
       }
     }

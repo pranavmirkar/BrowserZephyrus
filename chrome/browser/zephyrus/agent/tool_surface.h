@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_ZEPHYRUS_AGENT_TOOL_SURFACE_H_
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "base/functional/callback.h"
@@ -39,7 +40,7 @@ class ToolSurface {
 
   using ObserveCallback = base::OnceCallback<void(Observation)>;
 
-  virtual ~ToolSurface() = default;
+  virtual ~ToolSurface();
 
   // The URL of the active tab. Authoritative: the executor sends this to the
   // kernel rather than accepting one from its caller, because the kernel uses
@@ -70,7 +71,27 @@ class ToolSurface {
 
   // Takes a fresh look at the active page. Asynchronous because it goes to the
   // renderer.
+  // Looks at the page for the MODEL.
+  //
+  // What comes back is what the model will be shown, so it becomes the baseline
+  // that the next look reports its changes against.
   virtual void Observe(ObserveCallback callback) = 0;
+
+  // Search beyond the normal prompt's element budget. Implementations keep
+  // these results available in the next observation so their ids remain usable.
+  virtual void ObserveForFind(const std::string& query,
+                              ObserveCallback callback);
+
+  // The same look, for an internal check the model never sees.
+  //
+  // It must not become that baseline, and the distinction is not academic. A
+  // check runs AFTER an action -- did the navigation arrive, did the text land
+  // -- so treating it as "what the model last saw" means the model's next look
+  // is compared against a picture taken after its own action. A step that
+  // plainly changed the page then reports "nothing on the page changed", which
+  // is the precise opposite of the truth and the signal the model uses to
+  // decide whether it is finished.
+  virtual void ObserveForCheck(ObserveCallback callback) = 0;
 
   // Identifies the tree the active page is currently showing. Compared against
   // the Observation's before acting on any element: if it has changed, every id

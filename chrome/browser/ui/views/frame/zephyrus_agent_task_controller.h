@@ -93,6 +93,18 @@ class ZephyrusAgentTaskController : public mojom::AgentModel,
   // Answers every approval question with `answer` instead of showing a
   // dialog. Test-facing: it replaces the UI, not the decision -- everything
   // after the answer is the production path.
+  // Stops a running task now.
+  //
+  // Cancellation is the BROWSER refusing to serve any more tool calls, not a
+  // request the kernel is asked to honour politely. Dropping the pipes is what
+  // makes it immediate and unconditional: a loop that is mid-inference cannot
+  // talk itself out of it, and a kernel that has wedged still stops. The loop
+  // sees the disconnect, finishes itself and deletes itself, which is a path
+  // that already existed and is already tested.
+  //
+  // Safe to call when nothing is running.
+  void Cancel();
+
   void SetAutoAnswerForTesting(bool answer) { auto_answer_ = answer; }
   bool HasPendingApprovalForTesting() const { return !pending_.is_null(); }
 

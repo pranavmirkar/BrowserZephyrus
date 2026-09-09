@@ -129,5 +129,128 @@ TEST(SanitizerTest, AnOffscreenElementIsNotPaintedOver) {
       << "it would have painted over the wrong part of the screen";
 }
 
+TEST(SanitizerTest, APrivateThingInTheNameIsFound) {
+  // The gap: an element whose accessible NAME is the private thing. There is no
+  // field and no label, so the label hints miss it and the value is empty --
+  // and it went out untouched in the JSON and unpainted in the picture.
+  ObservedNode account =
+      Field("button", "Signed in as pranav@gmail.com", "");
+  EXPECT_EQ(ClassifyElement(account), Sensitivity::kEmail);
+
+  Observation observation;
+  observation.elements.push_back(account);
+  EXPECT_EQ(FindRedactions(observation).size(), 1u)
+      << "the picture would not have been masked there either";
+}
+
+TEST(SanitizerTest, RedactingANameKeepsTheThingClickable) {
+  // Word-wise, because the name is also how the model refers to the element.
+  // Blanking it whole would hide the address and the button with it.
+  Observation observation;
+  observation.elements.push_back(
+      Field("button", "Signed in as pranav@gmail.com", ""));
+
+  RedactObservation(observation);
+
+  const std::string& name = observation.elements[0].name;
+  EXPECT_EQ(name.find("pranav@gmail.com"), std::string::npos) << name;
+  EXPECT_NE(name.find("Signed in as"), std::string::npos)
+      << "the button lost the words that make it findable: " << name;
+}
+
+TEST(SanitizerTest, ALabelIsNotMistakenForAValue) {
+  // The other half of the same rule. "Email address" is what the box is CALLED,
+  // and redacting the label would leave a nameless box the model cannot use.
+  Observation observation;
+  observation.elements.push_back(
+      Field("textbox", "Email address", "pranav@gmail.com"));
+
+  RedactObservation(observation);
+
+  EXPECT_EQ(observation.elements[0].name, "Email address");
+  EXPECT_EQ(observation.elements[0].value, kRedactedMarker);
+}
+
+TEST(SanitizerTest, TheTitleIsRedactedToo) {
+  // A page is free to put whatever it likes in its own title, and some do put
+  // the signed-in address there. The title is read three separate times on the
+  // way to a prompt, so leaving it out of this undid the rest.
+  Observation observation;
+  observation.title = "Inbox - pranav@gmail.com";
+
+  RedactObservation(observation);
+
+  EXPECT_EQ(observation.title.find("pranav@gmail.com"), std::string::npos)
+      << observation.title;
+}
+
+TEST(SanitizerTest, ATitleThatHappensToContainDigitsIsLeftAlone) {
+  // The control on my own rule. Reading a NAME as content is right for an
+  // address and wrong for a number: a name is a title as often as it is data,
+  // and a false positive does not merely lose a word -- it paints a black
+  // rectangle over that element in the screenshot and takes the title the task
+  // was about with it.
+  Observation observation;
+  observation.elements.push_back(
+      Field("link", "I Spent 1000000 Dollars", ""));
+
+  EXPECT_EQ(ClassifyElement(observation.elements[0]), Sensitivity::kNone);
+  EXPECT_TRUE(FindRedactions(observation).empty())
+      << "the video the task was about would have been blacked out";
+
+  RedactObservation(observation);
+  EXPECT_EQ(observation.elements[0].name, "I Spent 1000000 Dollars");
+}
+
+TEST(SanitizerTest, DigitsInAFieldValueAreStillCaught) {
+  // The other side of the same line. Ten digits typed into a box is a phone
+  // number; ten digits in a headline is a headline. Narrowing the rule for
+  // names must not have narrowed it for values.
+  Observation observation;
+  observation.elements.push_back(Field("textbox", "Contact", "9876543210"));
+
+  EXPECT_EQ(ClassifyElement(observation.elements[0]), Sensitivity::kPhone);
+  RedactObservation(observation);
+  EXPECT_EQ(observation.elements[0].value, kRedactedMarker);
+}
+
+TEST(SanitizerTest, TheVerdictIsRecordedBeforeTheValueIsReplaced) {
+  // Order matters, and getting it wrong is invisible: classify after redacting
+  // and a card field known only by its digits reads as harmless, because the
+  // digits are already gone. The policy that refuses to type card details
+  // reads this field, so a stale verdict there is a security rule that passes
+  // its own tests and never fires.
+  Observation observation;
+  observation.elements.push_back(Field("textbox", "", "4111111111111111"));
+
+  RedactObservation(observation);
+
+  EXPECT_EQ(observation.elements[0].sensitivity, "payment_card");
+  EXPECT_EQ(observation.elements[0].value, kRedactedMarker);
+}
+
+TEST(SanitizerTest, TheLineAroundAnElementIsRedactedToo) {
+  // A new field leaked what every other field was masking.
+  //
+  // `detail` carries the prose beside an element, added so that "which of these
+  // is newest" has an answer. It went out raw: the value beside it said
+  // [redacted] and the detail said the address in full, plus a phone number.
+  // That is the exact shape of the bug this file exists to stop, in a field
+  // that did not exist when it was written -- so the test is about the
+  // PRINCIPLE: every channel carrying page text is a channel that leaks.
+  Observation observation;
+  ObservedNode plain = Field("button", "Menu", "");
+  plain.detail = "We will write to pranav@gmail.com or call 9876543210.";
+  observation.elements.push_back(std::move(plain));
+
+  RedactObservation(observation);
+
+  const std::string& detail = observation.elements[0].detail;
+  EXPECT_EQ(detail.find("pranav@gmail.com"), std::string::npos) << detail;
+  EXPECT_EQ(detail.find("9876543210"), std::string::npos) << detail;
+  // And it is still a useful caption.
+  EXPECT_NE(detail.find("We will write to"), std::string::npos) << detail;
+}
+
 }  // namespace
 }  // namespace zephyrus::agent

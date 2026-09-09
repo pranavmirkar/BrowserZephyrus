@@ -49,7 +49,14 @@ class AgentKernelClient {
 
   // True if a service process is currently bound. Test-facing: production code
   // has no reason to care, because Decide() launches on demand.
-  bool IsRunningForTesting() const { return kernel_.is_bound(); }
+  bool IsRunningForTesting() const {
+    // The member is sequence-guarded, so reading it has to say so. Without
+    // this the thread-safety analysis rejects the read outright -- correctly:
+    // an unannotated read of a guarded remote is exactly the bug the guard is
+    // there to catch, whether or not the caller happens to be a test.
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+    return kernel_.is_bound();
+  }
 
  private:
   // Starts the service if it is not already running.

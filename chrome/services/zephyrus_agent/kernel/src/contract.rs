@@ -268,15 +268,74 @@ impl Contract {
         let Ok(value) = serde_json::from_str::<Value>(arguments_json) else {
             return untouched();
         };
-        if value.is_object() || value.is_null() {
+        // An argument we do not know is dropped, not fatal.
+        //
+        // `page.find {"query": "RTX 4090", "filter": "price"}` was refused
+        // outright with "unexpected argument `filter`" -- a good query thrown
+        // away because the model added a hint alongside it. The extra field is
+        // not used by anything; refusing the whole call for its presence is the
+        // harness being the obstacle. Dropping it keeps the strict check honest
+        // about what actually runs.
+        if let Value::Object(fields) = &value {
+            let known: serde_json::Map<String, Value> = fields
+                .iter()
+                .filter(|(name, _)| tool.properties.contains(name))
+                .map(|(name, item)| (name.clone(), item.clone()))
+                .collect();
+            if known.len() != fields.len() {
+                return Value::Object(known).to_string();
+            }
             return untouched();
         }
-        if tool.required.len() != 1 {
+        if value.is_null() {
             return untouched();
         }
+        // Positional arguments, in the order the schema declares them.
+        //
+        // `page.select "e1", "Price"` is a perfectly clear call and was refused
+        // with "arguments are not a JSON object". The contract knows the
+        // properties and their order, so a list of values maps straight onto
+        // them -- and refusing to do that made the harness the obstacle.
+        if let Value::Array(items) = &value {
+            if items.is_empty() {
+                return "{}".to_string();
+            }
+            if items.len() > tool.properties.len() {
+                return untouched();
+            }
+            let mut wrapped = serde_json::Map::new();
+            for (property, item) in tool.properties.iter().zip(items) {
+                wrapped.insert(property.clone(), item.clone());
+            }
+            return Value::Object(wrapped).to_string();
+        }
+
+        // A single bare value goes into the tool's one property.
+        //
+        // Keyed on there being exactly ONE property, not one REQUIRED property.
+        // Making task.complete's answer optional -- so that finishing without a
+        // summary still counts -- left it with no required properties at all,
+        // and silently broke `task.complete "the thing I did"`: the wrapping
+        // stopped happening and the call was refused for not being an object.
+        // A tool with one argument has one argument whether or not it insists.
+        let sole = if tool.required.len() == 1 {
+            Some(&tool.required[0])
+        } else if tool.properties.len() == 1 {
+            Some(&tool.properties[0])
+        } else {
+            None
+        };
+        let Some(property) = sole else {
+            return untouched();
+        };
         let mut wrapped = serde_json::Map::new();
-        wrapped.insert(tool.required[0].clone(), value);
+        wrapped.insert(property.clone(), value);
         Value::Object(wrapped).to_string()
+    }
+
+    /// Every tool name, for the extractor to match a reply against.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools.keys().cloned().collect()
     }
 
     pub fn tool(&self, name: &str) -> Option<&Tool> {
@@ -316,30 +375,52 @@ impl Contract {
                 continue;
             }
             let tool = &self.tools[name];
-            let mut args: Vec<String> = tool
+            // Show the exact JSON, not a signature.
+            //
+            // The listing used to read `- browser.navigate [R1] Load a URL.`
+            // followed by `args: url`, which is a function signature -- and
+            // models imitate what they are shown. Traced in one run, five
+            // replies, five spellings of the same call:
+            //
+            //   browser.navigate {"url": "..."}
+            //   browser.navigate https://...
+            //   browser.navigate("https://...")
+            //   browser.navigate [R1] {"url": "..."}
+            //   browser.navigate?url=https://...
+            //
+            // Each one cost a step, and one of them was mangled into an
+            // unusable address. The parser was taught to read all of them,
+            // which is worth doing -- but the cheaper fix is to stop asking the
+            // question. Print the shape we want and the model copies THAT.
+            //
+            // The risk tag is gone from here for the same reason: we printed
+            // `[R1]`, so a model wrote `[R1]` back as if it were an argument.
+            // Risk is the kernel's business, not something the model needs.
+            let example: Vec<String> = tool
                 .properties
                 .iter()
-                .map(|property| {
-                    if tool.required.contains(property) {
-                        property.clone()
-                    } else {
-                        format!("{property}?")
-                    }
-                })
+                .map(|property| format!("\"{property}\": \"...\""))
                 .collect();
-            args.sort();
-
             out.push_str(&format!(
-                "- {} [{}] {}\n  args: {}\n",
+                "- {}: {}\n  {{\"name\": \"{}\", \"arguments\": {{{}}}}}\n",
                 tool.name,
-                tool.floor.as_str(),
                 tool.description,
-                if args.is_empty() {
-                    "none".to_string()
-                } else {
-                    args.join(", ")
-                }
+                tool.name,
+                example.join(", ")
             ));
+
+            // Which of those may be left out. A plain sentence rather than a
+            // `?` inside the JSON, because the JSON above is meant to be copied
+            // verbatim and a marker inside it would be copied too.
+            let optional: Vec<&str> = tool
+                .properties
+                .iter()
+                .filter(|property| !tool.required.contains(property))
+                .map(|s| s.as_str())
+                .collect();
+            if !optional.is_empty() {
+                out.push_str(&format!("  optional: {}\n", optional.join(", ")));
+            }
         }
         out
     }

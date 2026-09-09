@@ -53,6 +53,10 @@ void AgentKernelService::Decide(mojom::PolicyRequestPtr request,
     bridged_element.id = ::rust::String(element->id);
     bridged_element.role = ::rust::String(element->role);
     bridged_element.name = ::rust::String(element->name);
+    // Carried across, because the policy decides on it. Dropping it here would
+    // have left the rule that refuses to type card details reading an empty
+    // string forever -- green in its own Rust tests, dead in the browser.
+    bridged_element.sensitivity = ::rust::String(element->sensitivity);
     bridged.elements.push_back(std::move(bridged_element));
   }
 

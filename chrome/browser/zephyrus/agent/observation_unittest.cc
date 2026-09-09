@@ -655,5 +655,323 @@ TEST(ObservationTest, APairIsNotASet) {
   EXPECT_TRUE(observation.elements[1].group.empty());
 }
 
+// --- what changed since last time ---------------------------------------
+
+Observation Page(const std::string& url,
+                 const std::string& title,
+                 std::vector<std::string> names,
+                 bool playing = false) {
+  Observation observation;
+  observation.url = url;
+  observation.title = title;
+  observation.media_playing = playing;
+  for (const std::string& name : names) {
+    ObservedNode node;
+    node.name = name;
+    observation.elements.push_back(std::move(node));
+  }
+  return observation;
+}
+
+TEST(ObservationTest, SaysWhereYouEndedUpAndWhatStarted) {
+  // The failure this exists for: a task was finished and the agent could not
+  // tell. It opened the right video twice and carried on hunting, because
+  // nothing ever said anything had happened.
+  Observation now = Page("https://youtube.com/watch?v=a", "SIDEMEN - YouTube",
+                         {"Subscribe", "Share", "Save"}, /*playing=*/true);
+  now.DescribeChangeFrom(Page("https://youtube.com/", "YouTube", {"Search"}));
+
+  EXPECT_NE(now.changed.find("SIDEMEN"), std::string::npos) << now.changed;
+  EXPECT_NE(now.changed.find("started playing media"), std::string::npos)
+      << now.changed;
+}
+
+TEST(ObservationTest, NamesWhatAppearedRatherThanCountingIt) {
+  // "8 new things" is not something a model can act on. "including Checkout"
+  // is, and it is the difference between knowing a basket updated and knowing
+  // only that something did.
+  Observation now = Page("https://shop.example/cart", "Cart",
+                         {"Checkout", "Place order", "Continue shopping"});
+  now.DescribeChangeFrom(Page("https://shop.example/cart", "Cart", {}));
+
+  EXPECT_NE(now.changed.find("Checkout"), std::string::npos) << now.changed;
+  EXPECT_NE(now.changed.find("3 new things"), std::string::npos) << now.changed;
+}
+
+TEST(ObservationTest, ATitleChangeCountsEvenWhenTheAddressDoesNot) {
+  // How a single-page app announces it became something else. Watching only
+  // the URL misses it entirely, which is most of the modern web.
+  Observation now = Page("https://app.example/", "Order confirmed", {"Done"});
+  now.DescribeChangeFrom(Page("https://app.example/", "Checkout", {"Pay"}));
+
+  EXPECT_NE(now.changed.find("Order confirmed"), std::string::npos)
+      << now.changed;
+}
+
+TEST(ObservationTest, SaysPlainlyWhenNothingHappened) {
+  // As useful as saying what DID happen. This is the difference between "that
+  // did not work" and "that worked and I cannot tell" -- and guessing wrong
+  // between those is what burned eight minutes of a real run.
+  Observation now = Page("https://example.org/", "Example", {"Search"});
+  now.DescribeChangeFrom(Page("https://example.org/", "Example", {"Search"}));
+
+  EXPECT_EQ(now.changed, "nothing on the page changed");
+}
+
+TEST(ObservationTest, TheChangeIsShownToTheModel) {
+  Observation now = Page("https://example.org/b", "B", {"Next"});
+  now.DescribeChangeFrom(Page("https://example.org/a", "A", {}));
+
+  const std::string json = now.ToJson(1);
+  EXPECT_NE(json.find("what_changed"), std::string::npos) << json;
+}
+
+TEST(ObservationTest, ItReportsAndDoesNotJudge) {
+  // It must not decide the task is finished. That is the model's call, and a
+  // browser guessing at it would be confidently wrong on exactly the cases
+  // where being wrong matters.
+  Observation now = Page("https://youtube.com/watch?v=a", "SIDEMEN - YouTube",
+                         {"Share"}, /*playing=*/true);
+  now.DescribeChangeFrom(Page("https://youtube.com/", "YouTube", {"Search"}));
+
+  EXPECT_EQ(now.changed.find("complete"), std::string::npos) << now.changed;
+  EXPECT_EQ(now.changed.find("done"), std::string::npos) << now.changed;
+}
+
+TEST(ObservationTest, AHugeTitleCannotCrowdOutThePage) {
+  // The one page-controlled string that went through unbounded, and it is read
+  // three times over on the way to a prompt -- in the JSON, in what_changed and
+  // in the arrival note. A page sets its own title.
+  Observation observation =
+      BuildObservation(MakeTree({MakeNode(2, ax::mojom::Role::kButton, "Go")}),
+                       "https://example.org/", std::string(9000, 'x'),
+                       kMaxObservedElements, kMaxObservedTextLength);
+
+  // A ceiling rather than the exact cap, which lives in the .cc: what matters
+  // is that a page cannot decide how much of the prompt its title occupies.
+  // Deliberately loose -- pinning the exact number here would mean this test
+  // has to be edited every time the cap is tuned, which is how a bound test
+  // turns into a bound-tuning chore.
+  EXPECT_LT(observation.title.size(), 400u)
+      << "the title was " << observation.title.size() << " bytes";
+}
+
+// A results card: a link with the title, and the view count and upload age
+// beside it -- which is how every results page on the web is built.
+ui::AXTreeUpdate MakeResultCard() {
+  ui::AXNodeData root = MakeNode(1, ax::mojom::Role::kRootWebArea);
+  root.relative_bounds.bounds = gfx::RectF(0, 0, 800, 600);
+
+  ui::AXNodeData card = MakeNode(2, ax::mojom::Role::kGenericContainer);
+  card.relative_bounds.bounds = gfx::RectF(0, 0, 800, 200);
+
+  ui::AXNodeData title = MakeNode(3, ax::mojom::Role::kLink, "SIDEMEN SUNDAY");
+  title.relative_bounds.bounds = gfx::RectF(10, 10, 400, 40);
+
+  ui::AXNodeData meta = MakeNode(4, ax::mojom::Role::kStaticText, "");
+  meta.SetName("6.4M views 8 days ago");
+  meta.relative_bounds.bounds = gfx::RectF(10, 60, 400, 20);
+
+  card.child_ids = {title.id, meta.id};
+  root.child_ids = {card.id};
+
+  ui::AXTreeUpdate update;
+  update.root_id = root.id;
+  update.nodes = {root, card, title, meta};
+  update.has_tree_data = true;
+  update.tree_data.tree_id = ui::AXTreeID::CreateNewAXTreeID();
+  return update;
+}
+
+TEST(ObservationTest, CarriesTheLineUnderTheTitle) {
+  // "Play the LATEST video" was unanswerable from what the model was shown. An
+  // accessible name is the element's own label -- title and duration -- while
+  // the view count and the upload age sit in sibling nodes and never arrived.
+  // A person answers "which is newest" by glancing at that line; the model was
+  // not being given it.
+  Observation observation =
+      BuildObservation(MakeResultCard(), "https://example.org/results",
+                       "Results", kMaxObservedElements, kMaxObservedTextLength);
+
+  const ObservedNode* link = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    if (node.name == "SIDEMEN SUNDAY") {
+      link = &node;
+    }
+  }
+  ASSERT_TRUE(link) << observation.ToJson(1);
+  EXPECT_NE(link->detail.find("8 days ago"), std::string::npos)
+      << "the upload age never reached the model: \"" << link->detail << "\"";
+  EXPECT_NE(observation.ToJson(1).find("detail"), std::string::npos)
+      << observation.ToJson(1);
+}
+
+TEST(ObservationTest, TextBudgetDoesNotSplitUtf8) {
+  auto observation = BuildObservation(
+      MakeTree({MakeNode(2, ax::mojom::Role::kStaticText, "a\xE2\x82\xAC")}),
+      "https://example.com", "Example", 30, 2);
+  EXPECT_EQ(observation.text, "a");
+  EXPECT_FALSE(observation.ToJson(1).empty());
+}
+
+// A results row, nested the way a search page nests one rather than the way a
+// channel grid does: the title sits in a wrapper of its own, and the views and
+// the age sit one level further out.
+//
+// Every string here is copied from a real observation of youtube.com/results,
+// including the money in the title -- which is the whole point of the case.
+ui::AXTreeUpdate MakeNestedResultRow() {
+  ui::AXNodeData root = MakeNode(1, ax::mojom::Role::kRootWebArea);
+  root.relative_bounds.bounds = gfx::RectF(0, 0, 800, 600);
+
+  ui::AXNodeData row = MakeNode(2, ax::mojom::Role::kGenericContainer);
+  row.relative_bounds.bounds = gfx::RectF(0, 0, 800, 200);
+
+  ui::AXNodeData inner = MakeNode(3, ax::mojom::Role::kGenericContainer);
+  inner.relative_bounds.bounds = gfx::RectF(10, 10, 400, 60);
+
+  ui::AXNodeData title = MakeNode(4, ax::mojom::Role::kLink);
+  title.SetName("SIDEMEN $100,000 vs $100 CRUISE HOLIDAY 20 minutes");
+  title.relative_bounds.bounds = gfx::RectF(10, 10, 400, 40);
+
+  ui::AXNodeData title_text = MakeNode(5, ax::mojom::Role::kStaticText);
+  title_text.SetName("SIDEMEN $100,000 vs $100 CRUISE HOLIDAY");
+  title_text.relative_bounds.bounds = gfx::RectF(10, 10, 400, 40);
+
+  ui::AXNodeData meta = MakeNode(6, ax::mojom::Role::kStaticText);
+  meta.SetName("7.2M views 4 months ago");
+  meta.relative_bounds.bounds = gfx::RectF(10, 80, 400, 20);
+
+  inner.child_ids = {title.id, title_text.id};
+  row.child_ids = {inner.id, meta.id};
+  root.child_ids = {row.id};
+
+  ui::AXTreeUpdate update;
+  update.root_id = root.id;
+  update.nodes = {root, row, inner, title, title_text, meta};
+  update.has_tree_data = true;
+  update.tree_data.tree_id = ui::AXTreeID::CreateNewAXTreeID();
+  return update;
+}
+
+TEST(ObservationTest, ADigitInTheTitleDoesNotEndTheSearchForADate) {
+  // MEASURED, and the numbers are the argument: on a channel page 19 of 30
+  // elements got a caption, and on a search results page for the same videos
+  // only 3 of 30 did. Both pages print the upload age. The difference is that
+  // search results nest one level deeper, so the nearest enclosing text holds
+  // the title alone -- and a title about money has digits in it.
+  //
+  //   e11  detail: "$100,000 vs $100 CRUISE HOLIDAY"      <- accepted, no age
+  //   e25  detail: "ABANDONED IN ASIA7.2M views - 4 months ago"
+  //
+  // "Has a number in it" proves the text carries a fact. It does not prove it
+  // carries the fact being looked for, so the walk keeps going while no date
+  // has been found.
+  Observation observation = BuildObservation(
+      MakeNestedResultRow(), "https://example.org/results", "Results",
+      kMaxObservedElements, kMaxObservedTextLength);
+
+  const ObservedNode* link = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    if (node.role == "link") {
+      link = &node;
+    }
+  }
+  ASSERT_TRUE(link) << observation.ToJson(1);
+  EXPECT_EQ(link->posted, "4 months ago")
+      << "the walk stopped at the title's own price and never found the date; "
+         "detail was \"" << link->detail << "\"";
+}
+
+TEST(ObservationTest, TheUploadAgeIsItsOwnFact) {
+  // MEASURED on a real YouTube results page: thirty elements, sixteen with
+  // surrounding text, and only TWO where an upload age survived. The caption
+  // spent its budget repeating the title, because the NAME is "title +
+  // duration" and the page text is "title + views + age" -- they share a prefix
+  // and differ after it, so an exact-substring strip removed nothing.
+  //
+  // Asked for "the latest sidemen video", the agent had nothing to compare and
+  // opened one a month old while two-day-old videos sat beside it.
+  Observation observation =
+      BuildObservation(MakeResultCard(), "https://example.org/results",
+                       "Results", kMaxObservedElements, kMaxObservedTextLength);
+
+  const ObservedNode* link = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    if (node.name == "SIDEMEN SUNDAY") {
+      link = &node;
+    }
+  }
+  ASSERT_TRUE(link) << observation.ToJson(1);
+  EXPECT_EQ(link->posted, "8 days ago")
+      << "the age was not pulled out as its own fact: detail was "
+      << link->detail;
+  EXPECT_NE(observation.ToJson(1).find("posted"), std::string::npos)
+      << observation.ToJson(1);
+}
+
+TEST(ObservationTest, ProseThatMentionsAgoIsNotAnUploadAge) {
+  // The control. "long ago" and "ages ago" are not timestamps, and a field that
+  // answers "which is newest" is worse than useless if it invents one.
+  Observation observation = Build({
+      MakeNode(2, ax::mojom::Role::kLink, "A story from long ago"),
+  });
+  ASSERT_EQ(observation.elements.size(), 1u);
+  EXPECT_TRUE(observation.elements[0].posted.empty())
+      << "read an age out of prose: " << observation.elements[0].posted;
+}
+
+TEST(ObservationTest, AnAgeIsReadByShapeNotByVocabulary) {
+  // The first version listed the unit words and read as general without being
+  // general: the very page it was written for prints "13d ago" in its sidebar,
+  // and none of the listed words matched. What every spelling shares is shape --
+  // a number, some letters, then "ago".
+  struct Case {
+    const char* around;
+    const char* expected;
+  };
+  const Case cases[] = {
+      {"6.4M views 8 days ago", "8 days ago"},
+      {"1.5M views 13d ago", "13d ago"},
+      {"57M views 2 hours ago", "2 hours ago"},
+      {"85K views 3 mo ago", "3 mo ago"},
+      {"7h ago", "7h ago"},
+  };
+  for (const Case& c : cases) {
+    Observation observation = Build({
+        MakeNode(2, ax::mojom::Role::kLink, "A VIDEO"),
+        MakeNode(3, ax::mojom::Role::kStaticText, c.around),
+    });
+    const ObservedNode* link = nullptr;
+    for (const ObservedNode& node : observation.elements) {
+      if (node.name == "A VIDEO") {
+        link = &node;
+      }
+    }
+    ASSERT_TRUE(link) << c.around;
+    EXPECT_EQ(link->posted, c.expected)
+        << "from " << c.around << " the detail was " << link->detail;
+  }
+}
+
+TEST(ObservationTest, AWrittenDateCountsWhenThereIsNoAge) {
+  // Reviews, articles and releases print a date rather than an age. A worse
+  // answer to "which is newest" than an age, and a far better one than nothing.
+  Observation observation = Build({
+      MakeNode(2, ax::mojom::Role::kLink, "A REVIEW"),
+      MakeNode(3, ax::mojom::Role::kStaticText, "Reviewed on 12 August 2025"),
+  });
+  const ObservedNode* link = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    if (node.name == "A REVIEW") {
+      link = &node;
+    }
+  }
+  ASSERT_TRUE(link);
+  EXPECT_NE(link->posted.find("August"), std::string::npos)
+      << "detail was " << link->detail;
+  EXPECT_NE(link->posted.find("2025"), std::string::npos) << link->posted;
+}
+
 }  // namespace
 }  // namespace zephyrus::agent

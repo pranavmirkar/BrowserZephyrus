@@ -70,12 +70,23 @@ class FakeToolRunner : public mojom::ToolRunner {
 
   void Observe(int32_t level, ObserveCallback callback) override {
     ++observations;
+    if (note_a_change_after_the_first_look && observations > 1) {
+      // The same page, described by a look that has something to compare
+      // against. This is what really happens: the first Observation has no
+      // previous one and carries no `what_changed`, every later one does.
+      observation_json = base::StrCat(
+          {R"({"url":"https://docs.example.com/x","title":"X",)",
+           R"("what_changed":"nothing on the page changed","elements":[]})"});
+    }
     if (change_page_each_time) {
       // A page that moves under the agent, which is the normal case and the
       // one where repeating a call is legitimate.
+      const int page = pages_repeat_after > 0
+                           ? observations % pages_repeat_after
+                           : observations;
       observation_json = base::StrCat(
           {R"({"url":"https://docs.example.com/x","title":"X","scroll":)",
-           base::NumberToString(observations), R"(,"elements":[]})"});
+           base::NumberToString(page), R"(,"elements":[]})"});
     }
     std::move(callback).Run(observation_json);
   }
@@ -119,6 +130,10 @@ class FakeToolRunner : public mojom::ToolRunner {
   base::RepeatingClosure on_execute;
 
   bool change_page_each_time = false;
+  bool note_a_change_after_the_first_look = false;
+  // After this many distinct pages, start showing them again in order --
+  // a site you can walk in a circle, which is most sites.
+  int pages_repeat_after = 0;
   int observations = 0;
   std::vector<std::string> executed;
   std::vector<std::string> executed_arguments;
@@ -170,6 +185,36 @@ TEST_F(TaskLoopTest, RunsUntilTheModelSaysItIsDone) {
             (std::vector<std::string>{"page.observe", "task.complete"}));
 }
 
+TEST_F(TaskLoopTest, EmptyModelAnswerFailsWithoutSpendingTheTaskBudget) {
+  auto outcome = Run({""}, 20);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
+  EXPECT_EQ(outcome->steps, 1u);
+  EXPECT_TRUE(runner_.executed.empty());
+}
+
+TEST_F(TaskLoopTest, LoadingRechecksDoNotSpendModelSteps) {
+  runner_.observation_json =
+      R"({"url":"https://docs.example.com/x","loading":true,"elements":[]})";
+  runner_.note_a_change_after_the_first_look = true;
+  auto outcome = Run({R"({"name":"task.ask","arguments":{"question":"Which section?"}})"}, 1);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kAskedTheUser);
+  EXPECT_EQ(outcome->steps, 1u);
+  EXPECT_EQ(runner_.observations, 2);
+  EXPECT_EQ(model_->user_prompts.size(), 1u);
+}
+
+TEST_F(TaskLoopTest, RecoveryDoesNotRecommendTheSameFailedClick) {
+  runner_.observation_json =
+      R"({"url":"https://a.example/","title":"A","elements":[)"
+      R"({"id":"e1","role":"link","name":"Failed target"},)"
+      R"({"id":"e2","role":"link","name":"Alternative"}]})";
+  Run({R"({"name":"page.click","arguments":{"element_id":"e1"}})"});
+  const auto& prompt = model_->user_prompts.back();
+  EXPECT_EQ(prompt.find("The page has e1"), std::string::npos);
+  EXPECT_NE(prompt.find("The page has e2"), std::string::npos);
+  EXPECT_NE(prompt.find("Arguments: {\"element_id\":\"e1\"}"), std::string::npos);
+}
+
 TEST_F(TaskLoopTest, StopsWhenTheModelAsksTheUser) {
   mojom::TaskOutcomePtr outcome = Run({
       R"({"name":"task.ask","arguments":{"question":"Which Alex?"}})",
@@ -217,6 +262,165 @@ TEST_F(TaskLoopTest, TheStepBudgetIsNotAdvisory) {
   EXPECT_EQ(runner_.executed.size(), 3u);
 }
 
+TEST_F(TaskLoopTest, ADeterministicModelIsNeverHandedTheSamePromptTwice) {
+  // The trap, stated as a property of the harness rather than of one message.
+  //
+  // Temperature is zero, so an identical prompt produces an identical reply --
+  // always, not usually. If the harness refuses a reply without changing
+  // anything the model can see, the run becomes a closed loop that only the
+  // step budget can end. Measured on a real run: eight identical
+  // browser.navigate calls against a three-line history that never grew, the
+  // whole budget spent, the user watching it "waste steps".
+  //
+  // Asserted over EVERY consecutive pair of prompts, because the trap does not
+  // belong to the repeat guard or to the not-a-tool-call path. It belongs to
+  // any rejection that leaves the prompt untouched, including ones not written
+  // yet.
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://a.example/x"}})"},
+      /*max_steps=*/8);
+  ASSERT_TRUE(outcome);
+  ASSERT_GE(model_->user_prompts.size(), 3u);
+
+  for (size_t i = 1; i < model_->user_prompts.size(); ++i) {
+    EXPECT_NE(model_->user_prompts[i - 1], model_->user_prompts[i])
+        << "prompt " << i << " is identical to the one before it, so a model "
+           "at temperature zero can only repeat itself: "
+        << model_->user_prompts[i];
+  }
+}
+
+TEST_F(TaskLoopTest, AStuckRunStopsInsteadOfSpendingTheWholeBudget) {
+  // Measured, and the reason a user called it unacceptable: the model proposed
+  // the same refused browser.navigate NINE times and burned all twenty steps
+  // proving it. Counting the repeats and putting the number in the prompt was
+  // not enough -- the prompt genuinely changed each turn ("refused 6 times",
+  // "refused 7 times") and a temperature-zero model answered identically
+  // anyway, because a number is a different prompt without being a different
+  // situation.
+  //
+  // So the harness ends it. Three identical refused calls is a pattern, not a
+  // retry.
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://a.example/x"}})"},
+      /*max_steps=*/20);
+
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
+  EXPECT_LT(outcome->steps, 8u)
+      << "it spent " << outcome->steps << " steps on a call that was refused "
+         "every time";
+  EXPECT_NE(outcome->message.find("kept proposing"), std::string::npos)
+      << outcome->message;
+}
+
+TEST_F(TaskLoopTest, AModelThatShufflesOnAFrozenPageStopsToo) {
+  // The guard above keys on the CALL, and a model can walk around that without
+  // making any progress at all. Measured, on amazon.com: an image viewer
+  // opened, the page collapsed to two covered controls, and the model called
+  // page.find ten times with ten slightly different queries --
+  //
+  //   "price: RTX 4090", "RTX 4090 price", "cheapest RTX 4090",
+  //   "cheapest RTX 4090 price", "RTX 4090 price comparison", ...
+  //
+  // -- no two adjacent ones identical, so the repeat guard never fired, and
+  // every single one came back "nothing on the page changed". The budget ran
+  // out.
+  //
+  // Keyed on the RESULT instead. Whatever it is called, a page that has not
+  // moved in five steps is a page nothing is working on.
+  runner_.observation_json =
+      R"({"url":"https://a.example/","title":"A","elements":[)"
+      R"({"id":"e1","role":"button","name":"Close"}]})";
+
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"page.find","arguments":{"query":"one"}})",
+       R"({"name":"page.find","arguments":{"query":"two"}})",
+       R"({"name":"page.find","arguments":{"query":"three"}})",
+       R"({"name":"page.find","arguments":{"query":"four"}})",
+       R"({"name":"page.find","arguments":{"query":"five"}})",
+       R"({"name":"page.find","arguments":{"query":"six"}})",
+       R"({"name":"page.find","arguments":{"query":"seven"}})",
+       R"({"name":"page.find","arguments":{"query":"eight"}})",
+       R"({"name":"page.find","arguments":{"query":"nine"}})",
+       R"({"name":"page.find","arguments":{"query":"ten"}})"},
+      /*max_steps=*/20);
+
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
+  EXPECT_LT(outcome->steps, 9u)
+      << "it spent " << outcome->steps
+      << " steps on a page that never changed once";
+  EXPECT_NE(outcome->message.find("changed nothing"), std::string::npos)
+      << outcome->message;
+}
+
+TEST_F(TaskLoopTest, TheWayOutIsNeverTheToolThatJustFailed) {
+  // The harness diagnosed the trap correctly and then pointed back into it:
+  // "doing it again will do nothing -- use a relevant untried target,
+  // page.find, or task.ask if blocked", answered with page.find, ten times.
+  //
+  // Advice that names the tool the model is stuck on is not advice.
+  runner_.observation_json =
+      R"({"url":"https://a.example/","title":"A","elements":[)"
+      R"({"id":"e1","role":"button","name":"Close"}]})";
+
+  mojom::TaskOutcomePtr outcome =
+      Run({R"({"name":"page.find","arguments":{"query":"same"}})"},
+          /*max_steps=*/20);
+  ASSERT_TRUE(outcome);
+
+  for (const std::string& prompt : model_->user_prompts) {
+    EXPECT_EQ(prompt.find("target, page.find"), std::string::npos)
+        << "it was told to escape a stuck page.find by calling page.find:\n"
+        << prompt;
+  }
+}
+
+TEST_F(TaskLoopTest, ARefusalNamesSomethingRealToActOn) {
+  // "Look at the elements listed in the OBSERVATION" is advice. A model that is
+  // stuck is stuck precisely because it is not getting from the observation to
+  // a next step, so the refusal names two actual ids and their actual names.
+  runner_.observation_json =
+      R"({"url":"https://a.example/","title":"A","elements":[)"
+      R"({"id":"e1","role":"link","name":"THE VIDEO"},)"
+      R"({"id":"e2","role":"button","name":"Play"}]})";
+
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://a.example/x"}})"},
+      /*max_steps=*/20);
+  ASSERT_TRUE(outcome);
+
+  bool named = false;
+  for (const std::string& prompt : model_->user_prompts) {
+    if (prompt.find("e1 \"THE VIDEO\"") != std::string::npos) {
+      named = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(named) << "the refusal never named anything the model could click";
+}
+
+TEST_F(TaskLoopTest, WalkingInACircleIsCaughtToo) {
+  // Measured: search page -> click a product -> back to the search page ->
+  // click the same product, four times round, eighteen steps spent. Every
+  // CONSECUTIVE pair of steps differed, so the guard that looked one step back
+  // saw nothing wrong at any point.
+  //
+  // A cycle is the same call against the same page a second time, however far
+  // apart the two visits are.
+  runner_.change_page_each_time = true;
+  runner_.pages_repeat_after = 2;
+
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"page.click","arguments":{"element_id":"e1"}})"},
+      /*max_steps=*/20);
+
+  ASSERT_TRUE(outcome);
+  EXPECT_LT(outcome->steps, 10u)
+      << "it went round the loop " << outcome->steps << " times";
+}
+
 TEST_F(TaskLoopTest, StopsRepeatingACallThatChangedNothing) {
   // A real run navigated to an invented URL EIGHT TIMES and spent its whole
   // budget on it. History alone did not help: the model could read what
@@ -242,6 +446,50 @@ TEST_F(TaskLoopTest, StopsRepeatingACallThatChangedNothing) {
     }
   }
   EXPECT_TRUE(told) << "the model was never told why the repeat was refused";
+}
+
+TEST_F(TaskLoopTest, TheRefusalIsSaidOnceHoweverOftenItIsEarned) {
+  // The refusal path does not update `last_call_`, so a model that keeps
+  // proposing the same call lands there every single turn. Pushing a line each
+  // time built a prompt that grew fastest exactly when things were going worst
+  // -- the same self-poisoning loop already fixed for prose replies, still
+  // present here. Measured on a real run: twelve wasted steps, and each turn
+  // slower than the last.
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://a.example/x"}})"},
+      /*max_steps=*/6);
+
+  ASSERT_TRUE(outcome);
+  ASSERT_FALSE(model_->user_prompts.empty());
+
+  const std::string& last = model_->user_prompts.back();
+  size_t said = 0;
+  for (size_t at = last.find("You already called"); at != std::string::npos;
+       at = last.find("You already called", at + 1)) {
+    ++said;
+  }
+  EXPECT_EQ(said, 1u)
+      << "the same complaint was stacked " << said << " times:\n"
+      << last;
+}
+
+TEST_F(TaskLoopTest, ADescriptionOfTheLookIsNotAChangeToThePage) {
+  // A gap opened by the change report itself. `what_changed` describes the
+  // LOOK, not the page: the first Observation has nothing to compare against
+  // and carries no such field, the second says "nothing on the page changed".
+  // Comparing the raw JSON therefore saw two different observations of one
+  // unchanged page, and the guard that exists to catch a repeat sat out the
+  // first repeat -- the one it is for.
+  runner_.note_a_change_after_the_first_look = true;
+
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://a.example/x"}})"},
+      /*max_steps=*/5);
+
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(runner_.executed.size(), 1u)
+      << "the repeat ran anyway, because the page LOOKED different when only "
+         "the description of it had changed";
 }
 
 TEST_F(TaskLoopTest, RepeatingACallIsFineWhenThePageMoved) {
@@ -292,9 +540,10 @@ TEST_F(TaskLoopTest, RepeatedProseDoesNotStackUpInTheHistory) {
           /*max_steps=*/6);
 
   ASSERT_TRUE(outcome);
-  ASSERT_GE(model_->user_prompts.size(), 5u);
+  ASSERT_EQ(model_->user_prompts.size(), 3u);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
 
-  const std::string& late = model_->user_prompts[4];
+  const std::string& late = model_->user_prompts.back();
   size_t count = 0;
   for (size_t at = late.find("was not a tool call"); at != std::string::npos;
        at = late.find("was not a tool call", at + 1)) {
@@ -308,6 +557,16 @@ TEST_F(TaskLoopTest, TheHistoryShownToTheModelIsBounded) {
   // An unbounded history is a prompt that grows every step. The older entries
   // are not lost, they are just not re-read: what the model needs is what it
   // just did, not everything it has ever done.
+  //
+  // The page has to move for this to test what it says it tests. Without that,
+  // the fourteen scrolls are fourteen repeats against an identical page, and
+  // only the first one ever runs -- the history then filled up with the repeat
+  // guard's own complaint, which is not history and is now collapsed to a
+  // single line. The test passed for years on that stacking, so it was really
+  // asserting the bug. Scrolling a page that actually scrolls produces fourteen
+  // genuine entries, which is the thing being bounded.
+  runner_.change_page_each_time = true;
+
   mojom::TaskOutcomePtr outcome =
       Run({R"({"name":"page.scroll","arguments":{"direction":"down","amount":"page"}})"},
           /*max_steps=*/14);
@@ -348,7 +607,15 @@ TEST_F(TaskLoopTest, ShowsTheModelTheToolsAndThePage) {
   ASSERT_FALSE(model_->system_prompts.empty());
   const std::string& system = model_->system_prompts[0];
   // Generated from the contract, so it cannot drift from what is enforced.
-  EXPECT_NE(system.find("- page.click [R1]"), std::string::npos) << system;
+  //
+  // The listing prints the exact call to copy rather than a signature: a
+  // signature invited models to invent a syntax, and one traced run produced
+  // five spellings of the same navigation before giving up. The risk tag is
+  // gone from it too -- we printed [R1] and a model wrote it back as an
+  // argument.
+  EXPECT_NE(system.find("- page.click:"), std::string::npos) << system;
+  EXPECT_EQ(system.find("[R1]"), std::string::npos)
+      << "risk tags belong to the kernel, not the model: " << system;
   EXPECT_EQ(system.find("()"), std::string::npos)
       << "no parentheses -- a model copied them into the tool name once";
 
@@ -485,8 +752,16 @@ TEST_F(TaskLoopTest, TheModelIsToldItMayGoStraightToASearchPage) {
 
   ASSERT_FALSE(model_->system_prompts.empty());
   const std::string& prompt = model_->system_prompts[0];
-  EXPECT_NE(prompt.find("search_query"), std::string::npos)
-      << "the model is not told the search pattern is allowed: " << prompt;
+  // The RULE, not an example of it.
+  //
+  // This used to look for "search_query", which was a token from a YouTube URL
+  // printed in the rules. Naming two sites in a prompt every model reads on
+  // every step is site knowledge shipped in the harness, and a browser is not
+  // supposed to have favourites.
+  EXPECT_NE(prompt.find("SEARCH page"), std::string::npos)
+      << "the model is not told a search page is fair to open: " << prompt;
+  EXPECT_EQ(prompt.find("youtube"), std::string::npos)
+      << "the rules name a particular site: " << prompt;
 
   // And the part that still has to hold: a specific item is reached by clicking
   // it, because its address contains an id no one can derive from the title.
@@ -563,6 +838,51 @@ TEST_F(TaskLoopTest, ItIsToldHowMuchBudgetIsLeft) {
   // And it counts DOWN, or it is just a constant.
   EXPECT_NE(model_->user_prompts[0], model_->user_prompts[1])
       << "the remaining budget never changes";
+}
+
+TEST_F(TaskLoopTest, ItIsToldWhenThePageStartedPlayingSomething) {
+  // The gap that kept a finished task running. "play the latest video" was
+  // done -- the video was playing -- and nothing in the Observation said so, so
+  // the agent opened the right video twice and carried on hunting both times.
+  //
+  // A browser knows whether a page is making sound. A screenshot-driven agent
+  // has to guess it from the shape of a pause button.
+  runner_.observation_json =
+      R"({"url":"https://www.youtube.com/","title":"YouTube","elements":[]})";
+
+  runner_.on_execute = base::BindLambdaForTesting([&] {
+    runner_.observation_json =
+        R"({"url":"https://www.youtube.com/watch?v=abc","title":)"
+        R"("SIDEMEN LAST TO FALL ASLEEP - YouTube","media_playing":true,)"
+        R"("elements":[]})";
+  });
+
+  Run({R"({"name":"page.click","arguments":{"element_id":"e1"}})"},
+      /*max_steps=*/3);
+
+  ASSERT_GE(model_->user_prompts.size(), 2u);
+  const std::string& after = model_->user_prompts[1];
+  EXPECT_NE(after.find("playing media right now"), std::string::npos)
+      << "it was not told the video had started: " << after;
+  EXPECT_NE(after.find("task.complete"), std::string::npos) << after;
+}
+
+TEST_F(TaskLoopTest, ASilentPageIsNotClaimedToBePlaying) {
+  // The other half. Saying it every time would make the signal worthless, and
+  // a claim the agent cannot rely on is worse than no claim.
+  runner_.observation_json =
+      R"({"url":"https://example.org/a","title":"A","elements":[]})";
+  runner_.on_execute = base::BindLambdaForTesting([&] {
+    runner_.observation_json =
+        R"({"url":"https://example.org/b","title":"B","elements":[]})";
+  });
+
+  Run({R"({"name":"page.click","arguments":{"element_id":"e1"}})"},
+      /*max_steps=*/3);
+
+  ASSERT_GE(model_->user_prompts.size(), 2u);
+  EXPECT_EQ(model_->user_prompts[1].find("playing media"), std::string::npos)
+      << model_->user_prompts[1];
 }
 
 }  // namespace

@@ -63,6 +63,8 @@ class BrowserToolSurface : public ToolSurface {
   bool SwitchToTab(int tab_id) override;
   bool CloseTab(int tab_id) override;
   void Observe(ObserveCallback callback) override;
+  void ObserveForFind(const std::string& query, ObserveCallback callback) override;
+  void ObserveForCheck(ObserveCallback callback) override;
   ui::AXTreeID CurrentTreeId() override;
   bool ClickNode(const ObservedNode& node) override;
   bool TypeIntoNode(const ObservedNode& node,
@@ -152,6 +154,10 @@ class BrowserToolSurface : public ToolSurface {
                    ObserveCallback callback,
                    std::string summary);
 
+  // The single exit for every Observation, whatever route it took. Works out
+  // what changed and remembers this look for the next comparison.
+  void Answer(Observation observation, ObserveCallback callback);
+
   void OnSnapshot(ObserveCallback callback,
                   std::string url,
                   std::string title,
@@ -174,8 +180,58 @@ class BrowserToolSurface : public ToolSurface {
   bool vision_checked_ = false;
 
   std::unique_ptr<FetchWatcher> fetch_watcher_;
+  // The last Observation handed out, kept only so the next one can say what
+  // changed. Structured rather than re-parsed from JSON, because this is the
+  // one place that has the real thing.
+  Observation previous_;
+  bool has_previous_ = false;
+
   std::string settle_signature_;
+  std::string find_query_;
   int settle_rounds_ = 0;
+
+  // Consecutive looks that agreed with each other.
+  //
+  // Counted rather than tested, because a page under construction is stable
+  // between batches and a single agreement cannot tell that apart from a page
+  // that has finished.
+  int stable_rounds_ = 0;
+
+  // The address at the previous look, and when it last differed.
+  //
+  // A page whose address just changed is a page still being built: on a
+  // single-page app the URL moves first and the content follows. See
+  // kGraceAfterArriving.
+  std::string url_when_last_looked_;
+  base::TimeTicks arrived_at_;
+
+  // Address, title and element count: what "the page has finished arriving"
+  // is judged on, deliberately blind to text that merely ticks.
+  std::string arrival_signature_;
+
+  // The last address the browser actually LOADED, as opposed to the one the
+  // page is currently showing. Written by FetchWatcher, which is why that class
+  // holds a pointer back here. See Observation::document_url.
+  std::string last_document_url_;
+
+  // The address the model was last shown, and whether the last thing the agent
+  // did was the kind that can make a page navigate. Together they answer "is
+  // this page still on its way somewhere".
+  std::string answered_url_;
+  bool last_action_could_navigate_ = false;
+
+  // Whether the look now in flight is the one the model will see.
+  //
+  // A member rather than a parameter threaded through the five asynchronous
+  // hops between starting a look and finishing one. Safe because looks are
+  // strictly serial: the loop runs one tool call at a time and each completes
+  // before the next begins.
+  bool remember_this_look_ = true;
+
+  // The signature of the last Observation actually handed to the agent, so the
+  // settle loop can recognise a page that has not moved since the model acted.
+  std::string answered_signature_;
+  bool has_answered_ = false;
 
   raw_ptr<Browser> browser_;
 

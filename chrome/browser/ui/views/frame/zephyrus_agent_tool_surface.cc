@@ -6,6 +6,7 @@
 
 #include <tuple>
 
+#include "base/memory/raw_ptr.h"
 #include "base/command_line.h"
 #include "chrome/browser/zephyrus/agent/dev_model_client.h"
 #include "chrome/browser/zephyrus/agent/sanitizer.h"
@@ -13,6 +14,8 @@
 #include "third_party/skia/include/core/SkPaint.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "base/functional/bind.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/profiles/profile.h"
@@ -24,7 +27,9 @@
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/sessions/content/session_tab_helper.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/media_session.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -157,6 +162,82 @@ constexpr base::TimeDelta kActionIsRecent = base::Seconds(3);
 // otherwise be waited on forever. At this point take what is there and go.
 constexpr int kMaxSettleRounds = 8;
 
+// The budget when the page still looks EXACTLY as it did before the agent
+// acted, or a navigation is in flight.
+//
+// Stability was being used as a proxy for "my action took effect", and the two
+// are not the same. Immediately after a click the page is still the old page
+// and perfectly stable, so two looks 150ms apart agreed with each other and the
+// browser called it settled -- on the page the click was meant to leave. The
+// model was then told "nothing on the page changed", which is not a missing
+// signal but a wrong one: it reads as "that click failed, try something else".
+//
+// Watched on youtube.com: the agent opened the correct video, was told nothing
+// had happened, went back to the results page and clicked it again, until the
+// twenty-step budget ran out. It played the right video several times over.
+//
+// Bounded by kActionIsRecent in practice, so a click that genuinely changes
+// nothing costs about three seconds once and then reports the truth -- which is
+// the trade worth making, because the alternative is reporting a falsehood
+// immediately and losing the whole task to it.
+constexpr int kMaxSettleRoundsAfterAction = 24;
+
+// How long to keep looking after a click or a key press before accepting that
+// the page is not going to navigate.
+//
+// Byte-identity was the wrong test and it is worth saying why, because it looked
+// right. The first version kept waiting only while the page was EXACTLY as the
+// model last saw it -- but a click that is about to navigate usually changes
+// something trivial first: a ripple, a focus ring, a title tweak. Any of those
+// makes the page "different", the wait ends, and the model is handed the
+// pre-navigation page with "nothing on the page changed" attached. The rule has
+// to be about the NAVIGATION, not about whether some pixel moved.
+//
+// Only clicks and key presses pay this, and only until the URL actually moves,
+// so the common case -- a click that navigates -- settles as soon as it lands
+// and costs nothing extra. A click that opens a menu pays the full grace once.
+constexpr base::TimeDelta kGraceAfterNavigatingAction = base::Seconds(2.5);
+
+// How long a page counts as still ARRIVING after its address changes.
+//
+// The mirror image of the wait above, and the one that actually lost a task.
+// That wait runs until the URL moves; this one runs from the moment it moved.
+// A single-page app changes its address FIRST and builds the page afterwards,
+// so the instant the old wait ends is the instant the page is emptiest.
+//
+// MEASURED, on the run this was written for. The agent searched, opened the
+// Sidemen channel, read eleven upload ages and clicked the newest -- "8 days
+// ago" -- which is exactly the task it was given. It arrived at the right
+// video and was handed this:
+//
+//     title: "YouTube"        (not the video's title -- the site's)
+//     text:  "INSkip navigationsidemen latestSign in"
+//     10 elements, one of them a covered "Play" button
+//
+// Nothing there says a video was reached, so the model went back to the search
+// results and tried again. Four times. The same URL, looked at later in the
+// same run, had 30 elements and the title "SIDEMEN $100,000 USA ROAD TRIP".
+// The model was right every time and the browser threw the answer away.
+//
+// Chromium was no help: IsLoading() was already false and no fetch was in
+// flight, because the document had finished and the application had not. Two
+// looks 150ms apart agreed with each other, and agreement was being read as
+// completion.
+constexpr base::TimeDelta kGraceAfterArriving = base::Seconds(3);
+
+// Consecutive looks that must agree before a just-arrived page is believed.
+//
+// One round of agreement is enough for a page sitting still and is not enough
+// for one being built, because construction has gaps: a frame where the next
+// batch of nodes has not landed looks exactly like a frame where there is no
+// next batch. Three in a row is 450ms of quiet, which construction does not
+// have and a finished page pays without noticing.
+//
+// A ceiling, not a wait. A page that is genuinely done agrees immediately and
+// leaves after those three looks; only a page that keeps changing spends the
+// whole window above.
+constexpr int kStableRoundsOnArrival = 3;
+
 // What "the page changed" means for settling: the things the model is shown.
 // Pixels move constantly and mean nothing here.
 std::string SignatureOf(const Observation& observation) {
@@ -186,8 +267,8 @@ std::string SignatureOf(const Observation& observation) {
 // decides only once it has gone quiet.
 class BrowserToolSurface::FetchWatcher : public content::WebContentsObserver {
  public:
-  explicit FetchWatcher(content::WebContents* contents)
-      : content::WebContentsObserver(contents) {}
+  FetchWatcher(content::WebContents* contents, BrowserToolSurface* owner)
+      : content::WebContentsObserver(contents), owner_(owner) {}
 
   void ResourceLoadComplete(
       content::RenderFrameHost*,
@@ -196,13 +277,43 @@ class BrowserToolSurface::FetchWatcher : public content::WebContentsObserver {
     last_fetch_at_ = base::TimeTicks::Now();
   }
 
+  // A navigation that has started and not yet finished.
+  //
+  // Same-document navigations count, and that is the point: a single-page app
+  // moving from a results list to a video does it with the History API, so
+  // there is no load, no new document, and nothing in ResourceLoadComplete to
+  // notice. Without this the browser cannot tell "the page has not reacted yet"
+  // from "the page is not going to react".
+  void DidStartNavigation(content::NavigationHandle*) override {
+    ++navigations_in_flight_;
+  }
+
+  void DidFinishNavigation(content::NavigationHandle* handle) override {
+    if (navigations_in_flight_ > 0) {
+      --navigations_in_flight_;
+    }
+    // A real document, in the tab the agent is driving.
+    //
+    // Same-document navigations are excluded deliberately: pushState and
+    // replaceState move the address without loading anything, and it is
+    // precisely that move which was being mistaken for a failed navigation.
+    if (handle && handle->IsInPrimaryMainFrame() && handle->HasCommitted() &&
+        !handle->IsSameDocument()) {
+      owner_->last_document_url_ = handle->GetURL().spec();
+    }
+  }
+
+  bool NavigationPending() const { return navigations_in_flight_ > 0; }
+
   bool BusyWithin(base::TimeDelta window) const {
     return !last_fetch_at_.is_null() &&
            base::TimeTicks::Now() - last_fetch_at_ < window;
   }
 
  private:
+  const raw_ptr<BrowserToolSurface> owner_;
   base::TimeTicks last_fetch_at_;
+  int navigations_in_flight_ = 0;
 };
 
 // Runs `done` when the page stops loading, or when it has waited long enough.
@@ -301,6 +412,14 @@ content::WebContents* BrowserToolSurface::FindTabInCurrentWorkspace(
 }
 
 bool BrowserToolSurface::Navigate(const GURL& url) {
+  find_query_.clear();
+  // Definitionally a navigation, so the look that follows must wait for it.
+  //
+  // Only clicks and key presses were marked, which left the one action that is
+  // ALWAYS a navigation without the grace: browser.navigate looked before the
+  // load committed and reported "the page did not load" for a page that was on
+  // its way. Traced on a real run, first step of the task.
+  last_action_could_navigate_ = true;
   last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents) {
@@ -313,6 +432,7 @@ bool BrowserToolSurface::Navigate(const GURL& url) {
 }
 
 bool BrowserToolSurface::GoBack() {
+  last_action_could_navigate_ = true;
   last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents || !contents->GetController().CanGoBack()) {
@@ -323,6 +443,7 @@ bool BrowserToolSurface::GoBack() {
 }
 
 bool BrowserToolSurface::GoForward() {
+  last_action_could_navigate_ = true;
   last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents || !contents->GetController().CanGoForward()) {
@@ -333,6 +454,7 @@ bool BrowserToolSurface::GoForward() {
 }
 
 bool BrowserToolSurface::Reload() {
+  last_action_could_navigate_ = true;
   last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents) {
@@ -344,6 +466,7 @@ bool BrowserToolSurface::Reload() {
 }
 
 bool BrowserToolSurface::OpenTab(const GURL& url) {
+  last_action_could_navigate_ = true;
   last_action_at_ = base::TimeTicks::Now();
   // An empty URL means a blank new tab, which is what the contract's optional
   // url argument asks for.
@@ -355,6 +478,7 @@ bool BrowserToolSurface::OpenTab(const GURL& url) {
 }
 
 bool BrowserToolSurface::SwitchToTab(int tab_id) {
+  last_action_could_navigate_ = true;
   last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = FindTabInCurrentWorkspace(tab_id);
   if (!contents) {
@@ -400,6 +524,11 @@ void BrowserToolSurface::EnsureAccessibility() {
                                            ui::kAXModeWebContentsOnly);
 }
 
+void BrowserToolSurface::ObserveForCheck(ObserveCallback callback) {
+  remember_this_look_ = false;
+  Observe(std::move(callback));
+}
+
 void BrowserToolSurface::Observe(ObserveCallback callback) {
   EnsureAccessibility();
   content::WebContents* contents = ActiveContents();
@@ -417,7 +546,7 @@ void BrowserToolSurface::Observe(ObserveCallback callback) {
   settle_signature_.clear();
   // Starts listening now, which is enough: the fetches that matter are the ones
   // the agent's own action just caused.
-  fetch_watcher_ = std::make_unique<FetchWatcher>(contents);
+  fetch_watcher_ = std::make_unique<FetchWatcher>(contents, this);
 
   if (contents->IsLoading()) {
     load_waiter_ = std::make_unique<LoadWaiter>(
@@ -441,6 +570,12 @@ void BrowserToolSurface::Observe(ObserveCallback callback) {
   }
 
   TakeSnapshot(std::move(callback));
+}
+
+void BrowserToolSurface::ObserveForFind(const std::string& query,
+                                       ObserveCallback callback) {
+  find_query_ = query;
+  Observe(std::move(callback));
 }
 
 void BrowserToolSurface::TakeSnapshot(ObserveCallback callback) {
@@ -475,17 +610,151 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
                                     std::string url,
                                     std::string title,
                                     ui::AXTreeUpdate& update) {
+  if (has_answered_ && url != answered_url_) {
+    find_query_.clear();
+  }
   Observation observation = BuildObservation(
-      update, url, title, kMaxObservedElements, kMaxObservedTextLength);
+      update, url, title, find_query_.empty() ? kMaxObservedElements : 5000,
+      kMaxObservedTextLength);
+  if (!find_query_.empty()) {
+    const auto matches = observation.Matching(find_query_);
+    if (matches.empty()) {
+      // Nothing matched, so show the page rather than nothing at all.
+      //
+      // Replacing the elements with an empty list here handed the model a page
+      // with no controls on it -- indistinguishable from a blank document --
+      // and because the query survives until a navigation or a click, the step
+      // after that was blank too. The only ways out are a navigate or a click,
+      // and a click needs an element it can no longer see.
+      //
+      // The query is dropped as well: a filter that matches nothing is not
+      // worth carrying into the next look.
+      find_query_.clear();
+
+      // The budget was raised to 5000 for the search. Put it back, keeping the
+      // content-first order BuildObservation already placed them in, and say
+      // that it was cut.
+      if (observation.elements.size() > kMaxObservedElements) {
+        observation.elements.resize(kMaxObservedElements);
+        observation.truncated = true;
+      }
+    } else {
+      std::vector<ObservedNode> selected;
+      for (const ObservedNode* match : matches) {
+        if (selected.size() == kMaxObservedElements) {
+          break;
+        }
+        selected.push_back(*match);
+      }
+      observation.elements = std::move(selected);
+    }
+  }
+
+  // What the page is doing, not just what is on it.
+  if (content::WebContents* contents = ActiveContents()) {
+    // Either signal, not one overriding the other.
+    //
+    // They answer different halves of the question and neither is complete.
+    // IsCurrentlyAudible() measures sound actually leaving the tab, which a
+    // muted autoplaying video does not produce; the media session knows about
+    // that video and can also go stale, still reporting the last thing it was
+    // told after the page has moved on. Letting the session REPLACE the
+    // measurement meant a genuinely audible video was reported silent whenever
+    // the session disagreed.
+    //
+    // So: playing if anything says it is playing. An overclaim here costs a
+    // model one wasted look; an underclaim costs it the completed task it
+    // cannot tell it has finished.
+    observation.media_playing = contents->IsCurrentlyAudible();
+    if (auto* session = content::MediaSession::GetIfExists(contents)) {
+      auto info = session->GetMediaSessionInfoSync();
+      if (info && info->playback_state ==
+                      media_session::mojom::MediaPlaybackState::kPlaying) {
+        observation.media_playing = true;
+      }
+    }
+    observation.loading = contents->IsLoading();
+    observation.document_url = last_document_url_;
+  }
 
   // Look again unless this look matched the last one. The first look never
   // matches, so a page is always seen at least twice before it is believed.
   const std::string signature = SignatureOf(observation);
+
+  // When the address last moved under us, which is when arrival started.
+  if (observation.url != url_when_last_looked_) {
+    url_when_last_looked_ = observation.url;
+    arrived_at_ = base::TimeTicks::Now();
+  }
+  const bool just_arrived =
+      !arrived_at_.is_null() &&
+      base::TimeTicks::Now() - arrived_at_ < kGraceAfterArriving;
+
   const bool still_fetching =
       fetch_watcher_ && fetch_watcher_->BusyWithin(kSettleInterval * 2);
-  if ((signature != settle_signature_ || still_fetching) &&
-      settle_rounds_ < kMaxSettleRounds) {
+  const bool navigating =
+      fetch_watcher_ && fetch_watcher_->NavigationPending();
+
+  // A click or a key press has happened and the address has not moved yet.
+  //
+  // This is the case the whole fix is about. A single-page app decides to
+  // navigate in its own time -- on youtube.com, a moment after the click -- and
+  // there is no signal for "a navigation is about to start". So the only honest
+  // thing is to keep looking for a bounded while and see whether one does.
+  //
+  // Judged on the URL rather than on the page looking identical, because a page
+  // about to navigate rarely looks identical: it puts up a spinner, moves the
+  // focus ring, tweaks its title. Watching for those and calling it "changed"
+  // is what handed the model the pre-navigation page in the first place.
+  const bool awaiting_navigation =
+      last_action_could_navigate_ && has_answered_ &&
+      observation.url == answered_url_ &&
+      base::TimeTicks::Now() - last_action_at_ < kGraceAfterNavigatingAction;
+
+  // How many looks have agreed in a row, rather than whether this one did.
+  //
+  // Arrival is judged on a COARSER signature than settling is, and the reason
+  // is a page with a clock on it. The full signature carries every name and
+  // value, so a live view count, a countdown or an unread badge changes it on
+  // every look and it never agrees with itself -- and demanding three
+  // agreements from a page like that would spend the whole window, then report
+  // "still loading", then be looked at three more times by the loop. A page
+  // that ticks would have become the slowest thing the agent does.
+  //
+  // What arrival is actually asking is "has the rest of the page shown up
+  // yet", and that is a question about how MUCH is there, not what it says.
+  // The measured failure was ten elements becoming thirty under a title that
+  // went from "YouTube" to the video's own. A count and a title catch exactly
+  // that, and a ticking number moves neither.
+  const std::string arrival_signature = base::StrCat(
+      {observation.url, " >< ", observation.title, " >< ",
+       base::NumberToString(observation.elements.size())});
+
+  bool stable = false;
+  if (just_arrived) {
+    if (arrival_signature == arrival_signature_) {
+      ++stable_rounds_;
+    } else {
+      arrival_signature_ = arrival_signature;
+      stable_rounds_ = 0;
+    }
+    stable = stable_rounds_ >= kStableRoundsOnArrival;
+    // Kept current so the ordinary rule below resumes cleanly afterwards.
     settle_signature_ = signature;
+  } else {
+    stable = signature == settle_signature_;
+    settle_signature_ = signature;
+  }
+
+  const int rounds_allowed =
+      (navigating || awaiting_navigation || just_arrived)
+          ? kMaxSettleRoundsAfterAction
+          : kMaxSettleRounds;
+
+  const bool still_moving =
+      !stable || still_fetching || navigating || awaiting_navigation;
+
+  if (still_moving && settle_rounds_ < rounds_allowed) {
     ++settle_rounds_;
     base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
         FROM_HERE,
@@ -496,8 +765,23 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
   }
 
   settle_rounds_ = 0;
+  stable_rounds_ = 0;
   settle_signature_.clear();
+  arrival_signature_.clear();
   fetch_watcher_.reset();
+
+  // Say so when the waiting ran out on a page that had not finished.
+  //
+  // This is the half that matters. Waiting longer helps a page that settles
+  // within the window and does nothing for one that does not, and there will
+  // always be one that does not. What makes THAT recoverable is admitting it:
+  // the loop already re-observes a page marked loading, up to three times, and
+  // that machinery sat idle through the whole failed run because it was told
+  // the half-built page was finished.
+  //
+  // An honest "still building" costs a model nothing to handle. A confident
+  // photograph of an empty page costs it the task.
+  observation.loading = observation.loading || still_moving;
 
   // The page has stopped moving, so this is the moment worth photographing.
   CaptureScreenshot(std::move(observation), std::move(callback));
@@ -522,7 +806,7 @@ void BrowserToolSurface::CaptureScreenshot(Observation observation,
   // Observation goes out exactly as it did before vision existed.
   if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
           kAgentVisionSwitch)) {
-    std::move(callback).Run(std::move(observation));
+    Answer(std::move(observation), std::move(callback));
     return;
   }
 
@@ -533,7 +817,7 @@ void BrowserToolSurface::CaptureScreenshot(Observation observation,
     // No picture is not an error. The Observation still describes the page, and
     // a task that stops because a screenshot was unavailable would be worse
     // than one that carries on with the channel that does work.
-    std::move(callback).Run(std::move(observation));
+    Answer(std::move(observation), std::move(callback));
     return;
   }
 
@@ -560,7 +844,7 @@ void BrowserToolSurface::OnScreenshot(
     const content::CopyFromSurfaceResult& result) {
   if (!result.has_value() || result.value().bitmap.drawsNothing()) {
     // No picture is not an error; the Observation still describes the page.
-    std::move(callback).Run(std::move(observation));
+    Answer(std::move(observation), std::move(callback));
     return;
   }
 
@@ -627,7 +911,7 @@ void BrowserToolSurface::DescribeScreenshot(Observation observation,
   }
 
   if (!vision_ || observation.screenshot_jpeg.empty()) {
-    std::move(callback).Run(std::move(observation));
+    Answer(std::move(observation), std::move(callback));
     return;
   }
 
@@ -661,6 +945,78 @@ void BrowserToolSurface::OnDescribed(Observation observation,
   // Clearing it is what makes that structural rather than a promise about who
   // reads which field: there is nothing left to send.
   observation.screenshot_jpeg.clear();
+
+  Answer(std::move(observation), std::move(callback));
+}
+
+void BrowserToolSurface::Answer(Observation observation,
+                                ObserveCallback callback) {
+  // The private values go here, at the one door every Observation leaves by.
+  //
+  // This was written, tested and never called. The picture was masked and the
+  // TEXT was not, so an address that had been carefully painted out of the
+  // screenshot was sitting in the JSON beside it -- and the JSON is the half
+  // that actually goes to a model. A single exit is what makes it impossible to
+  // add a fifth route that forgets.
+  //
+  // After the mask, not before: the mask needs the real values to know what to
+  // paint over and where.
+  RedactObservation(observation);
+
+  // Belt and braces on the promise that the picture never leaves. OnDescribed
+  // clears it, but that is only one of the ways out -- vision switched on with
+  // no model configured reaches here with the bytes still attached. Cleared at
+  // the door instead, so the guarantee does not depend on the route.
+  observation.screenshot_jpeg.clear();
+
+  // Said last, so it compares the finished Observation against the finished
+  // one before it -- after settling, after redaction, after the description.
+  if (has_previous_) {
+    observation.DescribeChangeFrom(previous_);
+  }
+
+  // Only a look the model is shown may move the baseline.
+  //
+  // An internal check runs after an action, so letting it stand in for "what
+  // the model last saw" makes the next real look report no change for a step
+  // that changed everything.
+  if (!remember_this_look_) {
+    remember_this_look_ = true;
+    std::move(callback).Run(std::move(observation));
+    return;
+  }
+
+  // Kept for next time. The elements are what the comparison needs; the
+  // picture is already gone by here and the description is not worth diffing.
+  previous_ = Observation();
+  previous_.url = observation.url;
+  previous_.title = observation.title;
+  previous_.media_playing = observation.media_playing;
+  previous_.elements.reserve(observation.elements.size());
+  for (const ObservedNode& node : observation.elements) {
+    ObservedNode copy;
+    copy.name = node.name;
+    // The VALUE too. Keeping only names made typing invisible: the box now
+    // holds "sidemen", every name is exactly what it was, and the change
+    // report said nothing happened. Filling something in is the commonest way
+    // an agent changes a page without changing its shape.
+    //
+    // Safe to keep, because this runs after redaction -- what is stored here is
+    // the masked value the model was shown, never the real one.
+    copy.value = node.value;
+    previous_.elements.push_back(std::move(copy));
+  }
+  has_previous_ = true;
+
+  // What the model is about to be shown. The next settle compares against it to
+  // tell "the page has not reacted yet" from "the page did not react".
+  answered_signature_ = SignatureOf(observation);
+  answered_url_ = observation.url;
+  has_answered_ = true;
+
+  // The grace above is spent, whatever happened. Without this a later look on
+  // an unrelated step would still think it was waiting for that click.
+  last_action_could_navigate_ = false;
 
   std::move(callback).Run(std::move(observation));
 }
@@ -710,6 +1066,10 @@ bool BrowserToolSurface::PerformAction(ax::mojom::Action action,
 }
 
 bool BrowserToolSurface::MoveAndClick(const gfx::Rect& bounds) {
+  find_query_.clear();
+  // A click and a key press are the two things that make a page decide to go
+  // somewhere. Typing and scrolling do not, and must not pay the grace.
+  last_action_could_navigate_ = true;
   last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents || !contents->GetPrimaryMainFrame()) {
@@ -974,6 +1334,9 @@ bool BrowserToolSurface::ScrollPage(bool down, const std::string& amount) {
 }
 
 bool BrowserToolSurface::PressKey(const std::string& key) {
+  // A click and a key press are the two things that make a page decide to go
+  // somewhere. Typing and scrolling do not, and must not pay the grace.
+  last_action_could_navigate_ = true;
   last_action_at_ = base::TimeTicks::Now();
   content::WebContents* contents = ActiveContents();
   if (!contents) {

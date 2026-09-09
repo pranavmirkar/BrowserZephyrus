@@ -9,6 +9,9 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include "base/memory/weak_ptr.h"
+#include "base/files/file_path.h"
+#include <vector>
 
 #include "base/memory/scoped_refptr.h"
 #include "chrome/services/zephyrus_agent/public/mojom/agent_kernel.mojom.h"
@@ -83,9 +86,56 @@ class DevModelClient : public mojom::AgentModel {
   mojo::PendingRemote<mojom::AgentModel> BindNewPipeAndPassRemote();
 
   // mojom::AgentModel:
+  // Loads the model without asking it anything.
+  //
+  // MEASURED on this machine, qwen2.5:7b: 19.2s for a trivial request with the
+  // model cold, 2.5s with it resident. That 17 seconds was being paid AFTER the
+  // user pressed send, because the client is built when a task starts -- so a
+  // task appeared to take half a minute to begin while the browser sat waiting
+  // for a 4.7GB file to come off disk.
+  //
+  // Called when the agent panel opens instead, which is the moment a person has
+  // said "I am about to use this" and is still typing. The load then happens
+  // beside them rather than in front of them.
+  static void WarmUp(
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+
   void Propose(const std::string& system_prompt,
                const std::string& user_prompt,
                ProposeCallback callback) override;
+
+ private:
+  // Replies read from a recording, replayed in order instead of asking a model.
+  //
+  // A model at temperature zero is repeatable in principle and not in practice:
+  // it is a different process, on a machine whose load changes, behind a server
+  // that may truncate a prompt. Debugging the HARNESS against it means every
+  // change is tested against a moving input, which is how a week goes into
+  // deciding whether a fix worked.
+  //
+  // With a recording the model is a constant. Change the parser, the prompt or
+  // the executor, replay the exact session that failed, and any difference in
+  // behaviour is yours. This is what the build plan meant by "deterministic
+  // replay from day one, because debugging a non-replayable agent is
+  // guesswork".
+  std::vector<std::string> replies_;
+  size_t next_reply_ = 0;
+  bool replaying_ = false;
+
+  // The recording is read off the disk, which cannot be done on this thread.
+  //
+  // A Propose that arrives before the file has loaded is held rather than
+  // answered wrongly: answering "nothing recorded" because the read had not
+  // finished would make replay depend on disk timing, and being independent of
+  // timing is the entire point of it.
+  bool loaded_ = false;
+  std::vector<ProposeCallback> waiting_;
+
+  void LoadRecording(const base::FilePath& path);
+  void OnRecordingLoaded(std::vector<std::string> replies);
+  void AnswerFromRecording(ProposeCallback callback);
+
+ public:
 
  private:
   DevModelClient(const GURL& endpoint,
@@ -96,6 +146,7 @@ class DevModelClient : public mojom::AgentModel {
 
   void OnResponse(LoaderList::iterator loader,
                   ProposeCallback callback,
+                  std::string user_prompt,
                   std::optional<std::string> body);
 
   const GURL endpoint_;
@@ -107,7 +158,12 @@ class DevModelClient : public mojom::AgentModel {
   // and leave the loop waiting.
   LoaderList loaders_;
 
+
   mojo::ReceiverSet<mojom::AgentModel> receivers_;
+
+  // Last member, as the style checker requires: everything above must still
+  // exist when a pending callback runs.
+  base::WeakPtrFactory<DevModelClient> weak_factory_{this};
 };
 
 }  // namespace zephyrus::agent

@@ -4,7 +4,9 @@
 
 #include "chrome/browser/zephyrus/agent/observation.h"
 
+#include <algorithm>
 #include <map>
+#include <set>
 #include <string_view>
 #include <vector>
 #include <utility>
@@ -12,6 +14,7 @@
 #include "base/json/json_writer.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/memory/raw_ptr.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -99,6 +102,16 @@ std::string RoleNameFor(const ui::AXNode& node) {
 // each actually worth reading.
 constexpr size_t kMaxNameLength = 140;
 
+// The title gets its own, larger cap.
+//
+// Bounding it at the ELEMENT cap was too tight, and the same mistake as capping
+// names at eighty: it truncated the one field that says what page this is. A
+// title is a single string read once, not one of thirty read every step, so it
+// can afford more room. Three hundred still turns a hostile 4096-character
+// title -- Chromium's own ceiling -- into something that cannot crowd out the
+// page it is describing.
+constexpr size_t kMaxTitleLength = 300;
+
 // A name a person could act on.
 //
 // An accessible name is often computed from everything inside the element, so a
@@ -112,7 +125,7 @@ constexpr size_t kMaxNameLength = 140;
 // Truncation is safe here because the model acts on issued ids, never on names.
 // The name is only how it chooses, and the first few words are what a person
 // reads too.
-std::string Shorten(std::string name) {
+std::string Shorten(std::string name, size_t limit = kMaxNameLength) {
   // Newlines and runs of spaces come from the page's own layout and carry no
   // meaning once the text is on one line.
   //
@@ -124,7 +137,7 @@ std::string Shorten(std::string name) {
   // asserts the exact string rather than merely that it got shorter.
   name = base::CollapseWhitespaceASCII(
       name, /*trim_sequences_with_line_breaks=*/false);
-  if (name.size() <= kMaxNameLength) {
+  if (name.size() <= limit) {
     return name;
   }
 
@@ -132,12 +145,12 @@ std::string Shorten(std::string name) {
   // would produce a string the JSON writer cannot encode, and the model would
   // lose the whole Observation rather than one long name.
   std::string cut;
-  base::TruncateUTF8ToByteSize(name, kMaxNameLength, &cut);
+  base::TruncateUTF8ToByteSize(name, limit, &cut);
 
   // Back up to the last space so the label ends on a word. A name that stops
   // mid-word reads as corruption and invites the model to distrust it.
   const size_t space = cut.find_last_of(' ');
-  if (space != std::string::npos && space > kMaxNameLength / 2) {
+  if (space != std::string::npos && space > limit / 2) {
     cut.resize(space);
   }
   return cut + "...";
@@ -153,6 +166,201 @@ std::string Shorten(std::string name) {
 // So fall back the way a person reads a form -- the placeholder, then any
 // description. Chromium only populates kPlaceholder when it is NOT already the
 // name, so this adds information rather than repeating it.
+// "8 days ago" and friends, found anywhere in `text`.
+//
+// Relative ages are what results pages actually print, and they are directly
+// comparable without knowing today's date. Deliberately narrow: a NUMBER, a
+// unit, then "ago". Anything else is prose that happens to contain a number.
+std::string PostedAgeIn(std::string_view text) {
+  // Structure, not a vocabulary.
+  //
+  // The first version listed the unit words -- second, minute, hour and so on
+  // -- which read as general and was not. The very page it was written for
+  // prints "13d ago" and "7h ago" in its sidebar, and none of those matched. A
+  // list of words is a list of the spellings someone happened to think of.
+  //
+  // What every one of them shares is shape: a NUMBER, then some letters, then
+  // "ago". That covers "8 days ago", "13d ago" and "3 mo ago" without knowing
+  // any of them in advance, and still refuses "long ago" and "ages ago",
+  // because those carry no number.
+  const size_t ago = text.find(" ago");
+  if (ago != std::string_view::npos) {
+    // Just the tail before "ago" -- an age is short, and looking further back
+    // only invites a number from an unrelated sentence.
+    constexpr size_t kAgeWindow = 14;
+    const size_t from = ago > kAgeWindow ? ago - kAgeWindow : 0;
+    std::string_view before = text.substr(from, ago - from);
+
+    // Walk back over the letters, then any space, then the digits.
+    size_t at = before.size();
+    while (at > 0 && base::IsAsciiAlpha(before[at - 1])) {
+      --at;
+    }
+    const size_t letters = at;
+    while (at > 0 && base::IsAsciiWhitespace(before[at - 1])) {
+      --at;
+    }
+    const size_t digits_end = at;
+    while (at > 0 && base::IsAsciiDigit(before[at - 1])) {
+      --at;
+    }
+    if (at < digits_end && letters < before.size()) {
+      std::string found(text.substr(from + at, ago - from - at + 4));
+      base::TrimWhitespaceASCII(found, base::TRIM_ALL, &found);
+      return found;
+    }
+  }
+
+  // Failing that, a written date.
+  //
+  // Plenty of pages print "12 August 2025" or "Aug 12, 2025" rather than an
+  // age -- a review, an article, a release. It is a worse answer to "which is
+  // newest" than an age is, and a far better one than nothing.
+  static constexpr std::string_view kMonths[] = {
+      "january", "february", "march",     "april",   "may",      "june",
+      "july",    "august",   "september", "october", "november", "december"};
+  const std::string lowered = base::ToLowerASCII(text);
+  for (std::string_view month : kMonths) {
+    const size_t at = lowered.find(month);
+    if (at == std::string::npos) {
+      continue;
+    }
+    // A month name is only a date when a year is beside it. "March" on its own
+    // is a word.
+    const size_t from = at > 8 ? at - 8 : 0;
+    const std::string_view around =
+        std::string_view(lowered).substr(from, month.size() + 24);
+    size_t digits = 0;
+    for (const char c : around) {
+      digits += base::IsAsciiDigit(c) ? 1 : 0;
+    }
+    if (digits < 4) {
+      continue;
+    }
+    std::string found(text.substr(from, around.size()));
+    base::TrimWhitespaceASCII(found, base::TRIM_ALL, &found);
+    return found;
+  }
+  return std::string();
+}
+
+// The words near `node` that its own name does not already carry.
+//
+// Walks up until an ancestor has meaningfully more text than the element does,
+// then reports what that ancestor adds. On a results page that ancestor is the
+// card around the link, and what it adds is the channel, the view count and the
+// upload age -- exactly the line a person reads to tell one result from
+// another.
+//
+// Bounded hard, and taken from an ancestor rather than the whole page, because
+// the point is a caption and not a second copy of the document.
+std::string DetailAround(const ui::AXNode& node, const std::string& name) {
+  // Room for a caption, now that it no longer repeats the title.
+  constexpr size_t kMaxDetailLength = 120;
+  // Five, and the depth is not what keeps this honest -- the length cap below
+  // is. An ancestor that has climbed far enough to hold the neighbouring
+  // results is an ancestor whose text is far longer than a caption, and it is
+  // skipped on that ground whatever its depth. Stopping at three only meant
+  // giving up before reaching the row that had the facts.
+  constexpr int kAncestorsToTry = 5;
+
+  // The first thing worth quoting, kept in case nothing better turns up.
+  std::string fallback;
+
+  const ui::AXNode* ancestor = node.parent();
+  for (int step = 0; ancestor && step < kAncestorsToTry;
+       ++step, ancestor = ancestor->parent()) {
+    std::string around = ancestor->GetTextContentUTF8();
+    if (around.empty()) {
+      continue;
+    }
+
+    // No length test against the name.
+    //
+    // "Is this ancestor longer than the name" was a proxy for "does it add
+    // anything", and a wrong one: text content is built from DESCENDANT static
+    // text, so a link with a name and no children contributes none of itself to
+    // it. A card whose only other text was "7h ago" therefore measured shorter
+    // than the name and was skipped -- losing the upload age precisely where
+    // the page was most concise about it. What is left AFTER removing the
+    // element's own words is the only thing worth testing.
+
+    // Remove the element's own words from the front, one word at a time.
+    //
+    // An exact substring search missed almost every time: the NAME is the
+    // accessibility label, which on a results page is the title plus the
+    // duration, while the surrounding text is the title followed by the view
+    // count. They share a prefix and differ after it, so nothing matched and
+    // the caption spent its whole budget repeating the title -- which is how
+    // the upload age, the one fact "latest" needs, ended up cut off.
+    for (const std::string& word : base::SplitString(
+             name, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+      if (around.size() >= word.size() &&
+          around.compare(0, word.size(), word) == 0) {
+        around.erase(0, word.size());
+        continue;
+      }
+      break;
+    }
+    around = base::CollapseWhitespaceASCII(
+        around, /*trim_sequences_with_line_breaks=*/false);
+    base::TrimWhitespaceASCII(around, base::TRIM_ALL, &around);
+    if (around.empty()) {
+      continue;
+    }
+    if (around.size() > kMaxDetailLength) {
+      // A run this long is the rest of the page, not a caption for this one
+      // element. Keep climbing rather than quoting it.
+      continue;
+    }
+
+    // It has to add a FACT, and a fact here has a number in it.
+    //
+    // Views, ages, prices, ratings, counts -- everything this field exists to
+    // carry is numeric. What it is NOT for is the names of the element's
+    // neighbours: the "All" filter chip sat in a bar with the others, so its
+    // caption came back "ShortsUnwatchedWatchedVideosRecently uploadedLive",
+    // which tells a model nothing it cannot already see in the element list.
+    //
+    // Measured, and this is the part that matters: without this test almost
+    // EVERY element got a caption from its immediate parent, and the
+    // observation grew enough to break a timing-sensitive click test that had
+    // been green all day. A field that costs every look something has to earn
+    // it on every element it appears on.
+    if (!std::any_of(around.begin(), around.end(),
+                     [](char c) { return base::IsAsciiDigit(c); })) {
+      continue;
+    }
+
+    // Of the enclosing texts that qualify, prefer one that DATES the thing.
+    //
+    // Taking the first was the bug, and it is a subtle one because the first is
+    // usually right. MEASURED on a search results page: 3 of 30 elements got a
+    // caption at all, against 19 of 30 on the channel page for the same
+    // videos. The difference was not the data -- both pages print the upload
+    // age -- it was that search results nest one level deeper, and the shallow
+    // ancestor holds only the title.
+    //
+    //   e11  detail: "$100,000 vs $100 CRUISE HOLIDAY"           <- stopped here
+    //   e25  detail: "ABANDONED IN ASIA7.2M views - 4 months ago"
+    //
+    // Both passed the "has a number in it" test, because e11's title is about
+    // money. A digit proves the text carries a fact; it does not prove the
+    // fact is the one being looked for. So keep climbing while no age has been
+    // found, and settle for the first candidate only if none of them has one.
+    //
+    // General, not a rule about videos: an article, a review and a listing all
+    // put their date one wrapper out from their title.
+    if (!PostedAgeIn(around).empty()) {
+      return around;
+    }
+    if (fallback.empty()) {
+      fallback = around;
+    }
+  }
+  return fallback;
+}
+
 std::string DescribeNode(const ui::AXNode& node) {
   std::string name = node.GetStringAttribute(ax::mojom::StringAttribute::kName);
   if (!name.empty()) {
@@ -227,6 +435,8 @@ void Collect(const ui::AXTree& tree,
         // order. Numbering here would number them in the order they appear in
         // the document, which is the order this exists to stop using.
         observed.role = role;
+        observed.detail = DetailAround(node, name);
+        observed.posted = PostedAgeIn(observed.detail);
         observed.name = std::move(name);
         observed.value = std::move(value);
         observed.ax_id = node.id();
@@ -265,7 +475,11 @@ void Collect(const ui::AXTree& tree,
 // bounds per element per candidate -- walks the ancestor chain thousands of
 // times over for the same answer.
 struct PlacedNode {
-  const ui::AXNode* node;
+  // raw_ptr rather than a bare pointer because this is a field, and the
+  // checker is right to insist even though the vector never leaves the call
+  // that built it -- "it is local" is exactly the reasoning that stops being
+  // true the first time someone stores one of these.
+  raw_ptr<const ui::AXNode> node;
   gfx::Rect bounds;
 };
 
@@ -372,6 +586,94 @@ const ObservedNode* Observation::Find(std::string_view element_id) const {
   return nullptr;
 }
 
+void Observation::DescribeChangeFrom(const Observation& previous) {
+  std::vector<std::string> notes;
+
+  if (previous.url != url) {
+    notes.push_back(base::StrCat({"you are now on \"", title, "\""}));
+  } else if (previous.title != title) {
+    // Same address, new title: this is how a single-page app announces that it
+    // became something else, and it is invisible if you only watch the URL.
+    notes.push_back(base::StrCat({"the page became \"", title, "\""}));
+  }
+
+  if (media_playing && !previous.media_playing) {
+    notes.push_back("it started playing media");
+  } else if (!media_playing && previous.media_playing) {
+    notes.push_back("it stopped playing media");
+  }
+
+  // What appeared. Named, because "8 new things" is not actionable and
+  // "including Checkout and Place order" is.
+  std::set<std::string> before;
+  for (const ObservedNode& node : previous.elements) {
+    before.insert(node.name);
+  }
+  std::vector<std::string> arrived;
+  for (const ObservedNode& node : elements) {
+    if (!node.name.empty() && !before.count(node.name)) {
+      arrived.push_back(node.name);
+    }
+  }
+  if (!arrived.empty()) {
+    std::string note =
+        base::StrCat({base::NumberToString(arrived.size()), " new thing",
+                      arrived.size() == 1 ? "" : "s", " appeared"});
+    const size_t named = arrived.size() < 2 ? arrived.size() : 2;
+    for (size_t i = 0; i < named; ++i) {
+      base::StrAppend(&note, {i == 0 ? ", including \"" : "\" and \"",
+                              arrived[i]});
+    }
+    if (named > 0) {
+      note += "\"";
+    }
+    notes.push_back(std::move(note));
+  }
+
+  // Fields whose contents changed.
+  //
+  // Compared by name, because ids are reissued every look and a field is the
+  // same field to a person if it is still called the same thing. The value
+  // itself is not repeated here -- it is already in the elements list, and
+  // some of it is redacted.
+  std::map<std::string, std::string> held_before;
+  for (const ObservedNode& node : previous.elements) {
+    if (!node.name.empty()) {
+      held_before[node.name] = node.value;
+    }
+  }
+  std::vector<std::string> refilled;
+  for (const ObservedNode& node : elements) {
+    const auto found = held_before.find(node.name);
+    if (found != held_before.end() && found->second != node.value) {
+      refilled.push_back(node.name);
+    }
+  }
+  if (!refilled.empty()) {
+    std::string note = base::StrCat(
+        {base::NumberToString(refilled.size()), " field",
+         refilled.size() == 1 ? "" : "s", " now hold different text"});
+    const size_t named = refilled.size() < 2 ? refilled.size() : 2;
+    for (size_t i = 0; i < named; ++i) {
+      base::StrAppend(&note,
+                      {i == 0 ? ", including \"" : "\" and \"", refilled[i]});
+    }
+    if (named > 0) {
+      note += "\"";
+    }
+    notes.push_back(std::move(note));
+  }
+
+  if (notes.empty()) {
+    // Saying nothing changed is as useful as saying what did. It is the
+    // difference between "that did not work" and "that worked and I cannot
+    // tell", and the agent kept guessing wrong about exactly this.
+    changed = "nothing on the page changed";
+    return;
+  }
+  changed = base::JoinString(notes, "; ");
+}
+
 std::vector<const ObservedNode*> Observation::Matching(
     std::string_view query) const {
   std::vector<const ObservedNode*> matches;
@@ -388,8 +690,22 @@ std::vector<const ObservedNode*> Observation::Matching(
 
 std::string Observation::ToJson(int level) const {
   base::DictValue root;
+  if (loading) {
+    root.Set("loading", true);
+  }
   root.Set("url", url);
   root.Set("title", title);
+  if (!changed.empty()) {
+    // Right at the top, because it is the answer to the question the model is
+    // actually asking: did what I just did work?
+    root.Set("what_changed", changed);
+  }
+  if (media_playing) {
+    // At the top level, beside url and title, because it describes the PAGE
+    // rather than any one element -- and because for a task about playing
+    // something, this is the answer.
+    root.Set("media_playing", true);
+  }
 
   if (level >= 1) {
     base::ListValue list;
@@ -398,11 +714,24 @@ std::string Observation::ToJson(int level) const {
       entry.Set("id", node.id);
       entry.Set("role", node.role);
       entry.Set("name", node.name);
+      if (node.offscreen) {
+        entry.Set("offscreen", true);
+      }
       if (!node.value.empty()) {
         entry.Set("value", node.value);
       }
       if (!focused_id.empty() && node.id == focused_id) {
         entry.Set("focused", true);
+      }
+      if (!node.posted.empty()) {
+        // The one fact "which is the latest" turns on, in the same place for
+        // every candidate so they can be compared.
+        entry.Set("posted", node.posted);
+      }
+      if (!node.detail.empty()) {
+        // The line under the title: who posted it, how many views, how long
+        // ago. Without this "the latest one" has no answer on the page.
+        entry.Set("detail", node.detail);
       }
       if (node.obscured) {
         // Said plainly, because "covered" and "missing" call for completely
@@ -444,12 +773,26 @@ Observation BuildObservation(const ui::AXTreeUpdate& update,
                              size_t max_text_length) {
   Observation observation;
   observation.url = url;
-  observation.title = title;
+  // Bounded like everything else the page writes. It was the one string that
+  // went through untouched, and it is read three times over -- in the JSON, in
+  // what_changed, and in the arrival note -- so a page with a huge title
+  // crowded out the page it was describing.
+  observation.title = Shorten(title, kMaxTitleLength);
   observation.tree_id = update.tree_data.tree_id;
 
   // A snapshot that will not unserialize is a snapshot we cannot read. An empty
   // Observation is the honest result: it offers nothing, so every element id
   // the model could name is ungrounded and gets refused.
+  // Checked BEFORE handing it over, because Unserialize does not merely fail on
+  // a rootless update any more -- it DCHECKs. Upstream tightened that, and a
+  // snapshot with no root is a thing that genuinely arrives: a tab that has not
+  // committed, a frame torn down mid-capture. Asking the question ourselves
+  // turns a browser crash in any DCHECK build back into the empty Observation
+  // this was always meant to return.
+  if (update.nodes.empty() || update.root_id == ui::kInvalidAXNodeID) {
+    return observation;
+  }
+
   ui::AXTree tree;
   if (!tree.Unserialize(update) || !tree.root()) {
     return observation;
@@ -512,7 +855,8 @@ Observation BuildObservation(const ui::AXTreeUpdate& update,
 
   observation.text = tree.root()->GetTextContentUTF8();
   if (observation.text.size() > max_text_length) {
-    observation.text.resize(max_text_length);
+    base::TruncateUTF8ToByteSize(observation.text, max_text_length,
+                               &observation.text);
     observation.truncated = true;
   }
 

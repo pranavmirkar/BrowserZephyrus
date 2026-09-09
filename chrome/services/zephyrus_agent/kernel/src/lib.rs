@@ -56,6 +56,10 @@ mod ffi {
         id: String,
         role: String,
         name: String,
+        /// What private thing the browser judged this to hold, or empty.
+        /// A bare word: "password", "payment_card", "email", "phone",
+        /// "personal_name".
+        sensitivity: String,
     }
 
     /// What the browser should do with a proposed call.
@@ -135,10 +139,13 @@ mod ffi {
 
         /// Recover a tool call from whatever the model emitted.
         ///
-        /// Free function rather than a Kernel method: it needs no contract, and
-        /// keeping it callable without one means a kernel that failed to load
-        /// can still report what the model said rather than nothing at all.
-        fn extract_call(response: &str) -> ExtractedCall;
+        /// A Kernel method, because reading a reply reliably needs to know which
+        /// tool names are real. It was a free function on the reasoning that it
+        /// "needs no contract" -- and without one it had to guess at the shape
+        /// of a name, which threw away `browser.navigate https://...` for want
+        /// of a bracket. A kernel that failed to load has no tools, so nothing
+        /// matches and the caller is told no call was found, which is true.
+        fn extract_call(self: &Kernel, response: &str) -> ExtractedCall;
     }
 }
 
@@ -221,6 +228,7 @@ impl Kernel {
                 id: e.id.clone(),
                 role: e.role.clone(),
                 name: e.name.clone(),
+                sensitivity: e.sensitivity.clone(),
             })
             .collect();
 
@@ -257,8 +265,15 @@ fn refuse(reason: String) -> ffi::PolicyDecision {
 
 /// See `extraction::extract_call`. This is the cxx-facing shape of it: cxx has
 /// no Option, so absence is a flag rather than a missing value.
-pub fn extract_call(response: &str) -> ffi::ExtractedCall {
-    match extraction::extract_call(response) {
+impl Kernel {
+    pub fn extract_call(&self, response: &str) -> ffi::ExtractedCall {
+        extract_call_with(self.contract.as_ref(), response)
+    }
+}
+
+fn extract_call_with(contract: Option<&Contract>, response: &str) -> ffi::ExtractedCall {
+    let known: Vec<String> = contract.map(Contract::tool_names).unwrap_or_default();
+    match extraction::extract_call(response, &known) {
         Some(call) => ffi::ExtractedCall {
             found: true,
             tool: call.name,

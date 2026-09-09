@@ -13,6 +13,9 @@ struct ObservedElement {
   string id;
   string role;
   string name;
+  // What private thing the browser judged this to hold, or empty. Stated by
+  // the browser rather than guessed at again here; see ObservedNode.
+  string sensitivity;
 };
 
 // What the browser should do with a proposed call.
@@ -121,6 +124,10 @@ enum TaskStatus {
   // going: an agent that cannot finish in its budget is usually looping.
   kOutOfSteps = 3,
   kFailed = 4,
+  // The user stopped it. Distinct from kFailed because nothing went wrong:
+  // saying "failed" for a task someone deliberately ended is a lie the log then
+  // carries forever.
+  kCancelled = 5,
 };
 
 struct TaskOutcome {

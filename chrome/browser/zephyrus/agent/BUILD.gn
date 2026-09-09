@@ -23,6 +23,7 @@ source_set("agent") {
     "tool_runner_impl.cc",
     "tool_runner_impl.h",
     "tool_executor.h",
+    "tool_surface.cc",
     "tool_surface.h",
   ]
 

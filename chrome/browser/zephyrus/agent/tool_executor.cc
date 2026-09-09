@@ -14,8 +14,11 @@
 #include "base/json/json_reader.h"
 #include "base/strings/string_util.h"
 #include "base/json/json_writer.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/values.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
+#include "chrome/browser/zephyrus/agent/sanitizer.h"
 #include "url/gurl.h"
 
 namespace zephyrus::agent {
@@ -87,6 +90,93 @@ std::optional<GURL> WebUrlArgument(const base::DictValue& arguments) {
   return url;
 }
 
+// What to say when page.find matched nothing.
+//
+// "[]" is the least useful true answer available. It says "your query was
+// wrong, try another one", and a model does exactly that -- MEASURED, twice, on
+// two different sites in one run:
+//
+//   page.find "price"             -> []
+//   page.find "cheapest RTX 4090" -> []
+//   page.find "RTX 4090 price"    -> []
+//
+// The page had two things on it, both covered: a "Close" button and a "Zoom In
+// On Image" button. An image viewer had opened over the product page and
+// nothing was ever going to match, however the query was phrased. The way out
+// was one Escape, and the browser knew the whole time.
+//
+// So the empty answer carries the reason. A model cannot infer "an overlay is
+// open" from an empty list, and it does not have to: the browser can see it.
+// A name, short enough to sit in a sentence.
+std::string ShortName(const std::string& name) {
+  constexpr size_t kMax = 40;
+  if (name.size() <= kMax) {
+    return name;
+  }
+  // Cut on a space so a truncated name reads as a name, and never mid-codepoint
+  // -- this string goes into JSON.
+  size_t cut = name.rfind(' ', kMax);
+  if (cut == std::string::npos || cut < kMax / 2) {
+    cut = kMax;
+    while (cut > 0 && (static_cast<unsigned char>(name[cut]) & 0xC0) == 0x80) {
+      --cut;
+    }
+  }
+  return name.substr(0, cut) + "...";
+}
+
+std::string NothingMatched(const std::string& query,
+                           const Observation& observation) {
+  std::string note = base::StrCat({"nothing here matches \"", query, "\". "});
+
+  if (observation.elements.empty()) {
+    return note +
+           "There is nothing on this page to act on at all, which usually "
+           "means it has not finished loading. Look again before deciding it "
+           "is empty.";
+  }
+
+  // Every single one behind something else. One element hidden is ordinary --
+  // a sticky header, a tooltip. ALL of them is a page that is not the page any
+  // more.
+  bool everything_covered = true;
+  for (const ObservedNode& node : observation.elements) {
+    if (!node.obscured) {
+      everything_covered = false;
+      break;
+    }
+  }
+
+  base::StrAppend(&note, {"The page has ",
+                          base::NumberToString(observation.elements.size()),
+                          observation.elements.size() == 1 ? " thing on it"
+                                                           : " things on it"});
+  if (everything_covered) {
+    base::StrAppend(&note, {", every one of them covered by something on top"});
+  }
+
+  int shown = 0;
+  for (const ObservedNode& node : observation.elements) {
+    if (shown >= 3) {
+      break;
+    }
+    base::StrAppend(&note, {shown == 0 ? ": " : ", ", node.id, " \"",
+                            ShortName(node.name), "\""});
+    ++shown;
+  }
+
+  if (everything_covered) {
+    base::StrAppend(
+        &note,
+        {". Something is open OVER the page -- a viewer, a dialog, a banner. "
+         "No query will match past it. Close it first: page.press with key "
+         "\"Escape\", or click whatever dismisses it."});
+  } else {
+    base::StrAppend(&note, {". Call page.observe to see all of them."});
+  }
+  return note;
+}
+
 }  // namespace
 
 ToolExecutor::ToolExecutor(AgentKernelClient* kernel, ToolSurface* surface)
@@ -142,6 +232,7 @@ void ToolExecutor::Send(const std::string& tool,
     element->id = node.id;
     element->role = node.role;
     element->name = node.name;
+    element->sensitivity = node.sensitivity;
     request->elements.push_back(std::move(element));
   }
 
@@ -281,12 +372,30 @@ void ToolExecutor::Perform(const std::string& tool,
 
   if (tool == "tabs.open") {
     // url is optional for this tool: no url means a new blank tab.
+    //
+    // "about:blank" counts as no url. It is the name of the blank page, so it
+    // is what a model reaches for when asked to open a blank tab, and refusing
+    // it meant refusing the exact thing the tool already does. MEASURED: a user
+    // typed "can you open a new tab" and got back "that is not a web address
+    // this browser will open", twice, and the task was abandoned.
+    //
+    // This widens nothing. The tab that opens is the same blank tab the no-url
+    // path opens; browser.navigate's gate is untouched, and every other scheme
+    // is still refused below.
     GURL url;
-    if (arguments.contains("url")) {
+    const std::string* asked = arguments.FindString("url");
+    const bool wants_a_blank_tab = !asked || asked->empty() ||
+                                   *asked == "about:blank" ||
+                                   *asked == "about:newtab";
+    if (!wants_a_blank_tab) {
       std::optional<GURL> parsed_url = WebUrlArgument(arguments);
       if (!parsed_url) {
-        std::move(callback).Run(
-            Failed("that is not a web address this browser will open"));
+        // Say what WOULD work. A refusal that only says no leaves the model
+        // rewriting the argument, which is the syntax churn this harness has
+        // paid for before.
+        std::move(callback).Run(Failed(
+            "that is not a web address this browser will open. tabs.open takes "
+            "an http or https address, or no url at all for a blank tab."));
         return;
       }
       url = *parsed_url;
@@ -318,7 +427,22 @@ void ToolExecutor::Perform(const std::string& tool,
     const char* field = tool == "task.complete" ? "answer" : "question";
     const std::string* text = arguments.FindString(field);
     if (!text) {
-      std::move(callback).Run(Failed("nothing was said"));
+      // An empty ANSWER is not a failure to finish; an empty QUESTION is.
+      //
+      // The contract stopped requiring an answer -- finishing without a summary
+      // is still finishing -- and this check went on refusing it, so a
+      // completed task was rejected for not describing itself. Asking the user
+      // nothing at all is different: there is no question to put in front of
+      // them, so there is nothing for them to answer.
+      if (tool == "task.complete") {
+        base::DictValue done;
+        done.Set("answer", "");
+        std::string empty_json;
+        base::JSONWriter::Write(done, &empty_json);
+        std::move(callback).Run(Ok(std::move(empty_json)));
+        return;
+      }
+      std::move(callback).Run(Failed("there was no question to ask"));
       return;
     }
     base::DictValue value;
@@ -335,13 +459,103 @@ void ToolExecutor::Perform(const std::string& tool,
   if (tool == "page.observe" || tool == "page.find") {
     const int level = arguments.FindInt("level").value_or(1);
     const std::string* query = arguments.FindString("query");
-    surface_->Observe(base::BindOnce(
+    auto observed = base::BindOnce(
         &ToolExecutor::OnObserved, weak_factory_.GetWeakPtr(), tool, level,
-        query ? *query : std::string(), std::move(callback)));
+        query ? *query : std::string(), std::move(callback));
+    if (tool == "page.find" && query) {
+      surface_->ObserveForFind(*query, std::move(observed));
+    } else {
+      surface_->Observe(std::move(observed));
+    }
     return;
   }
 
+  if (tool == "page.click" || tool == "page.type" || tool == "page.select") {
+    const std::string* id = arguments.FindString("element_id");
+    const ObservedNode* expected = id ? observation_.Find(*id) : nullptr;
+    if (!expected) {
+      std::move(callback).Run(Failed("that element is not on the page"));
+      return;
+    }
+    surface_->ObserveForCheck(base::BindOnce(
+        &ToolExecutor::OnElementReady, weak_factory_.GetWeakPtr(), tool,
+        arguments.Clone(), *expected, std::move(callback)));
+    return;
+  }
+  DispatchElement(tool, arguments.Clone(), std::move(callback));
+}
+
+void ToolExecutor::OnElementReady(std::string tool,
+                                  base::DictValue arguments,
+                                  ObservedNode expected,
+                                  ExecuteCallback callback,
+                                  Observation fresh) {
+  if (fresh.tree_id != observation_.tree_id || fresh.url != observation_.url) {
+    std::move(callback).Run(Failed("the page changed while the model was thinking; choose from the next observation"));
+    return;
+  }
+  const ObservedNode* match = nullptr;
+  for (const auto& node : fresh.elements) {
+    if (node.name != expected.name || node.role != expected.role ||
+        node.sensitivity != expected.sensitivity) {
+      continue;
+    }
+    if (match) {
+      std::move(callback).Run(Failed("the target is ambiguous after the page updated; use page.find to choose a distinct target"));
+      return;
+    }
+    match = &node;
+  }
+  if (!match) {
+    std::move(callback).Run(Failed("the target disappeared while the model was thinking; choose from the next observation"));
+    return;
+  }
+  // Refresh the authorized target's geometry, keeping every model-issued id
+  // bound to its original element. A slow inference must not click old pixels.
+  for (auto& node : observation_.elements) {
+    if (node.id == expected.id) {
+      node.bounds = match->bounds;
+      node.offscreen = match->offscreen;
+      node.ax_id = match->ax_id;
+      break;
+    }
+  }
+
+  // Let the renderer settle before synthesising input.
+  //
+  // The staleness check above is a full look at the page, which crosses to the
+  // renderer and back. Sending fake mouse events the instant it returns loses
+  // them: the page's own listeners see nothing, while Chromium's injector
+  // aimed at the same coordinates hits the element -- measured by
+  // ClickingReachesAListenerOnAServedPage, which regressed the moment this
+  // check was added in front of the dispatch.
+  //
+  // The same shape cost this code a working click once before, when
+  // WebContents::Focus() sat here; removing that call is what made clicking
+  // work at all. Anything that touches the page immediately before synthetic
+  // input appears to swallow it.
+  //
+  // A quarter of a second, matching the pause VerifyEntered already takes after
+  // typing for the same reason. It is paid once per element action, and it buys
+  // the check that stops the agent clicking pixels that have moved.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&ToolExecutor::DispatchElement,
+                     weak_factory_.GetWeakPtr(), tool, std::move(arguments),
+                     std::move(callback)),
+      base::Milliseconds(250));
+}
+
+void ToolExecutor::DispatchElement(const std::string& tool,
+                                   base::DictValue arguments,
+                                   ExecuteCallback callback) {
   Result result = PerformOnElement(tool, arguments);
+  if (result.status == Result::Status::kOk && tool == "page.click") {
+    surface_->ObserveForCheck(base::BindOnce(
+        &ToolExecutor::OnClickChecked, weak_factory_.GetWeakPtr(),
+        std::move(callback)));
+    return;
+  }
 
   // Entering text is the one action whose effect can be checked cheaply, and
   // the one that has silently failed most. If it claims to have worked, look
@@ -359,12 +573,26 @@ void ToolExecutor::Perform(const std::string& tool,
   std::move(callback).Run(std::move(result));
 }
 
+void ToolExecutor::OnClickChecked(ExecuteCallback callback, Observation fresh) {
+  base::DictValue evidence;
+  evidence.Set("input_dispatched", true);
+  evidence.Set("url", fresh.url);
+  evidence.Set("title", fresh.title);
+  evidence.Set("media_playing", fresh.media_playing);
+  // A dispatched click is not proof that the user's task succeeded.
+  evidence.Set("verification", "Check the next observation for the requested effect.");
+  std::string json;
+  base::JSONWriter::Write(evidence, &json);
+  std::move(callback).Run(Ok(std::move(json)));
+}
+
 void ToolExecutor::VerifyArrived(std::string wanted, ExecuteCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   // Looking settles, so this waits for the load rather than racing it.
-  surface_->Observe(base::BindOnce(&ToolExecutor::OnArrived,
-                                   weak_factory_.GetWeakPtr(),
-                                   std::move(wanted), std::move(callback)));
+  surface_->ObserveForCheck(base::BindOnce(&ToolExecutor::OnArrived,
+                                          weak_factory_.GetWeakPtr(),
+                                          std::move(wanted),
+                                          std::move(callback)));
 }
 
 void ToolExecutor::OnArrived(std::string wanted,
@@ -377,6 +605,24 @@ void ToolExecutor::OnArrived(std::string wanted,
   const GURL landed(fresh.url);
 
   if (SameDestination(asked, landed)) {
+    std::move(callback).Run(Ok());
+    return;
+  }
+
+  // The page loaded and then rewrote its own address.
+  //
+  // Sites do this constantly -- stripping a tracking parameter, canonicalising
+  // a path, a single-page app moving to its first view -- and none of it means
+  // the navigation failed. Judged on the document that was actually fetched,
+  // the request plainly succeeded.
+  //
+  // Found by a test written for something else: a served page called
+  // replaceState on load, and the harness told the model "that address did not
+  // open -- addresses cannot be guessed", about an address it had just opened
+  // correctly. That is the most damaging thing it could have said, because it
+  // is the sentence that sends a model looking somewhere else.
+  const GURL document(fresh.document_url);
+  if (document.is_valid() && SameDestination(asked, document)) {
     std::move(callback).Run(Ok());
     return;
   }
@@ -406,9 +652,10 @@ void ToolExecutor::VerifyEntered(std::string text, ExecuteCallback callback) {
 
 void ToolExecutor::LookToVerify(std::string text, ExecuteCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  surface_->Observe(base::BindOnce(&ToolExecutor::OnVerified,
-                                   weak_factory_.GetWeakPtr(), std::move(text),
-                                   std::move(callback)));
+  surface_->ObserveForCheck(base::BindOnce(&ToolExecutor::OnVerified,
+                                          weak_factory_.GetWeakPtr(),
+                                          std::move(text),
+                                          std::move(callback)));
 }
 
 void ToolExecutor::OnVerified(std::string text,
@@ -510,6 +757,35 @@ ToolExecutor::Result ToolExecutor::PerformOnElement(
       return Failed("nothing was given to enter");
     }
 
+    // page.select picks from a list; it is not typing, and must not be judged
+    // as if it were.
+    //
+    // Both tools shared the whole block below, so choosing an option was
+    // checked against the roles that can hold TEXT. A native <select> holds no
+    // text, so a perfectly good call came back "\"Price: Low to High\" is a
+    // option, not something you can type into" -- an error about typing, for a
+    // tool that does not type, naming the value rather than the target. Traced:
+    // the model tried four times and the run was called stuck.
+    if (tool == "page.select") {
+      if (node->offscreen) {
+        return Failed("\"" + node->name +
+                      "\" is scrolled out of view -- scroll to it first");
+      }
+      // An <option> is a plausible thing for a model to aim at, and the thing
+      // that actually takes the value is the list it belongs to. Say so rather
+      // than refusing flatly.
+      if (node->role == "option" || node->role == "menuitem") {
+        return Failed(
+            "\"" + node->name +
+            "\" is one of the choices, not the control that holds them. Pick "
+            "the list itself and pass this as the value.");
+      }
+      return surface_->SetNodeValue(*node, *text)
+                 ? Ok()
+                 : Failed("that choice did not take -- check the list and the "
+                          "exact wording of the option");
+    }
+
     // Refuse a target that cannot hold text, and say what it is.
     //
     // This is what stalled a real task. A page can have a text field and a
@@ -531,10 +807,20 @@ ToolExecutor::Result ToolExecutor::PerformOnElement(
       // submitted an empty search, changed the page, and invalidated every
       // element id it was holding.
       const ObservedNode* typeable = nullptr;
-      for (const ObservedNode* candidate : observation_.Matching(node->name)) {
-        if (candidate->name == node->name && IsTextEntryRole(candidate->role)) {
-          typeable = candidate;
-          break;
+      // Not when the name is nothing but a mask.
+      //
+      // The disambiguation below rests entirely on the name meaning something:
+      // two controls called "Search" are two halves of one search box. Once
+      // redaction has replaced a name that WAS the private thing, several
+      // unrelated elements can end up called exactly "[redacted]" -- and then
+      // "the other element with the same name" is not disambiguation, it is
+      // picking one at random and typing the model's text into it.
+      if (node->name != kRedactedMarker && !node->name.empty()) {
+        for (const ObservedNode* candidate : observation_.Matching(node->name)) {
+          if (candidate->name == node->name && IsTextEntryRole(candidate->role)) {
+            typeable = candidate;
+            break;
+          }
         }
       }
       if (!typeable) {
@@ -559,13 +845,10 @@ ToolExecutor::Result ToolExecutor::PerformOnElement(
                     "\" is scrolled out of view -- scroll to it first");
     }
 
-    // page.type types; page.select picks. Two mechanisms, because a native
-    // <select> cannot be typed into and a framework search box cannot be
-    // assigned to.
-    const bool done = tool == "page.type"
-                          ? surface_->TypeIntoNode(*node, *text)
-                          : surface_->SetNodeValue(*node, *text);
-    return done ? Ok() : Failed("that could not be filled in");
+    // Only page.type reaches here now; select returned above.
+    return surface_->TypeIntoNode(*node, *text)
+               ? Ok()
+               : Failed("that could not be filled in");
   }
 
   // Unreachable for the V1 contract: all eighteen tools are handled above. It
@@ -595,6 +878,16 @@ void ToolExecutor::OnObserved(std::string tool,
       entry.Set("name", node->name);
       matches.Append(std::move(entry));
     }
+    if (matches.empty()) {
+      base::DictValue answer;
+      answer.Set("matched", base::ListValue());
+      answer.Set("note", NothingMatched(query, observation_));
+      std::string json;
+      base::JSONWriter::Write(answer, &json);
+      std::move(callback).Run(Ok(std::move(json)));
+      return;
+    }
+
     std::string json;
     base::JSONWriter::Write(matches, &json);
     std::move(callback).Run(Ok(std::move(json)));

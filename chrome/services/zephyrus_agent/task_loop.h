@@ -6,11 +6,14 @@
 #define CHROME_SERVICES_ZEPHYRUS_AGENT_TASK_LOOP_H_
 
 #include <memory>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
+#include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner_helpers.h"
 #include "chrome/services/zephyrus_agent/kernel/src/lib.rs.h"
 #include "chrome/services/zephyrus_agent/public/mojom/agent_kernel.mojom.h"
@@ -89,6 +92,17 @@ class TaskLoop {
   std::string SystemPrompt() const;
   std::string UserPrompt() const;
 
+  // Two real, clickable elements from the current Observation, named, or empty.
+  //
+  // `instead_of` is the tool that just failed to change anything, and it is
+  // left out of the suggested ways forward. Advice that recommends the tool
+  // the model is already stuck on is not advice: a traced run was told "doing
+  // it again will do nothing -- use a relevant untried target, page.find, or
+  // task.ask", and answered with page.find. Ten times, until the budget ran
+  // out. The harness had diagnosed the trap correctly and then pointed back
+  // into it.
+  std::string SomethingToActOn(std::string_view instead_of) const;
+
   // Called when either remote drops. A task whose browser or model has gone
   // away cannot make progress and must say so rather than wait.
   void OnDisconnected();
@@ -107,7 +121,36 @@ class TaskLoop {
   std::string last_seen_url_;
 
   std::string last_call_;
-  std::string observation_at_last_call_;
+  // The Observation with `what_changed` taken out, which is what "did the page
+  // change" actually means. See OnObserved.
+  // How many times running the model has failed to produce a tool call, and
+  // how many times a repeat has been refused. Both are shown to it, because a
+  // zero-temperature model handed an unchanged prompt gives an unchanged reply
+  // -- so every rejection has to leave a mark the model can see.
+  uint32_t unparsed_replies_ = 0;
+  uint32_t refused_repeats_ = 0;
+
+  // Every (call, page) pair this task has already tried, so a loop that
+  // walks in a circle is caught as well as one that stands still.
+  std::set<std::string> seen_here_;
+
+  std::string page_key_;
+  std::string page_at_last_call_;
+
+  // The page as it was one step ago, and how many steps have not moved it.
+  //
+  // The other repeat guards key on the CALL: the same tool with the same
+  // arguments against the same page. That catches a model standing perfectly
+  // still and misses one shuffling -- "RTX 4090 price", "cheapest RTX 4090",
+  // "RTX 4090 price list" are three different calls and one identical
+  // non-event. Ten of those went by in a traced run because no two adjacent
+  // ones matched.
+  //
+  // Keyed on the RESULT instead, which is the thing that actually matters and
+  // the one a model cannot vary its way around: if the page has not changed in
+  // several steps, nothing being tried is working, whatever it was called.
+  std::string page_at_last_step_;
+  uint32_t steps_without_change_ = 0;
 
   mojo::Remote<mojom::ToolRunner> runner_;
   mojo::Remote<mojom::AgentModel> model_;
@@ -119,11 +162,13 @@ class TaskLoop {
   mojom::PendingApprovalPtr approved_;
 
   uint32_t steps_ = 0;
+  uint32_t loading_rechecks_ = 0;
   std::string observation_json_;
 
   // What has happened so far, oldest first, already shaped for the prompt. A
   // model with no memory of its last step repeats it.
   std::vector<std::string> history_;
+  base::WeakPtrFactory<TaskLoop> weak_factory_{this};
 };
 
 }  // namespace zephyrus::agent

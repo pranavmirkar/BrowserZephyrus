@@ -49,6 +49,8 @@ ObservedNode Node(const std::string& id,
 // of it fail the way a real browser would when the world has moved.
 class FakeToolSurface : public ToolSurface {
  public:
+  int checks = 0;
+
   FakeToolSurface() {
     page_tree_id = ui::AXTreeID::CreateNewAXTreeID();
     live_tree_id = page_tree_id;
@@ -78,6 +80,13 @@ class FakeToolSurface : public ToolSurface {
   bool SwitchToTab(int tab_id) override { return HasTab(tab_id); }
   bool CloseTab(int tab_id) override { return HasTab(tab_id); }
 
+  // A check look. The fake records it separately so a test can assert that a
+  // verification did not disturb what the model is compared against.
+  void ObserveForCheck(ObserveCallback callback) override {
+    ++checks;
+    Observe(std::move(callback));
+  }
+
   void Observe(ObserveCallback callback) override {
     ++observe_count;
     Observation observation;
@@ -93,6 +102,7 @@ class FakeToolSurface : public ToolSurface {
 
   bool ClickNode(const ObservedNode& node) override {
     clicked = node.ax_id;
+    clicked_bounds = node.bounds;
     return true;
   }
   bool TypeIntoNode(const ObservedNode& node,
@@ -172,6 +182,7 @@ class FakeToolSurface : public ToolSurface {
   bool went_back = false;
   bool scrolled_down = false;
   ui::AXNodeID clicked = ui::kInvalidAXNodeID;
+  gfx::Rect clicked_bounds;
   ui::AXNodeID filled = ui::kInvalidAXNodeID;
   // True when the text went through the typing path rather than being
   // assigned. page.type must type; page.select must not.
@@ -218,6 +229,26 @@ class ToolExecutorTest : public testing::Test {
   std::unique_ptr<AgentKernelClient> client_;
   std::unique_ptr<ToolExecutor> executor_;
 };
+
+TEST_F(ToolExecutorTest, RefreshesTargetGeometryAfterSlowInference) {
+  surface_.page_elements = {Node("e1", "link", "Video", 41)};
+  surface_.page_elements[0].bounds = gfx::Rect(20, 20, 100, 30);
+  ObserveFirst();
+  surface_.page_elements[0].bounds = gfx::Rect(200, 400, 100, 30);
+  auto result = Run("page.click", R"({"element_id":"e1"})");
+  EXPECT_EQ(result.status, Status::kOk);
+  EXPECT_EQ(surface_.clicked_bounds, gfx::Rect(200, 400, 100, 30));
+  EXPECT_NE(result.value_json.find("input_dispatched"), std::string::npos);
+}
+
+TEST_F(ToolExecutorTest, DoesNotClickAReplacementAtTheOldPosition) {
+  surface_.page_elements = {Node("e1", "link", "Video", 41)};
+  ObserveFirst();
+  surface_.page_elements = {Node("e1", "button", "Delete", 42)};
+  auto result = Run("page.click", R"({"element_id":"e1"})");
+  EXPECT_EQ(result.status, Status::kFailed);
+  EXPECT_EQ(surface_.clicked, ui::kInvalidAXNodeID);
+}
 
 // --- the ordinary path --------------------------------------------------
 
@@ -630,6 +661,73 @@ TEST_F(ToolExecutorTest, TypingThatLandsIsReportedAsSuccess) {
   ToolExecutor::Result result =
       Run("page.type", R"({"element_id":"e1","text":"sidemen"})");
   EXPECT_EQ(result.status, Status::kOk) << result.message;
+}
+
+TEST_F(ToolExecutorTest, AnEmptyFindSaysWhatIsActuallyOnThePage) {
+  // MEASURED on amazon.com. A click opened the product image viewer, the page
+  // collapsed to two covered controls, and page.find answered "[]" three times
+  // running:
+  //
+  //   "price" -> []   "cheapest RTX 4090" -> []   "RTX 4090 price" -> []
+  //
+  // "[]" says "your query was wrong", so the model rewrote the query. Nothing
+  // was ever going to match past an image viewer, and the way out was one
+  // Escape -- which the browser could see and did not say.
+  ObservedNode close = Node("e1", "button", "Close", 21);
+  close.obscured = true;
+  ObservedNode zoom = Node("e2", "button", "Zoom In On Image", 22);
+  zoom.obscured = true;
+  surface_.page_elements = {close, zoom};
+  ObserveFirst();
+
+  const ToolExecutor::Result found = Run("page.find", R"({"query":"price"})");
+  ASSERT_EQ(found.status, Status::kOk) << found.message;
+
+  EXPECT_NE(found.value_json.find("Escape"), std::string::npos)
+      << "the page was behind an overlay and the way out was never named: "
+      << found.value_json;
+  EXPECT_NE(found.value_json.find("Close"), std::string::npos)
+      << found.value_json;
+  EXPECT_NE(found.value_json.find("covered"), std::string::npos)
+      << found.value_json;
+}
+
+TEST_F(ToolExecutorTest, AnEmptyFindOnAnOrdinaryPageStillNamesWhatIsThere) {
+  // The control. Most empty finds are not overlays, and claiming one would send
+  // a model hunting for a dialog that is not there.
+  ObserveFirst();
+
+  const ToolExecutor::Result found =
+      Run("page.find", R"({"query":"nothing like this exists"})");
+  ASSERT_EQ(found.status, Status::kOk) << found.message;
+
+  EXPECT_EQ(found.value_json.find("Escape"), std::string::npos)
+      << "nothing was covered, so no overlay should have been claimed: "
+      << found.value_json;
+  EXPECT_NE(found.value_json.find("Specifications"), std::string::npos)
+      << "it did not say what was on the page: " << found.value_json;
+}
+
+TEST_F(ToolExecutorTest, AskingForABlankTabByNameIsNotARefusal) {
+  // MEASURED: a user typed "can you open a new tab". The model called
+  // tabs.open with "about:blank" -- the name of the blank page, and exactly
+  // what this tool does with no url at all -- and was told "that is not a web
+  // address this browser will open". Twice. Then the task was abandoned.
+  EXPECT_EQ(Run("tabs.open", R"({"url":"about:blank"})").status, Status::kOk);
+  EXPECT_EQ(Run("tabs.open", R"({})").status, Status::kOk);
+}
+
+TEST_F(ToolExecutorTest, LettingTheBlankPageThroughDoesNotOpenTheSchemeGate) {
+  // The control for the case above. `about:blank` is allowed because it is the
+  // empty document -- no origin, nothing sent, nothing received. Every other
+  // spelling still has to stop and be checked, and the kernel is what stops
+  // them, before the executor is reached at all.
+  for (const char* address : {R"({"url":"file:///C:/Windows/win.ini"})",
+                              R"({"url":"about:config"})",
+                              R"({"url":"about:blank#not-really"})"}) {
+    EXPECT_NE(Run("tabs.open", address).status, Status::kOk)
+        << address << " was opened without anyone checking it";
+  }
 }
 
 TEST_F(ToolExecutorTest, SaysSoWhenAnAddressDoesNotOpen) {

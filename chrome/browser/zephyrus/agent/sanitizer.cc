@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/notreached.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 
@@ -74,6 +75,103 @@ bool IsMostlyNumeric(std::string_view text) {
   return meaningful > 0 && CountDigits(text) == meaningful;
 }
 
+// The strongest classification found in any single word of `text`.
+//
+// Free text has no structure to reason about, so it is judged a word at a time.
+// A run like "call me on 9876543210" is not a phone number as a whole string
+// and plainly contains one.
+Sensitivity ClassifyEachWord(std::string_view text) {
+  for (const std::string& word : base::SplitString(
+           text, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
+    const Sensitivity kind = ClassifyText(word);
+    if (kind != Sensitivity::kNone) {
+      return kind;
+    }
+  }
+  return Sensitivity::kNone;
+}
+
+// The same, but only for the unmistakable kinds.
+//
+// Used on an element's NAME, where the numeric rules are too eager to trust. A
+// name is a title as often as it is data -- "I Spent 1000000 Dollars" is seven
+// digits and a video, not a phone number -- and a false positive here does not
+// merely lose a word: it paints a black rectangle over that element in the
+// screenshot and takes the title the task was about with it.
+//
+// An address in a name has no such reading. Nothing is called someone@example
+// by accident, so that one is kept and the digit rules are not. The digit rules
+// still apply in full to a field's VALUE, where ten digits really is a phone
+// number, and to the page's running text.
+Sensitivity ClassifyNameAsContent(std::string_view name) {
+  const Sensitivity kind = ClassifyEachWord(name);
+  return kind == Sensitivity::kEmail ? kind : Sensitivity::kNone;
+}
+
+// Replaces the words in a name that ClassifyNameAsContent flags, and no others.
+//
+// Deliberately the same test as the classification above, so that what is
+// hidden in the text is exactly what is painted over in the picture. Two rules
+// drifting apart here is how you get a name the JSON masked and the screenshot
+// did not.
+void RedactNameWords(std::string& name) {
+  std::vector<std::string> words = base::SplitString(
+      name, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  bool changed = false;
+  for (std::string& word : words) {
+    if (ClassifyNameAsContent(word) != Sensitivity::kNone) {
+      word = kRedactedMarker;
+      changed = true;
+    }
+  }
+  if (changed) {
+    name = base::JoinString(words, " ");
+  }
+}
+
+// The bare word a policy can match on.
+std::string_view DescribeSensitivity(Sensitivity kind) {
+  switch (kind) {
+    case Sensitivity::kNone:
+      return "";
+    case Sensitivity::kPassword:
+      return "password";
+    case Sensitivity::kEmail:
+      return "email";
+    case Sensitivity::kPhone:
+      return "phone";
+    case Sensitivity::kPaymentCard:
+      return "payment_card";
+    case Sensitivity::kPersonalName:
+      return "personal_name";
+  }
+  NOTREACHED();
+}
+
+// Replaces the private words in `text`, leaving the rest. True if it changed.
+//
+// Word-wise rather than wholesale, because these strings are also how the model
+// refers to things. Blanking an entire button name to hide the address inside it
+// would remove the address and the button.
+bool RedactWords(std::string& text) {
+  if (text.empty()) {
+    return false;
+  }
+  std::vector<std::string> words = base::SplitString(
+      text, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
+  bool changed = false;
+  for (std::string& word : words) {
+    if (ClassifyText(word) != Sensitivity::kNone) {
+      word = kRedactedMarker;
+      changed = true;
+    }
+  }
+  if (changed) {
+    text = base::JoinString(words, " ");
+  }
+  return changed;
+}
+
 }  // namespace
 
 Sensitivity ClassifyText(std::string_view text) {
@@ -111,8 +209,34 @@ Sensitivity ClassifyElement(const ObservedNode& node) {
     }
   }
 
-  // Failing that, what it currently holds.
-  return ClassifyText(node.value);
+  // Failing that, what it currently holds -- judged WHOLE first.
+  //
+  // People write a card number as "4111 1111 1111 1111", and the whole of that
+  // is sixteen digits while every word of it is four. Going word-wise first
+  // silently stopped detecting the commonest way a card number is typed, which
+  // the existing test caught and which is worth restating: the spaces are
+  // punctuation inside one number, not boundaries between several.
+  const Sensitivity whole = ClassifyText(node.value);
+  if (whole != Sensitivity::kNone) {
+    return whole;
+  }
+
+  // Then word-wise, for a value that is a sentence with something in it.
+  const Sensitivity from_word = ClassifyEachWord(node.value);
+  if (from_word != Sensitivity::kNone) {
+    return from_word;
+  }
+
+  // Last, the NAME read as content rather than as a label -- and only for the
+  // kinds that cannot be mistaken for a title. See ClassifyNameAsContent.
+  //
+  // The gap this closes: an element whose accessible name simply is the private
+  // thing. An account button reading "Signed in as someone@example.com", a
+  // header showing a phone number. None of those are labelled anything, so the
+  // hints above miss them, and the value is empty because there is no field --
+  // the address is the name. Both channels leaked it: the text because nothing
+  // replaced it, the picture because nothing knew to paint over it.
+  return ClassifyNameAsContent(node.name);
 }
 
 std::vector<Redaction> FindRedactions(const Observation& observation) {
@@ -136,7 +260,12 @@ std::vector<Redaction> FindRedactions(const Observation& observation) {
 
 void RedactObservation(Observation& observation) {
   for (ObservedNode& node : observation.elements) {
-    if (ClassifyElement(node) == Sensitivity::kNone) {
+    const Sensitivity kind = ClassifyElement(node);
+    // Recorded before anything is replaced, because after that the evidence is
+    // gone: a card number field known only by its digits classifies as harmless
+    // the moment those digits become [redacted].
+    node.sensitivity = std::string(DescribeSensitivity(kind));
+    if (kind == Sensitivity::kNone) {
       continue;
     }
     // The VALUE goes; the role, the label and the position stay.
@@ -147,25 +276,40 @@ void RedactObservation(Observation& observation) {
     if (!node.value.empty()) {
       node.value = kRedactedMarker;
     }
+
+    // And the name, where the private thing is the name itself. Word-wise, so
+    // "Signed in as [redacted]" survives as something the model can still find
+    // and click -- the point is to remove the address, not the button.
+    RedactNameWords(node.name);
   }
 
-  // Page text is a blunter problem: it is one long run with no structure to
-  // reason about, so anything that looks private inside it is replaced
-  // wholesale rather than located.
-  if (!observation.text.empty()) {
-    std::vector<std::string> words = base::SplitString(
-        observation.text, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-    bool changed = false;
-    for (std::string& word : words) {
-      if (ClassifyText(word) != Sensitivity::kNone) {
-        word = kRedactedMarker;
-        changed = true;
-      }
-    }
-    if (changed) {
-      observation.text = base::JoinString(words, " ");
-    }
+  // The line around each element, judged like page text rather than like a
+  // title.
+  //
+  // This is running prose lifted from beside the element -- a channel added to
+  // answer "which of these is the newest", and one that promptly carried an
+  // address and a phone number to the model with the value beside it already
+  // masked. Exactly the leak this whole sanitizer exists to prevent, in a field
+  // that did not exist when it was written.
+  //
+  // Outside the sensitive-element loop above on purpose: the private thing in
+  // the text near an element has nothing to do with whether that ELEMENT is
+  // sensitive. A harmless button beside someone's address still shows it.
+  for (ObservedNode& node : observation.elements) {
+    RedactWords(node.detail);
   }
+
+  // The page's running text: one long run with no structure, so anything that
+  // looks private inside it is replaced in place. The digit rules apply in
+  // full here -- a bare ten-digit word in prose is a phone number far more
+  // often than it is anything else.
+  RedactWords(observation.text);
+
+  // The title gets the narrower rule, for the reason names do: a title is a
+  // title. "I Spent 1000000 Dollars" is seven digits and a video, and blanking
+  // that number would leave the model unable to recognise the page it was sent
+  // to find.
+  RedactNameWords(observation.title);
 }
 
 }  // namespace zephyrus::agent

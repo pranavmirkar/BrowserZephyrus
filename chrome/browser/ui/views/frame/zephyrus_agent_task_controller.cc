@@ -136,6 +136,25 @@ bool ZephyrusAgentTaskController::StartTaskWithConfiguredModel(
   return true;
 }
 
+void ZephyrusAgentTaskController::Cancel() {
+  if (!done_) {
+    return;
+  }
+
+  // Drop the pipes first. The kernel's loop is watching them, so this is what
+  // actually stops the work -- and it stops it whether the loop is waiting on a
+  // model, waiting on the browser, or wedged.
+  runner_.reset();
+  model_receivers_.Clear();
+  pending_.reset();
+
+  auto outcome = mojom::TaskOutcome::New();
+  outcome->status = mojom::TaskStatus::kCancelled;
+  outcome->message = "you stopped it";
+  outcome->steps = 0;
+  Finish(std::move(outcome));
+}
+
 void ZephyrusAgentTaskController::Run(mojom::PendingApprovalPtr approved) {
   if (steps_remaining_ == 0) {
     auto outcome = mojom::TaskOutcome::New();

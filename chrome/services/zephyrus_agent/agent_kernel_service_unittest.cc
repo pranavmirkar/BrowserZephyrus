@@ -36,6 +36,15 @@ mojom::ObservedElementPtr Element(const std::string& id,
   return element;
 }
 
+// An element the browser judged to hold a particular private thing.
+mojom::ObservedElementPtr SensitiveElement(const std::string& id,
+                                           const std::string& name,
+                                           const std::string& sensitivity) {
+  mojom::ObservedElementPtr element = Element(id, "textbox", name);
+  element->sensitivity = sensitivity;
+  return element;
+}
+
 class AgentKernelServiceTest : public testing::Test {
  public:
   AgentKernelServiceTest()
@@ -74,6 +83,43 @@ class AgentKernelServiceTest : public testing::Test {
   mojo::Remote<mojom::AgentKernel> remote_;
   AgentKernelService service_;
 };
+
+TEST_F(AgentKernelServiceTest, RefusesToTypeCardDetailsThroughTheRealBoundary) {
+  // Written at the mojo boundary rather than against the policy, because the
+  // policy was never the part at risk.
+  //
+  // The rule reads a field the browser fills in, and that field has to cross
+  // two hops to reach it: mojo into this process, then the cxx bridge into
+  // Rust. The bridge dropped it. Every Rust test still passed -- they build the
+  // element on the Rust side, where the field is right there -- and the rule
+  // was dead in the browser, reading an empty string forever.
+  //
+  // This test sends a real mojom message and would have caught that.
+  mojom::PolicyRequestPtr request =
+      MakeRequest("page.type", R"({"element_id":"e9","text":"4111111111111111"})");
+  request->elements.push_back(
+      SensitiveElement("e9", "Card number", "payment_card"));
+
+  mojom::PolicyDecisionPtr decision = Decide(std::move(request));
+  ASSERT_TRUE(decision);
+  EXPECT_EQ(decision->disposition, mojom::Disposition::kDeny);
+  EXPECT_EQ(decision->risk, "R3");
+  EXPECT_NE(decision->reason.find("card"), std::string::npos)
+      << decision->reason;
+}
+
+TEST_F(AgentKernelServiceTest, StillTypesIntoAnOrdinaryBox) {
+  // The control. A rule that refused every field would pass the test above and
+  // make the agent useless.
+  mojom::PolicyRequestPtr request =
+      MakeRequest("page.type", R"({"element_id":"e9","text":"laptops"})");
+  request->elements.push_back(SensitiveElement("e9", "Search", ""));
+
+  mojom::PolicyDecisionPtr decision = Decide(std::move(request));
+  ASSERT_TRUE(decision);
+  EXPECT_NE(decision->disposition, mojom::Disposition::kDeny)
+      << decision->reason;
+}
 
 TEST_F(AgentKernelServiceTest, ReportsTheContractItEnforces) {
   std::string version;

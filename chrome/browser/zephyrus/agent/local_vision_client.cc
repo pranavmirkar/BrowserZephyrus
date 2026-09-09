@@ -25,6 +25,17 @@ namespace {
 // and it would cost the reasoning model prompt space for no extra information.
 constexpr size_t kMaxResponseBytes = 16 * 1024;
 
+// How much of the description is kept.
+//
+// The response cap above is a network limit; this is a prompt one, and they are
+// not the same job. What comes back here was written by a model reading a
+// picture the PAGE controls, so its length is not really the local model's
+// choice -- a page can put a wall of text on screen and get it read back. Two
+// or three sentences is what the description is for; past that it is crowding
+// out the accessibility tree, which is the channel that actually knows what is
+// clickable.
+constexpr size_t kMaxDescription = 400;
+
 // What the local model is asked for.
 //
 // Written to get STRUCTURE rather than transcription. The accessibility tree
@@ -186,7 +197,24 @@ void LocalVisionClient::OnResponse(LoaderList::iterator loader,
 
   const std::string* content =
       parsed->GetDict().FindStringByDottedPath("message.content");
-  std::move(callback).Run(content ? *content : std::string());
+  if (!content) {
+    std::move(callback).Run(std::string());
+    return;
+  }
+
+  // Trimmed on a character boundary. A string cut through the middle of a UTF-8
+  // sequence is one the JSON writer cannot encode, which would lose the whole
+  // Observation rather than the tail of one sentence.
+  std::string description = *content;
+  if (description.size() > kMaxDescription) {
+    size_t end = kMaxDescription;
+    while (end > 0 &&
+           (static_cast<unsigned char>(description[end]) & 0xC0) == 0x80) {
+      --end;
+    }
+    description.resize(end);
+  }
+  std::move(callback).Run(std::move(description));
 }
 
 }  // namespace zephyrus::agent

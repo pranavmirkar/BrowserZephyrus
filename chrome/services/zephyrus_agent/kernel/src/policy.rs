@@ -37,6 +37,8 @@ pub struct Element {
     pub id: String,
     pub role: String,
     pub name: String,
+    /// What private thing the browser judged this to hold, or empty.
+    pub sensitivity: String,
 }
 
 /// A proposed call, plus the context needed to judge it.
@@ -207,6 +209,22 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
                         .to_string(),
                 );
             }
+            // A card number, by exactly the same argument.
+            //
+            // The password rule was written as being about credentials and it
+            // is really about a class: fields whose contents the agent cannot
+            // legitimately possess. It has no card number either, so anything
+            // it typed here was invented or read off a page it had no business
+            // copying from -- and unlike a password, a wrong guess that happens
+            // to work costs the user money.
+            if element.sensitivity == "payment_card" {
+                return (
+                    Risk::R3,
+                    "the agent does not fill in card details -- type them \
+                     yourself and it can carry on from there"
+                        .to_string(),
+                );
+            }
         }
     }
 
@@ -242,6 +260,24 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
     // new site while handing it a query string is the part worth a question.
     if let Some((_, argument)) = NAVIGATING_TOOLS.iter().find(|(t, _)| *t == request.tool) {
         if let Some(target) = request.arguments.get(*argument).and_then(Value::as_str) {
+            // The blank page is not a destination.
+            //
+            // `about:blank` has no origin, so the origin rules below cannot
+            // check it and escalate it to Ask -- which meant the user was
+            // asked to approve "open a new tab". That is the whole of what
+            // `tabs.open` does with NO url at all, and that form is allowed
+            // without ceremony. Two spellings of one harmless action were
+            // getting two different answers, and the harder one is the
+            // spelling a model naturally reaches for: MEASURED, a user typed
+            // "can you open a new tab" and the task died there.
+            //
+            // Nothing is widened. The blank page sends nothing, receives
+            // nothing and has no origin to be confused about. Matched EXACTLY:
+            // this is not a licence for the `about:` scheme, which reaches
+            // real browser internals.
+            if target == "about:blank" {
+                return (floor, String::new());
+            }
             match origin_of(target) {
                 // Unparseable destination. We decline to reason about it rather
                 // than assume it is harmless.
@@ -409,7 +445,33 @@ fn origin_of(url: &str) -> Option<String> {
 /// grows anything that reads history, credentials or file contents.
 fn carries_data(url: &str) -> bool {
     let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
-    after_scheme.contains('?') || after_scheme.contains('#')
+    if after_scheme.contains('?') || after_scheme.contains('#') {
+        return true;
+    }
+
+    // The path is a place to put data too, and it was not being looked at.
+    //
+    // `https://evil.example/log/what-the-user-was-just-reading` has no query
+    // string and no fragment, so the check above waved it through -- while the
+    // same text after a `?` was caught. That is a bypass anyone reading this
+    // rule would find, and page-injected instructions are written by people who
+    // read rules like this one.
+    //
+    // A length is used rather than a cleverer test because the alternative is a
+    // guess about meaning, and a guess here is wrong in the direction that
+    // matters. Sixty characters of path is well beyond the addresses reached by
+    // ordinary browsing and enough room to be worth a question.
+    //
+    // Worth being honest about the limit: a short path can still carry a
+    // little. This raises the floor on the obvious case, it does not prove the
+    // absence of the general one -- which is why the check it feeds asks the
+    // user rather than deciding alone.
+    const PATH_ROOM_FOR_DATA: usize = 60;
+    let path = match after_scheme.split_once('/') {
+        Some((_, rest)) => rest,
+        None => return false,
+    };
+    path.len() > PATH_ROOM_FOR_DATA
 }
 
 fn deny(risk: Risk, reason: String) -> Decision {

@@ -56,6 +56,42 @@ struct ObservedNode {
   // anywhere on the page regardless of what it claimed to be clicking.
   gfx::Rect bounds;
 
+  // How long ago this was posted, in the page's own words, or empty.
+  //
+  // Pulled out of the surrounding text as its own field rather than left inside
+  // it. MEASURED on a real results page: thirty elements, sixteen carrying
+  // surrounding text, and only TWO where an upload age survived -- because the
+  // text spent its budget repeating the title the name already gave. Asked for
+  // "the latest sidemen video", the agent had nothing to compare and opened one
+  // a month old while two-day-old videos sat beside it.
+  //
+  // A separate field because it answers a question a blob cannot: newest is a
+  // comparison, and a comparison needs the same fact in the same place for
+  // every candidate.
+  std::string posted;
+
+  // The text that sits AROUND this element, or empty.
+  //
+  // An accessible name is the element's own label and nothing else. On a
+  // YouTube results page a video link is called "SIDEMEN LAST TO FALL ASLEEP
+  // CHALLENGE (USA EDITION) 1 hour, 45 minutes" -- title and duration -- while
+  // "6.4M views" and "8 days ago" live in SIBLING elements and never reached
+  // the model at all.
+  //
+  // So "play the LATEST sidemen video" was unanswerable: nothing in front of
+  // the model said which one was newest. It is the question a person answers by
+  // glancing at the line under the title, and we were not showing that line.
+  std::string detail;
+
+  // What private thing this element holds, as a bare word, or empty.
+  //
+  // Worked out ONCE, by the sanitizer, before it redacts. Anything downstream
+  // that needs to know reads this rather than classifying again: a second
+  // classifier would run on a value that has already been replaced and quietly
+  // decide the field was harmless -- the exact ordering trap that makes a
+  // security rule true in a test and false in the browser.
+  std::string sensitivity;
+
   // True if something is drawn ON TOP of this element.
   //
   // The question vision was going to answer, answered as a fact instead. A
@@ -108,6 +144,51 @@ struct Observation {
   std::string title;
   std::vector<ObservedNode> elements;
   std::string text;
+
+  // What changed since the agent last looked, in plain words, or empty.
+  //
+  // The general form of "did that work". Reporting a flag per kind of state --
+  // media playing, then downloads, then dialogs, then cart counts -- is a list
+  // that never ends, because a page can be doing anything. What is finite is
+  // the DIFFERENCE between two consecutive looks, and that answers the question
+  // for cases nobody enumerated: a confirmation appearing, results loading, a
+  // basket total moving, a login completing.
+  //
+  // It exists because a task was finished and the agent could not tell. It
+  // opened the right video twice and carried on hunting, because nothing said
+  // anything had happened.
+  std::string changed;
+
+  // True if this page is playing sound right now.
+  //
+  // The missing half of "did it work". We told the model WHERE it arrived and
+  // never what the page was DOING, so a task literally about playing a video
+  // finished successfully and the model had no way to tell -- it opened the
+  // right video twice and carried on hunting both times.
+  //
+  // A browser knows this. A screenshot-driven agent has to guess from a pause
+  // button's shape, which is exactly the kind of inference being inside the
+  // browser lets us replace with a fact.
+  bool media_playing = false;
+  // The address of the DOCUMENT that was last actually loaded, which is not
+  // always the address the page is currently showing.
+  //
+  // A page may rewrite its own address without loading anything: canonicalising
+  // a link, dropping a tracking parameter, or a single-page app moving to its
+  // next view. `url` follows that rewrite, because it is what the user would
+  // see. This does not.
+  //
+  // Kept because the two answer different questions, and one of them was being
+  // asked with the wrong field. "Did the address I asked for open?" is about
+  // the document; a page that loaded correctly and then tidied its own URL was
+  // being reported to the model as "that address did not open -- addresses
+  // cannot be guessed", which is both false and the exact advice most likely
+  // to send it somewhere else.
+  //
+  // Not serialised: this is for the browser's own check, not for the model.
+  std::string document_url;
+
+  bool loading = false;
 
   // A picture of the page, as JPEG bytes. Empty unless vision is switched on.
   //
@@ -166,6 +247,14 @@ struct Observation {
   // What the model is shown. `level` follows the tool contract: 0 is url and
   // title only, 1 adds elements and text.
   std::string ToJson(int level) const;
+
+  // Fills in `changed` by comparing against what was seen last.
+  //
+  // Deliberately factual and short. It reports that eight things appeared and
+  // names two of them; it does not decide whether that means the task is done,
+  // because that is the model's judgement and a browser guessing at it would be
+  // confidently wrong on the cases that matter.
+  void DescribeChangeFrom(const Observation& previous);
 
   // The elements whose name or role contains `query`, case-insensitively.
   std::vector<const ObservedNode*> Matching(std::string_view query) const;
