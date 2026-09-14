@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/color/zephyrus_color_mixer.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/border.h"
 #include "ui/gfx/canvas.h"
@@ -10,6 +11,7 @@
 #include "ui/native_theme/native_theme.h"
 
 #include <map>
+#include <optional>
 
 #include "base/no_destructor.h"
 #include "base/scoped_observation.h"
@@ -23,6 +25,16 @@
 
 namespace zephyrus {
 namespace {
+
+// The palette the most recent normal browser window resolved from its
+// ColorProvider, or nothing before the first one has. See Current().
+std::optional<Palette>& PublishedPalette() {
+  // A plain function-local static, NOT base::NoDestructor: Palette is a struct
+  // of SkColors, so std::optional<Palette> is trivially destructible and
+  // NoDestructor static_asserts against exactly that case.
+  static std::optional<Palette> palette;
+  return palette;
+}
 
 // An anchored bubble closes when it loses activation — and the mouse PRESS on
 // its own trigger button is what takes that activation away. The button's
@@ -131,15 +143,74 @@ bool OsPrefersDark() {
 }  // namespace
 
 const Palette& Current() {
-  // The OS decides. Zephyrus has no theme pref of its own, deliberately: the
-  // native surfaces we do not own (context menus, WebUI, system dialogs) follow
-  // the OS regardless, so any independent setting here would guarantee a
-  // mismatch on some surface rather than remove one.
+  // THE BROWSER'S THEME, if a window has published one.
   //
-  // NativeTheme notifies on change, and Views repaints on it, so this being a
-  // live read rather than a cached value is what lets the browser follow a
-  // theme flip without a restart.
+  // This used to return one of two hardcoded tables, which meant the ~60 call
+  // sites reading Ground()/Ink()/Accent() -- the settings sheet, the privacy
+  // popup, the tab switcher, the profile dialog, the search overlay -- could
+  // never follow a Customize Chrome colour no matter what the mixer did. Nearly
+  // all of those sites sit in free helper functions with no View in scope, so
+  // there is nothing there to resolve a ColorProvider from; threading a view
+  // through all of them would be a far larger and riskier change than the
+  // problem deserves.
+  //
+  // So a normal browser window publishes its resolved palette here whenever its
+  // theme changes (BrowserView::OnThemeChanged), and this returns that.
+  //
+  // THE LIMITATION, stated rather than hidden: this is one process-wide value.
+  // With two windows on different profiles wearing different themes, a popup
+  // reads whichever published last. That is acceptable here because Zephyrus
+  // profiles are disabled and private windows deliberately do NOT publish (see
+  // BrowserView::OnThemeChanged) -- their grey must not leak into a normal
+  // window's popups. If per-profile themes ever ship, this becomes a lookup
+  // keyed by profile rather than a single slot.
+  if (const std::optional<Palette>& themed = PublishedPalette();
+      themed.has_value()) {
+    return *themed;
+  }
+
+  // Nothing published yet -- before the first window's theme resolves. The OS
+  // decides, as it always did: Zephyrus has no theme pref of its own, because
+  // the native surfaces we do not own (context menus, WebUI, system dialogs)
+  // follow the OS regardless.
   return OsPrefersDark() ? kDarkPalette : kLightPalette;
+}
+
+bool PublishThemePalette(const Palette& palette) {
+  std::optional<Palette>& slot = PublishedPalette();
+  if (slot.has_value() && slot->ground == palette.ground &&
+      slot->surface == palette.surface && slot->rule == palette.rule &&
+      slot->ink == palette.ink && slot->muted == palette.muted &&
+      slot->faint == palette.faint && slot->accent == palette.accent &&
+      slot->accent_ink == palette.accent_ink) {
+    return false;
+  }
+  slot = palette;
+  return true;
+}
+
+Palette PaletteFrom(const ui::ColorProvider& provider) {
+  Palette p;
+  p.ground = provider.GetColor(kColorZephyrusGround);
+  p.surface = provider.GetColor(kColorZephyrusSurface);
+  p.rule = provider.GetColor(kColorZephyrusRule);
+  p.ink = provider.GetColor(kColorZephyrusInk);
+  p.muted = provider.GetColor(kColorZephyrusMuted);
+  p.faint = provider.GetColor(kColorZephyrusFaint);
+  p.accent = provider.GetColor(kColorZephyrusAccent);
+  p.accent_ink = provider.GetColor(kColorZephyrusAccentInk);
+  return p;
+}
+
+Palette PaletteFor(const views::View& view) {
+  const ui::ColorProvider* provider = view.GetColorProvider();
+  // A view with no widget has no theme to read. Falling back to the old tables
+  // keeps a mis-ordered call looking wrong rather than crashing -- but it IS
+  // wrong, so it is worth finding; see the note in the header.
+  if (!provider) {
+    return Current();
+  }
+  return PaletteFrom(*provider);
 }
 
 const Palette& PaletteFor(bool is_private) {

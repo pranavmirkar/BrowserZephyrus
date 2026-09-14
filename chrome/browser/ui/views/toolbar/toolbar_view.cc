@@ -183,6 +183,7 @@
 #include "ui/gfx/animation/animation_delegate.h"
 #include "ui/gfx/animation/linear_animation.h"
 #include "ui/gfx/animation/slide_animation.h"
+#include "ui/views/animation/animation_delegate_views.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/compositor/paint_recorder.h"
 #include "ui/gfx/canvas.h"
@@ -234,6 +235,7 @@
 #include "chrome/browser/ui/views/frame/windows_icon_painter.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_image.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_icons.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/dialog_button.mojom-shared.h"
@@ -3618,6 +3620,55 @@ END_METADATA
 // The set is deliberately small and generic. A long list turns picking into
 // searching, and these have to read at 13px in a title bar, so anything
 // detailed is a smudge regardless of how good it looks in the picker.
+// One cell of the icon picker: the glyph, stroked, on a hover wash.
+//
+// A LabelButton cannot show these -- the glyphs are paths, not text -- so this
+// is the smallest button that can paint one.
+class ZephyrusIconSwatch : public views::Button {
+  METADATA_HEADER(ZephyrusIconSwatch, views::Button)
+
+ public:
+  ZephyrusIconSwatch(const zephyrus::WorkspaceIcon& icon,
+                     SkColor ink,
+                     base::RepeatingClosure on_pick)
+      : views::Button(base::BindRepeating(
+            [](base::RepeatingClosure cb, const ui::Event&) { cb.Run(); },
+            std::move(on_pick))),
+        icon_(icon),
+        ink_(ink) {
+    SetAnimateOnStateChange(false);
+    SetPreferredSize(gfx::Size(kSwatch, kSwatch));
+    GetViewAccessibility().SetName(std::u16string(icon.label));
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    gfx::RectF body(GetLocalBounds());
+    const bool hot =
+        GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
+    if (hot) {
+      // The swatch previews the SHAPE as well as the glyph, so picking an icon
+      // also shows what the active indicator will become.
+      cc::PaintFlags flags;
+      flags.setAntiAlias(true);
+      flags.setStyle(cc::PaintFlags::kFill_Style);
+      flags.setColor(SkColorSetA(ink_, 0x1F));
+      canvas->DrawPath(zephyrus::ShapePath(icon_->shape, body, 1.f), flags);
+    }
+    gfx::RectF glyph = body;
+    glyph.Inset(kGlyphInset);
+    zephyrus::PaintWorkspaceGlyph(canvas, *icon_, glyph, ink_, 1.5f);
+  }
+
+ private:
+  static constexpr int kSwatch = 30;
+  static constexpr float kGlyphInset = 5.f;
+  const raw_ref<const zephyrus::WorkspaceIcon> icon_;
+  SkColor ink_;
+};
+
+BEGIN_METADATA(ZephyrusIconSwatch)
+END_METADATA
+
 class ZephyrusIconPicker : public views::BubbleDialogDelegateView {
   METADATA_HEADER(ZephyrusIconPicker, views::BubbleDialogDelegateView)
 
@@ -3636,20 +3687,17 @@ class ZephyrusIconPicker : public views::BubbleDialogDelegateView {
     zephyrus::ConfigureBubble(this);
     SetBackgroundColor(zephyrus::Surface());
 
-    // Every icon here has to read against a WHITE disc, because that is what
-    // the active workspace indicator is. Two of the original eighteen did not
-    // and were replaced: the envelope and the aeroplane are mostly white, so
-    // they vanished the moment their workspace became active.
+    // DRAWN icons, not emoji.
     //
-    // Screening them out here is the whole fix -- the strip does not need a
-    // special case for pale icons if a pale icon can never be chosen.
-    static constexpr const char16_t* kIcons[] = {
-        u"⭐", u"🔥", u"💼", u"📚", u"🎵",
-        u"🎮", u"🛒", u"💰", u"📦", u"📈",
-        u"🔧", u"🧪", u"🎨", u"🏃", u"🍽",
-        u"🚀", u"🏠", u"❤",
-    };
-    constexpr int kPerRow = 6;
+    // The emoji grid this replaces had a standing problem the comment here used
+    // to describe: an emoji is an image, it cannot be recoloured, and a pale one
+    // vanished the moment its workspace became active and the disc went white.
+    // Two had to be struck from the list for that reason alone.
+    //
+    // A stroked glyph takes whatever colour it is given, so that whole class of
+    // problem is gone rather than worked around -- and the set can be wider,
+    // because nothing has to be screened out for being too light.
+    constexpr int kPerRow = 7;
 
     // Rows of BoxLayout rather than a TableLayout: the grid is fixed-size and
     // uniform, so a table buys nothing and TableLayout is not reachable from
@@ -3659,23 +3707,25 @@ class ZephyrusIconPicker : public views::BubbleDialogDelegateView {
         views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
     views::View* row = nullptr;
     int in_row = 0;
-    for (const char16_t* icon : kIcons) {
+    for (const zephyrus::WorkspaceIcon& icon : zephyrus::AllWorkspaceIcons()) {
       if (!row || in_row == kPerRow) {
         row = grid->AddChildView(std::make_unique<views::View>());
         row->SetLayoutManager(std::make_unique<views::BoxLayout>(
             views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 2));
         in_row = 0;
       }
-      const std::u16string glyph(icon);
-      auto* button = row->AddChildView(std::make_unique<views::LabelButton>(
-          base::BindRepeating(
-              [](ZephyrusIconPicker* self, std::u16string g,
-                 const ui::Event&) { self->Pick(g); },
-              base::Unretained(this), glyph),
-          glyph));
-      button->SetHorizontalAlignment(gfx::ALIGN_CENTER);
-      button->SetMinSize(gfx::Size(28, 28));
-      button->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
+      // The KEY is what gets stored, not the label -- see WorkspaceIcon::key
+      // for why it goes in the field that used to hold an emoji.
+      const std::u16string key = base::ASCIIToUTF16(std::string(icon.key));
+      auto* swatch = row->AddChildView(
+          std::make_unique<ZephyrusIconSwatch>(
+              icon, zephyrus::Ink(),
+              base::BindRepeating(
+                  [](ZephyrusIconPicker* self, std::u16string k) {
+                    self->Pick(k);
+                  },
+                  base::Unretained(this), key)));
+      swatch->SetTooltipText(icon.label);
       ++in_row;
     }
 
@@ -3749,6 +3799,10 @@ END_METADATA
 // One number in the strip.
 class ZephyrusWorkspaceCell : public views::Button,
                               public views::ContextMenuController {
+  // No AnimationDelegateViews base: views::Button ALREADY derives from it, and
+  // adding it again is an ambiguous base rather than a second delegate. The
+  // consequence is that Button's own hover animation and ours arrive at the
+  // same callback -- see AnimationProgressed, which has to tell them apart.
   METADATA_HEADER(ZephyrusWorkspaceCell, views::Button)
 
  public:
@@ -3758,7 +3812,8 @@ class ZephyrusWorkspaceCell : public views::Button,
                         SkColor ink,
                         PressedCallback callback,
                         base::RepeatingClosure on_context_menu = {},
-                        gfx::ImageSkia photo = gfx::ImageSkia())
+                        gfx::ImageSkia photo = gfx::ImageSkia(),
+                        bool animate_entrance = false)
       : views::Button(std::move(callback)),
         active_(active),
         is_icon_(is_icon),
@@ -3791,6 +3846,13 @@ class ZephyrusWorkspaceCell : public views::Button,
     label_->SetHorizontalAlignment(gfx::ALIGN_CENTER);
     label_->SetVerticalAlignment(gfx::ALIGN_MIDDLE);
 
+    // A DRAWN icon replaces the label entirely -- it is stroked in
+    // OnPaintBackground, so the label would only add an empty box.
+    icon_ = zephyrus::FindWorkspaceIcon(glyph);
+    if (icon_) {
+      label_->SetText(std::u16string());
+    }
+
     // An EMOJI is an image: it cannot be recoloured, so it never takes the
     // inverted ink. Only a numeral does.
     if (!is_icon_) {
@@ -3800,9 +3862,52 @@ class ZephyrusWorkspaceCell : public views::Button,
       label_->SetEnabledColor(ink_);
     }
     SetPreferredSize(gfx::Size(kCell, kCell));
+
+    if (icon_) {
+      // LINEAR: the effect curves are keyframes applied inside the painter, so
+      // this only has to supply an even 0..1 clock.
+      glyph_anim_.SetTweenType(gfx::Tween::LINEAR);
+      glyph_anim_.SetSlideDuration(zephyrus::EffectDuration(icon_->effect));
+      // Fired by a WORKSPACE SWITCH, not by hover.
+      //
+      // The strip is rebuilt wholesale whenever anything about the workspace
+      // list changes, so "this cell was just constructed" is not on its own a
+      // switch -- a rename or an icon change rebuilds it too, and so does
+      // opening the window. The strip decides, by comparing the current
+      // workspace against the one it drew last time, and only the cell that
+      // just became current is told to animate.
+      if (animate_entrance) {
+        glyph_anim_.Reset(0.0);
+        glyph_anim_.Show();
+      }
+    }
   }
 
   void Layout(PassKey) override { label_->SetBoundsRect(GetLocalBounds()); }
+
+  // views::AnimationDelegateViews, via views::Button:
+  //
+  // Button routes its OWN hover animation through here too, so anything that is
+  // not ours has to be forwarded or the button's built-in state animation stops
+  // working.
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    if (animation == &glyph_anim_) {
+      SchedulePaint();
+      return;
+    }
+    views::Button::AnimationProgressed(animation);
+  }
+  void AnimationEnded(const gfx::Animation* animation) override {
+    if (animation == &glyph_anim_) {
+      // ONE cycle, whatever the effect. The continuous ones (breathe, pulse,
+      // orbit) used to loop for as long as the cursor stayed; a switch is an
+      // event rather than a state, so there is nothing to keep looping for --
+      // one breath, one pulse, one full turn, then rest.
+      SchedulePaint();
+      return;
+    }
+    views::Button::AnimationEnded(animation);
+  }
 
   // The cell's edge length, for callers that need to ask for a photo at the
   // right size. Exposed rather than duplicated: a photo requested at a size the
@@ -3812,6 +3917,15 @@ class ZephyrusWorkspaceCell : public views::Button,
   void OnPaintBackground(gfx::Canvas* canvas) override {
     const bool hot =
         GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
+
+    // A DRAWN icon is its own path: container plus stroked glyph, both painted
+    // here. It never reaches the disc code below, which exists to sit behind an
+    // emoji or a photo.
+    if (icon_) {
+      PaintIconCell(canvas, hot);
+      return;
+    }
+
     // An idle cell draws no disc -- but a photo cell still has its photo, which
     // is the cell's entire content. Returning before PaintPhoto() here is what
     // made photo workspaces invisible until you hovered them.
@@ -3843,6 +3957,54 @@ class ZephyrusWorkspaceCell : public views::Button,
     flags.setColor(active_ ? SK_ColorWHITE : SkColorSetA(SK_ColorWHITE, 0x2E));
     canvas->DrawRoundRect(body, radius, flags);
     PaintPhoto(canvas);
+  }
+
+  // The container's silhouette IS the current-workspace indicator.
+  //
+  // This replaces a white disc that was either drawn or not. The shape carries
+  // the state instead: at rest every cell is a circle, and the current one has
+  // morphed into the silhouette its icon was assigned. Hover morphs part of the
+  // way, which is what makes the cell feel like it is offering to become the
+  // selection rather than just lighting up.
+  //
+  // No animation loop. The morph amount is a function of state, and Views
+  // repaints on state change -- the CSS original got its motion from a
+  // transition, which is the one part that does not survive the port. A timer
+  // to tween it would be the obvious next step if it reads as abrupt.
+  void PaintIconCell(gfx::Canvas* canvas, bool hot) {
+    gfx::RectF body(GetLocalBounds());
+    body.Inset(1.f);
+    if (body.IsEmpty()) {
+      return;
+    }
+
+    // The container is a STATE, not an animation. Only the glyph moves --
+    // the shape morph that used to be animated here was doing too much at
+    // 28px, and two things moving at once in a cell that small reads as noise.
+    const float morph = active_ ? 1.f : (hot ? kHoverMorph : 0.f);
+    const SkPath container = zephyrus::ShapePath(icon_->shape, body, morph);
+
+    // Same two tonal strengths the disc had: solid when current, a faint wash
+    // when hovered, nothing at rest.
+    if (active_ || hot) {
+      cc::PaintFlags fill;
+      fill.setAntiAlias(true);
+      fill.setStyle(cc::PaintFlags::kFill_Style);
+      fill.setColor(active_ ? SK_ColorWHITE : SkColorSetA(SK_ColorWHITE, 0x2E));
+      canvas->DrawPath(container, fill);
+    }
+
+    // The glyph inverts on the filled container, exactly as the numeral does.
+    const SkColor glyph_color = active_ ? zephyrus::Ground() : ink_;
+    gfx::RectF glyph_box = body;
+    glyph_box.Inset(kGlyphInset);
+    // A negative progress is the resting glyph. Only a hovered cell animates.
+    const float progress = glyph_anim_.is_animating()
+                               ? static_cast<float>(
+                                     glyph_anim_.GetCurrentValue())
+                               : -1.f;
+    zephyrus::PaintWorkspaceGlyph(canvas, *icon_, glyph_box, glyph_color,
+                                  kGlyphStroke, progress);
   }
 
   // Drawn in the BACKGROUND pass, after the disc above it, rather than in
@@ -3896,6 +4058,22 @@ class ZephyrusWorkspaceCell : public views::Button,
   static constexpr int kCell = kPillHeight;
   // Leaves a 2px rim of the disc showing around the photo when active.
   static constexpr int kPhotoInset = 2;
+  // How much of the cell the glyph gives back to the container. A lobed
+  // silhouette (cookie, burst) pulls IN between its lobes, so a glyph sized to
+  // the circle would poke through those valleys.
+  static constexpr float kGlyphInset = 5.f;
+  // Screen pixels, not scaled with the cell -- see PaintWorkspaceGlyph.
+  static constexpr float kGlyphStroke = 1.5f;
+  // How far a hovered (but not current) cell's container sits toward its
+  // shape. A fixed state, not a tween -- see PaintIconCell.
+  static constexpr float kHoverMorph = 0.45f;
+
+  // Drives one cycle of the glyph's effect, 0..1. The curves live in the
+  // painter; this only supplies the clock.
+  gfx::SlideAnimation glyph_anim_{this};
+  // Null unless the stored string names one of our drawn icons; an emoji or a
+  // numeral leaves this null and takes the label path.
+  raw_ptr<const zephyrus::WorkspaceIcon> icon_ = nullptr;
   bool active_;
   bool is_icon_;
   SkColor ink_;
@@ -3924,6 +4102,11 @@ class ZephyrusWorkspaceStrip : public views::View,
 
  public:
   using SwitchCallback = base::RepeatingCallback<void(int workspace_id)>;
+
+  // What the strip drew last time, so a rebuild can tell a real workspace
+  // switch from a rename or a window opening. See SetWorkspaces.
+  int last_current_id_ = 0;
+  bool drew_once_ = false;
 
   using WorkspaceCallback = base::RepeatingCallback<void(int workspace_id)>;
 
@@ -3954,6 +4137,20 @@ class ZephyrusWorkspaceStrip : public views::View,
                      int current_id,
                      SkColor ink,
                      const ImageLookup& image_for) {
+    // Did the CURRENT workspace actually change since the last rebuild?
+    //
+    // This is the whole trigger for the glyph animation, and it has to be
+    // decided here because a cell cannot tell. Rebuilds happen for renames,
+    // icon changes, added and deleted workspaces, and on window open -- in all
+    // of those the active cell is newly constructed but nothing was switched.
+    //
+    // drew_once_ keeps the first rebuild silent: a window that animates its
+    // workspace icon while it is still opening looks like a glitch, not a
+    // response to anything the user did.
+    const bool switched = drew_once_ && current_id != last_current_id_;
+    drew_once_ = true;
+    last_current_id_ = current_id;
+
     RemoveAllChildViews();
     for (size_t i = 0; i < ws.size(); ++i) {
       const auto& w = ws[i];
@@ -3995,7 +4192,8 @@ class ZephyrusWorkspaceStrip : public views::View,
           base::BindRepeating(on_switch_, w.id),
           base::BindRepeating(&ZephyrusWorkspaceStrip::ShowCellMenu,
                               base::Unretained(this), w.id, can_delete),
-          std::move(photo)));
+          std::move(photo),
+          /*animate_entrance=*/switched && active));
       cell->SetTooltipText(u"Workspace " + base::NumberToString16(i + 1));
     }
 

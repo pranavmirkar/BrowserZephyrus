@@ -121,7 +121,16 @@ void ApplyGM3OmniboxBackgroundColor(ui::ColorMixer& mixer,
                                     const ui::ColorProviderKey& key) {
   // Apply omnibox background color updates only to non-themed clients.
   if (!key.custom_theme) {
-    mixer[kColorLocationBarBackground] = {ui::kColorSysOmniboxContainer};
+    // Zephyrus (from Helium): let the frame show through the omnibox.
+    //
+    // A translucent container ties the pill to whatever plane it is sitting on
+    // instead of stamping an opaque rectangle across the toolbar, which is
+    // what makes a themed toolbar look like one surface with a hole in it.
+    // Opaque under high contrast, where showing through is the wrong trade.
+    const SkAlpha background_alpha =
+        ShouldApplyHighContrastColors(key) ? SK_AlphaOPAQUE : 0xCC;
+    mixer[kColorLocationBarBackground] =
+        ui::SetAlpha({ui::kColorSysOmniboxContainer}, background_alpha);
     mixer[kColorLocationBarBackgroundHovered] =
         ui::GetResultingPaintColor(ui::kColorSysStateHoverBrightBlendProtection,
                                    kColorLocationBarBackground);
@@ -187,18 +196,32 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
       key.color_mode == ui::ColorProviderKey::ColorMode::kDark;
   ui::ColorMixer& mixer = provider->AddMixer();
 
-  // Zephyrus: every focus ring in the browser is the brand accent purple
-  // (Google-blue focus rings are the most pervasive stock-Chrome tell).
+  // Zephyrus: the focus ring is the THEME's accent.
+  //
+  // It used to be a hardcoded violet (0x8B5CF6) from the theme Zephyrus wore
+  // before 2026-08-26. The reason for overriding it at all still holds --
+  // Google-blue focus rings are the most pervasive stock-Chrome tell -- but a
+  // fixed colour cannot follow a Customize Chrome theme, so the omnibox kept a
+  // violet ring in a green browser. kColorSysStateFocusRing is the token
+  // Chromium already resolves per theme.
   mixer[ui::kColorFocusableBorderFocused] = {
-      SkColorSetA(SkColorSetRGB(0x8B, 0x5C, 0xF6), 0xB3)};
+      ui::SetAlpha(ui::kColorSysStateFocusRing, 0xB3)};
 
   // Zephyrus menus. The geometry comes from the "macos-context-menu" Figma
-  // component (see menu_config_win.cc); the COLOURS are deliberately ours, not
-  // the design's — that mock is a light macOS panel, and Zephyrus has one fixed
-  // dark theme with no light mode. So: the design's structure, our palette.
+  // component (see menu_config_win.cc); the COLOURS are tokens, so the menu
+  // follows whatever theme the browser is wearing.
+  //
+  // Every value in this block used to be a literal, written when Zephyrus had
+  // one permanent navy theme and a violet accent. Both are two generations
+  // stale, and more importantly a literal cannot follow Customize Chrome --
+  // which is exactly what showed up as navy menus with violet selection
+  // sitting inside a green browser.
   {
-    // Panel: the theme navy lifted slightly so the menu reads as a surface
-    // floating above the window rather than a hole in it.
+    // Panel: a raised surface, not the window's ground. That is the same
+    // distinction the rest of the chrome makes -- the menu floats above the
+    // window rather than being a hole in it -- now expressed as the token that
+    // already means it.
+    //
     // OPAQUE, and likely permanently so for menus. Every precondition for DWM
     // acrylic is verified true here (not layered, no WS_EX_NOREDIRECTIONBITMAP,
     // frame extended, DWM reads the backdrop type back as
@@ -211,25 +234,29 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
     // design. If so, no menu can ever blur, and alpha here only makes the
     // fallback show through as a washed-out panel. See the activating-surface
     // experiment in zephyrus_bubble_blur for the test of that theory.
-    constexpr SkColor kZephyrusMenuBg = SkColorSetRGB(0x1A, 0x1D, 0x2E);
-    mixer[ui::kColorMenuBackground] = {kZephyrusMenuBg};
-    // Hairline edge — the dark-theme counterpart of the design's white 30%.
-    mixer[ui::kColorMenuBorder] = {SkColorSetA(SK_ColorWHITE, 0x24)};
-    mixer[ui::kColorMenuSeparator] = {SkColorSetA(SK_ColorWHITE, 0x14)};
+    mixer[ui::kColorMenuBackground] = {ui::kColorSysSurface};
+    // Hairline edge and separator. Divider is the token Chromium uses for
+    // exactly this, and it already carries the theme's idea of how strong a
+    // hairline should be against its own background.
+    mixer[ui::kColorMenuBorder] = {ui::kColorSysDivider};
+    mixer[ui::kColorMenuSeparator] = {ui::kColorSysDivider};
 
-    // Label vs accelerator: the design's near-black/grey pair, inverted for a
-    // dark panel. The accelerator stays clearly secondary.
-    mixer[ui::kColorMenuItemForeground] = {SkColorSetRGB(0xF2, 0xF2, 0xF5)};
+    // Label vs accelerator. OnSurface is paired with Surface upstream, so
+    // taking both from that pair is what keeps the text legible on a theme
+    // nobody here has seen -- rather than pairing a themed panel with the old
+    // hardcoded near-white.
+    mixer[ui::kColorMenuItemForeground] = {ui::kColorSysOnSurface};
     mixer[ui::kColorMenuItemForegroundSecondary] = {
-        SkColorSetRGB(0x9A, 0x9A, 0xA5)};
-    mixer[ui::kColorMenuItemForegroundDisabled] = {
-        SkColorSetA(SK_ColorWHITE, 0x5A)};
+        ui::kColorSysOnSurfaceSubtle};
+    mixer[ui::kColorMenuItemForegroundDisabled] = {ui::kColorSysStateDisabled};
 
-    // Selection: the design's macOS blue becomes the Zephyrus accent, so the
-    // menu agrees with every other selected surface in the browser.
-    mixer[ui::kColorMenuItemBackgroundSelected] = {
-        SkColorSetRGB(0x8B, 0x5C, 0xF6)};
-    mixer[ui::kColorMenuItemForegroundSelected] = {SK_ColorWHITE};
+    // Selection, as a PAIR. Setting a fill without its matching foreground is
+    // how this shipped broken twice before: the row inverts and the label is
+    // left printing ink-on-accent, so it disappears. Primary/OnPrimary stay a
+    // pair through a theme change, which a hardcoded violet and white could
+    // not.
+    mixer[ui::kColorMenuItemBackgroundSelected] = {ui::kColorSysPrimary};
+    mixer[ui::kColorMenuItemForegroundSelected] = {ui::kColorSysOnPrimary};
   }
 
   const bool use_alternate_palette = features::IsTabGroupColorRefreshEnabled();

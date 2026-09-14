@@ -79,6 +79,8 @@ class AccessibilityFocusHighlight;
 class BookmarkBarController;
 class BookmarkBarView;
 class Browser;
+#include "chrome/browser/ui/views/frame/zephyrus_customize_panel.h"
+
 class BrowserViewLayout;
 class ContentsContainerView;
 class ContentsLayoutManager;
@@ -303,6 +305,21 @@ class BrowserView : public BrowserWindow,
 
   // Width the layout should keep clear on the right for the panel, or zero.
   int ZephyrusAgentPanelWidth() const;
+
+  // "Customize Zephyrus", the right-hand panel that replaces Chromium's
+  // side panel for theming. Shares the agent panel's column and its
+  // normal-window test.
+  zephyrus::ZephyrusCustomizePanel* zephyrus_customize_panel() {
+    return zephyrus_customize_panel_;
+  }
+  int ZephyrusCustomizePanelWidth() const;
+
+  // Repositions the panel without a full layout.
+  //
+  // Public because the panel calls it on every frame of its own slide: only
+  // its x changes, so re-running the whole layout for that would be work the
+  // animation does not need.
+  void UpdateZephyrusCustomizePanelBounds();
 
   ZephyrusSearchOverlay* zephyrus_search_overlay() {
     return zephyrus_search_overlay_;
@@ -1393,6 +1410,8 @@ class BrowserView : public BrowserWindow,
   // Ctrl+T search card. A view rather than a bubble so its backdrop blur has
   // the web contents to sample; see zephyrus_search_overlay.h.
   raw_ptr<ZephyrusSearchOverlay> zephyrus_search_overlay_ = nullptr;
+  raw_ptr<zephyrus::ZephyrusCustomizePanel> zephyrus_customize_panel_ =
+      nullptr;
   raw_ptr<zephyrus::agent::ZephyrusAgentPanel> zephyrus_agent_panel_ =
       nullptr;
   // Ctrl+Tab switcher. Also a view rather than a bubble, for the blur.
@@ -1412,6 +1431,11 @@ class BrowserView : public BrowserWindow,
   // follow it: `anim_t_` is linear progress (1 = fully shown, 0 = hidden),
   // `anim_target_` is where it's heading.
   std::optional<SkColor> zephyrus_page_color_;
+
+  // Guards the second theme propagation in OnThemeChanged(). Children are
+  // walked before the parent, so the palette we publish arrives too late for
+  // them and we re-propagate once; this stops that from recursing.
+  bool zephyrus_republishing_theme_ = false;
   // Identity of the contents container that last had its page-color background
   // applied (opaque id, never dereferenced), so unchanged colors don't rebuild
   // backgrounds on every navigation event.

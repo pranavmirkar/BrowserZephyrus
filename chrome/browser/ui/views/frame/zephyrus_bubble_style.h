@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_BUBBLE_STYLE_H_
 
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/color/color_provider.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/views/controls/label.h"
 #include "ui/gfx/geometry/rect.h"
@@ -123,6 +124,26 @@ inline constexpr Palette kDarkPalette = {
 // initialisation -- NativeTheme is not ready that early.
 const Palette& Current();
 
+// Publish the browser's resolved palette as the one Current() answers with.
+//
+// Called by a NORMAL browser window when its theme changes. This is what lets
+// the ~60 call sites that read Ground()/Ink()/Accent() from free helper
+// functions -- popups, dialogs, the tab switcher, the settings sheet -- follow
+// a Customize Chrome colour without every one of them acquiring a View to
+// resolve a ColorProvider from.
+//
+// Private windows must NOT call this: their grey is deliberately outside the
+// theme and would otherwise leak into a normal window's popups. See the note on
+// Current() for the single-slot limitation.
+//
+// Returns whether the palette actually changed. The caller needs that, because
+// View::PropagateThemeChanged() walks CHILDREN BEFORE THE PARENT -- so by the
+// time BrowserView publishes, every descendant that reads a colour in its own
+// OnThemeChanged has already read the previous one. Verified, not assumed:
+// ZephyrusSidebarView::OnThemeChanged() calls RebuildTabList(), which reads
+// zephyrus::Surface(). See BrowserView::OnThemeChanged for the second pass.
+[[nodiscard]] bool PublishThemePalette(const Palette& palette);
+
 // Private Workspace: a GREY palette of its own.
 //
 // It used to be the inverse of whatever theme was active -- light chrome inside
@@ -149,6 +170,31 @@ inline constexpr Palette kPrivatePalette = {
 
 // The palette for one window.
 const Palette& PaletteFor(bool is_private);
+
+// The palette as the BROWSER'S THEME currently defines it.
+//
+// This is where the colours come from now. `Current()` above reads a pair of
+// hardcoded tables and only ever answers "light" or "dark"; this reads the
+// ColorProvider, so a colour the user picked in Customize Chrome on the New Tab
+// Page arrives here and reaches Zephyrus's own surfaces by the same route it
+// reaches Chromium's.
+//
+// A SNAPSHOT, taken deliberately rather than read live. A View can only reach a
+// ColorProvider once it is in a Widget, so there is no provider during
+// construction -- and several of these views were applying colour in their
+// constructors, which is precisely the code that cannot ask. Taking a copy in
+// OnThemeChanged() fixes both halves at once: it runs after the view is in a
+// widget, and it runs AGAIN on every theme change, which is what makes the
+// browser follow a live switch instead of needing a restart.
+//
+// So the rule is: hold one of these as a member, fill it in OnThemeChanged(),
+// and never call this from a constructor.
+Palette PaletteFrom(const ui::ColorProvider& provider);
+
+// Convenience for the common case: the palette for `view`.
+//
+// Must not be called before `view` is in a Widget. See above.
+Palette PaletteFor(const views::View& view);
 
 inline SkColor Ground() { return Current().ground; }
 inline SkColor Surface() { return Current().surface; }

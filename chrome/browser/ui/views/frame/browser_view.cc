@@ -170,6 +170,7 @@
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_empty_background.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
 // ZEPHYRUS PROFILES FRONTEND - DISABLED.
 // #include "chrome/browser/ui/views/frame/zephyrus_profile_switcher.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
@@ -1000,6 +1001,11 @@ BrowserView::BrowserView(Browser* browser)
     // a popup or app window has neither.
     zephyrus_agent_panel_ = AddChildView(
         std::make_unique<zephyrus::agent::ZephyrusAgentPanel>(this));
+
+    // The theming panel shares that column. Only one is open at a time,
+    // so the window never has to be wide enough for both.
+    zephyrus_customize_panel_ = AddChildView(
+        std::make_unique<zephyrus::ZephyrusCustomizePanel>(this));
 
     // Added after the sidebar so it sits above the panel, and above the
     // contents container it also overlaps -- the seam it grabs spans both.
@@ -3097,12 +3103,33 @@ SkColor BrowserView::GetZephyrusThemeColor() const {
   // browsing is worse than no privacy mode.
   const bool is_private =
       browser_ && browser_->profile() && browser_->profile()->IsOffTheRecord();
-  // Private is the INVERTED theme rather than a different hue: a one-accent
-  // language has no second colour to spend on it, so value carries the
-  // distinction instead. A private window is dark while the browser is light,
-  // and light while it is dark -- which is a bigger, more obvious shift than
-  // the violet tint it replaces.
-  return ZephyrusGround(is_private);
+  // Private keeps its own grey, deliberately outside the theme: the entire job
+  // of that colour is to be unmistakably not-the-normal-window, and a private
+  // window that follows the user's theme lands wherever every other window
+  // already is.
+  if (is_private) {
+    return ZephyrusGround(true);
+  }
+
+  // This is the WINDOW PLANE -- the frame. Not the base.
+  //
+  // The distinction is the whole lesson of 2026-09-10, when this returned the
+  // base colour and every Zephyrus surface derived from it: the toolbar, the
+  // sidebar and the field the content card floats in all became the same
+  // colour as the card itself, and the window went flat. The structure was
+  // still there, it had simply become invisible.
+  //
+  // Helium's answer, which this now follows: surfaces read DIFFERENT tokens and
+  // the theme moves them together. kColorFrameActive is the plane the card
+  // floats in; the card and the panels are kColorSysBase; the toolbar is
+  // kColorToolbar (which material_chrome_color_mixer.cc now maps to the frame
+  // in dark mode). Two planes, and they stay two planes at every seed colour.
+  if (GetWidget()) {
+    return GetColorProvider()->GetColor(ui::kColorFrameActive);
+  }
+  // No widget yet: the fixed ground is the only answer available, and
+  // OnThemeChanged() corrects it as soon as there is one.
+  return ZephyrusGround(false);
 }
 
 void BrowserView::UpdateZephyrusTitlebarColor() {
@@ -3119,8 +3146,21 @@ void BrowserView::UpdateZephyrusTitlebarColor() {
   const bool color_changed = color != zephyrus_page_color_;
   zephyrus_page_color_ = color;
   if (color_changed) {
-    toolbar_->SetZephyrusTitlebarColor(color);
+    // The toolbar gets its OWN token, not the frame colour.
+    //
+    // On the default palette these are the same value in dark mode, so nothing
+    // moves; under a theme they separate, which is the point. Feeding the
+    // toolbar the frame colour is what merged the bar into the window.
+    std::optional<SkColor> toolbar_color = color;
+    if (GetWidget() && !(browser_ && browser_->profile() &&
+                         browser_->profile()->IsOffTheRecord())) {
+      toolbar_color = GetColorProvider()->GetColor(kColorToolbar);
+    }
+    toolbar_->SetZephyrusTitlebarColor(toolbar_color);
     if (zephyrus_sidebar_) {
+      // The sidebar is Zephyrus's tab strip, and a tab strip sits ON the frame
+      // -- the same reason Helium made inactive tabs transparent so the frame
+      // shows through them.
       zephyrus_sidebar_->SetZephyrusColor(color);
     }
   }
@@ -3133,8 +3173,16 @@ void BrowserView::UpdateZephyrusTitlebarColor() {
     const uintptr_t container_id =
         reinterpret_cast<uintptr_t>(contents_container);
     if (color_changed || container_id != zephyrus_last_contents_container_) {
-      contents_container->SetBackground(
-          views::CreateSolidBackground(GetZephyrusThemeColor()));
+      // Zephyrus: with the DWM backdrop active this fill is the LARGEST thing
+      // covering the glass -- it spans the whole client area behind the page
+      // card. Leaving it unpainted is what lets the backdrop show in the margin
+      // around the card and beside the sidebar.
+      if (zephyrus::HasWindowBackdrop(GetWidget())) {
+        contents_container->SetBackground(nullptr);
+      } else {
+        contents_container->SetBackground(
+            views::CreateSolidBackground(GetZephyrusThemeColor()));
+      }
       zephyrus_last_contents_container_ = container_id;
     }
   }
@@ -3182,8 +3230,16 @@ void BrowserView::UpdateZephyrusEmptyState() {
       }
     }
   } else {
-    contents_container_->SetBackground(
-        views::CreateSolidBackground(GetZephyrusThemeColor()));
+    // Zephyrus: the SECOND place this fill is set, and the one that spans the
+    // whole client area. Suppressed under the DWM backdrop for the same reason
+    // as the one in UpdateZephyrusTitlebarColor -- an opaque fill here hides
+    // the glass everywhere except the non-client edge.
+    if (zephyrus::HasWindowBackdrop(GetWidget())) {
+      contents_container_->SetBackground(nullptr);
+    } else {
+      contents_container_->SetBackground(
+          views::CreateSolidBackground(GetZephyrusThemeColor()));
+    }
     if (multi_contents_view_) {
       multi_contents_view_->SetVisible(true);
     }
@@ -3278,6 +3334,77 @@ void BrowserView::UpdateZephyrusSidebarPin() {
 
 int BrowserView::ZephyrusAgentPanelWidth() const {
   return zephyrus_agent_panel_ ? zephyrus_agent_panel_->GetReservedWidth() : 0;
+}
+
+int BrowserView::ZephyrusCustomizePanelWidth() const {
+  return zephyrus_customize_panel_
+             ? zephyrus_customize_panel_->GetReservedWidth()
+             : 0;
+}
+
+void BrowserView::UpdateZephyrusCustomizePanelBounds() {
+  // Bounds derived from the content card, exactly as the agent panel
+  // does: the page's right edge IS this panel's left edge, at every
+  // scale factor.
+  if (!zephyrus_customize_panel_ || !contents_container_) {
+    return;
+  }
+  // Visible, not open: during the slide out the panel is closed but still on
+  // screen, and it still needs correct bounds if a layout runs mid-flight.
+  if (!zephyrus_customize_panel_->GetVisible()) {
+    return;
+  }
+
+  // Matched to the CONTENT CARD, not to its container.
+  //
+  // contents_container_ spans the whole client area and applies the card's
+  // margin to its own children, so taking its bounds directly put the panel
+  // level with the window rather than with the page -- overhanging it at the
+  // top, the bottom and the outer edge. That was the layout leaking out past
+  // the card beside it.
+  //
+  // A flush, full-height version of this was tried on 2026-09-10 and reverted:
+  // the panel is a CARD, the same as the sidebar and the agent panel, and it
+  // has to agree with the page's edges rather than the window's.
+  //
+  // The leading edge is deliberately NOT inset: the content card's own
+  // trailing margin is already the channel between the two, and insetting both
+  // would double it.
+  constexpr int kMargin = ContentsContainerView::kZephyrusContentMargin;
+  const gfx::Rect content_bounds = contents_container_->bounds();
+
+  // Read the card's ACTUAL rectangle rather than recomputing it.
+  //
+  // Every previous version of this replicated ContentsContainerView's margin
+  // rule -- a flat 4px, then the titlebar-attachment rule -- and every one of
+  // them was a guess about a value that view already knows. It applies
+  // GetZephyrusContentMargin() to its own local bounds, so asking it directly
+  // is both exact and immune to that rule changing later.
+  gfx::Rect card = content_bounds;
+  if (multi_contents_view_) {
+    if (ContentsContainerView* active =
+            multi_contents_view_->GetActiveContentsContainerView()) {
+      gfx::Rect local = active->GetLocalBounds();
+      local.Inset(active->GetZephyrusContentMargin());
+      gfx::RectF in_browser_view(local);
+      views::View::ConvertRectToTarget(active, this, &in_browser_view);
+      const gfx::Rect visible = gfx::ToEnclosingRect(in_browser_view);
+      if (!visible.IsEmpty()) {
+        card = visible;
+      }
+    }
+  }
+
+  // Top and height come straight from the card, so the two agree by
+  // construction. The right edge keeps its own margin off the window.
+  const int panel_x = card.right() + kMargin;
+  const int panel_right =
+      content_bounds.right() +
+      zephyrus::ZephyrusCustomizePanel::kDefaultWidth - kMargin;
+
+  zephyrus_customize_panel_->SetBounds(
+      panel_x + zephyrus_customize_panel_->SlideOffset(), card.y(),
+      std::max(0, panel_right - panel_x), card.height());
 }
 
 void BrowserView::UpdateZephyrusAgentPanelBounds() {
@@ -5354,6 +5481,7 @@ void BrowserView::Layout(PassKey) {
   // reveal below then shifts.
   UpdateZephyrusSidebarBounds();
   UpdateZephyrusAgentPanelBounds();
+  UpdateZephyrusCustomizePanelBounds();
   ApplyZephyrusSidebarReveal();
 
   // Zephyrus: stop here while the sidebar column is sliding.
@@ -5677,6 +5805,50 @@ void BrowserView::OnThemeChanged() {
   views::ClientView::OnThemeChanged();
   if (!initialized_) {
     return;
+  }
+
+  // Zephyrus: repaint our own chrome on a theme change.
+  //
+  // GetZephyrusThemeColor() reads the ColorProvider now, so a Customize Chrome
+  // colour gives a different answer -- but nothing was asking again, and this
+  // is the only signal that fires. Clearing the cache first forces the whole
+  // refresh: the toolbar's token can move even when the frame's does not.
+  zephyrus_page_color_.reset();
+  UpdateZephyrusTitlebarColor();
+
+  // Publish the resolved palette for every Zephyrus surface that cannot reach a
+  // ColorProvider of its own.
+  //
+  // The popups, dialogs and sheets read their colours from free helpers with no
+  // View in scope (zephyrus::Ground(), Ink(), Accent()...). Without this they
+  // stay on the hardcoded tables forever and a themed browser has a stack of
+  // un-themed surfaces sitting on top of it. See zephyrus::Current().
+  //
+  // NOT from a private window: its grey is deliberately outside the theme, and
+  // publishing it would repaint a normal window's popups grey.
+  if (GetWidget() && !(browser_ && browser_->profile() &&
+                       browser_->profile()->IsOffTheRecord())) {
+    const bool palette_changed =
+        zephyrus::PublishThemePalette(zephyrus::PaletteFrom(*GetColorProvider()));
+
+    // A SECOND pass, because this one arrived too late for our own children.
+    //
+    // View::PropagateThemeChanged() walks children before the parent, and
+    // BrowserView is the parent of all of them -- so every descendant that
+    // reads a colour during its own OnThemeChanged already read the PREVIOUS
+    // palette by the time we get here. That is not hypothetical:
+    // ZephyrusSidebarView::OnThemeChanged() calls RebuildTabList(), which reads
+    // zephyrus::Surface(), and the toolbar's button refreshers do the same.
+    //
+    // Re-propagating with the new palette in place gives them the right value.
+    // It terminates after exactly one extra pass: the nested call publishes the
+    // same palette, palette_changed comes back false, and no third pass runs.
+    // The guard is belt-and-braces against a view that changes colours from
+    // inside OnThemeChanged.
+    if (palette_changed && !zephyrus_republishing_theme_) {
+      base::AutoReset<bool> guard(&zephyrus_republishing_theme_, true);
+      GetWidget()->ThemeChanged();
+    }
   }
 
   FrameColorsChanged();
@@ -6567,6 +6739,8 @@ void BrowserView::FrameColorsChanged() {
     web_app_window_title_->SetBackgroundColor(frame_color);
     web_app_window_title_->SetEnabledColor(caption_color);
   }
+  // The native brush is an opaque fallback while the compositor starts.
+  // The Windows host separately controls compositor alpha and the DWM backdrop.
   GetWidget()->SetBackgroundColor(kColorToolbar);
 }
 

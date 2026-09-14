@@ -26,6 +26,8 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
+#include "chrome/browser/tab_contents/tab_util.h"
+#include "content/public/common/referrer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_delegate.h"
 #include "components/tabs/public/tab_interface.h"
@@ -1143,34 +1145,174 @@ void ZephyrusWorkspaceManager::MoveContentsToWorkspace(
   if (previous == workspace_id) {
     return;
   }
-  store_->SetWorkspaceForContents(contents, workspace_id);
-  // Moving a tab is filing, not navigating: stay in the workspace the user is
-  // looking at. If the moved tab was the visible one, activate another tab that
-  // still belongs here, or open a fresh one if that emptied the workspace.
+
+  // A TAB'S STORAGE PARTITION IS FIXED AT WebContents CREATION.
   //
-  // Deliberately NOT EnsureActiveTabInWorkspace(): its empty-workspace fallback
-  // follows the active tab into its new workspace, which is right when a tab is
-  // closed (so the window can still close on the last tab) but wrong here — it
-  // would drag the user along with the tab they just filed away.
-  if (contents == tab_strip_model_->GetActiveWebContents()) {
-    int target_index = -1;
-    for (int i = 0; i < tab_strip_model_->count(); ++i) {
-      if (GetWorkspaceForContents(tab_strip_model_->GetWebContentsAt(i)) ==
-          current_workspace_id_) {
-        target_index = i;
-        break;
-      }
-    }
-    if (target_index >= 0) {
-      tab_strip_model_->ActivateTabAt(target_index);
-    } else {
-      // The tab we just filed away is still active, so force the tag rather
-      // than letting it be inherited straight back into the target workspace.
-      AddTabForWorkspace(current_workspace_id_);
-    }
+  // Re-tagging alone was an isolation hole, and a silent one: the tab moved to
+  // workspace 3 in the sidebar and kept browsing with workspace 2's cookies.
+  // It reads as the opposite of a bug -- you arrive in a new workspace already
+  // signed in -- which is exactly how it survived unnoticed.
+  //
+  // So when the two workspaces sit in different partitions the tab has to be
+  // REBUILT in the target one. Same URL, same position, same pinned state, and
+  // CopyStateFrom carries the back/forward history across, so the only thing
+  // actually lost is live page state (form contents, scroll offset) -- which
+  // cannot survive a cookie-jar change in any case.
+  //
+  // Posted, never synchronous. This is reached from the sidebar's context-menu
+  // command, and closing the tab here would destroy the menu's own row while
+  // Views is still inside the click that opened it. That is the callback UAF
+  // this codebase has hit before.
+  const std::string from_partition = store_->PartitionNameForWorkspace(previous);
+  const std::string to_partition =
+      store_->PartitionNameForWorkspace(workspace_id);
+  if (from_partition != to_partition) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&ZephyrusWorkspaceManager::RebuildContentsInWorkspace,
+                       weak_factory_.GetWeakPtr(), contents, workspace_id));
+    return;
   }
+
+  store_->SetWorkspaceForContents(contents, workspace_id);
+
+  // FOLLOW THE TAB into its new workspace.
+  //
+  // This previously stayed put, on the reasoning that moving a tab is filing
+  // rather than navigating. In use that reads as nothing having happened: the
+  // tab vanishes from the sidebar and the user is left looking at the workspace
+  // they just emptied, with no feedback that the move worked. Going there shows
+  // the result of the action.
+  SwitchToWorkspace(workspace_id);
+  const int moved_index = tab_strip_model_->GetIndexOfWebContents(contents);
+  if (moved_index != TabStripModel::kNoTab) {
+    tab_strip_model_->ActivateTabAt(moved_index);
+  }
+
   NotifyChanged();
   PersistState();
+}
+
+void ZephyrusWorkspaceManager::RebuildContentsInWorkspace(
+    content::WebContents* contents,
+    int workspace_id) {
+  // Everything below re-validates: this runs a task later, so the tab may have
+  // been closed and the workspace deleted in between.
+  if (!contents || !tab_strip_model_ || !GetWorkspace(workspace_id)) {
+    return;
+  }
+  const int index = tab_strip_model_->GetIndexOfWebContents(contents);
+  if (index == TabStripModel::kNoTab) {
+    return;
+  }
+
+  Profile* const profile = browser_ ? browser_->profile() : nullptr;
+  if (!profile) {
+    return;
+  }
+  const GURL url = contents->GetLastCommittedURL();
+  const std::string partition = store_->PartitionNameForWorkspace(workspace_id);
+
+  scoped_refptr<content::SiteInstance> site_instance =
+      zephyrus::SiteInstanceForWorkspace(profile, partition, url);
+  // Null means the target is the DEFAULT partition, which needs no fixed
+  // SiteInstance -- a plain new-tab SiteInstance already lands there.
+  content::WebContents::CreateParams create_params(
+      profile, site_instance ? site_instance
+                             : tab_util::GetSiteInstanceForNewTab(profile, url));
+  std::unique_ptr<content::WebContents> replacement =
+      content::WebContents::Create(create_params);
+  if (!replacement) {
+    return;
+  }
+
+  // NO HISTORY COPY. The tab starts fresh at its current URL.
+  //
+  // CopyStateFrom was tried and CRASHED the browser on any tab with real
+  // history -- which is every tab worth moving. Navigation entries carry the
+  // SiteInstance they were committed in, and those are bound to the SOURCE
+  // partition; cloning them into a WebContents built for a DIFFERENT partition
+  // hands content a history that disagrees with the tab it belongs to, and it
+  // CHECKs on the next navigation. The first dump had
+  // RenderFrameHostManager::GetSiteInstanceForNavigation in it for exactly
+  // this reason.
+  //
+  // Losing back/forward is the honest price of changing cookie jars: those
+  // entries were fetched with another workspace's session, so replaying them
+  // here would be wrong even if content allowed it.
+  if (url.is_valid()) {
+    replacement->GetController().LoadURL(url, content::Referrer(),
+                                         ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
+                                         std::string());
+  }
+
+  const bool was_pinned = tab_strip_model_->IsTabPinned(index);
+  content::WebContents* const replacement_ptr = replacement.get();
+
+  // FORCE the workspace across the insertion.
+  //
+  // Setting it on the store beforehand is NOT enough and was the bug: the
+  // kInserted handler unconditionally re-tags every inserted tab with
+  // WorkspaceIdForInsertedContents(), which infers the window's CURRENT
+  // workspace -- precisely the one we are moving the tab out of. The symptom
+  // was a tab that reloaded, logged out (it did get the target partition) and
+  // then stayed exactly where it was.
+  //
+  // pending_forced_workspace_id_ is the channel that handler already honours
+  // above every other source, which is why AddTabForWorkspace uses it too.
+  pending_forced_workspace_id_ = workspace_id;
+
+  int add_types = AddTabTypes::ADD_NONE;
+  if (was_pinned) {
+    add_types |= AddTabTypes::ADD_PINNED;
+  }
+  tab_strip_model_->InsertWebContentsAt(index + 1, std::move(replacement),
+                                        add_types);
+  // Consumed by the insertion; cleared defensively in case it never arrived.
+  pending_forced_workspace_id_.reset();
+  store_->SetWorkspaceForContents(replacement_ptr, workspace_id);
+
+  // Follow the tab, exactly as the same-partition path does. Whether it was the
+  // ACTIVE tab is deliberately not consulted: the user asked for this tab to go
+  // there, so that is where they should end up either way.
+  SwitchToWorkspace(workspace_id);
+  const int new_index = tab_strip_model_->GetIndexOfWebContents(replacement_ptr);
+  if (new_index != TabStripModel::kNoTab) {
+    tab_strip_model_->ActivateTabAt(new_index);
+  }
+
+  // CLOSING THE ORIGINAL IS ITS OWN TASK, and that is not tidiness.
+  //
+  // Closing here CHECK-crashed the browser. CloseWebContentsAt fires its
+  // observers synchronously, our own OnTabStripModelChanged runs inside that
+  // notification, and anything it does that touches the strip re-enters a
+  // TabStripModel that is mid-close -- which the model CHECKs against.
+  // Confirmed from the dump: exception 0x80000003 with
+  // SendDetachWebContentsNotifications / CloseWebContentses on the faulting
+  // thread.
+  //
+  // A separate task turn means the insert's notifications are fully drained
+  // before the close begins, so neither re-enters the other.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ZephyrusWorkspaceManager::CloseReplacedContents,
+                     weak_factory_.GetWeakPtr(), contents));
+
+  NotifyChanged();
+  PersistState();
+}
+
+void ZephyrusWorkspaceManager::CloseReplacedContents(
+    content::WebContents* contents) {
+  if (!contents || !tab_strip_model_ || tab_strip_model_->closing_all()) {
+    return;
+  }
+  const int index = tab_strip_model_->GetIndexOfWebContents(contents);
+  if (index == TabStripModel::kNoTab) {
+    return;  // Already gone -- the user closed it in the meantime.
+  }
+  store_->EraseContents(contents);
+  tab_strip_model_->CloseWebContentsAt(index, TabCloseTypes::CLOSE_NONE);
 }
 
 void ZephyrusWorkspaceManager::SwitchToWorkspaceByIndex(size_t index) {
@@ -1223,6 +1365,12 @@ bool ZephyrusWorkspaceManager::IsContentsInCurrentWorkspace(
 
 void ZephyrusWorkspaceManager::AdoptUntrackedTabs() {
   bool adopted = false;
+  // Collected, not acted on in the loop: rebuilding a tab inserts and closes,
+  // which would invalidate the indices this is walking.
+  std::vector<content::WebContents*> needs_repartition;
+  const std::string current_partition =
+      store_->PartitionNameForWorkspace(current_workspace_id_);
+
   for (int i = 0; i < tab_strip_model_->count(); ++i) {
     content::WebContents* contents = tab_strip_model_->GetWebContentsAt(i);
     if (!contents) {
@@ -1234,10 +1382,34 @@ void ZephyrusWorkspaceManager::AdoptUntrackedTabs() {
     // way the tab matches no workspace, so without this it is present in the
     // strip yet invisible in every sidebar.
     if (!store_->Get(GetWorkspaceForContents(contents))) {
+      // ADOPTING IS ALSO A RE-TAG, so it has the same hole
+      // MoveContentsToWorkspace had: the tab keeps the partition it was built
+      // with. An orphan is usually orphaned BECAUSE its workspace was deleted,
+      // and deleting a workspace wipes its partition -- so re-tagging alone
+      // leaves the tab reading from a jar that no workspace owns and nothing
+      // will ever clear again.
+      //
+      // Compare against the tab's LIVE partition rather than its old tag: the
+      // tag is exactly what is unreliable here.
+      if (zephyrus::PartitionNameOfContents(contents) != current_partition) {
+        needs_repartition.push_back(contents);
+        continue;
+      }
       store_->SetWorkspaceForContents(contents, current_workspace_id_);
       adopted = true;
     }
   }
+
+  // Posted for the same reason the move is: this closes tabs, and adoption runs
+  // from tab-strip and workspace-deletion paths that are mid-notification.
+  for (content::WebContents* contents : needs_repartition) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&ZephyrusWorkspaceManager::RebuildContentsInWorkspace,
+                       weak_factory_.GetWeakPtr(), contents,
+                       current_workspace_id_));
+  }
+
   if (adopted) {
     NotifyChanged();
     SchedulePersistState();
@@ -1463,15 +1635,18 @@ void ZephyrusWorkspaceManager::AddTabForWorkspace(int workspace_id) {
   // every caller still costs nothing.
   store_->SetWindowWorkspace(browser_, workspace_id);
 
-  // Zephyrus has no new-tab page, and a window with no tabs is now a valid
-  // state that shows the empty backdrop. So when the window is *already*
-  // empty — at startup, or after the user closed the last tab — never
-  // manufacture a blank tab just to keep a workspace populated; that is
-  // exactly the page we are trying to abolish. Mid-session behaviour, where
-  // other tabs exist, is unchanged.
-  if (tab_strip_model_->count() == 0) {
-    return;
-  }
+  // ALWAYS spawn, including when the window is otherwise empty.
+  //
+  // This used to return early on an empty window, on the reasoning that
+  // "Zephyrus has no new-tab page" and the empty backdrop was the intended
+  // state. The NTP is back, so that premise is gone -- and the early return
+  // made the behaviour depend on something the user is not thinking about:
+  // emptying a workspace gave you a new tab if ANOTHER workspace still had
+  // tabs, and the backdrop if it did not.
+  //
+  // The visible consequence is that the empty backdrop no longer appears when
+  // the last tab closes. Restoring it for that case alone is this early return,
+  // put back.
 
   pending_forced_workspace_id_ = workspace_id;
   tab_strip_model_->delegate()->AddTabAt(GURL(), /*index=*/-1,

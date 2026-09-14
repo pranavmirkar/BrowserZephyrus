@@ -17,6 +17,13 @@
 #include "chrome/browser/history/top_sites_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/autocomplete/chrome_autocomplete_provider_client.h"
+#include "chrome/browser/autocomplete/chrome_autocomplete_scheme_classifier.h"
+#include "components/omnibox/browser/autocomplete_input.h"
+#include "components/omnibox/browser/autocomplete_result.h"
+#include "third_party/metrics_proto/omnibox_event.pb.h"
+#include "chrome/common/webui_url_constants.h"
+#include "content/public/common/url_constants.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -98,6 +105,28 @@ constexpr int kChipFaviconSize = 16;
 constexpr int kMaxChips = 5;
 constexpr int kChipsInset = 76;
 constexpr int kChipsGap = 8;
+
+// ---- suggestion list, Material 3 -----------------------------------------
+//
+// MD3's list item, not a compact omnibox dropdown: a 56dp row, a 24dp leading
+// icon, and a state layer for the highlight instead of a selection colour.
+// Those three are what make a list read as Material rather than as a menu.
+// 56 for a single line, 72 once a row carries a supporting line under its
+// headline -- MD3's two-line list item.
+constexpr int kRowHeight = 56;
+constexpr int kRowHeightTwoLine = 72;
+// The sheet sits close under the bar. MD3's docked search reads as one control
+// in two parts, and kPanelGap (20) is the gap between unrelated blocks.
+constexpr int kListGap = 8;
+constexpr int kRowIconSize = 24;
+constexpr int kRowHPadding = 16;
+constexpr int kRowGap = 16;
+// MD3 surfaces are rounded at the CONTAINER, and its rows square -- the corners
+// belong to the sheet, not to each item.
+constexpr int kListRadius = 28;
+constexpr int kMaxRows = 6;
+// MD3 state-layer opacities live in SuggestionRow::ApplyStateLayer, which is
+// the only thing that can reconcile hover, press and keyboard selection.
 
 // Motion. Ctrl+T is keyboard-initiated and used dozens of times a day, which
 // by the usual rule argues for NO animation at all — a command surface that
@@ -203,6 +232,150 @@ SkColor FillForState(const ChipFills& fills, views::Button::ButtonState state) {
 // The engine selector. views::Button is subclassed rather than using
 // LabelButton because LabelButton hard-codes image-then-text, and the design
 // puts the chevron after the engine name.
+// One suggestion row.
+//
+// A BUTTON, not a plain View, and that is the whole reason mouse input works:
+// the overlay is a full-window scrim that dismisses on any click reaching it,
+// so a row that does not consume its own click hands it to the scrim and the
+// card closes instead of opening the result. Keyboard worked because it never
+// went near the scrim.
+//
+// It also carries MD3's state layers -- hover 8%, press 12%, selected 12% --
+// which a plain View has no state to express.
+class SuggestionRow : public views::Button {
+  METADATA_HEADER(SuggestionRow, views::Button)
+
+ public:
+  using ActivateCallback = base::RepeatingCallback<void(const GURL&)>;
+
+  explicit SuggestionRow(ActivateCallback on_activate)
+      : views::Button(base::BindRepeating(&SuggestionRow::Activate,
+                                          base::Unretained(this))),
+        on_activate_(std::move(on_activate)) {
+    // The row is the full-bleed width of the sheet; the sheet owns the corners.
+    SetAnimateOnStateChange(false);
+
+    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal,
+        gfx::Insets::VH(0, kRowHPadding), kRowGap));
+    layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+
+    icon_ = AddChildView(std::make_unique<views::ImageView>());
+    icon_->SetImageSize(gfx::Size(kRowIconSize, kRowIconSize));
+    icon_->SetPreferredSize(gfx::Size(kRowIconSize, kRowIconSize));
+    icon_->SetCanProcessEventsWithinSubtree(false);
+
+    auto* column = AddChildView(std::make_unique<views::View>());
+    column->SetCanProcessEventsWithinSubtree(false);
+    column->SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
+    layout->SetFlexForView(column, 1);
+
+    headline_ = column->AddChildView(std::make_unique<views::Label>());
+    headline_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    headline_->SetAutoColorReadabilityEnabled(false);
+    // The card paints to a translucent blurred layer, and subpixel text AA
+    // needs an opaque backing. Views DCHECKs on this in debug builds.
+    headline_->SetSubpixelRenderingEnabled(false);
+    headline_->SetElideBehavior(gfx::ELIDE_TAIL);
+
+    supporting_ = column->AddChildView(std::make_unique<views::Label>());
+    supporting_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    supporting_->SetAutoColorReadabilityEnabled(false);
+    supporting_->SetSubpixelRenderingEnabled(false);
+    supporting_->SetElideBehavior(gfx::ELIDE_TAIL);
+    supporting_->SetFontList(supporting_->font_list().DeriveWithSizeDelta(-1));
+    supporting_->SetVisible(false);
+
+    ApplyStateLayer();
+  }
+
+  // Returns true when the destination changed, i.e. the caller owes this row a
+  // fresh favicon. Rows are UPDATED rather than rebuilt so the one under the
+  // cursor survives: results arrive repeatedly as providers report in, and
+  // destroying the hovered row each time is what made the highlight blink.
+  bool SetMatch(const AutocompleteMatch& match, bool is_search) {
+    const bool two_line = !is_search && !match.description.empty();
+    headline_->SetText(two_line ? match.description
+                                : (match.contents.empty() ? match.description
+                                                          : match.contents));
+    headline_->SetEnabledColor(zephyrus::Ink());
+    supporting_->SetVisible(two_line);
+    if (two_line) {
+      supporting_->SetText(match.contents);
+      supporting_->SetEnabledColor(zephyrus::Muted());
+    }
+    SetPreferredSize(
+        gfx::Size(kContentWidth, two_line ? kRowHeightTwoLine : kRowHeight));
+
+    const bool changed = destination_ != match.destination_url;
+    destination_ = match.destination_url;
+    if (changed) {
+      // Generic glyph immediately; the favicon replaces it if one arrives.
+      icon_->SetImage(ui::ImageModel::FromVectorIcon(
+          is_search ? vector_icons::kSearchIcon : vector_icons::kGlobeIcon,
+          zephyrus::Muted(), kRowIconSize));
+    }
+    return changed;
+  }
+
+  views::ImageView* icon() { return icon_; }
+  const GURL& destination() const { return destination_; }
+  SuggestionRow(const SuggestionRow&) = delete;
+  SuggestionRow& operator=(const SuggestionRow&) = delete;
+  ~SuggestionRow() override = default;
+
+  // Keyboard selection. Held separately from the mouse state because both can
+  // be true at once and the row must not flicker when they disagree.
+  void SetSelected(bool selected) {
+    if (selected_ == selected) {
+      return;
+    }
+    selected_ = selected;
+    ApplyStateLayer();
+  }
+
+  // views::Button:
+  void StateChanged(ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    ApplyStateLayer();
+  }
+
+ private:
+  void ApplyStateLayer() {
+    const ButtonState state = GetState();
+    SkAlpha alpha = 0;
+    if (state == STATE_PRESSED) {
+      alpha = 0x1F;  // 12%
+    } else if (selected_) {
+      alpha = 0x1F;  // 12% -- keyboard selection reads as strongly as a press.
+    } else if (state == STATE_HOVERED) {
+      alpha = 0x14;  // 8%
+    }
+    SetBackground(alpha ? views::CreateSolidBackground(
+                              SkColorSetA(zephyrus::Ink(), alpha))
+                        : nullptr);
+    SchedulePaint();
+  }
+
+  void Activate() {
+    if (destination_.is_valid()) {
+      on_activate_.Run(destination_);
+    }
+  }
+
+  ActivateCallback on_activate_;
+  raw_ptr<views::ImageView> icon_ = nullptr;
+  raw_ptr<views::Label> headline_ = nullptr;
+  raw_ptr<views::Label> supporting_ = nullptr;
+  GURL destination_;
+  bool selected_ = false;
+};
+
+BEGIN_METADATA(SuggestionRow)
+END_METADATA
+
 class EngineChip : public views::Button {
   METADATA_HEADER(EngineChip, views::Button)
 
@@ -405,6 +578,29 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
 
   chips_row_ = suggestions;
 
+  // ---- suggestion list. Its own surface below the field, in the MD3 "docked
+  // search" shape: the field is the bar, this is the sheet that drops from it.
+  //
+  // Created empty and hidden. It only has height once the user types, so the
+  // resting card keeps the size the design draws.
+  auto* list = container->AddChildView(std::make_unique<views::View>());
+  list->SetProperty(views::kMarginsKey,
+                    gfx::Insets::TLBR(kListGap - kPanelGap, 0, 0, 0));
+  list->SetPaintToLayer();
+  list->layer()->SetFillsBoundsOpaquely(false);
+  list->layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kListRadius));
+  list->layer()->SetIsFastRoundedCorner(true);
+  // Same blur and fill as the field, so the two read as one material rather
+  // than a translucent bar with an opaque panel hanging off it.
+  list->layer()->SetBackgroundBlur(kFieldBlurSigma);
+  list->SetBackground(views::CreateRoundedRectBackground(
+      SkColorSetA(zephyrus::Ground(), 0x99), kListRadius));
+  list->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(8, 0), 0));
+  list->SetVisible(false);
+  suggestions_list_ = list;
+
+
   // Last: it labels both the chip and the field, so both must exist.
   RefreshEngineLabel();
   SetChevronOpen(false);
@@ -413,6 +609,34 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
 ZephyrusSearchOverlay::~ZephyrusSearchOverlay() = default;
 
 // static
+bool ZephyrusSearchOverlay::ShowForNewTab(Browser* browser) {
+  if (!browser) {
+    return false;
+  }
+  TabStripModel* model = browser->tab_strip_model();
+  content::WebContents* contents =
+      model ? model->GetActiveWebContents() : nullptr;
+  if (!contents) {
+    return false;  // Empty window: the user needs a tab, not a search box.
+  }
+  // The VISIBLE url, not the committed one: a tab mid-navigation away from the
+  // NTP is already somewhere else as far as the user is concerned.
+  const GURL url = contents->GetVisibleURL();
+  if (!url.is_valid() || url.IsAboutBlank()) {
+    return false;
+  }
+  // The NTP has its own search field; a floating one on top of it would be two
+  // search boxes for one intent.
+  if (url.SchemeIs(content::kChromeUIScheme) &&
+      (url.host() == chrome::kChromeUINewTabPageHost ||
+       url.host() == chrome::kChromeUINewTabHost ||
+       url.host() == chrome::kChromeUINewTabPageThirdPartyHost)) {
+    return false;
+  }
+  Show(browser);
+  return true;
+}
+
 void ZephyrusSearchOverlay::Show(Browser* browser) {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
   if (!browser_view) {
@@ -534,8 +758,21 @@ bool ZephyrusSearchOverlay::HandleKeyEvent(views::Textfield* sender,
   if (key_event.type() != ui::EventType::kKeyPressed) {
     return false;
   }
+  if (key_event.key_code() == ui::VKEY_DOWN) {
+    MoveSelection(1);
+    return true;
+  }
+  if (key_event.key_code() == ui::VKEY_UP) {
+    MoveSelection(-1);
+    return true;
+  }
   if (key_event.key_code() == ui::VKEY_RETURN) {
-    OpenQuery(std::u16string(input_->GetText()));
+    // A highlighted row wins. With none highlighted this falls through to the
+    // old behaviour, which is the right default: the user typed something and
+    // pressed Enter without ever reaching for the list.
+    if (!OpenSelectedSuggestion()) {
+      OpenQuery(std::u16string(input_->GetText()));
+    }
     return true;
   }
   if (key_event.key_code() == ui::VKEY_ESCAPE) {
@@ -543,6 +780,192 @@ bool ZephyrusSearchOverlay::HandleKeyEvent(views::Textfield* sender,
     return true;
   }
   return false;
+}
+
+void ZephyrusSearchOverlay::ContentsChanged(views::Textfield* sender,
+                                            const std::u16string& new_contents) {
+  UpdateSuggestions(new_contents);
+}
+
+void ZephyrusSearchOverlay::UpdateSuggestions(const std::u16string& text) {
+  Profile* const profile =
+      browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
+                    : nullptr;
+  if (!profile) {
+    return;
+  }
+  if (text.empty()) {
+    // Blank field: stop the controller and collapse the list, so the resting
+    // card is the size the design draws rather than a panel with a stale set of
+    // results hanging off it.
+    if (autocomplete_) {
+      autocomplete_->Stop(AutocompleteStopReason::kClobbered);
+    }
+    selected_row_ = -1;
+    suggestion_rows_.clear();
+    if (suggestions_list_) {
+      suggestions_list_->RemoveAllChildViews();
+      suggestions_list_->SetVisible(false);
+    }
+    if (chips_row_) {
+      chips_row_->SetVisible(true);
+    }
+    panel_->InvalidateLayout();
+    return;
+  }
+
+  if (!autocomplete_) {
+    // The SAME controller the omnibox drives, deliberately. Workspace scoping
+    // lives inside it (IsUrlOutsideCurrentWorkspace demotes other workspaces'
+    // history), so reusing it means one definition of that rule rather than a
+    // second one here that would drift.
+    autocomplete_ = std::make_unique<AutocompleteController>(
+        std::make_unique<ChromeAutocompleteProviderClient>(profile),
+        AutocompleteControllerConfig{
+            .provider_types = AutocompleteClassifier::DefaultOmniboxProviders()});
+    autocomplete_observation_.Observe(autocomplete_.get());
+  }
+
+  AutocompleteInput input(text, metrics::OmniboxEventProto::OTHER,
+                          ChromeAutocompleteSchemeClassifier(profile));
+  input.set_focus_type(metrics::OmniboxFocusType::INTERACTION_DEFAULT);
+  autocomplete_->Start(input);
+}
+
+void ZephyrusSearchOverlay::OnResultChanged(AutocompleteController* controller,
+                                            bool default_match_changed) {
+  RebuildSuggestionRows();
+}
+
+void ZephyrusSearchOverlay::MoveSelection(int delta) {
+  if (suggestion_rows_.empty()) {
+    return;
+  }
+  const int count = static_cast<int>(suggestion_rows_.size());
+  // -1 is a real position, not "none": Up from the first row returns to the
+  // typed text rather than wrapping to the bottom, which is what the omnibox
+  // does and what the hand expects.
+  int next = selected_row_ + delta;
+  if (next < -1) {
+    next = count - 1;
+  } else if (next >= count) {
+    next = -1;
+  }
+  selected_row_ = next;
+  ApplySelectionHighlight();
+}
+
+bool ZephyrusSearchOverlay::OpenSelectedSuggestion() {
+  if (selected_row_ < 0 || !autocomplete_ ||
+      selected_row_ >= static_cast<int>(autocomplete_->result().size())) {
+    return false;
+  }
+  const AutocompleteMatch& match =
+      autocomplete_->result().match_at(static_cast<size_t>(selected_row_));
+  if (!match.destination_url.is_valid()) {
+    return false;
+  }
+  OpenUrl(match.destination_url);
+  return true;
+}
+
+void ZephyrusSearchOverlay::RebuildSuggestionRows() {
+  if (!suggestions_list_ || !autocomplete_) {
+    return;
+  }
+
+  const AutocompleteResult& result = autocomplete_->result();
+  const size_t count = std::min(result.size(), static_cast<size_t>(kMaxRows));
+
+  // GROW OR SHRINK, then update in place. Never rebuild wholesale.
+  //
+  // OnResultChanged fires repeatedly as each provider reports in, so a full
+  // rebuild destroyed and recreated the row under the cursor several times per
+  // keystroke -- the mouse left a dying view and entered a new one, which is
+  // what made the hover highlight blink and drop.
+  while (suggestion_rows_.size() > count) {
+    views::View* doomed = suggestion_rows_.back();
+    suggestion_rows_.pop_back();
+    suggestions_list_->RemoveChildViewT(doomed);
+  }
+  while (suggestion_rows_.size() < count) {
+    suggestion_rows_.push_back(
+        suggestions_list_->AddChildView(std::make_unique<SuggestionRow>(
+            base::BindRepeating(&ZephyrusSearchOverlay::OpenUrl,
+                                base::Unretained(this)))));
+  }
+
+  Profile* const profile =
+      browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
+                    : nullptr;
+  favicon::FaviconService* const favicons =
+      profile ? FaviconServiceFactory::GetForProfile(
+                    profile, ServiceAccessType::EXPLICIT_ACCESS)
+              : nullptr;
+
+  for (size_t i = 0; i < count; ++i) {
+    const AutocompleteMatch& match = result.match_at(i);
+    auto* row = views::AsViewClass<SuggestionRow>(suggestion_rows_[i]);
+    if (!row) {
+      continue;
+    }
+    const bool is_search = AutocompleteMatch::IsSearchType(match.type);
+    // Only a row whose destination actually changed needs a new icon. Without
+    // this every provider update re-requested every favicon, which is both the
+    // churn that made icons flicker and a pile of cancelled work.
+    if (row->SetMatch(match, is_search) && favicons && !is_search &&
+        match.destination_url.is_valid()) {
+      favicons->GetFaviconImageForPageURL(
+          match.destination_url,
+          base::BindOnce(&ZephyrusSearchOverlay::OnRowFaviconReady,
+                         weak_factory_.GetWeakPtr(), row->icon()),
+          &favicon_tracker_);
+    }
+  }
+
+  // A result set that no longer contains the highlighted position must not keep
+  // it: the next Enter would open whatever slid into that index.
+  if (selected_row_ >= static_cast<int>(suggestion_rows_.size())) {
+    selected_row_ = -1;
+  }
+  const bool any = !suggestion_rows_.empty();
+  suggestions_list_->SetVisible(any);
+  if (chips_row_) {
+    // The chips are the zero-input state; they and the list never share the
+    // card.
+    chips_row_->SetVisible(!any);
+  }
+  ApplySelectionHighlight();
+  panel_->InvalidateLayout();
+}
+
+void ZephyrusSearchOverlay::OnRowFaviconReady(
+    views::ImageView* icon,
+    const favicon_base::FaviconImageResult& result) {
+  // `icon` is a raw view pointer that outlived an async hop. It is safe only
+  // because RebuildSuggestionRows cancels this tracker before destroying rows;
+  // without that cancel this would be a use-after-free on every keystroke.
+  if (!icon || result.image.IsEmpty()) {
+    return;  // Keeps the generic glyph.
+  }
+  gfx::ImageSkia image = result.image.AsImageSkia();
+  if (image.width() != kRowIconSize || image.height() != kRowIconSize) {
+    image = gfx::ImageSkiaOperations::CreateResizedImage(
+        image, skia::ImageOperations::RESIZE_BEST,
+        gfx::Size(kRowIconSize, kRowIconSize));
+  }
+  icon->SetImage(ui::ImageModel::FromImageSkia(image));
+}
+
+void ZephyrusSearchOverlay::ApplySelectionHighlight() {
+  // The row owns its own state layer now, because it has to reconcile keyboard
+  // selection with hover and press -- all three can be true at once, and the
+  // old version overwrote the mouse state with a background of its own.
+  for (size_t i = 0; i < suggestion_rows_.size(); ++i) {
+    if (auto* row = views::AsViewClass<SuggestionRow>(suggestion_rows_[i])) {
+      row->SetSelected(static_cast<int>(i) == selected_row_);
+    }
+  }
 }
 
 void ZephyrusSearchOverlay::ShowEnginePicker() {

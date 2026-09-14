@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/frame/browser_frame_view_win.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
+
 
 #include <dwmapi.h>
 
@@ -545,7 +547,8 @@ bool BrowserFrameViewWin::IsMaximized() const {
 
 void BrowserFrameViewWin::OnPaint(gfx::Canvas* canvas) {
   TRACE_EVENT0("views.frame", "BrowserFrameViewWin::OnPaint");
-  if (ShouldBrowserCustomDrawTitlebar(GetBrowserView())) {
+  if (ShouldBrowserCustomDrawTitlebar(GetBrowserView()) &&
+      !zephyrus::HasWindowBackdrop(GetWidget())) {
     PaintTitlebar(canvas);
   }
 }

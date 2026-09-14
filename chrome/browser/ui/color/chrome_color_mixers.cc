@@ -61,9 +61,6 @@ void AddChromeColorMixers(ui::ColorProvider* provider,
       chrome_color_provider_utils_callbacks;
   ui::SetColorProviderUtilsCallbacks(
       chrome_color_provider_utils_callbacks.get());
-  // Zephyrus sys tokens FIRST: every mixer below derives from them.
-  AddZephyrusSysColorMixer(provider, key);
-
   AddChromeColorMixer(provider, key);
   AddNewTabPageColorMixer(provider, key);
   AddOmniboxColorMixer(provider, key);
@@ -88,9 +85,9 @@ void AddChromeColorMixers(ui::ColorProvider* provider,
     key.app_controller->AddColorMixers(provider, key);
   }
 
-  // Zephyrus, dead last -- after the native mixer AND any custom theme, both of
-  // which would otherwise overwrite it. This is the single upstream edit that
-  // retunes every Chromium-owned surface (context menus, the app menu,
-  // tooltips, dialogs, autofill and permission popups) to our palette.
+  // Zephyrus last, so the tokens it reads are the finished ones. It defines
+  // only its own ids and overrides nothing, so Chromium's surfaces keep
+  // Chromium's colours -- which is what makes the theme picker on the New Tab
+  // Page work at all.
   AddZephyrusColorMixer(provider, key);
 }

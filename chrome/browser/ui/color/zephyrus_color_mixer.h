@@ -5,41 +5,53 @@
 #ifndef CHROME_BROWSER_UI_COLOR_ZEPHYRUS_COLOR_MIXER_H_
 #define CHROME_BROWSER_UI_COLOR_ZEPHYRUS_COLOR_MIXER_H_
 
+#include "chrome/browser/ui/color/chrome_color_id.h"
+#include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/color/color_provider_key.h"
 
-// Pushes the Zephyrus palette into Chromium's own colour system.
+// The Zephyrus palette, as names that RESOLVE AGAINST CHROMIUM'S THEME.
 //
-// WHY THIS EXISTS
-// ---------------
-// Zephyrus-owned views read zephyrus::Ground()/Ink()/etc. directly. Everything
-// upstream -- context menus, the app menu, tooltips, the find bar, permission
-// and download bubbles, autofill popups, dialogs -- does not: those read
-// ui::ColorProvider. Converting them one file at a time would mean patching
-// dozens of upstream files and re-patching every one of them on each rebase.
+// THIS USED TO POINT THE OTHER WAY, and the reversal is the whole change.
+// The old mixer took a hardcoded monochrome palette and pushed it onto
+// Chromium's Material tokens, so every upstream surface -- context menus, the
+// app menu, tooltips, dialogs, autofill, tables, trees, and every WebUI page
+// that reads --color-sys-* -- came out in our two colours no matter what the
+// browser theme said. It worked, and it made Chromium's own theming inert:
+// picking a colour in Customize Chrome changed nothing, because our pass ran
+// last and overwrote it.
 //
-// Doing it here retunes them all at once and touches a single upstream file
-// (chrome_color_mixers.cc), which is the difference between a rebase that
-// conflicts in one place and a rebase that conflicts everywhere.
+// Now the palette is a VIEW ONTO the theme rather than a replacement for it.
+// The ids below are defined in terms of Chromium's sys tokens, so a colour
+// chosen on the New Tab Page reaches Zephyrus's own sidebar, popups and search
+// overlay by the same route it reaches everything else.
 //
-// ORDER MATTERS, and it is why this is two functions.
+// The vocabulary survives the change deliberately. Zephyrus views ask for
+// "ground" and "ink" and "rule", not for kColorSysBase and kColorSysOnSurface,
+// because those names carry the design language's rules -- separation is a
+// hairline, not a shadow; there is one accent and it means "now". Keeping the
+// names keeps one place to change if the mapping is ever wrong.
 //
-// Chromium's mixers form a chain, and a recipe like
-// `mixer[kColorTabNavItemSelected] = {ui::kColorSysPrimary}` resolves that
-// reference against the chain below the mixer that declared it. Setting the
-// Material sys tokens FIRST, before Chrome's own mixers run, means all ~61
-// downstream derivations compute from our palette rather than Chromium's.
-//
-// (An earlier version of this comment claimed the split was what fixed the blue
-// tab in chrome://history. It was not -- that was a hardcoded CSS fallback in
-// cr_shared_vars.css. The ordering here is still the right structure, but it
-// was not the cure for that bug.)
-void AddZephyrusSysColorMixer(ui::ColorProvider* provider,
-                              const ui::ColorProviderKey& key);
+// Ids live here rather than in chrome_color_id.h so this costs zero upstream
+// lines: they start at kChromeColorsEnd, which is what that marker is for.
+enum ZephyrusColorIds : ui::ColorId {
+  kColorZephyrusGround = kChromeColorsEnd,
+  kColorZephyrusSurface,
+  kColorZephyrusRule,
+  kColorZephyrusInk,
+  kColorZephyrusMuted,
+  kColorZephyrusFaint,
+  kColorZephyrusAccent,
+  kColorZephyrusAccentInk,
+  kZephyrusColorsEnd,
+};
 
-// ...and the direct Views overrides (menus, dialogs, tooltips, selection) go
-// LAST, after the native mixer and any custom theme, which would otherwise
-// overwrite them.
+// Defines the ids above from Chromium's own tokens.
+//
+// Runs LAST, so the tokens it reads are the finished ones -- after the native
+// mixer and after any custom theme. It adds no override of its own: nothing
+// upstream reads these ids, so this pass cannot change how Chromium looks.
+// That is the point. Chromium's surfaces are Chromium's again.
 void AddZephyrusColorMixer(ui::ColorProvider* provider,
                            const ui::ColorProviderKey& key);
 

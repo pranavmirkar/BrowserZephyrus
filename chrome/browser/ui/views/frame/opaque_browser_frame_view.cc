@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/frame/browser_native_widget.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
 #include "chrome/browser/ui/views/frame/opaque_browser_frame_view_layout.h"
@@ -705,10 +706,20 @@ void OpaqueBrowserFrameView::OnPaint(gfx::Canvas* canvas) {
     }
   }
 
-  if (IsFrameCondensed()) {
-    PaintMaximizedFrameBorder(canvas);
-  } else {
-    PaintRestoredFrameBorder(canvas);
+  // Zephyrus: the DWM backdrop lives BEHIND this fill, so painting it hides
+  // the glass completely.
+  //
+  // Codex's change suppressed the equivalent paint in BrowserFrameViewWin, but
+  // that is the SYSTEM-drawn frame view and Zephyrus never uses it: we force
+  // ThemeHelperWin::ShouldUseNativeFrame() to false so we can draw our own
+  // title bar, which means CreateBrowserFrameViewWin hands us this class
+  // instead. The suppression has to live here to have any effect.
+  if (!zephyrus::HasWindowBackdrop(browser_widget())) {
+    if (IsFrameCondensed()) {
+      PaintMaximizedFrameBorder(canvas);
+    } else {
+      PaintRestoredFrameBorder(canvas);
+    }
   }
 
   // The window icon and title are painted by their respective views.

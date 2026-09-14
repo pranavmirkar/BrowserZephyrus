@@ -9,8 +9,11 @@ import type {CustomizeButtonsElement} from './customize_buttons.js';
 export function getHtml(this: CustomizeButtonsElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
-<!-- Zephyrus: customize buttons hidden -->
-<div id="customizeButtons" hidden>
+<!-- Zephyrus: Google's AI wallpaper-search button is deliberately absent from
+     this container; the Customize Chrome button itself is not. Hiding the
+     whole container to remove the first one took the second with it, and the
+     second is the only way into the theme picker. -->
+<div id="customizeButtons">
   <cr-button id="customizeButton" class="customize-button"
       @click="${this.onCustomizeClick_}" title="$i18n{customizeThisPage}"
       aria-pressed="${this.showCustomize}">

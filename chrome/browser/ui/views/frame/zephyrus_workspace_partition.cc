@@ -16,6 +16,8 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
@@ -78,6 +80,32 @@ bool IsValidWorkspacePartitionName(const std::string& name) {
     }
   }
   return true;
+}
+
+std::string PartitionNameOfContents(content::WebContents* contents) {
+  if (!contents) {
+    return std::string();
+  }
+  content::RenderFrameHost* frame = contents->GetPrimaryMainFrame();
+  if (!frame) {
+    return std::string();
+  }
+  content::RenderProcessHost* process = frame->GetProcess();
+  if (!process) {
+    return std::string();
+  }
+  content::StoragePartition* partition = process->GetStoragePartition();
+  if (!partition) {
+    return std::string();
+  }
+  const content::StoragePartitionConfig& config = partition->GetConfig();
+  // Only OUR domain counts. A partition belonging to something else is not a
+  // workspace partition, and reporting its name would make a guest view look
+  // like it was sitting in workspace 7.
+  if (config.partition_domain() != kWorkspacePartitionDomain) {
+    return std::string();
+  }
+  return config.partition_name();
 }
 
 scoped_refptr<content::SiteInstance> SiteInstanceForWorkspace(

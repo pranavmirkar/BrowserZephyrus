@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/frame/zephyrus_sidebar_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
+
 
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
@@ -999,17 +1001,11 @@ END_METADATA
 ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
     : browser_view_(browser_view),
       tab_strip_model_(browser_view->browser()->tab_strip_model()) {
-  // Frosted translucent panel (dark by default; adapts to the page color via
-  // SetZephyrusColor()).
+  // Preserve alpha for the DWM desktop backdrop. OnPaintBackground uses the
+  // themed fill below as a fallback when the native effect is unavailable.
   SetPaintToLayer();
-  // Opaque: the panel is flat window chrome with square corners and no fade, so
-  // the compositor can skip blending it and occlude whatever is behind it.
-  layer()->SetFillsBoundsOpaquely(true);
+  layer()->SetFillsBoundsOpaquely(false);
   layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kPanelCornerRadius));
-  // No backdrop blur. The panel is ATTACHED — what sits behind it is the
-  // window's own flat background, not the web page, so there is nothing to
-  // frost. The blur still costs a GPU pass to produce an image identical to
-  // the colour underneath it.
   SetBackground(
       views::CreateRoundedRectBackground(GetPanelColor(), kPanelCornerRadius));
 
@@ -1093,6 +1089,14 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
 ZephyrusSidebarView::~ZephyrusSidebarView() {
   if (tab_strip_model_) {
     tab_strip_model_->RemoveObserver(this);
+  }
+}
+
+void ZephyrusSidebarView::OnPaintBackground(gfx::Canvas* canvas) {
+  // The desktop blur belongs to DWM, outside Chromium's compositor. A Views
+  // backdrop filter here can only sample the window's own layers.
+  if (!zephyrus::HasWindowBackdrop(GetWidget())) {
+    views::View::OnPaintBackground(canvas);
   }
 }
 

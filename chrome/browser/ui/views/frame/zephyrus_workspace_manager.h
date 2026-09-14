@@ -331,6 +331,20 @@ class ZephyrusWorkspaceManager : public TabStripModelObserver {
   // workspace's active-tab invariant when the moved tab was showing.
   void MoveContentsToWorkspace(content::WebContents* contents, int workspace_id);
 
+  // Rebuilds `contents` as a new tab inside `workspace_id`'s StoragePartition.
+  //
+  // Needed because a tab's partition is fixed when its WebContents is created,
+  // so a cross-partition move cannot be a re-tag -- see the comment in
+  // MoveContentsToWorkspace. Always posted, never called directly: it closes a
+  // tab, and the caller is a context-menu command handler.
+  void RebuildContentsInWorkspace(content::WebContents* contents,
+                                  int workspace_id);
+
+  // Closes the tab that RebuildContentsInWorkspace replaced. Its OWN task:
+  // closing inside the rebuild re-entered TabStripModel mid-notification and
+  // CHECK-crashed. See the comment at the call site.
+  void CloseReplacedContents(content::WebContents* contents);
+
   // The workspace a tab belongs to (0 if untracked).
   int GetWorkspaceForContents(content::WebContents* contents) const;
   bool IsContentsInCurrentWorkspace(content::WebContents* contents) const;

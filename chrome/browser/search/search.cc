@@ -181,10 +181,13 @@ struct NewTabURLDetails {
     // Zephyrus never hands the new-tab surface to the default search engine.
     // Stock Chromium sends non-Google users to the provider's own new-tab page
     // (DuckDuckGo's, Bing's, ...) or to the third-party NTP; both are exactly
-    // the branded page Zephyrus exists to avoid. Any stray chrome://newtab
-    // navigation — session restore, startup pages, the Home button — lands on
-    // our own page instead. (Ctrl+T doesn't navigate at all; it opens the
-    // floating search overlay. See ZephyrusSearchOverlay.)
+    // the branded page Zephyrus exists to avoid.
+    //
+    // So every route to a new tab -- Ctrl+T, the toolbar button, session
+    // restore, startup pages, Home -- lands on Chromium's own New Tab Page,
+    // whatever the default engine is. That page is also where the browser's
+    // theme is customised, so this is what keeps Customize Chrome reachable on
+    // a DuckDuckGo profile.
     return NewTabURLDetails(chrome::ChromeUINewTabPageURLAsGURL(),
                             NEW_TAB_URL_VALID);
 #else

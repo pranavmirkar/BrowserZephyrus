@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/logging.h"
 #include "chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.h"
 
 #include <windows.h>
@@ -11,6 +12,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted_delete_on_sequence.h"
@@ -53,6 +55,14 @@
 #include "ui/gfx/win/msg_util.h"
 #include "ui/views/controls/menu/native_menu_win.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/background.h"
+#include "ui/aura/window.h"
+#include "ui/compositor/compositor.h"
+#include "ui/gfx/color_utils.h"
+#include "ui/native_theme/native_theme.h"
+#include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
+
 
 namespace {
 
@@ -300,6 +310,7 @@ void BrowserDesktopWindowTreeHostWin::ShowCustomSystemMenu(
 void BrowserDesktopWindowTreeHostWin::Init(
     const views::Widget::InitParams& params) {
   DesktopWindowTreeHostWin::Init(params);
+  UpdateZephyrusBackdrop(GetWidget()->GetColorProvider()->GetColor(kColorToolbar));
   virtual_desktop_helper_ = new VirtualDesktopHelper(params.workspace);
   virtual_desktop_helper_->Init(GetHWND());
 }
@@ -397,6 +408,14 @@ bool BrowserDesktopWindowTreeHostWin::GetDwmFrameInsetsInPixels(
     return false;
   }
 
+  // A system backdrop needs the full client surface, including the sidebar.
+  // Keep this in the normal DWM-margin path so resize/frame changes cannot
+  // silently reset the one-time DwmExtendFrameIntoClientArea call.
+  if (zephyrus::HasWindowBackdrop(GetWidget())) {
+    *insets = gfx::Insets(-1);
+    return true;
+  }
+
   // Don't extend the glass in at all if it won't be visible.
   if (!ShouldUseNativeFrame() || GetWidget()->IsFullscreen() ||
       ShouldBrowserCustomDrawTitlebar(browser_view_)) {
@@ -438,6 +457,100 @@ void BrowserDesktopWindowTreeHostWin::HandleCreate() {
           ->GetProfileAttributesStorage()
           .GetNumberOfProfiles() > 1) {
     SetWindowIcon(/*badged=*/true);
+  }
+}
+
+void BrowserDesktopWindowTreeHostWin::SetBackgroundColor(SkColor color) {
+  DesktopWindowTreeHostWin::SetBackgroundColor(color);
+  UpdateZephyrusBackdrop(color);
+}
+
+void BrowserDesktopWindowTreeHostWin::UpdateZephyrusBackdrop(SkColor color) {
+  if (!browser_view_ || !browser_view_->GetIsNormalType() ||
+      !GetWidget() || !GetHWND() ||
+      base::win::GetVersion() < base::win::Version::WIN11_22H2) {
+    return;
+  }
+  const auto* command_line = base::CommandLine::ForCurrentProcess();
+  const bool eligible = browser_view_->GetIsNormalType() &&
+      GetWidget()->GetNativeTheme()->forced_colors() ==
+          ui::ColorProviderKey::ForcedColors::kNone &&
+      command_line->HasSwitch("zephyrus-backdrop") &&
+      !command_line->HasSwitch("disable-gpu");
+  // OPT-IN as of 2026-09-14, and this is a measured decision, not a retreat.
+  //
+  // The backdrop enables cleanly -- DWM accepts acrylic, DwmExtendFrameIntoClientArea
+  // succeeds, the compositor clears transparent (logged: transparent=1 for the
+  // whole session) and six Views painters are suppressed. DWM even blurs the
+  // non-client EDGE correctly. The client area stays flat because Chromium's
+  // root output surface for a GPU-composited window is created with NO ALPHA
+  // CHANNEL, in both DirectComposition and redirection-bitmap modes -- so there
+  // is nothing for DWM to composite against.
+  //
+  // The translucent widgets that do work (menus, bubbles) reach alpha through
+  // UpdateLayeredWindow, the SOFTWARE path, which is exactly why
+  // desktop_window_tree_host_win.cc excludes TYPE_WINDOW from it: a
+  // software-composited window cannot show GPU-composited web contents.
+  //
+  // Left on by default it costs the whole chrome its theme colour and returns
+  // flat grey, so it is behind a switch until the root surface can carry alpha.
+  // That lever is in viz/GPU surface-format selection, not here.
+  // NOTE: --disable-direct-composition is deliberately NOT excluded any more.
+  //
+  // With DComp on, the root output surface is created WITHOUT an alpha channel
+  // (d3d_image_backing_factory.cc picks DXGI_ALPHA_MODE_PREMULTIPLIED only for
+  // a format that has alpha), so the presented pixels are opaque no matter what
+  // the compositor clears to -- measured: transparent=1 everywhere, and the
+  // client area still renders flat while only the non-client edge blurs.
+  //
+  // With DComp OFF the window keeps its redirection bitmap
+  // (ShouldRemoveRedirectionBitmap() returns false for exactly that reason),
+  // and a redirection surface is what DWM composited Aero glass against for
+  // years. That is the one surface configuration this approach has not been
+  // tried on.
+  const bool was_enabled =
+      ::GetPropW(GetHWND(), zephyrus::kWindowBackdropProperty) != nullptr;
+  const BOOL dark = color_utils::IsDark(color);
+  ::DwmSetWindowAttribute(GetHWND(), DWMWA_USE_IMMERSIVE_DARK_MODE,
+                          &dark, sizeof(dark));
+  const DWM_SYSTEMBACKDROP_TYPE material =
+      eligible ? DWMSBT_TRANSIENTWINDOW : DWMSBT_NONE;
+  const HRESULT result = ::DwmSetWindowAttribute(
+      GetHWND(), DWMWA_SYSTEMBACKDROP_TYPE, &material, sizeof(material));
+  bool enabled = eligible && SUCCEEDED(result);
+  if (enabled) {
+    enabled = ::SetPropW(GetHWND(), zephyrus::kWindowBackdropProperty,
+                        reinterpret_cast<HANDLE>(1)) != FALSE;
+  }
+  if (!enabled) {
+    ::RemovePropW(GetHWND(), zephyrus::kWindowBackdropProperty);
+  }
+  const bool transparent = enabled && !GetWidget()->IsFullscreen();
+  const MARGINS margins = transparent ? MARGINS{-1, -1, -1, -1}
+                                     : MARGINS{0, 0, 0, 0};
+  const HRESULT extend_hr = ::DwmExtendFrameIntoClientArea(GetHWND(), &margins);
+  // TEMPORARY instrumentation. The open question is whether the presented
+  // surface actually carries alpha -- every attribute reports success and the
+  // client area is still flat, so guessing at painters again is not the move.
+  LOG(ERROR) << "zephyrus-backdrop: eligible=" << eligible
+             << " was_enabled=" << was_enabled << " enabled=" << enabled
+             << " transparent=" << transparent
+             << " set_attr_hr=0x" << std::hex << result
+             << " extend_hr=0x" << extend_hr << std::dec
+             << " compositor=" << (compositor() ? "yes" : "NO");
+
+  // DWM supplies the blur; this is only a light theme tint over it. WebContents
+  // still paints its own opaque surface. Never make the entire HWND layered.
+  browser_view_->SetBackground(
+      transparent ? views::CreateSolidBackground(SkColorSetA(color, 0x28))
+                  : nullptr);
+  if (compositor() && was_enabled != enabled) {
+    compositor()->SetBackgroundColor(transparent ? SK_ColorTRANSPARENT : color);
+    window()->SetTransparent(transparent);
+    if (auto* content = GetWidget()->GetNativeWindow()) {
+      content->SetTransparent(transparent);
+    }
+    browser_view_->SchedulePaint();
   }
 }
 
@@ -632,6 +745,9 @@ bool BrowserDesktopWindowTreeHostWin::ShouldUseNativeFrame() const {
 bool BrowserDesktopWindowTreeHostWin::ShouldWindowContentsBeTransparent()
     const {
   CHECK(browser_view_);
+  if (zephyrus::HasWindowBackdrop(GetWidget())) {
+    return true;
+  }
   return !ShouldBrowserCustomDrawTitlebar(browser_view_) &&
          views::DesktopWindowTreeHostWin::ShouldWindowContentsBeTransparent();
 }

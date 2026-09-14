@@ -57,6 +57,10 @@ int BrowserViewLayoutDelegateImpl::GetZephyrusAgentPanelWidth() const {
   return browser_view().ZephyrusAgentPanelWidth();
 }
 
+int BrowserViewLayoutDelegateImpl::GetZephyrusCustomizePanelWidth() const {
+  return browser_view().ZephyrusCustomizePanelWidth();
+}
+
 double BrowserViewLayoutDelegateImpl::GetZephyrusSidebarRevealAmount() const {
   return browser_view().ZephyrusSidebarRevealAmount();
 }

@@ -8,7 +8,12 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
+#include <memory>
+#include <vector>
+
+#include "base/scoped_observation.h"
 #include "components/history/core/browser/history_types.h"
+#include "components/omnibox/browser/autocomplete_controller.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/compositor/layer_animation_observer.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
@@ -47,6 +52,7 @@ class Textfield;
 // anywhere outside the card dismisses it, and Escape is handled on the field.
 class ZephyrusSearchOverlay : public views::View,
                               public views::TextfieldController,
+                              public AutocompleteController::Observer,
                               public ui::ImplicitAnimationObserver {
   METADATA_HEADER(ZephyrusSearchOverlay, views::View)
 
@@ -59,6 +65,17 @@ class ZephyrusSearchOverlay : public views::View,
   // Shows the card over `browser`'s window, or dismisses it if already up.
   static void Show(Browser* browser);
 
+  // Ctrl+T handling. Returns true when the overlay took over and NO tab should
+  // be created.
+  //
+  // Only when the user is looking at a real page: from a website, Ctrl+T means
+  // "search for something", and the overlay answers that without spending a tab
+  // on a page you are going to navigate away from anyway. On the New Tab Page
+  // -- which has a search box of its own -- and on an empty window, a real new
+  // tab is still the right answer, so this returns false and the caller falls
+  // through to it.
+  static bool ShowForNewTab(Browser* browser);
+
   // Reveals the card and focuses the field.
   void Reveal();
   // Hides the card and clears whatever was typed.
@@ -69,6 +86,8 @@ class ZephyrusSearchOverlay : public views::View,
   bool OnMousePressed(const ui::MouseEvent& event) override;
 
   // views::TextfieldController: Enter commits, Escape dismisses.
+  void ContentsChanged(views::Textfield* sender,
+                       const std::u16string& new_contents) override;
   bool HandleKeyEvent(views::Textfield* sender,
                       const ui::KeyEvent& key_event) override;
 
@@ -78,7 +97,14 @@ class ZephyrusSearchOverlay : public views::View,
  private:
   // Resolves `text` to a destination and opens it in a new foreground tab.
   void OpenQuery(const std::u16string& text);
+
+ public:
+  // Public because a suggestion row's click callback calls it. The rows are
+  // built here and owned by this view, so this is not widening the surface for
+  // anyone else.
   void OpenUrl(const GURL& url);
+
+ private:
 
   void ShowEnginePicker();
   void OnEnginePickerFinished();
@@ -93,6 +119,24 @@ class ZephyrusSearchOverlay : public views::View,
   // Shortcut chips come from the profile's most-visited sites, so the row is
   // about where this user actually goes. Asked for on every reveal because the
   // ranking shifts as they browse.
+  // AutocompleteController::Observer:
+  void OnResultChanged(AutocompleteController* controller,
+                       bool default_match_changed) override;
+
+  // Restarts autocomplete for `text`, or clears the list when it is empty.
+  void UpdateSuggestions(const std::u16string& text);
+  // Rebuilds the rows from the controller's current result.
+  void RebuildSuggestionRows();
+  // Moves the highlight. `delta` is +1 for Down, -1 for Up.
+  void MoveSelection(int delta);
+  // Opens the highlighted row, or returns false when nothing is highlighted and
+  // the caller should fall back to resolving the raw text.
+  bool OpenSelectedSuggestion();
+  void ApplySelectionHighlight();
+
+  void OnRowFaviconReady(views::ImageView* icon,
+                         const favicon_base::FaviconImageResult& result);
+
   void RequestShortcuts();
   void OnShortcutsReady(const history::MostVisitedURLList& sites);
   void OnShortcutFaviconReady(views::LabelButton* chip,
@@ -109,6 +153,23 @@ class ZephyrusSearchOverlay : public views::View,
   raw_ptr<views::Label> engine_label_ = nullptr;
   raw_ptr<views::ImageView> engine_chevron_ = nullptr;
   raw_ptr<views::View> chips_row_ = nullptr;
+  // Holds one row per suggestion. Hidden (and empty) while the field is blank,
+  // which is what keeps the resting card the size the design draws.
+  raw_ptr<views::View> suggestions_list_ = nullptr;
+
+  // Workspace scoping is NOT implemented here. AutocompleteController already
+  // demotes URLs visited in other workspaces, via
+  // ChromeAutocompleteProviderClient::IsUrlOutsideCurrentWorkspace, so driving
+  // the same controller the omnibox uses gets it for free -- and keeps one
+  // definition of what "this workspace's history" means.
+  std::unique_ptr<AutocompleteController> autocomplete_;
+  base::ScopedObservation<AutocompleteController,
+                          AutocompleteController::Observer>
+      autocomplete_observation_{this};
+  // -1 when nothing is highlighted, which is a real state: Enter then resolves
+  // the typed text rather than opening a row the user never moved to.
+  int selected_row_ = -1;
+  std::vector<raw_ptr<views::View>> suggestion_rows_;
   raw_ptr<views::ImageView> engine_favicon_ = nullptr;
 
   // True between the start of the exit animation and the card actually

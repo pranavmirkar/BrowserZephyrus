@@ -1139,6 +1139,7 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   // reveal factor and no content pin: it is open or it is not, and the page
   // resizes once either way.
   content_right -= delegate().GetZephyrusAgentPanelWidth();
+  content_right -= delegate().GetZephyrusCustomizePanelWidth();
 
   if (const int deficit = horizontal_layout.min_content_width -
                           params.visual_client_area.width();

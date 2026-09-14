@@ -188,6 +188,7 @@ class ZephyrusSidebarView : public views::View,
 
   // views::View:
   void OnThemeChanged() override;
+  void OnPaintBackground(gfx::Canvas* canvas) override;
 
   // views::MouseWatcherListener:
   void MouseMovedOutOfHost() override;

@@ -203,25 +203,6 @@ namespace chrome {
 
 namespace {
 
-// Zephyrus: true when pressing Home would land on a new-tab page.
-//
-// Both spellings have to be checked. `chrome://newtab` is what the pref holds
-// and what the user can type; `chrome://new-tab-page` is what it resolves to
-// (see NewTabURLDetails::ForProfile, which Zephyrus forces to the latter so the
-// default search engine never gets handed the surface). Matching only one of
-// them would leave a live path to the page for the other.
-//
-// GetHomePage() already folds in kHomePageIsNewTabPage, so this covers both the
-// "use the New Tab page" checkbox and an explicitly typed NTP URL.
-bool IsZephyrusNewTabHomePage(Profile* profile) {
-  if (!profile) {
-    return false;
-  }
-  const GURL home = profile->GetHomePage();
-  return home == GURL(chrome::kChromeUINewTabURL) ||
-         home == GURL(chrome::kChromeUINewTabPageURL);
-}
-
 // Ensures that - if we have not popped up an infobar to prompt the user to e.g.
 // reload the current page - that the content pane of the browser is refocused.
 void AppInfoDialogClosedCallback(SessionID session_id,
@@ -663,7 +644,7 @@ bool BrowserCommandController::ExecuteCommandWithDisposition(
     // end. Everything else keeps the stock behavior of being dropped.
     switch (id) {
       case IDC_NEW_TAB:
-        ZephyrusSearchOverlay::Show(browser_);
+        NewTab(browser_, NewTabTypes::kNewTabCommand);
         break;
       case IDC_CLOSE_WINDOW:
         CloseWindow(browser_);
@@ -706,26 +687,6 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ReloadBypassingCache(browser_, disposition);
       break;
     case IDC_HOME:
-      // Zephyrus: Home must not be able to summon a new-tab page, because
-      // Zephyrus does not have one. When the home page is the NTP (the default,
-      // and whatever the pref says the URL is), the button behaves exactly like
-      // Ctrl+T: the native floating search overlay, no navigation, no tab. Left
-      // alone it would load chrome://newtab, which is the SECOND empty state
-      // this browser deliberately no longer has -- the user would get a flat
-      // dark page instead of the wallpaper an empty window paints.
-      //
-      // A real, user-set home page is still honoured; only the NTP case is
-      // intercepted.
-      //
-      // Normal windows ONLY. IDC_HOME is also enabled for app and app-popup
-      // windows (see UpdateCommandsForTabState), and there Home() ignores the
-      // home-page pref entirely and returns to the extension's launch URL.
-      // Without this guard a hosted app whose profile happens to use the NTP as
-      // its home page would get a search overlay instead of its own start page.
-      if (browser_->is_type_normal() && IsZephyrusNewTabHomePage(profile())) {
-        ZephyrusSearchOverlay::Show(browser_);
-        break;
-      }
       Home(browser_, disposition);
       break;
     case IDC_OPEN_CURRENT_URL:
@@ -803,10 +764,12 @@ void BrowserCommandController::HandleCommandWithDisposition(
       CloseWindow(browser_);
       break;
     case IDC_NEW_TAB: {
-      // Zephyrus has no new-tab page. "New tab" floats the search overlay over
-      // the current view instead; a tab is only created once the user commits a
-      // query or picks a shortcut.
-      ZephyrusSearchOverlay::Show(browser_);
+      // Zephyrus: from a real page, Ctrl+T opens the floating search bar rather
+      // than spending a tab. Returns false on the NTP and on an empty window,
+      // where a genuine new tab is still what the user wants.
+      if (!ZephyrusSearchOverlay::ShowForNewTab(browser_)) {
+        NewTab(browser_, NewTabTypes::kNewTabCommand);
+      }
       break;
     }
     case IDC_NEW_TAB_TO_RIGHT: {

@@ -837,12 +837,9 @@ content::WebUIDataSource* CreateAndAddNewTabPageUiHtmlSource(
                          chrome::kChromeUIUntrustedNewTabPageUrl,
                          chrome::kChromeUIUntrustedNtpMicrosoftAuthURL));
 
-  // Zephyrus: the new-tab page renders a flat colour and loads no images, so
-  // the wallpaper data source that used to live here is gone along with the
-  // widened img-src that existed only to permit it. The empty window is painted
-  // natively instead -- see zephyrus_empty_background.cc. Keeping one
-  // implementation also keeps one fallback colour: the page and the native
-  // paint both use #0E1123, which they did not when both existed.
+  // Zephyrus once served its own wallpaper here, behind a widened img-src that
+  // existed only to permit it. Both are gone and the stock CSP is untouched,
+  // which is what lets Customize Chrome's own backgrounds load.
 
   return source;
 }

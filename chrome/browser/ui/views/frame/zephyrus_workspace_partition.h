@@ -16,6 +16,7 @@ class Profile;
 namespace content {
 class BrowserContext;
 class SiteInstance;
+class WebContents;
 }  // namespace content
 
 // Zephyrus: how a workspace gets its own cookies.
@@ -74,6 +75,18 @@ bool IsValidWorkspacePartitionName(const std::string& name);
 //
 // Only needed where a tab is created with NO opener. A tab opened FROM another
 // tab inherits its opener's SiteInstance, and so its partition, for free.
+// The workspace partition `contents` is ACTUALLY in, read from its live
+// SiteInstance rather than from whatever workspace it is tagged with.
+//
+// The two can disagree, and that disagreement is the bug this exists to catch:
+// a tab's partition is fixed when its WebContents is created, so any code that
+// re-tags a tab moves the label without moving the cookies.
+//
+// Returns the empty string for the default partition AND for anything outside
+// our partition domain (a guest view, an extension) -- both mean "not in a
+// workspace partition", which is what callers act on.
+std::string PartitionNameOfContents(content::WebContents* contents);
+
 scoped_refptr<content::SiteInstance> SiteInstanceForWorkspace(
     content::BrowserContext* context,
     const std::string& partition_name,

@@ -66,6 +66,8 @@ class BrowserDesktopWindowTreeHostWin
                            int frame_thickness) const override;
   bool GetDwmFrameInsetsInPixels(gfx::Insets* insets) const override;
   void HandleCreate() override;
+  void SetBackgroundColor(SkColor color) override;
+  void UpdateZephyrusBackdrop(SkColor color);
   void HandleDestroying() override;
   bool PreHandleMSG(UINT message,
                     WPARAM w_param,

@@ -78,7 +78,11 @@ constexpr int kNewTabFooterHeight = 56;
 // radius is ContentsContainerOutline::kCornerRadius (8), which is also what
 // Windows 11 rounds its window corners to, so the page's curve matches the
 // frame just outside it. There is no stroke — the frame IS the margin.
-constexpr int kZephyrusContentMargin = 4;
+// kZephyrusContentMargin lives on ContentsContainerView now, so the layout can
+// give the side panel the same margin. Inside these member functions the class
+// member is what the bare name resolves to -- class scope is searched before
+// the enclosing namespace -- so no local alias is needed, and one here would be
+// dead.
 constexpr float kZephyrusContentRadius = ContentsContainerOutline::kCornerRadius;
 }  // namespace
 

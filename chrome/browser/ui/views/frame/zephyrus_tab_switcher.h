@@ -29,6 +29,7 @@ class WebContents;
 
 namespace views {
 class ImageView;
+class Label;
 class View;
 }
 
@@ -93,11 +94,22 @@ class ZephyrusTabSwitcher : public views::View {
   // Called by KeyWatcher for every key event on the window.
   void OnWindowKeyEvent(ui::KeyEvent* event);
 
-  // One card in the strip: thumbnail + title, highlighted when selected.
+  // One card in the strip: thumbnail, favicon, title. Highlighted when
+  // selected.
+  //
+  // The label and favicon are held because SELECTION RECOLOURS THEM, not just
+  // the card behind them: an unselected card's title sits at muted weight and
+  // the selected one steps up to full ink, which is what makes the selection
+  // readable at a glance instead of hunting for a 2px outline.
   struct Entry {
     raw_ptr<content::WebContents> contents = nullptr;
     raw_ptr<views::View> card = nullptr;
     raw_ptr<views::ImageView> image = nullptr;
+    raw_ptr<views::ImageView> favicon = nullptr;
+    raw_ptr<views::Label> title = nullptr;
+    // True when the site gave us nothing and we drew the globe instead. Only
+    // the fallback is ever tinted -- a real favicon keeps the site's colours.
+    bool fallback_icon = false;
     // Kept alive for as long as the switcher is open; dropping it unsubscribes.
     std::unique_ptr<ThumbnailImage::Subscription> subscription;
   };

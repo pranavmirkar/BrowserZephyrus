@@ -53,6 +53,24 @@ class ContentsContainerView : public views::View,
                               public views::ViewObserver {
   METADATA_HEADER(ContentsContainerView, views::View)
  public:
+  // Zephyrus: the window background left around a floating card.
+  //
+  // Public because the content card is not the only card. The side panel is
+  // laid out by upstream code that has no reason to know about this, so the
+  // layout reads the value from here rather than keeping a second copy that
+  // could drift.
+  static constexpr int kZephyrusContentMargin = 4;
+
+  // The margin of window background left around the web contents so the page
+  // reads as a card floating in the window rather than as the window itself.
+  // Empty in fullscreen and in non-tabbed windows, where a floating card would
+  // be wrong.
+  //
+  // Public because the customize panel matches its edges to this card, and
+  // recomputing the rule outside this class is exactly how that got it wrong
+  // three times.
+  gfx::Insets GetZephyrusContentMargin() const;
+
   // Enumerates where the devtools are docked relative to the main web contents.
   enum class DevToolsDockedPlacement {
     kLeft,
@@ -179,11 +197,7 @@ class ContentsContainerView : public views::View,
   // window with no margin gets square corners.
   void UpdateZephyrusContentCorners();
 
-  // Zephyrus: the margin of window background left around the web contents so
-  // the page reads as a card floating in the window rather than as the window
-  // itself. Empty in fullscreen and in non-tabbed windows, where a floating
-  // card would be wrong.
-  gfx::Insets GetZephyrusContentMargin() const;
+
 
   // Whether browser chrome sits directly above the page right now.
   bool ZephyrusTopIsAttached() const;

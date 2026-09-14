@@ -3,6 +3,9 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
+
 
 #include <variant>
 
@@ -243,7 +246,14 @@ void CustomCornersBackground::SetCutoutFrom(const Cutouts& cutouts) {
 
 void CustomCornersBackground::Paint(gfx::Canvas* canvas,
                                     views::View* view) const {
-  if (!visible_) {
+  // Zephyrus: under the DWM backdrop NO chrome fill paints, whichever view
+  // owns this background.
+  //
+  // The original condition matched only browser_view().toolbar(), but
+  // TopContainerView installs one of these too -- so the strip behind the tab
+  // area kept its opaque fill and covered the glass there. The rule is about
+  // the backdrop, not about which view is asking.
+  if (!visible_ || zephyrus::HasWindowBackdrop(browser_view().GetWidget())) {
     return;
   }
 

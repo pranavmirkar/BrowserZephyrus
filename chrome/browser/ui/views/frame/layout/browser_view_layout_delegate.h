@@ -49,6 +49,7 @@ class BrowserViewLayoutDelegate {
   // target*amount, and treat amount < 1 as "animating".
   virtual int GetZephyrusSidebarTargetWidth() const = 0;
   virtual int GetZephyrusAgentPanelWidth() const = 0;
+  virtual int GetZephyrusCustomizePanelWidth() const = 0;
   virtual double GetZephyrusSidebarRevealAmount() const = 0;
 
   virtual bool ShouldDrawTabStrip() const = 0;
