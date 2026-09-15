@@ -21,6 +21,7 @@
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service_factory.h"
@@ -247,8 +248,12 @@ class PrivacyPanel : public views::View {
         site_(std::move(site)),
         blocking_off_(blocking_off),
         palette_(MakePalette()) {
+    // RULE 2, padding 0. This view is the bubble's contents and the bubble sets
+    // set_margins(gfx::Insets()), so it sits FLUSH inside a frame drawn at
+    // kRadiusPopup. At zero padding the concentric answer is the frame's own
+    // radius -- a smaller one cuts a visible notch inside each corner.
     SetBackground(views::CreateRoundedRectBackground(palette_.card,
-                                                     zephyrus::kCornerRadius));
+                                                     zephyrus::kRadiusPopup));
     SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(18, 18), 0))
         ->set_cross_axis_alignment(
@@ -424,8 +429,12 @@ class PrivacyPanel : public views::View {
   // is no second copy of the weights to drift out of step.
   std::unique_ptr<views::View> BuildArithmetic() {
     auto view = std::make_unique<views::View>();
+    // RULE 2. Nested 18px inside the popup body, so this is derived, not
+    // chosen: 28 - 18 = 10. Off the ten-step scale on purpose -- a computed
+    // radius is allowed to be, and 10 is whole at every display scale we ship.
     view->SetBackground(views::CreateRoundedRectBackground(
-        palette_.inset, zephyrus::kCornerRadius));
+        palette_.inset,
+        zephyrus::m3::ConcentricInner(zephyrus::kRadiusPopup, 18)));
     auto* col = view->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(10, 12), 3));
     col->set_cross_axis_alignment(
@@ -556,8 +565,12 @@ class PrivacyPanel : public views::View {
   // §6 quick controls. One control for now: the breakage escape hatch.
   std::unique_ptr<views::View> BuildQuickControls() {
     auto view = std::make_unique<views::View>();
+    // RULE 2. Nested 18px inside the popup body, so this is derived, not
+    // chosen: 28 - 18 = 10. Off the ten-step scale on purpose -- a computed
+    // radius is allowed to be, and 10 is whole at every display scale we ship.
     view->SetBackground(views::CreateRoundedRectBackground(
-        palette_.inset, zephyrus::kCornerRadius));
+        palette_.inset,
+        zephyrus::m3::ConcentricInner(zephyrus::kRadiusPopup, 18)));
     auto* col = view->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(10, 12), 3));
     col->set_cross_axis_alignment(
@@ -895,6 +908,17 @@ void ShowWithAnalysis(std::unique_ptr<views::ViewTracker> anchor,
   views::Widget* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(
       std::move(bubble), views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
   zephyrus::ApplyBubbleFrame(bubble_ptr);
+  // The nub, aimed at the shield that opened this.
+  //
+  // Deliberately not part of ApplyBubbleFrame(): a nub is a claim about WHAT
+  // opened the popup, so it is opt-in per surface. This is one of the three
+  // that earns it (shield, downloads, extensions) and was simply missed -- the
+  // other two have called it all along, which is why only this popup floated
+  // with nothing tying it to its anchor.
+  //
+  // After the widget exists, like downloads does: the nub needs the bubble's
+  // frame view, which is created with the widget.
+  zephyrus::ApplyAnchoredNub(bubble_ptr);
   widget->Show();
   // After Show(): an announcement made while the widget is still hidden is
   // dropped by the platform, so the counts would never be spoken (§14.2).

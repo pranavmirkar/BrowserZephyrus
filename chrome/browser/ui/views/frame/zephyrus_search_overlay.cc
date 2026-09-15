@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_engine_picker.h"
 #include "components/favicon/core/favicon_service.h"
@@ -123,7 +124,12 @@ constexpr int kRowHPadding = 16;
 constexpr int kRowGap = 16;
 // MD3 surfaces are rounded at the CONTAINER, and its rows square -- the corners
 // belong to the sheet, not to each item.
-constexpr int kListRadius = 28;
+//
+// Rule 2 does NOT apply: the panel behind this has no background to round (see
+// the note on kPanelPadding), so the list is a standalone floating sheet rather
+// than a shape nested in another. It therefore CHOOSES its radius, and takes
+// the sheet step from the scale instead of repeating the number.
+constexpr int kListRadius = zephyrus::kRadiusPopup;
 constexpr int kMaxRows = 6;
 // MD3 state-layer opacities live in SuggestionRow::ApplyStateLayer, which is
 // the only thing that can reconcile hover, press and keyboard selection.
@@ -285,7 +291,7 @@ class SuggestionRow : public views::Button {
     supporting_->SetAutoColorReadabilityEnabled(false);
     supporting_->SetSubpixelRenderingEnabled(false);
     supporting_->SetElideBehavior(gfx::ELIDE_TAIL);
-    supporting_->SetFontList(supporting_->font_list().DeriveWithSizeDelta(-1));
+    supporting_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kBodySmall));
     supporting_->SetVisible(false);
 
     ApplyStateLayer();
@@ -344,14 +350,20 @@ class SuggestionRow : public views::Button {
 
  private:
   void ApplyStateLayer() {
+    // M3 state-layer opacities, from zephyrus::m3. These were hand-written
+    // (12% press against the spec's 10%) and drifted from the same values in
+    // the settings popup and the dialog buttons -- three surfaces, three
+    // answers to one question.
     const ButtonState state = GetState();
     SkAlpha alpha = 0;
     if (state == STATE_PRESSED) {
-      alpha = 0x1F;  // 12%
+      alpha = zephyrus::m3::kPressed;
     } else if (selected_) {
-      alpha = 0x1F;  // 12% -- keyboard selection reads as strongly as a press.
+      // Keyboard selection is not a pointer state, so it takes the focus
+      // opacity rather than borrowing press.
+      alpha = zephyrus::m3::kFocus;
     } else if (state == STATE_HOVERED) {
-      alpha = 0x14;  // 8%
+      alpha = zephyrus::m3::kHover;
     }
     SetBackground(alpha ? views::CreateSolidBackground(
                               SkColorSetA(zephyrus::Ink(), alpha))
@@ -521,8 +533,8 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
       gfx::Size(kEngineFaviconSize, kEngineFaviconSize));
 
   engine_label_ = engine->AddChildView(std::make_unique<views::Label>());
-  engine_label_->SetEnabledColor(SkColorSetARGB(0xE6, 0xFF, 0xFF, 0xFF));
-  engine_label_->SetFontList(gfx::FontList("Inter, Segoe UI, 13px"));
+  engine_label_->SetEnabledColor(SkColorSetA(zephyrus::Ink(), 0xE6));
+  engine_label_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
   // Subpixel antialiasing needs an opaque backing to blend against, and this
   // label sits inside `field`, whose layer is deliberately NOT opaque so the
   // glass effect works. views::Label DCHECKs on exactly that combination, and
@@ -531,7 +543,7 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
   engine_label_->SetSubpixelRenderingEnabled(false);
 
   engine_chevron_ = engine->AddChildView(std::make_unique<views::ImageView>(
-      ui::ImageModel::FromVectorIcon(kZephyrusDropdownIcon, SK_ColorWHITE,
+      ui::ImageModel::FromVectorIcon(kZephyrusDropdownIcon, zephyrus::Ink(),
                                      10)));
   engine_chevron_->SetImageSize(gfx::Size(10, 10));
   // Its own layer so the open/close flip can be a transform rather than a
@@ -550,7 +562,7 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
   // The pixel magnifier, then the field itself.
   auto* glyph = field->AddChildView(std::make_unique<views::ImageView>(
       ui::ImageModel::FromVectorIcon(kZephyrusSearchIcon,
-                                     SkColorSetARGB(0xB3, 0xFF, 0xFF, 0xFF),
+                                     SkColorSetA(zephyrus::Ink(), 0xB3),
                                      kSearchGlyphSize)));
   glyph->SetImageSize(gfx::Size(kSearchGlyphSize, kSearchGlyphSize));
 
@@ -558,7 +570,7 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
   input_->set_controller(this);
   input_->SetBackgroundEnabled(false);
   input_->SetBorder(nullptr);
-  input_->SetFontList(gfx::FontList("Inter, Segoe UI, 16px"));
+  input_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kBodyLarge));
   // No explicit text colour: Textfield::SetColor only tints the text that is
   // already there, so it would not hold for typed input. The dark theme
   // already renders this field's text light.
@@ -1074,8 +1086,8 @@ void ZephyrusSearchOverlay::OnShortcutsReady(
                             base::Unretained(this), url),
         label);
     chip->SetTextColor(views::Button::STATE_NORMAL,
-                       SkColorSetARGB(0xE6, 0xFF, 0xFF, 0xFF));
-    chip->SetTextColor(views::Button::STATE_HOVERED, SK_ColorWHITE);
+                       SkColorSetA(zephyrus::Ink(), 0xE6));
+    chip->SetTextColor(views::Button::STATE_HOVERED, zephyrus::Ink());
     chip->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(8, 14)));
     chip->SetImageLabelSpacing(8);
     chip->SetMaxSize(gfx::Size(180, 0));  // Long titles elide, not stretch.
@@ -1090,7 +1102,7 @@ void ZephyrusSearchOverlay::OnShortcutsReady(
       chip_ptr->SetImageModel(
           views::Button::STATE_NORMAL,
           ui::ImageModel::FromVectorIcon(vector_icons::kSearchIcon,
-                                         SkColorSetRGB(0x9A, 0x9A, 0xA5),
+                                         zephyrus::Muted(),
                                          kChipFaviconSize));
       favicons->GetFaviconImageForPageURL(
           url,

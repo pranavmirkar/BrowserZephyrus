@@ -6,6 +6,7 @@
 
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "build/build_config.h"
 
 #include <algorithm>
@@ -74,12 +75,20 @@ namespace {
 // The single active popup (at most one across all windows).
 ZephyrusSettingsPopup* g_active_popup = nullptr;
 
-// 20, not 22: this radius reaches the WebView's layer via
-// holder()->SetCornerRadii(), and layer-rounded corners must be a whole number
-// of device pixels or the curve renders blurry at fractional display scaling
-// (22 x 1.25 = 27.5). 20 also matches the web contents viewer.
-// Holds things -> card radius. Was 20.
-constexpr int kPopupCornerRadius = zephyrus::kRadiusCard;
+// POPUP radius, not card. This sheet floats over the window, so it takes M3's
+// dialog/sheet step (28) and now matches every upstream dialog, which
+// LayoutProvider maps to the same value.
+//
+// It asked for kRadiusCard before, which was simply the wrong constant for what
+// this is -- an 8px sheet reads as a clipped rectangle rather than something
+// cast on top of the window.
+//
+// The DPI constraint that shaped the old value still holds and 28 satisfies it:
+// this radius reaches the WebView's layer via holder()->SetCornerRadii(), and a
+// layer-rounded corner must be a whole number of device pixels or the curve
+// renders blurry at fractional scaling. 28 is a multiple of 4, so it is whole
+// at 1.25x (35), 1.5x (42) and 2x (56).
+constexpr int kPopupCornerRadius = zephyrus::kRadiusPopup;
 constexpr int kRailWidth = 208;
 constexpr int kRowHeight = 34;
 constexpr int kRowRadius = zephyrus::kCornerRadius;
@@ -107,11 +116,13 @@ SkColor Foreground() {
 SkColor MutedForeground() {
   return zephyrus::Muted();
 }
+// Selection is a stronger, persistent state rather than a pointer one, so it
+// keeps its own value; hover is M3's 8% state layer, up from a hand-picked 6%.
 SkColor SelectedRowFill() {
   return SkColorSetA(zephyrus::Ink(), 0x1F);
 }
 SkColor HoverRowFill() {
-  return SkColorSetA(zephyrus::Ink(), 0x0F);
+  return zephyrus::m3::StateLayer(zephyrus::Ink(), zephyrus::m3::kHover);
 }
 // The content half, one surface step off the rail so the popup still reads as
 // two halves in either theme.
@@ -449,7 +460,7 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
   version->SetEnabledColor(MutedForeground());
   version->SetAutoColorReadabilityEnabled(false);
   version->SetSubpixelRenderingEnabled(false);
-  version->SetFontList(version->font_list().DeriveWithSizeDelta(-1));
+  version->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
   version->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(0, 20, 14, 12)));
 
   // ---- Right: embedded WebUI ----------------------------------------------

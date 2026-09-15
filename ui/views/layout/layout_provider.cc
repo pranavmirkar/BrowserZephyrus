@@ -190,16 +190,23 @@ gfx::Insets LayoutProvider::GetDialogInsetsForContentType(
 
 int LayoutProvider::GetCornerRadiusMetric(Emphasis emphasis,
                                           const gfx::Size& size) const {
-  // Zephyrus: softer, Apple-like rounding across all chrome surfaces.
+  // Zephyrus: the legacy Emphasis scale, snapped onto M3's steps.
+  //
+  // Emphasis predates the shape tokens and describes how important a component
+  // is rather than what it is, so it cannot carry M3's per-component
+  // assignments. It is kept working, and on-scale, for the call sites that
+  // still use it -- but a component that knows what it is should ask for a
+  // ShapeContextTokens value instead, which is where the spec's real numbers
+  // live. Notably kHigh is 16, NOT a dialog's 28: use kDialogRadius for that.
   switch (emphasis) {
     case Emphasis::kNone:
       return 0;
     case Emphasis::kLow:
-      return 6;
-    case Emphasis::kMedium:
       return 8;
+    case Emphasis::kMedium:
+      return 12;
     case Emphasis::kHigh:
-      return 14;
+      return 16;
     case Emphasis::kMaximum:
       return std::min(size.width(), size.height()) / 2;
   }
@@ -208,18 +215,27 @@ int LayoutProvider::GetCornerRadiusMetric(Emphasis emphasis,
 ShapeSysTokens GetShapeSysToken(ShapeContextTokens id) {
   static constexpr auto shape_token_map =
       base::MakeFixedFlatMap<ShapeContextTokens, ShapeSysTokens>({
-          {ShapeContextTokens::kBadgeRadius, ShapeSysTokens::kXSmall},
+          // Zephyrus: M3's own component assignments. Each line is the spec's
+          // value for that component, not a preference.
+          //
+          // Badges and buttons are pills. Text-entry surfaces are 4. Menus are
+          // 12. Dialogs and floating sheets are 28 -- the biggest movers here,
+          // up from 16.
+          {ShapeContextTokens::kBadgeRadius, ShapeSysTokens::kFull},
           {ShapeContextTokens::kButtonRadius, ShapeSysTokens::kFull},
-          {ShapeContextTokens::kComboboxRadius, ShapeSysTokens::kSmall},
-          {ShapeContextTokens::kDialogRadius, ShapeSysTokens::kMediumSmall},
+          {ShapeContextTokens::kComboboxRadius, ShapeSysTokens::kExtraSmall},
+          {ShapeContextTokens::kDialogRadius, ShapeSysTokens::kExtraLarge},
           {ShapeContextTokens::kExtensionsMenuButtonRadius,
-           ShapeSysTokens::kXSmall},
-          {ShapeContextTokens::kFindBarViewRadius, ShapeSysTokens::kSmall},
-          {ShapeContextTokens::kMenuRadius, ShapeSysTokens::kMediumSmall},
-          {ShapeContextTokens::kMenuAuxRadius, ShapeSysTokens::kMediumSmall},
-          {ShapeContextTokens::kMenuTouchRadius, ShapeSysTokens::kMediumSmall},
-          {ShapeContextTokens::kOmniboxExpandedRadius, ShapeSysTokens::kMedium},
-          {ShapeContextTokens::kTextfieldRadius, ShapeSysTokens::kSmall},
+           ShapeSysTokens::kFull},
+          {ShapeContextTokens::kFindBarViewRadius, ShapeSysTokens::kExtraLarge},
+          {ShapeContextTokens::kMenuRadius, ShapeSysTokens::kMedium},
+          {ShapeContextTokens::kMenuAuxRadius, ShapeSysTokens::kMedium},
+          {ShapeContextTokens::kMenuTouchRadius, ShapeSysTokens::kMedium},
+          {ShapeContextTokens::kOmniboxExpandedRadius,
+           ShapeSysTokens::kExtraLarge},
+          {ShapeContextTokens::kTextfieldRadius, ShapeSysTokens::kExtraSmall},
+          // Left at 8: already on the M3 scale, and a separator's end cap is
+          // not a component the spec assigns.
           {ShapeContextTokens::kContentSeparatorRadius, ShapeSysTokens::kSmall},
       });
   const auto it = shape_token_map.find(id);
@@ -231,19 +247,26 @@ int LayoutProvider::GetCornerRadiusMetric(ShapeContextTokens id,
   ShapeSysTokens token = GetShapeSysToken(id);
   DCHECK_NE(token, ShapeSysTokens::kDefault)
       << "kDefault token means there is a missing mapping between shape tokens";
-  // Zephyrus: rounder shape scale (menus/dialogs/bubbles = kMediumSmall,
-  // omnibox dropdown = kMedium, textfields = kSmall).
+  // Zephyrus: the M3 corner radius scale. These are the spec's numbers.
   switch (token) {
-    case ShapeSysTokens::kXSmall:
-      return 5;
+    case ShapeSysTokens::kNone:
+      return 0;
+    case ShapeSysTokens::kExtraSmall:
+      return 4;
     case ShapeSysTokens::kSmall:
-      return 10;
-    case ShapeSysTokens::kMediumSmall:
-      return 16;
+      return 8;
     case ShapeSysTokens::kMedium:
-      return 20;
+      return 12;
     case ShapeSysTokens::kLarge:
-      return 26;
+      return 16;
+    case ShapeSysTokens::kLargeIncreased:
+      return 20;
+    case ShapeSysTokens::kExtraLarge:
+      return 28;
+    case ShapeSysTokens::kExtraLargeIncreased:
+      return 32;
+    case ShapeSysTokens::kExtraExtraLarge:
+      return 48;
     case ShapeSysTokens::kFull:
       return std::min(size.width(), size.height()) / 2;
     default:

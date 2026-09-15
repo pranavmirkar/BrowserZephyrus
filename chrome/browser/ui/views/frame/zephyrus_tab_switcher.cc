@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/thumbnails/thumbnail_tab_helper.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/vector_icons/vector_icons.h"
@@ -51,7 +52,6 @@ constexpr int kThumbWidthMin = 150;
 constexpr int kCardSpacing = 12;
 constexpr int kCardPadding = 8;
 constexpr int kPanelPadding = 8;
-constexpr int kMaxCards = 8;
 
 // The meta row under each thumbnail: favicon + title.
 constexpr int kFaviconSize = 16;
@@ -117,13 +117,18 @@ constexpr int kPanelCornerRadius = zephyrus::kRadiusPopup;
 // unrelated number and the two curves fight. Deriving it means the relationship
 // survives anyone later retuning the padding.
 //
-//   panel 24 - panel padding  8 -> card  16
-//   card  16 - card padding   8 -> thumb  8
+//   panel 28 - panel padding  8 -> card  20
+//   card  20 - card padding   8 -> thumb 12
 //
-// Note this deliberately puts the cards at 16, which zephyrus_bubble_style.h's
-// binary-radius rule ("pill or card, nothing in between") would normally
-// reject. Concentric nesting is the reason, and it is a geometric one: a card
-// inside a 24 panel cannot also be 8 without looking loose in the corners.
+// This is RULE 2 (see chrome/browser/zephyrus/M3_UI_OVERHAUL.md), and the
+// values are derived rather than chosen, so they follow kRadiusPopup
+// automatically -- these three moved from 24/16/8 to 28/20/12 when the popup
+// step did, with no edit here.
+//
+// The note that used to sit here apologised for the cards landing at 16,
+// because the old binary-radius rule ("pill or card, nothing in between")
+// rejected the mid-range. That rule is retired along with the rest of the
+// Nothing OS language; a derived radius never needed its permission anyway.
 constexpr int kCardCornerRadius = kPanelCornerRadius - kPanelPadding;
 constexpr int kThumbCornerRadius = kCardCornerRadius - kCardPadding;
 
@@ -276,13 +281,50 @@ bool ZephyrusTabSwitcher::BuildEntries() {
       continue;
     }
     tabs.push_back(contents);
-    if (tabs.size() >= kMaxCards) {
-      break;
-    }
   }
 
   if (tabs.size() < 2) {
     return false;  // A switcher for one tab is UI for nothing.
+  }
+
+  // HOW MANY FIT, and WHICH ones -- both used to be wrong.
+  //
+  // This collected the first kMaxCards (8) tabs in model order and stopped. Two
+  // problems: the number was fixed regardless of how wide the window was, and
+  // truncating from index 0 meant that past eight tabs the ACTIVE tab was
+  // usually not among the cards shown. A switcher that cannot show you where
+  // you are is worse than no switcher.
+  //
+  // The cap is now what actually fits at the minimum card size, and the window
+  // of tabs is centred on the active one, so the current tab and its immediate
+  // neighbours are always on screen. Some tabs are still unreachable when there
+  // are more than fit -- that is a real limit of a one-row strip, not something
+  // a different number would solve.
+  const int strip_width =
+      browser_view_ ? browser_view_->width() - 96 : kThumbWidthDesired * 4;
+  const int min_card = kThumbWidthMin + 2 * kCardPadding + kCardSpacing;
+  const size_t max_cards = static_cast<size_t>(
+      std::max(2, (strip_width + kCardSpacing) / std::max(1, min_card)));
+
+  if (tabs.size() > max_cards) {
+    content::WebContents* const active_contents = model->GetActiveWebContents();
+    size_t active_pos = 0;
+    for (size_t i = 0; i < tabs.size(); ++i) {
+      if (tabs[i] == active_contents) {
+        active_pos = i;
+        break;
+      }
+    }
+    // Centre the window on the active tab, then clamp it inside the list so the
+    // strip is always full rather than short at either end.
+    const size_t half = max_cards / 2;
+    size_t first = active_pos > half ? active_pos - half : 0;
+    if (first + max_cards > tabs.size()) {
+      first = tabs.size() - max_cards;
+    }
+    tabs = std::vector<content::WebContents*>(
+        tabs.begin() + static_cast<ptrdiff_t>(first),
+        tabs.begin() + static_cast<ptrdiff_t>(first + max_cards));
   }
 
   // Fit the strip to the window: start from the desired card size and shrink
@@ -365,7 +407,7 @@ bool ZephyrusTabSwitcher::BuildEntries() {
     // which needs an opaque backing -- has to be off. The sidebar carries the
     // same note for the same reason, and Views DCHECKs on it in debug builds.
     label->SetSubpixelRenderingEnabled(false);
-    label->SetFontList(gfx::FontList("Segoe UI, Medium 13px"));
+    label->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
     label->SetElideBehavior(gfx::ELIDE_TAIL);
     label->SetMultiLine(false);
     // Fixed, not just capped: a preferred size that grows with the text is what

@@ -82,6 +82,7 @@
 #include "base/command_line.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/zephyrus/agent/dev_model_client.h"
 #include "chrome/browser/ui/views/frame/zephyrus_privacy_popup.h"
 #include "chrome/browser/zephyrus/privacy/privacy_features.h"
@@ -2315,7 +2316,32 @@ END_METADATA
 // system already in use — the workspace dropdown's lifted panel color and the
 // 10px card radius — rather than inventing a second visual language.
 // Holds things -> card radius.
-constexpr int kZephyrusDialogRadius = zephyrus::kRadiusCard;
+// Material 3 basic dialog, to spec.
+//
+// 28dp container, 24dp padding, a 24sp headline over 14sp supporting text, and
+// TEXT buttons 40dp tall in a right-aligned row. The pieces that look like
+// arbitrary numbers are the spec's numbers.
+constexpr int kZephyrusDialogRadius = 28;
+constexpr int kDialogPadding = 24;
+// Headline -> supporting text, then supporting text -> actions. MD3 opens the
+// second gap deliberately: the message is read, then the choice is made.
+constexpr int kDialogHeadlineGap = 16;
+constexpr int kDialogActionsGap = 24;
+// Type sizes used to be declared here (24 / 14 / 14). They are gone: the scale
+// in zephyrus_m3.h owns those numbers now, and this dialog asks for
+// headline-small, body-medium and label-large by name. Two copies of a size is
+// how a "scale" stops being one.
+constexpr int kDialogButtonHeight = 40;
+constexpr int kDialogButtonHPadding = 12;
+// CONNECTED BUTTON GROUP: outer edges fully round, the touching edges nearly
+// square, separated by a hair.
+constexpr int kDialogButtonGap = 4;
+// CONCENTRIC with the dialog. A corner nested inside another shares its centre
+// only when its radius is the outer radius minus the gap between them, and the
+// actions sit exactly kDialogPadding in from the container edge:
+//   28 (container) - 24 (padding) = 4
+constexpr int kDialogButtonInnerRadius =
+    kZephyrusDialogRadius - kDialogPadding;
 constexpr int kZephyrusDialogWidth = 360;
 // Entrance is generous enough to be read as an arrival; the exit is quicker,
 // because waiting on a dialog you have already dismissed is what makes an
@@ -2377,24 +2403,34 @@ class ZephyrusDialogButton : public views::LabelButton {
   METADATA_HEADER(ZephyrusDialogButton, views::LabelButton)
 
  public:
+  // Per-corner radii, because the two actions are segments of one connected
+  // group. No fill colours: the tonal container is derived from the label.
   ZephyrusDialogButton(const std::u16string& text,
                        SkColor text_color,
-                       SkColor fill,
-                       SkColor hovered_fill,
+                       const gfx::RoundedCornersF& radii,
                        PressedCallback callback)
-      : views::LabelButton(std::move(callback), text),
-        fill_(fill),
-        hovered_fill_(hovered_fill),
-        focus_color_(text_color) {
+      : views::LabelButton(std::move(callback), text), radii_(radii) {
+    views::FocusRing::Remove(this);
+    // One segment of an MD3 connected button group: a tonal container at rest
+    // with per-corner radii, the label carrying the meaning. This replaces a
+    // filled confirm next to an outlined cancel, which read as "the red one is
+    // the default" when the default here is Cancel.
     SetHorizontalAlignment(gfx::ALIGN_CENTER);
     SetEnabledTextColors(text_color);
     SetTextColor(views::Button::STATE_HOVERED, text_color);
     SetTextColor(views::Button::STATE_PRESSED, text_color);
-    SetMinSize(gfx::Size(0, 34));
-    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 16)));
+    SetMinSize(gfx::Size(0, kDialogButtonHeight));
+    SetBorder(views::CreateEmptyBorder(
+        gfx::Insets::VH(0, kDialogButtonHPadding)));
+    label()->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
     SetAnimateOnStateChange(false);
+    press_morph_.SetSlideDuration(
+        zephyrus::m3::Duration(zephyrus::m3::Spring::kFastSpatial));
+    press_morph_.SetTweenType(gfx::Tween::LINEAR);
     SetPaintToLayer();
     layer()->SetFillsBoundsOpaquely(false);
+    layer()->SetRoundedCornerRadius(radii_);
+    layer()->SetIsFastRoundedCorner(true);
     UpdateFill();
   }
 
@@ -2404,60 +2440,111 @@ class ZephyrusDialogButton : public views::LabelButton {
     UpdatePressFeedback();
   }
 
-  void PaintButtonContents(gfx::Canvas* canvas) override {
-    views::LabelButton::PaintButtonContents(canvas);
-    if (!HasFocus()) {
-      return;
-    }
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setStyle(cc::PaintFlags::kStroke_Style);
-    flags.setStrokeWidth(kFocusStroke);
-    flags.setColor(SkColorSetA(focus_color_, 0xCC));
-    gfx::RectF ring(GetLocalBounds());
-    ring.Inset(kFocusStroke / 2.0f);
-    canvas->DrawRoundRect(ring, kZephyrusDialogRadius - kFocusStroke / 2.0f,
-                          flags);
-  }
-
-  void OnFocus() override {
-    views::LabelButton::OnFocus();
-    SchedulePaint();
-  }
-  void OnBlur() override {
-    views::LabelButton::OnBlur();
-    SchedulePaint();
-  }
+  // NO focus ring is painted here, and views::Button's default one is removed
+  // in the constructor. There were two of them stacked -- a custom stroke plus
+  // the platform ring -- which read as a selected state and cut the connected
+  // group's shared silhouette in half.
+  //
+  // Focus is still visible: Cancel takes it by default and its state layer
+  // shows through. That is weaker than a ring and it is a real accessibility
+  // trade -- if keyboard focus turns out to be hard to find here, the answer is
+  // MD3's 3dp indicator drawn OUTSIDE the group, not a stroke inside a segment.
 
  private:
-  static constexpr float kFocusStroke = 2.0f;
-
   void UpdateFill() {
-    const bool hot = GetState() == views::Button::STATE_HOVERED ||
-                     GetState() == views::Button::STATE_PRESSED;
-    SetBackground(views::CreateRoundedRectBackground(
-        hot ? hovered_fill_ : fill_, kZephyrusDialogRadius));
+    // A tonal container AT REST, not just on hover. These are segments of one
+    // connected group, and the group's shape is the control -- two bare text
+    // labels have no shape to connect.
+    //
+    // The container is neutral ink for both segments; the label carries the
+    // difference in meaning. A red container under the destructive label would
+    // make it the loudest thing in a dialog whose default action is Cancel.
+    // A tonal container PLUS a state layer, which is how M3 composes this --
+    // not three unrelated alphas. The resting container stays put and the
+    // state layer adds on top of it, so hover and press are the same
+    // increments here as on every other surface.
+    //
+    // Press was 0x33 (20%), double the spec's 10%. That is most of why these
+    // buttons felt heavier than the rest of the UI.
+    // Repaint at whatever shape the morph currently holds, so a state change
+    // mid-press does not snap the corners back to their resting value.
+    ApplyMorph(current_morph_);
   }
 
-  // Presses scale the button down slightly so it feels like it heard the
-  // click. Subtle and fast — this is feedback, not decoration.
+  // The container fill for the current state. Split out because the morph
+  // repaints the background too and the two must not disagree about colour.
+  SkColor FillColor() const {
+    constexpr SkAlpha kContainer = 0x14;  // resting tonal fill
+    const ButtonState state = GetState();
+    SkAlpha alpha = kContainer;
+    if (state == STATE_PRESSED) {
+      alpha = kContainer + zephyrus::m3::kPressed;
+    } else if (state == STATE_HOVERED) {
+      alpha = kContainer + zephyrus::m3::kHover;
+    }
+    return SkColorSetA(zephyrus::Ink(), alpha);
+  }
+
+  // SHAPE MORPH on press: the corner squares up while the button is held.
+  //
+  // This replaces a 0.97 scale transform. The scale was a reasonable invention
+  // but it was an invention; the morph is M3's actual button spec, and it is
+  // the signature Expressive interaction rather than a flourish.
+  //
+  // Only the OUTER corners move. The inner ones are the seam of a connected
+  // group and belong to the group's geometry, so squaring them would break the
+  // pair apart mid-press.
+  //
+  // At 40dp these are M3 "small" buttons, whose pressed corner is 8.
   void UpdatePressFeedback() {
-    if (!layer() || !gfx::Animation::ShouldRenderRichAnimation()) {
+    if (!gfx::Animation::ShouldRenderRichAnimation()) {
+      // Reduced motion: take the state, skip the travel.
+      ApplyMorph(GetState() == views::Button::STATE_PRESSED ? 1.f : 0.f);
       return;
     }
-    gfx::Transform transform;
     if (GetState() == views::Button::STATE_PRESSED) {
-      transform = gfx::GetScaleTransform(gfx::Rect(size()).CenterPoint(), 0.97f);
+      press_morph_.Show();
+    } else {
+      press_morph_.Hide();
     }
-    ui::ScopedLayerAnimationSettings settings(layer()->GetAnimator());
-    settings.SetTransitionDuration(base::Milliseconds(120));
-    settings.SetTweenType(gfx::Tween::EASE_OUT);
-    layer()->SetTransform(transform);
   }
 
-  SkColor fill_;
-  SkColor hovered_fill_;
-  SkColor focus_color_;
+  // views::Button:
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    if (animation != &press_morph_) {
+      views::LabelButton::AnimationProgressed(animation);
+      return;
+    }
+    // LINEAR in, M3's curve applied here -- see zephyrus::m3::Curve. Letting
+    // SlideAnimation tween as well would apply two curves to one value.
+    ApplyMorph(static_cast<float>(
+        zephyrus::m3::Curve(zephyrus::m3::Spring::kFastSpatial)
+            .Solve(press_morph_.GetCurrentValue())));
+  }
+
+  void ApplyMorph(float t) {
+    constexpr float kPressedOuter = 8.f;
+    const float outer_tl = gfx::Tween::FloatValueBetween(
+        t, radii_.upper_left(), std::min(radii_.upper_left(), kPressedOuter));
+    const float outer_bl = gfx::Tween::FloatValueBetween(
+        t, radii_.lower_left(), std::min(radii_.lower_left(), kPressedOuter));
+    const float outer_tr = gfx::Tween::FloatValueBetween(
+        t, radii_.upper_right(), std::min(radii_.upper_right(), kPressedOuter));
+    const float outer_br = gfx::Tween::FloatValueBetween(
+        t, radii_.lower_right(), std::min(radii_.lower_right(), kPressedOuter));
+    const gfx::RoundedCornersF morphed(outer_tl, outer_tr, outer_br, outer_bl);
+    current_morph_ = t;
+    if (ui::Layer* l = layer()) {
+      l->SetRoundedCornerRadius(morphed);
+    }
+    SetBackground(views::CreateRoundedRectBackground(FillColor(), morphed));
+    SchedulePaint();
+  }
+
+  const gfx::RoundedCornersF radii_;
+  // LINEAR: the M3 curve is applied in AnimationProgressed, not here.
+  gfx::SlideAnimation press_morph_{this};
+  float current_morph_ = 0.f;
 };
 
 BEGIN_METADATA(ZephyrusDialogButton)
@@ -2485,9 +2572,10 @@ class ZephyrusDeleteWorkspaceContents : public views::View {
     SetBorder(views::CreatePaddedBorder(
         views::CreateRoundedRectBorder(zephyrus::kHairline,
                                        kZephyrusDialogRadius, zephyrus::Rule()),
-        gfx::Insets::TLBR(23, 23, 19, 23)));
+        gfx::Insets(kDialogPadding)));
     auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 6));
+        views::BoxLayout::Orientation::kVertical, gfx::Insets(),
+        kDialogHeadlineGap));
     layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kStretch);
 
@@ -2498,9 +2586,9 @@ class ZephyrusDeleteWorkspaceContents : public views::View {
     title->SetEnabledColor(foreground);
     title->SetAutoColorReadabilityEnabled(false);
     title->SetSubpixelRenderingEnabled(false);
-    title->SetFontList(title->font_list()
-                           .DeriveWithSizeDelta(2)
-                           .DeriveWithWeight(gfx::Font::Weight::SEMIBOLD));
+    // headline-small: 24sp at REGULAR weight. The old semibold is the habit
+    // MD3 drops -- size carries the hierarchy, not weight.
+    title->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kHeadlineSmall));
 
     // Name the real consequence, with the actual number of tabs at stake.
     std::u16string body;
@@ -2515,7 +2603,8 @@ class ZephyrusDeleteWorkspaceContents : public views::View {
     auto* detail = AddChildView(std::make_unique<views::Label>(body));
     detail->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     detail->SetMultiLine(true);
-    detail->SetEnabledColor(SkColorSetA(foreground, 0xB0));
+    detail->SetEnabledColor(zephyrus::Muted());
+    detail->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kBodyMedium));
     detail->SetAutoColorReadabilityEnabled(false);
     detail->SetSubpixelRenderingEnabled(false);
 
@@ -2523,23 +2612,45 @@ class ZephyrusDeleteWorkspaceContents : public views::View {
     // from the buttons — bigger than the title-to-body gap, so the block reads
     // as "message, then choice" rather than three evenly spaced rows.
     auto* actions = AddChildView(std::make_unique<views::View>());
-    actions->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(18, 0, 0, 0));
+    actions->SetProperty(
+        views::kMarginsKey,
+        gfx::Insets::TLBR(kDialogActionsGap - kDialogHeadlineGap, 0, 0, 0));
     auto* actions_layout =
         actions->SetLayoutManager(std::make_unique<views::BoxLayout>(
-            views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 8));
+            views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
+            kDialogButtonGap));
     actions_layout->set_main_axis_alignment(
         views::BoxLayout::MainAxisAlignment::kEnd);
 
-    const SkColor quiet = SkColorSetA(foreground, 0x14);
-    const SkColor quiet_hot = SkColorSetA(foreground, 0x24);
+    // TWO TEXT BUTTONS, which is MD3's basic dialog. The destructive one is
+    // distinguished by COLOUR (the accent, this language's "danger"), not by
+    // being the only filled control in the dialog -- a filled button next to an
+    // outlined one reads as the default action, and the default here is Cancel.
+    //
+    // Cancel still takes focus, so a stray Enter cannot close a workspace's
+    // tabs.
+    // DESTRUCTIVE IS ALWAYS RED, never the theme's accent. Accent() follows the
+    // theme, so under a blue theme "Delete workspace" was blue -- which makes a
+    // destructive action look like every other primary action in the browser.
+    //
+    // Still two reds: #C6102E falls to about 3:1 on a near-black panel, so the
+    // lifted dark variant is used there. Which one is picked follows the PANEL,
+    // not the theme.
+    const SkColor destructive = color_utils::IsDark(panel)
+                                    ? zephyrus::kDarkPalette.accent
+                                    : zephyrus::kLightPalette.accent;
+
+    // Mirrored radii, so the two squared corners meet in the middle.
+    const float outer = kDialogButtonHeight / 2.0f;
+    const float inner = kDialogButtonInnerRadius;
     auto* cancel = actions->AddChildView(std::make_unique<ZephyrusDialogButton>(
-        u"Cancel", foreground, quiet, quiet_hot, std::move(on_cancel)));
-    // Destructive intent is carried by color, and Cancel takes focus so a
-    // stray Enter can't close a workspace's tabs. The red is pulled off full
-    // saturation: on a dark panel a pure #D93B3B vibrates against the surface.
+        u"Cancel", foreground,
+        gfx::RoundedCornersF(outer, inner, inner, outer),
+        std::move(on_cancel)));
     actions->AddChildView(std::make_unique<ZephyrusDialogButton>(
-        u"Delete workspace", SK_ColorWHITE, SkColorSetRGB(0xC7, 0x3A, 0x40),
-        SkColorSetRGB(0xD8, 0x46, 0x4C), std::move(on_confirm)));
+        u"Delete workspace", destructive,
+        gfx::RoundedCornersF(inner, outer, outer, inner),
+        std::move(on_confirm)));
     default_focus_ = cancel;
   }
 
@@ -2934,9 +3045,9 @@ void ToolbarView::ApplyZephyrusTitlebarColor(std::optional<SkColor> color) {
   UpdateZephyrusNavButtonBackgrounds(effective);
 
   // Adapt the Win11 caption-button glyph color to the title bar.
-  const SkColor caption_fg = color_utils::IsDark(effective)
-                                 ? SK_ColorWHITE
-                                 : SkColorSetRGB(0x1A, 0x1A, 0x1A);
+  // InkFor() is the house answer to "what reads on this surface", and it knows
+  // about the palette's softened dark fill; a raw IsDark pick does not.
+  const SkColor caption_fg = zephyrus::InkFor(effective);
   for (views::Button* button :
        {zephyrus_minimize_button_.get(), zephyrus_maximize_button_.get(),
         zephyrus_close_button_.get()}) {
@@ -3545,8 +3656,8 @@ class ZephyrusInlineNameField : public views::Textfield {
     SchedulePaint();
   }
 
-  SkColor ink_ = SkColorSetRGB(0x1a, 0x1a, 0x1e);
-  SkColor fill_ = SK_ColorWHITE;
+  SkColor ink_ = zephyrus::Ink();
+  SkColor fill_ = zephyrus::Surface();
 };
 
 BEGIN_METADATA(ZephyrusInlineNameField)
@@ -3954,7 +4065,11 @@ class ZephyrusWorkspaceCell : public views::Button,
     // longer OFFERS an icon that disappears on white. Constraining the input is
     // cheaper than special-casing the output.
     flags.setStyle(cc::PaintFlags::kFill_Style);
-    flags.setColor(active_ ? SK_ColorWHITE : SkColorSetA(SK_ColorWHITE, 0x2E));
+    // INK, not white. The glyph on top inverts to zephyrus::Ground(), so the
+    // disc has to be its pair or the inversion breaks the moment the theme is
+    // not dark -- white ink on a white disc.
+    flags.setColor(active_ ? zephyrus::Ink()
+                           : SkColorSetA(zephyrus::Ink(), 0x2E));
     canvas->DrawRoundRect(body, radius, flags);
     PaintPhoto(canvas);
   }
@@ -3990,7 +4105,8 @@ class ZephyrusWorkspaceCell : public views::Button,
       cc::PaintFlags fill;
       fill.setAntiAlias(true);
       fill.setStyle(cc::PaintFlags::kFill_Style);
-      fill.setColor(active_ ? SK_ColorWHITE : SkColorSetA(SK_ColorWHITE, 0x2E));
+      fill.setColor(active_ ? zephyrus::Ink()
+                            : SkColorSetA(zephyrus::Ink(), 0x2E));
       canvas->DrawPath(container, fill);
     }
 
@@ -4525,8 +4641,8 @@ class ZephyrusProfileMenu : public views::BubbleDialogDelegateView,
 
   raw_ptr<Browser> browser_;
   base::RepeatingClosure on_closed_;
-  SkColor panel_ = SK_ColorBLACK;
-  SkColor foreground_ = SK_ColorWHITE;
+  SkColor panel_ = zephyrus::Surface();
+  SkColor foreground_ = zephyrus::Ink();
   SkColor row_hover_ = SK_ColorTRANSPARENT;
   gfx::SlideAnimation expand_animation_{this};
   gfx::Rect final_bounds_;

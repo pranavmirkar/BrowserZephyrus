@@ -24,32 +24,46 @@ namespace zephyrus {
 // zephyrus::kVersion is defined in zephyrus_version.h (included above), kept in
 // chrome/browser/ui so the settings WebUI can reach it too.
 
-// The radius every Zephyrus card surface uses — bubbles, dialogs, rows,
-// buttons, and the omnibox results card.
-// SHAPE IS BINARY. Measured on the reference: 144 elements at full pill against
-// 16 at 8px and 14 at 6px -- there is essentially no mid-range rounding, which
-// is the range most interfaces live in.
+// ---------------------------------------------------------------------------
+// SHAPE: the Material 3 corner radius scale.
 //
-//   Pill  -> you can press it (buttons, chips, toggles, the omnibox field)
-//   Card  -> it holds other things (panels, popups, cards, split panes)
-//   Nothing in between. A 12px or 16px radius is always one of these two,
-//   chosen wrong.
-inline constexpr int kRadiusCard = 8;
-// Kept as the old name so the many existing call sites stay put; it was 10,
-// which is exactly the mid-range value the rule above exists to remove.
+// The old rule here said shape was BINARY -- pill or card, and "a 12px or 16px
+// radius is always one of these two, chosen wrong". That rule belonged to the
+// Nothing OS language, which is retired. It is deleted rather than amended: the
+// measurement behind it (144 elements at full pill, 16 at 8px) was a
+// measurement of Nothing OS, not of what Zephyrus is now.
+//
+// M3 assigns each component a step from a fixed ten-value scale, so a radius is
+// LOOKED UP, not chosen. These mirror ui::views::ShapeSysTokens, which carries
+// the same numbers for upstream surfaces -- one scale, two call paths.
+//
+// DPI: every value here is a multiple of 4, so layer-rounded corners land on
+// whole device pixels at 1.5x and 2x. See the corner-radius/DPI note.
+inline constexpr int kRadiusNone = 0;
+inline constexpr int kRadiusXSmall = 4;   // text fields, inner corners
+inline constexpr int kRadiusSmall = 8;    // pressed small button
+inline constexpr int kRadiusMedium = 12;  // cards, menus
+inline constexpr int kRadiusLarge = 16;   // nested surfaces
+inline constexpr int kRadiusXLarge = 28;  // dialogs, sheets, floating popups
+
+// Cards: M3's card shape is 12, up from the retired language's 8.
+inline constexpr int kRadiusCard = kRadiusMedium;
+// The old spelling, kept so the existing call sites move with the scale instead
+// of needing 91 individual edits.
 inline constexpr int kCornerRadius = kRadiusCard;
 
-// A THIRD radius, for surfaces that FLOAT over the window: context menus, the
-// omnibox results, and the popups hanging off the title bar.
+// Surfaces that FLOAT over the window: the settings sheet, the privacy popup,
+// the tab switcher, the search overlay, menus hanging off the title bar.
 //
-// This is not the mid-range value the rule above rejects. The distinction is
-// real: a card is embedded in the layout and shares the window's edges, while a
-// popup is a separate pane cast on top of it and reads as its own object. 8px
-// on something floating looks like a clipped rectangle; 28px says "this is a
-// sheet, not part of the page".
+// 28, matching M3's dialog and sheet value and therefore matching every
+// upstream dialog now that LayoutProvider maps kDialogRadius to the same step.
+// It was 24 -- off the scale, and 4px adrift from upstream dialogs doing the
+// same job.
 //
-// Embedded cards stay at kRadiusCard. Do not merge the two.
-inline constexpr int kRadiusPopup = 24;
+// Still distinct from kRadiusCard, and the distinction is still real: a card is
+// embedded in the layout and shares the window's edges; a popup is a separate
+// pane cast on top of it. Do not merge the two.
+inline constexpr int kRadiusPopup = kRadiusXLarge;
 
 // The nub: the small point on the top edge of an anchored popup, aimed at the
 // control that opened it.
@@ -80,7 +94,9 @@ inline constexpr int kNubHeight = 10;
 struct Palette {
   SkColor ground;      // Base. The window's own colour.
   SkColor surface;     // A raised panel or card sitting on the ground.
-  SkColor rule;        // 1px hairlines. Separation is a line, not a shadow.
+  SkColor rule;        // Dividers INSIDE lists and menus (M3 outline-variant).
+                       // No longer the browser's separation mechanism -- that
+                       // is now a step between surface-container levels.
   SkColor ink;         // Primary text and solid fills.
   SkColor muted;       // Secondary text.
   SkColor faint;       // Disabled text, and the quietest borders.

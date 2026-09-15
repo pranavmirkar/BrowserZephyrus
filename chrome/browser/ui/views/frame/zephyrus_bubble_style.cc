@@ -130,14 +130,20 @@ class ToggleCloseRecorder : public views::WidgetObserver {
 
 namespace {
 
-// This revision of NativeTheme has no ShouldUseDarkColors(); the state lives in
-// preferred_color_scheme(), which has THREE values, not two. kNoPreference is
-// the common case on a machine that has never been switched, and it must fall
-// to light rather than being lumped in with dark -- treating "no preference" as
-// dark would ship a black browser to everyone who never chose anything.
-bool OsPrefersDark() {
-  return ui::NativeTheme::GetInstanceForNativeUi()->preferred_color_scheme() ==
-         ui::NativeTheme::PreferredColorScheme::kDark;
+// Zephyrus DEFAULTS TO DARK and does not follow the OS.
+//
+// This used to read NativeTheme::preferred_color_scheme(), which was dead code
+// in practice: ThemeService::GetBrowserColorScheme() returned kDark
+// unconditionally, so the browser was dark whatever this said. The OS value is
+// no longer consulted anywhere for browser chrome -- the user chooses light or
+// dark in Customize Chrome, and that choice arrives here as a PUBLISHED palette
+// (see Current()), not through this function.
+//
+// So this is only the fallback for the window between startup and the first
+// window resolving its theme, and the right answer for that window is the
+// default: dark.
+bool DefaultsToDark() {
+  return true;
 }
 
 }  // namespace
@@ -169,11 +175,13 @@ const Palette& Current() {
     return *themed;
   }
 
-  // Nothing published yet -- before the first window's theme resolves. The OS
-  // decides, as it always did: Zephyrus has no theme pref of its own, because
-  // the native surfaces we do not own (context menus, WebUI, system dialogs)
-  // follow the OS regardless.
-  return OsPrefersDark() ? kDarkPalette : kLightPalette;
+  // Nothing published yet -- before the first window's theme resolves. Zephyrus
+  // now HAS a theme pref of its own (prefs::kBrowserColorScheme, set from
+  // Customize Chrome), so the honest default for this window is the product
+  // default rather than the machine's: dark.
+  //
+  // The user's actual choice arrives a moment later, as a published palette.
+  return DefaultsToDark() ? kDarkPalette : kLightPalette;
 }
 
 bool PublishThemePalette(const Palette& palette) {
@@ -191,14 +199,14 @@ bool PublishThemePalette(const Palette& palette) {
 
 Palette PaletteFrom(const ui::ColorProvider& provider) {
   Palette p;
-  p.ground = provider.GetColor(kColorZephyrusGround);
-  p.surface = provider.GetColor(kColorZephyrusSurface);
-  p.rule = provider.GetColor(kColorZephyrusRule);
-  p.ink = provider.GetColor(kColorZephyrusInk);
-  p.muted = provider.GetColor(kColorZephyrusMuted);
-  p.faint = provider.GetColor(kColorZephyrusFaint);
-  p.accent = provider.GetColor(kColorZephyrusAccent);
-  p.accent_ink = provider.GetColor(kColorZephyrusAccentInk);
+  p.ground = provider.GetColor(kColorZephyrusLegacyGround);
+  p.surface = provider.GetColor(kColorZephyrusLegacySurface);
+  p.rule = provider.GetColor(kColorZephyrusLegacyRule);
+  p.ink = provider.GetColor(kColorZephyrusLegacyInk);
+  p.muted = provider.GetColor(kColorZephyrusLegacyMuted);
+  p.faint = provider.GetColor(kColorZephyrusLegacyFaint);
+  p.accent = provider.GetColor(kColorZephyrusLegacyAccent);
+  p.accent_ink = provider.GetColor(kColorZephyrusLegacyAccentInk);
   return p;
 }
 
@@ -220,7 +228,7 @@ const Palette& PaletteFor(bool is_private) {
   if (is_private) {
     return kPrivatePalette;
   }
-  return OsPrefersDark() ? kDarkPalette : kLightPalette;
+  return DefaultsToDark() ? kDarkPalette : kLightPalette;
 }
 
 

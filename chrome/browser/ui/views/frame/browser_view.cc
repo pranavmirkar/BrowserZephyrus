@@ -3158,10 +3158,28 @@ void BrowserView::UpdateZephyrusTitlebarColor() {
     }
     toolbar_->SetZephyrusTitlebarColor(toolbar_color);
     if (zephyrus_sidebar_) {
-      // The sidebar is Zephyrus's tab strip, and a tab strip sits ON the frame
-      // -- the same reason Helium made inactive tabs transparent so the frame
-      // shows through them.
-      zephyrus_sidebar_->SetZephyrusColor(color);
+      // THE SAME COLOUR AS THE TOOLBAR, not the page colour.
+      //
+      // This used to pass `color` -- the PAGE's colour -- while the toolbar
+      // three lines above was deliberately given kColorToolbar instead. Two
+      // surfaces that sit directly against each other, fed different inputs on
+      // purpose, so they only agreed when a page happened to have no colour.
+      // Under a theme the sidebar went page-tinted (pale blue on the NTP) while
+      // the title bar stayed on the theme role, and the seam between them was
+      // plainly visible.
+      //
+      // M3 settles which of the two is right: a navigation surface and a
+      // toolbar are BOTH surface-container. They are not merely similar, they
+      // are the same role -- so they now take the same value by construction
+      // and cannot drift apart again.
+      //
+      // Incognito is unaffected: `toolbar_color` stays `color` there, so both
+      // surfaces still receive the same thing.
+      //
+      // What this gives up is the sidebar tinting toward the page. That was a
+      // Nothing-OS-era flourish and it is what caused this mismatch; the title
+      // bar had already stopped doing it.
+      zephyrus_sidebar_->SetZephyrusColor(toolbar_color);
     }
   }
   // Paint the contents container in the theme color so it shows through the

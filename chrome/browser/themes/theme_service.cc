@@ -290,9 +290,13 @@ void ThemeService::RegisterProfilePrefs(
       prefs::kDeprecatedBrowserColorSchemeDoNotUse,
       std::to_underlying(ThemeService::BrowserColorScheme::kSystem),
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  // Zephyrus: a fresh profile is DARK, not "follow the system". See
+  // GetBrowserColorScheme() -- kSystem is coerced to dark anyway, but
+  // registering the real default keeps the pref honest for anything that reads
+  // it directly (the Customize Chrome UI shows the selected chip from here).
   registry->RegisterIntegerPref(
       prefs::kBrowserColorScheme,
-      std::to_underlying(ThemeService::BrowserColorScheme::kSystem));
+      std::to_underlying(ThemeService::BrowserColorScheme::kDark));
   registry->RegisterIntegerPref(
       prefs::kDeprecatedUserColorDoNotUse, SK_ColorTRANSPARENT,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
@@ -669,10 +673,49 @@ void ThemeService::SetBrowserColorScheme(
 }
 
 ThemeService::BrowserColorScheme ThemeService::GetBrowserColorScheme() const {
-  // Zephyrus: the browser chrome is always dark. There is no user-facing
-  // light/dark/system choice; dynamic page-color theming is layered per-surface
-  // (title bar, omnibox, etc.) on top of this dark base.
-  return BrowserColorScheme::kDark;
+  // Zephyrus: DARK BY DEFAULT, and the OS is never consulted.
+  //
+  // This used to `return BrowserColorScheme::kDark;` unconditionally, which had
+  // two consequences that took a while to connect:
+  //
+  //   1. Switching the Windows theme did nothing, in either direction, and a
+  //      relaunch under a light OS still came up dark. There was no stale value
+  //      and no upstream bug -- the OS setting was simply never read.
+  //   2. Customize Chrome's light/dark control wrote prefs::kBrowserColorScheme
+  //      (see SetBrowserColorScheme above) and NOTHING read it back. The
+  //      setting existed, persisted, and did nothing.
+  //
+  // The pref is now authoritative, so the Customize Chrome control works. What
+  // is deliberately dropped is "follow the system": kSystem is coerced to dark
+  // rather than falling through to NativeTheme. Zephyrus decides its own
+  // appearance and the user changes it on the New Tab Page.
+  //
+  // COUPLED, and it is not obvious: the kSystem chip was removed from
+  // ui/webui/resources/cr_components/customize_color_scheme_mode, whose
+  // listener does assert(!!currentMode) after looking the incoming value up in
+  // its option list. This function is what that value comes from
+  // (CustomizeColorSchemeModeHandler::InitializeColorSchemeMode sends
+  // GetBrowserColorScheme()), so the coercion below is the only reason a
+  // profile still holding kSystem does not trip that assert and break the
+  // appearance panel. Restore "follow the system" here and the chip has to come
+  // back in the same change.
+  //
+  // Note this is the BROWSER CHROME only. Web content's prefers-color-scheme
+  // still follows the OS through the renderer's own path, which is what a page
+  // should see.
+  // VALIDATE before casting. Preferences is a user-writable JSON file, so this
+  // integer is external input: an out-of-range value casts to an enum with no
+  // matching case, and the two consumers then disagree -- GetColorProviderKey()
+  // falls through to dark while BrowserUsesDarkColors() reports light, leaving
+  // the browser dark-themed but telling everything that asks that it is not.
+  const int raw = profile_->GetPrefs()->GetInteger(prefs::kBrowserColorScheme);
+  if (raw < static_cast<int>(BrowserColorScheme::kSystem) ||
+      raw > static_cast<int>(BrowserColorScheme::kMaxValue)) {
+    return BrowserColorScheme::kDark;
+  }
+  const auto scheme = static_cast<BrowserColorScheme>(raw);
+  return scheme == BrowserColorScheme::kSystem ? BrowserColorScheme::kDark
+                                               : scheme;
 }
 
 bool ThemeService::BrowserUsesDarkColors() const {

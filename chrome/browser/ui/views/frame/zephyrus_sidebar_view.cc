@@ -7,6 +7,7 @@
 
 
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
 
 #include <algorithm>
@@ -79,13 +80,19 @@
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/menu/menu_runner.h"
+#include "ui/views/controls/scroll_view.h"
+#include "ui/views/controls/scrollbar/overlay_scroll_bar.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/box_layout_view.h"
 #include "ui/views/mouse_watcher_view_host.h"
 #include "ui/views/vector_icons.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 
 namespace {
+
+// Effectively unbounded: ScrollView::ClipHeightTo needs a real maximum.
+constexpr int kUnboundedScrollHeight = 100000;
 
 constexpr int kRowHeight = 36;
 // Tab rows were full pills (kRowHeight / 2) while the action rows next to them
@@ -240,9 +247,9 @@ std::unique_ptr<views::View> MakeSectionHeader(const std::u16string& text,
   header->SetEnabledColor(SkColorSetA(foreground, 0x8C));
   header->SetAutoColorReadabilityEnabled(false);
   header->SetSubpixelRenderingEnabled(false);
-  header->SetFontList(header->font_list()
-                          .DeriveWithSizeDelta(-2)
-                          .DeriveWithWeight(gfx::Font::Weight::MEDIUM));
+  // label-small. These are the uppercase section headings ("Favorites"), which
+  // is exactly the utilitarian role M3 sizes label-small for.
+  header->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
   header->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(14, 12, 5, 12)));
   return header;
 }
@@ -1035,12 +1042,54 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   // ---- Tabs ------------------------------------------------------------------
   // No static heading here: RebuildTabList emits "Pinned tabs" and "Tabs"
   // itself, so the pinned group can sit above the workspace's own tabs.
-  tab_list_container_ = AddChildView(std::make_unique<views::View>());
-  tab_list_container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical, gfx::Insets(), kRowSpacing));
-  // The tab list takes the remaining height, so it pushes the version label to
-  // the very bottom of the panel.
-  box_layout->SetFlexForView(tab_list_container_, 1);
+  // SCROLLABLE. The tab list had no ScrollView at all, so once the tabs ran
+  // past the window height the overflow was simply unreachable -- no scrollbar,
+  // no wheel response, the rows just stopped. With ~20 tabs open the bottom of
+  // the list was inaccessible, which for a vertical tab strip is the whole
+  // feature failing.
+  //
+  // The ScrollView takes the flex (so it still pushes the version label to the
+  // foot of the panel); the container inside it keeps its own preferred height
+  // and scrolls within.
+  auto* tab_scroll = AddChildView(std::make_unique<views::ScrollView>());
+  // ClipHeightTo is REQUIRED, not decoration. Without it a ScrollView takes its
+  // preferred size from its contents, and the contents here are empty at
+  // construction (RebuildTabList fills them later) -- so it resolved to zero
+  // height and the whole tab list vanished. This is the same pairing the agent
+  // panel's log uses, and for the same reason.
+  tab_scroll->ClipHeightTo(0, kUnboundedScrollHeight);
+  // Transparent: the sidebar already paints the panel behind this, and an
+  // opaque scroll viewport would punch a square hole through the panel's
+  // rounded corners.
+  tab_scroll->SetBackgroundColor(std::nullopt);
+  tab_scroll->SetDrawOverflowIndicator(false);
+  // Vertical only. A horizontal bar here would appear whenever a long tab title
+  // widened the contents, and the rows already elide.
+  tab_scroll->SetHorizontalScrollBarMode(
+      views::ScrollView::ScrollBarMode::kDisabled);
+  // OVERLAY scrollbar, not the default.
+  //
+  // Chromium's default ScrollBarViews draws an OPAQUE track the full height of
+  // the viewport. In a rounded panel that reads as a dark column punched
+  // through the sidebar, and it squares off the panel's own rounded corners
+  // where the track runs past them.
+  //
+  // An overlay bar has no track, reserves no layout width, and fades its thumb
+  // when idle -- which is both what M3 specifies for scrollbars and the only
+  // variant that can sit inside a rounded surface without cutting it.
+  tab_scroll->SetVerticalScrollBar(std::make_unique<views::OverlayScrollBar>(
+      views::ScrollBar::Orientation::kVertical));
+
+  auto tab_list = std::make_unique<views::BoxLayoutView>();
+  tab_list->SetOrientation(views::BoxLayout::Orientation::kVertical);
+  tab_list->SetBetweenChildSpacing(kRowSpacing);
+  // STRETCH, so rows fill the viewport width. Left to the default the rows size
+  // to their own text and the list reads as ragged.
+  tab_list->SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kStretch);
+  tab_list_container_ = tab_scroll->SetContents(std::move(tab_list));
+  // The scroll area takes the remaining height, so it pushes the version label
+  // to the very bottom of the panel.
+  box_layout->SetFlexForView(tab_scroll, 1);
 
   // Zephyrus product version, quiet at the foot of the sidebar.
   auto* version = AddChildView(std::make_unique<views::Label>(
@@ -1048,8 +1097,14 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   version->SetHorizontalAlignment(gfx::ALIGN_CENTER);
   version->SetAutoColorReadabilityEnabled(false);
   version->SetSubpixelRenderingEnabled(false);
-  version->SetEnabledColor(SkColorSetA(fg_ink, 0x66));
-  version->SetFontList(version->font_list().DeriveWithSizeDelta(-2));
+  // on-surface-variant, not a hand-rolled 40% of the ink.
+  //
+  // 0x66 of the foreground is M3's DISABLED strength territory, and this label
+  // is not disabled -- it is secondary. At 12px on a light surface it fell
+  // below readable contrast, which is what made it look broken rather than
+  // quiet. M3 has a role for exactly this and it stays legible on both themes.
+  version->SetEnabledColor(zephyrus::Muted());
+  version->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
   version->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(6, 0, 2, 0)));
 
   // Start tucked off-screen and transparent to events so it doesn't intercept

@@ -186,12 +186,22 @@ void ZephyrusCustomizePanel::RoundWebContents() {
   // top and bottom edges. ContentsContainerView::UpdateBorderRoundedCorners
   // hit exactly this on the page card and records the same conclusion.
   //
-  // kRadiusCard is a whole number of pixels, which matters: a layer-rounded
-  // corner at a fractional value renders blurry under display scaling (the
-  // note on kPopupCornerRadius in ZephyrusSettingsPopup records measuring
-  // exactly that). It stays 8 even though the WebView sits 1px inside the
-  // border -- an 8 arc inset by 1 falls inside the border's 7 arc, so nothing
-  // bleeds, and 7 would be half a pixel at 1.5x scaling.
+  // RULE 2 YIELDS TO DPI HERE, deliberately.
+  //
+  // The WebView sits 1px inside the border, so concentricity
+  // (zephyrus::m3::ConcentricInner) would put it at kRadiusCard - 1 = 11. That
+  // is not a whole number of device pixels at 1.5x (16.5) and a layer-rounded
+  // corner at a fractional value renders blurry -- the note on
+  // kPopupCornerRadius in ZephyrusSettingsPopup records measuring exactly that.
+  //
+  // So it takes the container's own radius. This is the one case where the two
+  // constraints genuinely conflict, and DPI wins because a blurred corner is a
+  // visible defect while a 1px concentricity error is not: a 12 arc inset by 1
+  // still falls inside the border's arc, so nothing bleeds past the card.
+  //
+  // This is NOT a licence to skip Rule 2 elsewhere. It applies only where the
+  // gap is 1px; at any real padding the derived value is both correct and
+  // DPI-safe, because every step on the scale is a multiple of 4.
   web_view_->holder()->SetCornerRadii(radii);
   if (ui::Layer* layer = web_view_->layer()) {
     layer->SetRoundedCornerRadius(radii);
@@ -255,7 +265,19 @@ void ZephyrusCustomizePanel::ApplyPalette() {
   // 2026-09-10 and reverted -- it dissolved the panel into the chrome, which
   // took the card language with it.
   const Palette palette = PaletteFor(*this);
-  const SkColor ground = palette.ground;
+  // SURFACE, not ground -- i.e. M3's surface-container, the same role the title
+  // bar and the sidebar now take.
+  //
+  // This panel is chrome, so it belongs on the chrome plane. It was on `ground`
+  // (M3 `surface`, the PAGE plane), which put it one tone off both of its
+  // neighbours: 98 against their 94 in light, 6 against 12 in dark. Small, but
+  // it is a seam running the full height of the window.
+  //
+  // Deliberately NOT fixed by moving kColorSysBase: that token is the page
+  // plane for everything upstream, and collapsing the two planes into one value
+  // is what flattened the window on 2026-09-10. The two planes stay distinct;
+  // this panel simply moves onto the correct one.
+  const SkColor ground = palette.surface;
   SetBackground(views::CreateRoundedRectBackground(ground, kRadiusCard));
   SetBorder(views::CreateRoundedRectBorder(1, kRadiusCard, palette.rule));
 

@@ -13,6 +13,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "components/favicon/core/favicon_service.h"
 #include "components/favicon_base/favicon_types.h"
 #include "components/search_engines/choice_made_location.h"
@@ -86,7 +87,7 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
       AddChildView(std::make_unique<views::Label>(u"Search with"));
   heading->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   heading->SetEnabledColor(zephyrus::Muted());
-  heading->SetFontList(gfx::FontList("Segoe UI, 11px"));
+  heading->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
   heading->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(2, 8, 6, 8)));
 
   TemplateURLService* service = GetService(profile_);

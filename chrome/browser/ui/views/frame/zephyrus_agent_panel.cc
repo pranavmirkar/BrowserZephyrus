@@ -14,6 +14,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/font_list.h"
@@ -375,8 +376,17 @@ void ZephyrusAgentPanel::ApplyPalette() {
     title_->SetEnabledColor(palette.muted);
   }
   if (approval_) {
+    // RULE 2. This box is inset kEdge inside the panel, so its radius is
+    // derived: 12 - 12 = 0. It was kRadiusCard, i.e. the SAME radius as the
+    // container it sits in, which is the case the rule exists to catch.
+    //
+    // Zero is the correct concentric answer when the padding equals the outer
+    // radius -- at that inset the corner centres coincide and a square inner
+    // edge is what stays parallel. If a square box reads wrong here, the fix is
+    // to change kEdge, never to give the inner box a radius of its own.
     approval_->SetBackground(views::CreateRoundedRectBackground(
-        palette.surface, zephyrus::kRadiusCard));
+        palette.surface,
+        zephyrus::m3::ConcentricInner(zephyrus::kRadiusCard, kEdge)));
   }
   if (approval_reason_) {
     approval_reason_->SetEnabledColor(palette.ink);

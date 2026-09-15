@@ -1360,8 +1360,7 @@ SkColor LocationBarView::GetIconLabelBubbleSurroundingForegroundColor() const {
   }
   // Zephyrus: dynamic ink (magnifier + surrounding text) derived from the
   // page-adapted bar surface.
-  return GetZephyrusOmniboxTextColor().value_or(
-      SkColorSetRGB(0x72, 0x72, 0x72));
+  return GetZephyrusOmniboxTextColor().value_or(zephyrus::Muted());
 }
 
 SkAlpha LocationBarView::GetIconLabelBubbleSeparatorAlpha() const {
@@ -2030,7 +2029,10 @@ void LocationBarView::OnPaintBorder(gfx::Canvas* canvas) {
       flags.setStrokeWidth(kStrokeWidth);
       flags.setStrokeCap(cc::PaintFlags::kRound_Cap);
       flags.setAntiAlias(true);
-      flags.setColor(SkColorSetRGB(0x1A, 0x73, 0xE8));
+      // Was Google Blue (#1A73E8) -- a stock-Chrome tell sitting in our own
+      // omnibox. The accent is the browser's one "now" colour and is what this
+      // stroke is for.
+      flags.setColor(zephyrus::Accent());
       flags.setPathEffect(cc::PathEffect::MakeDash(intervals, 2, phase));
       canvas->DrawPath(path, flags);
     }

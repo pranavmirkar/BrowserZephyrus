@@ -35,6 +35,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -100,7 +101,7 @@ ZephyrusProfileDialog::ZephyrusProfileDialog(Mode mode,
                                : u"Create a new profile"));
   heading->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   heading->SetEnabledColor(SK_ColorWHITE);
-  heading->SetFontList(gfx::FontList("Segoe UI Semibold, 15px"));
+  heading->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kTitleMedium, /*emphasized=*/true));
 
   auto* body = AddChildView(std::make_unique<views::Label>(
       mode_ == Mode::kFirstRun
@@ -111,7 +112,7 @@ ZephyrusProfileDialog::ZephyrusProfileDialog(Mode mode,
   body->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   body->SetMultiLine(true);
   body->SetEnabledColor(zephyrus::Muted());
-  body->SetFontList(gfx::FontList("Segoe UI, 12px"));
+  body->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kBodySmall));
   body->SizeToFit(kDialogWidth);
 
   name_field_ = AddChildView(std::make_unique<views::Textfield>());
@@ -128,7 +129,7 @@ void ZephyrusProfileDialog::BuildAvatarRow() {
   auto* caption = AddChildView(std::make_unique<views::Label>(u"Pick an icon"));
   caption->SetHorizontalAlignment(gfx::ALIGN_LEFT);
   caption->SetEnabledColor(zephyrus::Muted());
-  caption->SetFontList(gfx::FontList("Segoe UI, 12px"));
+  caption->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kBodySmall));
 
   auto* row = AddChildView(std::make_unique<views::View>());
   row->SetLayoutManager(std::make_unique<views::BoxLayout>(
