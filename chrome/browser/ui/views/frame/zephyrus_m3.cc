@@ -4,9 +4,19 @@
 
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 
+#include <string>
+#include <vector>
+
+#include <algorithm>
+#include <cmath>
+#include <optional>
+
+#include "base/command_line.h"
 #include "base/containers/span.h"
+#include "base/logging.h"
 #include "base/notreached.h"
 #include "ui/gfx/font.h"
+#include "ui/views/background.h"
 #include "ui/gfx/font_list.h"
 
 namespace zephyrus::m3 {
@@ -58,17 +68,29 @@ gfx::FontList Font(Type style, bool emphasized) {
   // -Wunsafe-buffer-usage, and the span is bounds-checked.
   const Style& s = base::span(kStyles)[static_cast<size_t>(style)];
 
-  // DERIVED from the platform UI font, not built from a family name.
+  // INTER FIRST, then whatever the platform resolved as its UI font.
   //
-  // The call sites this replaces named "Segoe UI" directly, which is wrong on
-  // two counts: it hardcodes a Windows font into cross-platform code, and it
-  // bypasses whatever the platform has resolved as the UI font for the user's
-  // locale -- a CJK or Devanagari UI does not want Segoe UI Latin metrics.
-  // Deriving keeps the platform's choice and changes only size and weight.
+  // Inter is the product's typeface: chrome/installer/zephyrus_setup/fonts
+  // ships Inter-Regular and Inter-SemiBold and the installer renders its own UI
+  // in them. A browser that does not match its own installer is the wrong kind
+  // of inconsistent.
+  //
+  // This corrects a mistake. The search overlay asked for "Inter, Segoe UI" and
+  // that was replaced here with a platform-font derivation on the reasoning
+  // that Inter was not in the tree -- it is, and where a user has it installed
+  // the overlay really was rendering in Inter. The swap was a regression
+  // dressed up as a cleanup.
+  //
+  // The FALLBACK still matters and is why this is a list rather than a name:
+  // Inter is not installed for every user (bundling it is the open Phase 2b
+  // item), and it has no CJK or Devanagari coverage. Naming the platform font
+  // second means those users and those scripts get the right face instead of a
+  // missing-glyph box, which is the actual bug hardcoding "Segoe UI" had.
   const gfx::FontList base;
-  return base
-      .DeriveWithSizeDelta(s.size - base.GetFontSize())
-      .DeriveWithWeight(emphasized ? s.emphasized : s.weight);
+  const std::vector<std::string> families{
+      "Inter", base.GetPrimaryFont().GetFontName()};
+  return gfx::FontList(families, gfx::Font::NORMAL, s.size,
+                       emphasized ? s.emphasized : s.weight);
 }
 
 const gfx::CubicBezier& Curve(Spring spring) {
@@ -127,6 +149,99 @@ base::TimeDelta Duration(Spring spring) {
       return base::Milliseconds(300);
   }
   NOTREACHED();
+}
+
+gfx::Tween::Type TweenFor(Spring spring) {
+  switch (spring) {
+    // The spatial springs OVERSHOOT. EASE_OUT_4 is the only Tween documented as
+    // leading into a bounce, so it is the closest available shape -- closest,
+    // not equal: it does not actually cross 1.0, so the overshoot is lost.
+    // That is the cost of staying on the compositor thread.
+    case Spring::kFastSpatial:
+    case Spring::kDefaultSpatial:
+    case Spring::kSlowSpatial:
+      return gfx::Tween::EASE_OUT_4;
+    // The effects springs are smooth decelerations with no overshoot, which
+    // EASE_OUT_3 matches closely.
+    case Spring::kFastEffects:
+    case Spring::kDefaultEffects:
+    case Spring::kSlowEffects:
+      return gfx::Tween::EASE_OUT_3;
+  }
+  NOTREACHED();
+}
+
+namespace {
+
+// A pill: radius is half the shorter side, so there is nothing to make
+// concentric. Exemption 1.
+bool IsCapsule(const gfx::RoundedCornersF& r, const gfx::Size& size) {
+  const float half = std::min(size.width(), size.height()) / 2.0f;
+  return r.upper_left() >= half - 1.f && r.upper_right() >= half - 1.f;
+}
+
+std::optional<gfx::RoundedCornersF> RadiiOf(const views::View& v) {
+  return v.GetBackground() ? v.GetBackground()->GetRoundedCornerRadii()
+                           : std::nullopt;
+}
+
+// Counts so a CLEAN run is distinguishable from a run that never happened.
+// Without them "no violations" and "never called" look identical in the log,
+// which is the same false pass as trusting a build that did not rebuild.
+int g_rounded_seen = 0;
+int g_violations = 0;
+
+void AuditInto(const views::View& v, const views::View* rounded_ancestor) {
+  const std::optional<gfx::RoundedCornersF> mine = RadiiOf(v);
+  if (mine) {
+    ++g_rounded_seen;
+  }
+  if (mine && rounded_ancestor) {
+    const std::optional<gfx::RoundedCornersF> theirs =
+        RadiiOf(*rounded_ancestor);
+    const gfx::Rect outer = rounded_ancestor->GetLocalBounds();
+    const gfx::Rect inner = views::View::ConvertRectToTarget(
+        v.parent(), rounded_ancestor, v.bounds());
+    const int pad = std::min({inner.x() - outer.x(), inner.y() - outer.y(),
+                              outer.right() - inner.right(),
+                              outer.bottom() - inner.bottom()});
+    if (theirs && pad >= 0 && !IsCapsule(*mine, v.size())) {
+      const float want = ConcentricInner(theirs->upper_left(),
+                                         static_cast<float>(pad));
+      // One pixel of tolerance: the gap is measured from bounds, so uneven
+      // padding and odd sizes produce off-by-ones that are not violations.
+      if (std::abs(mine->upper_left() - want) > 1.f) {
+        ++g_violations;
+        LOG(WARNING) << "[zephyrus] Rule 2: " << v.GetClassName() << " radius "
+                     << mine->upper_left() << " inside "
+                     << rounded_ancestor->GetClassName() << " radius "
+                     << theirs->upper_left() << " with padding " << pad
+                     << " -- concentric would be " << want;
+      }
+    }
+  }
+  const views::View* next = mine ? &v : rounded_ancestor;
+  for (const views::View* child : v.children()) {
+    AuditInto(*child, next);
+  }
+}
+
+}  // namespace
+
+void AuditConcentricity(const views::View& root) {
+  // Parsed once. This is called on every activation, and re-scanning the
+  // command line each time would be a cost paid by everyone to serve a
+  // debugging switch almost nobody sets.
+  static const bool kEnabled =
+      base::CommandLine::ForCurrentProcess()->HasSwitch(kAuditShapeSwitch);
+  if (!kEnabled) {
+    return;
+  }
+  g_rounded_seen = 0;
+  g_violations = 0;
+  AuditInto(root, nullptr);
+  LOG(WARNING) << "[zephyrus] Rule 2 audit: walked " << g_rounded_seen
+               << " rounded views, " << g_violations << " violation(s)";
 }
 
 }  // namespace zephyrus::m3

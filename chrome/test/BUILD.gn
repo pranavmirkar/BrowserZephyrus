@@ -1282,6 +1282,7 @@ source_set("platform_browser_tests") {
     "../browser/zephyrus/privacy/fingerprint_randomization_browsertest.cc",
     "../browser/ui/views/frame/zephyrus_privacy_popup_browsertest.cc",
     "../browser/ui/views/frame/zephyrus_search_overlay_browsertest.cc",
+    "../browser/ui/views/toolbar/zephyrus_titlebar_groups_browsertest.cc",
     "../browser/no_best_effort_tasks_browsertest.cc",
     "../browser/policy/policy_prefs_browsertest.cc",
     "../browser/policy/test/browsing_history_policy_browsertest.cc",

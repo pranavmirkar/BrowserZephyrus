@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -61,7 +62,8 @@ ZephyrusCustomizePanel::ZephyrusCustomizePanel(BrowserView* browser_view)
   // is no reflow to pay for either.
 
   slide_.SetSlideDuration(kSlideDuration);
-  slide_.SetTweenType(gfx::Tween::FAST_OUT_SLOW_IN);
+  slide_.SetTweenType(
+      zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
 
   // Closed until asked for, and costing nothing until then.
   SetVisible(false);

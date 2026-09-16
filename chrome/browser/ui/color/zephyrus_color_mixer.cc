@@ -48,6 +48,13 @@ void AddZephyrusColorMixer(ui::ColorProvider* provider,
   mixer[kColorZephyrusOnSecondaryContainer] = {dark ? ui::kColorRefSecondary90
                                                     : ui::kColorRefSecondary10};
 
+  // A disabled title-bar glyph sits ON the group's container, not on the bar,
+  // so it dims against onSecondaryContainer -- M3's 38% for disabled content.
+  // Chromium's own disabled toolbar icon colour is derived from its toolbar
+  // palette and reads wrong on a seeded container.
+  mixer[kColorToolbarButtonIconDisabled] =
+      ui::SetAlpha(kColorZephyrusOnSecondaryContainer, 0x61);
+
   // -- Tertiary --------------------------------------------------------------
   mixer[kColorZephyrusTertiary] = {dark ? ui::kColorRefTertiary80
                                         : ui::kColorRefTertiary40};

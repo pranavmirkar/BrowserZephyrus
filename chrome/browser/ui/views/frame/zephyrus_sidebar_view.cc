@@ -128,8 +128,12 @@ constexpr int kMoveToWorkspaceBase = 100;  // + workspace index
 // does dozens of times a session -- that frequency argues for reduction, not
 // for drawer-length timing. 280ms was modal-scale for something that behaves
 // much more like a dropdown, and the cost of being slow is paid every time.
-constexpr base::TimeDelta kSlideInDuration = base::Milliseconds(210);
-constexpr base::TimeDelta kSlideOutDuration = base::Milliseconds(200);
+// HOT PATH. The reveal fires on hover, many times a minute, so it keeps its
+// short duration rather than taking M3's 350ms fast-spatial. See the note on
+// kHotSlideIn -- the spec's numbers are tuned for phone-scale motion and a
+// panel that makes you wait is the whole cost here.
+constexpr base::TimeDelta kSlideInDuration = zephyrus::m3::kHotSlideIn;
+constexpr base::TimeDelta kSlideOutDuration = zephyrus::m3::kHotSlideOut;
 
 // Where the panel sits for a given reveal amount.
 //
@@ -574,8 +578,10 @@ class ZephyrusTabRow : public views::Button {
     // transform and drag the translation into the easing with it.
     const double elapsed = (base::TimeTicks::Now() - lift_started_).InSecondsF();
     const double t = std::clamp(elapsed / 0.14, 0.0, 1.0);
-    const float lift =
-        static_cast<float>(gfx::Tween::CalculateValue(gfx::Tween::EASE_OUT_3, t));
+    // EXACT curve, not TweenFor: this value is computed here rather than
+    // handed to the compositor, so the real bezier is available.
+    const float lift = static_cast<float>(
+        zephyrus::m3::Curve(zephyrus::m3::Spring::kFastSpatial).Solve(t));
 
     // Eased between the two states rather than snapped. This is a state change
     // -- "releasing here does something else" -- and it was arriving in a
@@ -607,7 +613,10 @@ class ZephyrusTabRow : public views::Button {
     settings.SetPreemptionStrategy(
         ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
     settings.SetTransitionDuration(base::Milliseconds(160));
-    settings.SetTweenType(gfx::Tween::EASE_OUT_3);
+    // The row SETTLES back into place -- spatial, so it takes the spatial
+    // tween. Duration stays short for the reason above it.
+    settings.SetTweenType(
+        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
     layer()->SetTransform(gfx::Transform());
     // Back to solid: the tab has returned to the list.
     layer()->SetOpacity(1.f);
@@ -776,8 +785,9 @@ class ZephyrusTabRow : public views::Button {
     const double t = std::clamp(
         (base::TimeTicks::Now() - affordance_changed_).InSecondsF() / 0.16, 0.0,
         1.0);
+    // Exact curve for the same reason as the lift above.
     const float eased = static_cast<float>(
-        gfx::Tween::CalculateValue(gfx::Tween::EASE_OUT_3, t));
+        zephyrus::m3::Curve(zephyrus::m3::Spring::kFastSpatial).Solve(t));
     const float to = split_affordance_ ? 1.f : 0.f;
     return affordance_from_ + (to - affordance_from_) * eased;
   }
@@ -1178,10 +1188,11 @@ void ZephyrusSidebarView::Reveal() {
   // has always honoured it. Without this the panel would snap into place while
   // the page's edge kept easing open behind it — reduced motion half-applied
   // looks more broken than not applying it at all.
-  // EASE_OUT_3, matching the drag and settle animations. Two different
-  // ease-out variants inside one component is the kind of incoherence that
-  // makes an interface feel assembled rather than authored.
-  reveal_animation_.SetTweenType(gfx::Tween::EASE_OUT_3);
+  // One tween for the whole component, now chosen by ROLE rather than by
+  // matching whatever the neighbouring animation happened to use. The panel
+  // slides, so it is spatial.
+  reveal_animation_.SetTweenType(
+      zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
   reveal_animation_.SetSlideDuration(
       gfx::Animation::ShouldRenderRichAnimation() ? kSlideInDuration
                                                   : base::TimeDelta());
@@ -1239,10 +1250,11 @@ void ZephyrusSidebarView::TuckAway() {
 
   reveal_poll_timer_.Start(FROM_HERE, base::Milliseconds(100), this,
                            &ZephyrusSidebarView::OnRevealPoll);
-  // EASE_OUT_3, matching the drag and settle animations. Two different
-  // ease-out variants inside one component is the kind of incoherence that
-  // makes an interface feel assembled rather than authored.
-  reveal_animation_.SetTweenType(gfx::Tween::EASE_OUT_3);
+  // One tween for the whole component, now chosen by ROLE rather than by
+  // matching whatever the neighbouring animation happened to use. The panel
+  // slides, so it is spatial.
+  reveal_animation_.SetTweenType(
+      zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
   reveal_animation_.SetSlideDuration(
       gfx::Animation::ShouldRenderRichAnimation() ? kSlideOutDuration
                                                   : base::TimeDelta());
@@ -1494,7 +1506,8 @@ void ZephyrusSidebarView::UpdateSplitDropIndicator(bool visible) {
   settings.SetPreemptionStrategy(
       ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
   settings.SetTransitionDuration(base::Milliseconds(120));
-  settings.SetTweenType(gfx::Tween::EASE_OUT_3);
+  settings.SetTweenType(
+      zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
   split_drop_indicator_->layer()->SetOpacity(visible ? 1.f : 0.f);
 }
 
@@ -1682,7 +1695,8 @@ void ZephyrusSidebarView::OnRowDragged(views::View* row, int y_in_container) {
     // the list feels like it is wading; faster and the reorder is invisible,
     // which defeats the point of animating it at all.
     settings.SetTransitionDuration(base::Milliseconds(180));
-    settings.SetTweenType(gfx::Tween::EASE_OUT_3);
+    settings.SetTweenType(
+        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
     child->layer()->SetTransform(gfx::Transform());
   }
 }

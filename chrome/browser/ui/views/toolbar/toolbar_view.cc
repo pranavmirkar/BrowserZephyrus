@@ -95,6 +95,8 @@
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_tab_helper.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
+#include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "content/public/browser/web_contents.h"
@@ -344,6 +346,14 @@ class ZephyrusOmniboxFocusAnimation : public gfx::AnimationDelegate {
 
 DEFINE_UI_CLASS_PROPERTY_KEY(bool, kActionItemUnderlineIndicatorKey, false)
 
+
+// DO NOT reach an icon container's spacing through
+// ToolbarIconContainerView::GetTargetLayoutManager(). It is an UNCHECKED
+// static_cast to views::FlexLayout, and PinnedToolbarActionsContainer is built
+// with use_default_target_layout=false, so no FlexLayout is ever installed --
+// the cast hands back a bogus pointer and writing through it takes the browser
+// down with an access violation (0xC0000005) before the first paint.
+
 namespace {
 
 // Gets the display mode for a given browser.
@@ -450,9 +460,126 @@ inline constexpr float kPillStroke = 0.5f;
 // only matched by coincidence. Stating it once and applying it to both is what
 // actually keeps them level; it also makes the workspace cell square (a circle
 // needs width == height), so the cell's width follows from this too.
-inline constexpr int kPillHeight = 24;
+// 28, up from 24. At 24 the workspace glyph was 14px across once the inset was
+// taken off it, which is small enough that the icon's animation could not be
+// read without leaning toward the screen.
+//
+// It stays well inside the title bar: the caption buttons beside it are 32
+// wide, so 28 is not the constraint on the bar's height. 4px larger is also a
+// whole number of device pixels at 1.5x and 2x, which a layer-rounded circle
+// needs.
+inline constexpr int kPillHeight = 28;
 
-inline constexpr int kZephyrusCaptionWidth = 32;
+// Every title-bar control sits in a cell this wide. ToolbarView::Layout gives
+// each ToolbarButton SetMinSize(kZephyrusCell, kZephyrusCell), and the window
+// controls are built at the same width, so one number drives the whole bar.
+//
+// Measured, after getting it wrong twice: a
+// toolbar cell is 32, NOT the 16dp-icon-plus-4dp-insets 24 that
+// layout_constants suggests -- the normalising pass above overrides it. A
+// 28 here made the window controls the narrowest thing in the bar.
+// What a title-bar container actually DRAWS at, which is not kPillHeight.
+//
+// A workspace cell is kPillHeight square but insets its disc 1px per side, so
+// the disc renders 2 smaller than the cell. Matching the cells therefore does
+// NOT match what the eye sees; matching this does. Everything in the bar is
+// sized from here so the containers, the window controls and the workspace
+// discs all render at one height.
+inline constexpr int kZephyrusContainer = kPillHeight - 2;
+
+inline constexpr int kZephyrusCell = kZephyrusContainer;
+
+// The gap between two neighbouring cells. Even, because a run's containers are
+// grown or shrunk by half of it to land on the 2dp connected seam; an odd gap
+// cannot be halved and leaves the seams a pixel apart.
+inline constexpr int kZephyrusGap = 2;
+
+// The gap between two toolbar CELLS, which are Chromium's 24 and which we do
+// not widen -- see the note in Layout(). The container grows half of this into
+// the gap from each side, so 4 lands a 24dp cell in a kZephyrusContainer-wide
+// container with kZephyrusGap left over as the seam: 24 + 2*((4 - 2)/2) == 26.
+//
+// This and kZephyrusContainer move together. A gap that does not satisfy
+// 24 + (gap - kZephyrusGap) == kZephyrusContainer leaves the containers wider
+// or narrower than they are tall, which is what turned them into ovals before.
+//
+// This is the cheap way to a square container. Inflating the CELL to 28 or 32
+// instead costs the bar that width per control, and the toolbar decides what
+// to push into the overflow menu from the width its controls ASK for, not from
+// the pixels left over -- so wide cells evict a button while the bar still
+// looks half empty.
+inline constexpr int kZephyrusCellGap = 4;
+
+// The widest gap two controls may have and still be drawn as one connected
+// group. Generous next to the 2dp pitch, so ordinary layout slack still joins,
+// but far under the width of a container that has been emptied out.
+inline constexpr int kZephyrusMaxJoin = 8;
+
+// Put one view on the title bar's pitch, and ONLY if it is not already there.
+// This is called from Layout(); rewriting a margin that has not changed
+// invalidates layout, which re-enters Layout.
+void SetZephyrusPitchMargin(views::View* view, int left, int right) {
+  const gfx::Insets want = gfx::Insets::TLBR(0, left, 0, right);
+  const gfx::Insets* have = view->GetProperty(views::kMarginsKey);
+  if (!have || *have != want) {
+    view->SetProperty(views::kMarginsKey, want);
+  }
+}
+
+void SetZephyrusPitchMargin(views::View* view) {
+  SetZephyrusPitchMargin(view, kZephyrusCellGap, kZephyrusCellGap);
+}
+
+// Space a container's OWN buttons, leaving its outer edges flush.
+//
+// ToolbarIconContainerView asks its layout to ignore DEFAULT margins on the
+// main axis, which keeps its first and last child flush with its edges. An
+// explicit margin is not a default, so setting one on every button defeated
+// that and parked 6dp inside each container edge -- on top of the 6dp between
+// the containers. Measured: 6 + 6 + 6 = 18dp between the extensions button and
+// the download button, against 6dp anywhere the toolbar owns both sides, which
+// split them into separate groups.
+void SetZephyrusContainerPitch(views::View* container) {
+  std::vector<views::View*> buttons;
+  auto walk = [&](auto&& self, views::View* v) -> void {
+    if (!v->GetVisible()) {
+      return;
+    }
+    if (views::AsViewClass<views::Button>(v)) {
+      buttons.push_back(v);
+      return;
+    }
+    for (views::View* child : v->children()) {
+      self(self, child);
+    }
+  };
+  walk(walk, container);
+  if (buttons.empty()) {
+    return;
+  }
+  for (size_t i = 0; i < buttons.size(); ++i) {
+    SetZephyrusPitchMargin(buttons[i], i == 0 ? 0 : kZephyrusCellGap,
+                           i + 1 == buttons.size() ? 0 : kZephyrusCellGap);
+  }
+
+  // Then space the container by what its edges ACTUALLY do, not by what they
+  // ought to do. A container's edge need not sit on its outermost button:
+  // PinnedToolbarActionsContainer still carries the toolbar divider, whose
+  // margin is negative here, so its right edge lands 2dp INSIDE its last
+  // button -- measured, the gap across it came out 4 where every gap the
+  // toolbar owns is 6, and one tight pair drags a whole run's growth down.
+  //
+  // Adding back whatever the edge gives away makes the button-to-button gap
+  // kZephyrusCellGap wherever the run crosses a container boundary. Margins
+  // collapse to the LARGER of the two, so this has to overshoot to win.
+  const gfx::Rect lead = views::View::ConvertRectToTarget(
+      buttons.front(), container, buttons.front()->GetLocalBounds());
+  const gfx::Rect trail = views::View::ConvertRectToTarget(
+      buttons.back(), container, buttons.back()->GetLocalBounds());
+  SetZephyrusPitchMargin(container, kZephyrusCellGap - lead.x(),
+                         kZephyrusCellGap - (container->width() - trail.right()));
+}
+inline constexpr int kZephyrusCaptionCell = kZephyrusCell;
 
 // Air between the close button and the window's right edge. The strip used to
 // run flush into the corner; a few pixels of inset lets the cluster read as a
@@ -493,10 +620,8 @@ inline constexpr int kZephyrusBrowserControlsRightShift = 3;
 //
 // The two knobs: raise kLeftAir to push the rule off the app menu, raise
 // kRightAir to push it off the window controls.
-inline constexpr int kZephyrusCaptionSeparatorLeftAir = 7;
-inline constexpr int kZephyrusCaptionSeparatorRightAir = 2;
-inline constexpr int kZephyrusCaptionSeparatorCell =
-    kZephyrusCaptionSeparatorLeftAir + 1 + kZephyrusCaptionSeparatorRightAir;
+// The caption separator and its spacing constants are gone; the gap between
+// the two trailing groups is what divides them now.
 
 }  // namespace
 
@@ -689,18 +814,14 @@ void ToolbarView::Init() {
         InitialWebUIWindowMetricsManager::From(browser_)));
   }
 
-  if (!features::IsWebUIHomeButtonEnabled()) {
-    home_ = AddChildView(std::make_unique<HomeButton>(
-        browser_, base::BindRepeating(callback, browser_, IDC_HOME)));
-  }
-
-  if (!features::IsWebUISplitTabsButtonEnabled()) {
-    split_tabs_ =
-        AddChildView(std::make_unique<SplitTabsToolbarButton>(browser_));
-  }
-
-  // Zephyrus: new tab (+) button in the toolbar's left group, since the tab
-  // strip's new tab button is hidden.
+  // Zephyrus: new tab (+) sits with the navigation controls, since the tab
+  // strip's own new-tab button is hidden.
+  //
+  // ADDED HERE, right after reload, because children are laid out in the order
+  // they are added and back/forward/reload/new-tab are one button group. It
+  // used to be added after Home and Split tabs, which put those two INSIDE the
+  // group's span -- and a group whose members are not adjacent cannot be drawn
+  // as one run, so the cluster broke in half around them.
   if (browser_->is_type_normal()) {
     auto new_tab_button = std::make_unique<ToolbarButton>(
         base::BindRepeating(callback, browser_, IDC_NEW_TAB));
@@ -710,6 +831,16 @@ void ToolbarView::Init() {
     new_tab_button->SetTooltipText(new_tab_name);
     new_tab_button->GetViewAccessibility().SetName(new_tab_name);
     zephyrus_new_tab_button_ = AddChildView(std::move(new_tab_button));
+  }
+
+  if (!features::IsWebUIHomeButtonEnabled()) {
+    home_ = AddChildView(std::make_unique<HomeButton>(
+        browser_, base::BindRepeating(callback, browser_, IDC_HOME)));
+  }
+
+  if (!features::IsWebUISplitTabsButtonEnabled()) {
+    split_tabs_ =
+        AddChildView(std::make_unique<SplitTabsToolbarButton>(browser_));
   }
 
   if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&
@@ -952,6 +1083,16 @@ void ToolbarView::Init() {
     AddZephyrusAdblockButton();
   }
 
+  // Keep optional actions together on the trailing side of the omnibox.
+  // Move before creating its flexible spacers so neither spacer splits a group.
+  if (browser_->is_type_normal() && location_bar_view_) {
+    for (views::View* action : {static_cast<views::View*>(split_tabs_.get()),
+                               static_cast<views::View*>(home_.get())}) {
+      if (action) {
+        ReorderChildView(action, GetIndexOf(location_bar_view_).value());
+      }
+    }
+  }
   InitLayout();
 
   // Zephyrus: the pin toggle sits just right of the (now centered) omnibox, so
@@ -1727,6 +1868,62 @@ void ToolbarView::Layout(PassKey) {
   }
 
   if (display_mode_ == DisplayMode::kNormal) {
+    // Normalize icon cells, including actions added after initialization.
+    // Leave workspace content and the address field's internal buttons alone.
+    auto size_buttons = [&](auto&& self, views::View* view) -> void {
+      if (auto* button = views::AsViewClass<ToolbarButton>(view)) {
+        // The CELL is left at whatever Chromium sizes it -- 24 for a toolbar
+        // button. Forcing it to kZephyrusCell made every control demand 8dp
+        // more than it needs, and the toolbar evicts buttons to the overflow
+        // menu on demanded width, so Downloads disappeared while the bar still
+        // had obvious room. The container reaches kZephyrusCell by growing
+        // into kZephyrusCellGap instead, which costs the bar 2dp per control
+        // rather than 6.
+        button->SetMinSize(gfx::Size(0, kPillHeight));
+        // ToolbarButton's constructor does SetHorizontalAlignment(ALIGN_RIGHT).
+        // Upstream that is invisible: a stock cell is 24dp with 4dp insets, so
+        // the content box is exactly the icon's 16dp and every alignment lands
+        // in the same place. Widening the cell to kZephyrusCell for one bar
+        // pitch created 8dp of slack, and ALIGN_RIGHT put ALL of it on the
+        // icon's left -- MEASURED off the screen at 1.5x: every glyph sat 6
+        // device px, exactly 4dp, right of its container's centre.
+        //
+        // Icon-only controls belong centred. The app menu is left alone: it
+        // grows into a labelled chip, where the icon hugging the text is the
+        // point.
+        if (button != app_menu_button_ &&
+            button->GetHorizontalAlignment() != gfx::ALIGN_CENTER) {
+          button->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+        }
+        // One pitch for the whole bar. FlexLayout collapses margins, so the
+        // gap between two controls is the LARGER of their two margins, not the
+        // sum. A uniform margin makes every gap kZephyrusGap, and a run of
+        // evenly pitched cells is the only way the seams inside it come out
+        // equal.
+        if (!views::AsViewClass<ToolbarIconContainerView>(button->parent())) {
+          SetZephyrusPitchMargin(button);
+        }
+        // The shared container paints the state layer once. Keep the native
+        // mask/focus geometry but avoid a second wash over the same segment.
+        views::InkDrop::Get(button)->SetHighlightOpacity(0.f);
+        views::InkDrop::Get(button)->SetVisibleOpacity(0.f);
+        return;
+      }
+      if (views::AsViewClass<ToolbarIconContainerView>(view)) {
+        SetZephyrusContainerPitch(view);
+      }
+      for (views::View* child : view->children()) {
+        self(self, child);
+      }
+    };
+    if (zephyrus_nav_pill_backdrop_) {
+      for (views::View* child : children()) {
+        if (views::AsViewClass<views::Button>(child) ||
+            views::AsViewClass<ToolbarIconContainerView>(child)) {
+          size_buttons(size_buttons, child);
+        }
+      }
+    }
     LayoutCommon();
   }
 
@@ -1760,27 +1957,34 @@ void ToolbarView::Layout(PassKey) {
          {zephyrus_close_button_.get(), zephyrus_maximize_button_.get(),
           zephyrus_minimize_button_.get()}) {
       if (button && button->GetVisible()) {
-        button->SetBounds(right - kZephyrusCaptionWidth, 0,
-                          kZephyrusCaptionWidth, height());
-        right -= kZephyrusCaptionWidth;
+        // Full height is the HIT area -- the pointer thrown into the screen
+        // corner must still land on Close. The drawn container is clamped to
+        // kPillHeight by the group, so what you see matches the other
+        // controls while what you can hit reaches the edge.
+        //
+        // This SetBounds is why setting a preferred size on the button did
+        // nothing -- and why kMarginsKey does nothing either. The manual layout
+        // overrides both, so the bar's pitch has to be added HERE. Without the
+        // gap the three cells sat exactly kZephyrusCaptionCell apart, touching,
+        // and their containers only got a seam because the growth rule pulled
+        // each one in by a pixel -- which left the window controls 2dp narrower
+        // than every other control in the bar.
+        button->SetBounds(right - kZephyrusCaptionCell, 0,
+                          kZephyrusCaptionCell, height());
+        right -= kZephyrusCaptionCell + kZephyrusGap;
       }
     }
-    // `right` is now the left edge of the strip.
-    if (zephyrus_caption_separator_) {
-      zephyrus_caption_separator_->SetBounds(
-          right - kZephyrusCaptionSeparatorCell, 0,
-          kZephyrusCaptionSeparatorCell, height());
-    }
+    // The caption separator is GONE. It existed to divide the window controls
+    // from the toolbar actions; the two are now separate connected groups, and
+    // the gap between the groups says the same thing without a drawn rule.
+    // What splits them is the control KIND, not a view sitting between them --
+    // see ZephyrusTitlebarGroups.
   }
-  if (zephyrus_controls_backdrop_) {
-    zephyrus_controls_backdrop_->SetVisible(false);
-  }
-
-  // Zephyrus: no container behind the navigation arrows. Every title bar glyph
-  // sits bare on the flat theme, so the shared glass pill that used to group
-  // back/forward stays hidden (as does the window-controls backdrop above).
+  // The group painter covers the whole bar; it positions nothing itself, it
+  // just draws every group's containers behind the controls.
   if (zephyrus_nav_pill_backdrop_) {
-    zephyrus_nav_pill_backdrop_->SetVisible(false);
+    zephyrus_nav_pill_backdrop_->SetVisible(true);
+    zephyrus_nav_pill_backdrop_->SetBoundsRect(GetLocalBounds());
   }
 
   // Zephyrus: Safari-style compact address pill. Stock Chromium stretches the
@@ -2013,40 +2217,10 @@ namespace {
 // paints the authentic Win11 glyphs via Windows11IconPainter, with rectangular
 // hover backgrounds (red for close) like the native title bar buttons.
 // A vertical hairline dividing the browser controls from the window controls.
-class ZephyrusCaptionSeparator : public views::View {
-  METADATA_HEADER(ZephyrusCaptionSeparator, views::View)
-
- public:
-  ZephyrusCaptionSeparator() { SetCanProcessEventsWithinSubtree(false); }
-
-  void OnPaint(gfx::Canvas* canvas) override {
-    // Short and centred, not full height: a rule that runs the whole title bar
-    // would cut the window in two, where this only has to say "different group
-    // of controls".
-    constexpr int kRuleHeight = 16;
-    const gfx::Rect b = GetContentsBounds();
-    // Positioned from the LEFT edge, not centred: the cell is deliberately
-    // lopsided so the rule sits the same optical distance from the app menu
-    // glyph as from the chevron. Centring here would undo that.
-    const float x = b.x() + kZephyrusCaptionSeparatorLeftAir + 0.5f;
-    const float top = b.CenterPoint().y() - kRuleHeight / 2.f;
-
-    cc::PaintFlags flags;
-    flags.setAntiAlias(false);
-    flags.setStyle(cc::PaintFlags::kStroke_Style);
-    flags.setStrokeWidth(zephyrus::kHairline);
-    // Accent, by request. Worth noting this is the only DECORATIVE use of the
-    // red in the browser -- everywhere else it marks something live or
-    // destructive (close, focus, drop target, active tab). A permanent red
-    // mark in the title bar spends a little of what makes those read as
-    // urgent; it is a deliberate trade, not an oversight.
-    flags.setColor(zephyrus::Accent());
-    canvas->sk_canvas()->drawLine(x, top, x, top + kRuleHeight, flags);
-  }
-};
-
-BEGIN_METADATA(ZephyrusCaptionSeparator)
-END_METADATA
+// ZephyrusCaptionSeparator is DELETED. It drew a short accent rule between
+// the toolbar actions and the window controls; those are now two separate
+// button groups, and the gap between them says the same thing without
+// spending the accent on decoration.
 
 class ZephyrusWin11CaptionButton : public views::Button {
   METADATA_HEADER(ZephyrusWin11CaptionButton, views::Button)
@@ -2061,10 +2235,9 @@ class ZephyrusWin11CaptionButton : public views::Button {
     GetViewAccessibility().SetName(name);
     SetTooltipText(name);
     SetAnimateOnStateChange(false);
-    // Tight cells, macOS-style grouping. Height stays 36 so the strip is flush
-    // to the top edge and stays hittable when the pointer is thrown into the
-    // screen corner.
-    SetPreferredSize(gfx::Size(kZephyrusCaptionWidth, 36));
+    // Reserve the same width that Layout() assigns. The full-height hit
+    // target is independent of the compact painted container.
+    SetPreferredSize(gfx::Size(kZephyrusCaptionCell, 36));
   }
 
   // The 18-unit Breeze grid is drawn into a box this many DIPs across; the
@@ -2085,38 +2258,15 @@ class ZephyrusWin11CaptionButton : public views::Button {
     }
   }
 
-  // views::Button:
-  //
-  // KDE Breeze glyphs, handled the way macOS handles its controls: a small,
-  // tightly grouped cluster rather than Windows' wide full-height cells.
-  // The glyph is permanent (Breeze) and a circle fills behind it on hover.
-  //
-  // The traffic-light dots that briefly lived here were wrong: the ask was
-  // Breeze's marks with macOS's *treatment*, not macOS's coloured dots.
-  void OnPaintBackground(gfx::Canvas* canvas) override {
-    const bool hovered = GetState() == STATE_HOVERED;
-    const bool pressed = GetState() == STATE_PRESSED;
-    if (!hovered && !pressed) {
-      return;
-    }
+  // The group owns the complete container and state layer. A second circular
+  // hover fill here would cover the connected corners with a different shape.
+  void OnPaintBackground(gfx::Canvas* canvas) override {}
 
-    SkColor bg;
-    if (kind_ == Kind::kClose) {
-      // Close is the one destructive control, and the only red in the strip.
-      bg = zephyrus::Accent();
-      if (pressed) {
-        bg = color_utils::AlphaBlend(SK_ColorBLACK, bg, SkAlpha{0x2E});
-      }
-    } else {
-      bg = pressed ? zephyrus::Ink() : SkColorSetA(zephyrus::Ink(), 0xC4);
+  void StateChanged(ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    if (parent()) {
+      parent()->SchedulePaint();
     }
-
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setStyle(cc::PaintFlags::kFill_Style);
-    flags.setColor(bg);
-    canvas->DrawCircle(gfx::PointF(GetContentsBounds().CenterPoint()),
-                       (kGlyphBox + 6.f) / 2.f, flags);
   }
 
   // Breeze geometry, from breezebutton.cpp, on its own 18x18 grid:
@@ -2131,9 +2281,10 @@ class ZephyrusWin11CaptionButton : public views::Button {
   void PaintButtonContents(gfx::Canvas* canvas) override {
     const bool hot =
         GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
-    // On hover the glyph sits on a filled circle, so it flips to the ground --
-    // the same inversion rule the rest of the browser follows.
-    const SkColor symbol_color = hot ? zephyrus::Ground() : foreground_;
+    // Pair the glyph with the container, including Close's error state.
+    const SkColor symbol_color = zephyrus::m3::Role(
+        *this, hot && kind_ == Kind::kClose ? kColorZephyrusOnErrorContainer
+                                          : kColorZephyrusOnSecondaryContainer);
 
     gfx::ScopedCanvas scoped(canvas);
     const gfx::Rect contents = GetContentsBounds();
@@ -2156,33 +2307,43 @@ class ZephyrusWin11CaptionButton : public views::Button {
         canvas->sk_canvas()->drawLine(5, 5, 13, 13, flags);
         canvas->sk_canvas()->drawLine(13, 5, 5, 13, flags);
         break;
-      case Kind::kMinimize: {
-        SkPathBuilder path;
-        path.moveTo(4, 7);
-        path.lineTo(9, 12);
-        path.lineTo(14, 7);
-        canvas->sk_canvas()->drawPath(path.detach(), flags);
+      // macOS glyphs for these two. Close keeps its X, which both platforms
+      // draw the same way.
+      case Kind::kMinimize:
+        // A plain bar. macOS's minimise is the one glyph in the set with no
+        // direction to it -- the window is not going anywhere you can point at.
+        canvas->sk_canvas()->drawLine(5, 9, 13, 9, flags);
         break;
-      }
       case Kind::kMaximizeRestore: {
+        // Two triangles in opposite corners: pointing OUT to expand, and in
+        // toward each other to restore. Filled, unlike the chevrons this
+        // replaces -- a stroked triangle this small closes up into a smudge,
+        // and macOS fills them for the same reason.
+        cc::PaintFlags solid = flags;
+        solid.setStyle(cc::PaintFlags::kFill_Style);
         SkPathBuilder path;
         if (maximized_) {
-          path.moveTo(4, 9);
-          path.lineTo(9, 4);
-          path.lineTo(14, 9);
-          path.lineTo(9, 14);
+          // Restore: apexes meet near the centre.
+          path.moveTo(4, 8);
+          path.lineTo(8, 8);
+          path.lineTo(8, 4);
           path.close();
-          // STROKED, not filled. Breeze fills this diamond, but Breeze draws it
-          // much larger; at 16px a solid diamond reads as a blob next to two
-          // hairline chevrons, so it keeps the same pen as its neighbours and
-          // the row stays one weight.
-          canvas->sk_canvas()->drawPath(path.detach(), flags);
+          path.moveTo(14, 10);
+          path.lineTo(10, 10);
+          path.lineTo(10, 14);
+          path.close();
         } else {
-          path.moveTo(4, 11);
-          path.lineTo(9, 6);
-          path.lineTo(14, 11);
-          canvas->sk_canvas()->drawPath(path.detach(), flags);
+          // Expand: apexes reach for the corners.
+          path.moveTo(4, 4);
+          path.lineTo(10, 4);
+          path.lineTo(4, 10);
+          path.close();
+          path.moveTo(14, 14);
+          path.lineTo(8, 14);
+          path.lineTo(14, 8);
+          path.close();
         }
+        canvas->sk_canvas()->drawPath(path.detach(), solid);
         break;
       }
     }
@@ -2844,10 +3005,74 @@ void ShowZephyrusDeleteWorkspaceDialog(Browser* browser,
   }
 }
 
-// A floating "liquid glass" pill painted behind a group of toolbar controls
-// (per the Zephyrus Browser Design Figma: Window/Button Group, LiquidGlass).
-// Translucent white fill + hairline, fully rounded. Positioned manually in
-// ToolbarView::Layout and ignored by the FlexLayout pass.
+// One geometry source for the container and the native ink-drop mask.
+//
+// Every segment is SYMMETRIC about its own control. That is the whole point:
+// the glyph is centred in the control's cell, so a container that reaches
+// further to one side than the other puts the glyph visibly off centre.
+//
+// Splitting at the midpoint between neighbours did exactly that. A run's first
+// control grew only rightwards and its last only leftwards, so the glyph drifted
+// toward the group's outer cap -- and the old per-run inset, applied to one side
+// of those same two controls, pulled it the same way again.
+//
+// So the run grows by ONE amount on both sides of every control, taken from its
+// tightest gap: the closest pair lands exactly kSeam apart, wider-spaced pairs
+// keep a little more air, and no glyph moves. A control standing alone in its
+// group grows not at all -- there is nothing to connect to.
+SkRRect ZephyrusSegmentShape(const std::vector<ZephyrusGroupSegment>& group,
+                            size_t index) {
+  constexpr int kSeam = 2;
+  // A run only closes up to kSeam if it is allowed to grow half its gap. The
+  // toolbar sets its buttons about 13dp apart, so a cap of 6 left roughly a
+  // 3dp trough -- visible, and the group read as separate chips. The cap is
+  // only here to stop a loosely spaced run reaching into the group beside it.
+  constexpr int kMaxGrow = 10;
+  const auto& item = group[index];
+  int grow;
+  if (group.size() > 1) {
+    grow = kMaxGrow;
+    for (size_t i = 1; i < group.size(); ++i) {
+      const int gap =
+          std::max(0, group[i].bounds.x() - group[i - 1].bounds.right());
+      grow = std::min(grow, (gap - kSeam) / 2);
+    }
+    // NEGATIVE is allowed, and it has to be: cells that already touch (gap 0)
+    // need the containers pulled IN to open the seam, not left flush. Flooring
+    // this at zero is what painted the window controls as one unbroken slab.
+    grow = std::max(grow, -kSeam);
+  } else {
+    // Nothing to connect to, so nothing constrains the width -- and a toolbar
+    // cell is 24 wide inside a 28 tall bar, so a container drawn at the cell's
+    // width is a VERTICAL oval. Widen a lone control until its container is at
+    // least square and the fully rounded ends read as a circle.
+    grow = std::max(0, (item.bounds.height() - item.bounds.width() + 1) / 2);
+  }
+  const bool first = index == 0;
+  const bool last = index + 1 == group.size();
+  const float left = item.bounds.x() - grow;
+  const float right = item.bounds.right() + grow;
+  const float outer = item.bounds.height() / 2.f;
+  // Keep the group's outside silhouette while its inner corners respond.
+  //
+  // The inner radius has to stay SMALL relative to the container's half-height,
+  // or a run stops reading as one bar. These containers are kPillHeight tall,
+  // so the half-height is 14: at the old inner radius of 8, two corners facing
+  // each other across the 2dp seam opened the background to 2 + 8 + 8 = 18dp at
+  // the top and bottom edges while the middle stayed 2dp, and every segment
+  // read as its own rounded chip. At 4 that opening is 10dp, and the run reads
+  // as a divided bar with fully round ends -- which is the connected button
+  // group. Scale this with kPillHeight, never independently of it.
+  const float inner = item.pressed ? 2.f : 4.f;
+  const float end = first && last && item.pressed ? 4.f : outer;
+  const float l = first ? end : inner;
+  const float r = last ? end : inner;
+  const SkVector radii[4] = {{l, l}, {r, r}, {r, r}, {l, l}};
+  return SkRRect::MakeRectRadii(
+      SkRect::MakeLTRB(left, item.bounds.y(), right, item.bounds.bottom()), radii);
+}
+
+// Paints tonal M3 connected controls below their native glyphs.
 class ZephyrusGlassPill : public views::View {
   METADATA_HEADER(ZephyrusGlassPill, views::View)
 
@@ -2857,25 +3082,58 @@ class ZephyrusGlassPill : public views::View {
     SetProperty(views::kViewIgnoredByLayoutKey, true);
   }
 
+  // Where the groups come from, asked for at PAINT time.
+  //
+  // Pulling rather than being told means the containers can never lag the
+  // controls after a relayout, and this class is defined below
+  // ToolbarView::Layout() so it could not be handed them anyway.
+  using GroupSource = base::RepeatingCallback<
+      std::vector<std::vector<ZephyrusGroupSegment>>()>;
+  void SetGroupSource(GroupSource source) { source_ = std::move(source); }
+
   // views::View:
   void OnPaint(gfx::Canvas* canvas) override {
-    const float radius = height() / 2.0f;
+    if (!source_) {
+      return;
+    }
+    // Connected XS tokens: kZephyrusGap spacing, small inner corners at rest
+    // and smaller when pressed, at kZephyrusContainer height. The numbers live
+    // in ZephyrusSegmentShape; do not restate them here, they drift.
     cc::PaintFlags fill;
     fill.setAntiAlias(true);
-    // Alphas of WHITE lifted the old dark chrome and are invisible on a light
-    // ground. Surface fill plus a hairline rule instead -- the pill is defined
-    // by its outline here, which is how this language raises anything.
-    fill.setColor(zephyrus::Surface());
-    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), radius, fill);
-    cc::PaintFlags stroke;
-    stroke.setAntiAlias(true);
-    stroke.setStyle(cc::PaintFlags::kStroke_Style);
-    stroke.setStrokeWidth(zephyrus::kHairline);
-    stroke.setColor(zephyrus::Rule());
-    gfx::RectF hairline(GetLocalBounds());
-    hairline.Inset(0.5f);
-    canvas->DrawRoundRect(hairline, radius - 0.5f, stroke);
+    fill.setColor(zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer));
+
+    for (const auto& group : source_.Run()) {
+      for (size_t i = 0; i < group.size(); ++i) {
+        SkRRect rrect = ZephyrusSegmentShape(group, i);
+        rrect.offset(-x(), -y());
+        SkColor color = zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer);
+        SkColor ink = zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer);
+        // A disabled control keeps the container. M3 swaps it for onSurface at
+        // 12%, but that assumes a far weaker container tone than our seeded
+        // one: against kColorZephyrusSecondaryContainer the swap punched a
+        // visible hole in the run -- back and forward are disabled on a new
+        // tab, so the navigation group split into a grey half and a coloured
+        // half. The run's silhouette is the point of a connected group, so the
+        // container holds and only the GLYPH drops to 38%, which is where M3
+        // puts disabled content anyway.
+        if (group[i].hovered || group[i].pressed) {
+          if (group[i].close) {
+            color = zephyrus::m3::Role(*this, kColorZephyrusErrorContainer);
+            ink = zephyrus::m3::Role(*this, kColorZephyrusOnErrorContainer);
+          }
+          color = zephyrus::m3::WithStateLayer(
+              color, ink, group[i].pressed ? zephyrus::m3::kPressed
+                                          : zephyrus::m3::kHover);
+        }
+        fill.setColor(color);
+        canvas->sk_canvas()->drawRRect(rrect, fill);
+      }
+    }
   }
+
+ private:
+  GroupSource source_;
 };
 
 BEGIN_METADATA(ZephyrusGlassPill)
@@ -2883,20 +3141,148 @@ END_METADATA
 
 }  // namespace
 
-void ToolbarView::AddZephyrusWindowControls() {
-  // Glass backdrops paint underneath the controls, so they go in at index 0
-  // (first paint order). Bounds are set in Layout().
-  zephyrus_nav_pill_backdrop_ =
-      AddChildViewAt(std::make_unique<ZephyrusGlassPill>(), 0);
-  zephyrus_controls_backdrop_ =
-      AddChildViewAt(std::make_unique<ZephyrusGlassPill>(), 1);
-  // Sits to the LEFT of the window controls, and is created before them so it
-  // is behind them in paint order if their bounds ever overlap.
-  zephyrus_caption_separator_ =
-      AddChildView(std::make_unique<ZephyrusCaptionSeparator>());
-  zephyrus_caption_separator_->SetPreferredSize(
-      gfx::Size(kZephyrusCaptionSeparatorCell, 36));
+std::vector<std::vector<ZephyrusGroupSegment>>
+ToolbarView::ZephyrusTitlebarGroups() const {
+  constexpr int kNav = 0;
+  constexpr int kCaption = 1;
+  constexpr int kActions = 2;
+  constexpr int kShield = 3;
 
+  auto usable = [](const views::View* v) {
+    return v && v->GetVisible() && !v->bounds().IsEmpty();
+  };
+
+  // Group id per control, then a single pass in bar order.
+  std::vector<std::pair<views::View*, int>> ordered;
+  for (views::View* child : children()) {
+    if (child->GetProperty(views::kViewIgnoredByLayoutKey) || !usable(child)) {
+      continue;
+    }
+    if (!views::AsViewClass<views::Button>(child) &&
+        !views::AsViewClass<ToolbarIconContainerView>(child)) {
+      continue;
+    }
+    int id;
+    if (child == back_ || child == forward_ || child == reload_ ||
+        child == zephyrus_new_tab_button_) {
+      id = kNav;
+    } else if (child == zephyrus_minimize_button_ ||
+               child == zephyrus_maximize_button_ ||
+               child == zephyrus_close_button_) {
+      id = kCaption;
+    } else if (child == zephyrus_adblock_button_) {
+      id = kShield;
+    } else {
+      id = kActions;
+    }
+    // Containers such as pinned actions and extensions contain independent
+    // buttons. Each needs its own seam and state, not one stretched capsule.
+    auto collect = [&](auto&& self, views::View* view) -> void {
+      if (!usable(view)) {
+        return;
+      }
+      if (views::AsViewClass<views::Button>(view)) {
+        ordered.emplace_back(view, id);
+        return;
+      }
+      for (views::View* descendant : view->children()) {
+        self(self, descendant);
+      }
+    };
+    collect(collect, child);
+  }
+  std::sort(ordered.begin(), ordered.end(),
+            [this](const auto& a, const auto& b) {
+              return views::View::ConvertRectToTarget(a.first, this,
+                         a.first->GetLocalBounds()).x() <
+                     views::View::ConvertRectToTarget(b.first, this,
+                         b.first->GetLocalBounds()).x();
+            });
+
+  auto segment_for = [this](views::View* v) {
+    gfx::Rect r = views::View::ConvertRectToTarget(v, this, v->GetLocalBounds());
+    // Maximizing widens the outermost buttons via kInternalPaddingKey so the
+    // screen corner still hits them (Fitts's law). That padding is hit area,
+    // not something you can see.
+    if (const gfx::Insets* pad = v->GetProperty(views::kInternalPaddingKey)) {
+      r.Inset(*pad);
+    }
+    // Every container is the same height, and it is centred on the CONTROL,
+    // not on the bar. Centring on the bar was the vertical twin of the old
+    // midpoint split: a control whose cell does not sit dead centre in the
+    // title bar had its glyph -- which is centred in the cell -- riding high or
+    // low inside a container placed somewhere else.
+    //
+    // Width is left alone. Clamping each control to a square turned narrow
+    // cells into vertical ovals and distorted containers holding several
+    // actions; ZephyrusSegmentShape widens them instead, symmetrically.
+    r.set_y(r.CenterPoint().y() - kZephyrusContainer / 2);
+    r.set_height(kZephyrusContainer);
+    const views::Button* button = views::AsViewClass<views::Button>(v);
+    return ZephyrusGroupSegment{
+        r, button && button->GetState() == views::Button::STATE_PRESSED,
+        button && button->GetState() == views::Button::STATE_HOVERED,
+        v->GetEnabled(), v == zephyrus_close_button_, v};
+  };
+
+  // Runs of ADJACENT controls sharing a group id. Both words matter: sharing
+  // an id is what makes two controls the same KIND of thing, and sitting next
+  // to each other is what lets them be drawn joined.
+  //
+  // No outer inset is applied to a run's ends. It shaved one side off the
+  // first and last control, which is a control's CELL -- the thing the glyph
+  // is centred in -- so it moved the glyph. Groups are kept apart by the
+  // layout gap between them.
+  std::vector<std::vector<ZephyrusGroupSegment>> groups;
+  for (size_t i = 0; i < ordered.size();) {
+    std::vector<ZephyrusGroupSegment> run;
+    run.push_back(segment_for(ordered[i].first));
+    size_t j = i + 1;
+    while (j < ordered.size() && ordered[j].second == ordered[i].second) {
+      ZephyrusGroupSegment next = segment_for(ordered[j].first);
+      // A gap far wider than the seam is a HOLE, not a join. Measured: when
+      // the pinned actions spill into the overflow menu their container keeps
+      // its place in the bar, leaving 36dp of nothing between the extensions
+      // button and the overflow button -- and the run drew straight across it
+      // as though the two were joined.
+      if (next.bounds.x() - run.back().bounds.right() > kZephyrusMaxJoin) {
+        break;
+      }
+      run.push_back(std::move(next));
+      ++j;
+    }
+    groups.push_back(std::move(run));
+    i = j;
+  }
+  return groups;
+}
+
+bool ToolbarView::GetZephyrusButtonShape(const views::View* button,
+                                         SkRRect* shape) const {
+  if (!zephyrus_nav_pill_backdrop_) {
+    return false;
+  }
+  for (const auto& group : ZephyrusTitlebarGroups()) {
+    for (size_t i = 0; i < group.size(); ++i) {
+      if (group[i].view == button) {
+        *shape = ZephyrusSegmentShape(group, i);
+        const gfx::Rect bounds = views::View::ConvertRectToTarget(
+            button, this, button->GetLocalBounds());
+        shape->offset(-bounds.x(), -bounds.y());
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void ToolbarView::AddZephyrusWindowControls() {
+  // One painter tracks all visible groups, including customized actions.
+  auto groups = std::make_unique<ZephyrusGlassPill>();
+  groups->SetGroupSource(base::BindRepeating(
+      [](ToolbarView* toolbar) { return toolbar->ZephyrusTitlebarGroups(); },
+      base::Unretained(this)));
+  zephyrus_nav_pill_backdrop_ = AddChildViewAt(std::move(groups), 0);
   using Kind = ZephyrusWin11CaptionButton::Kind;
   auto add_button = [&](Kind kind, int accessible_name_id,
                         views::Button::PressedCallback callback) {
@@ -2955,6 +3341,9 @@ void ToolbarView::AddZephyrusWindowControls() {
     button->SetProperty(views::kCrossAxisAlignmentKey,
                         views::LayoutAlignment::kStretch);
   }
+  // Margins only, for anything that ever lays these out generically. Their
+  // actual placement is the manual SetBounds in Layout(), which ignores these
+  // entirely -- the horizontal pitch lives there.
   zephyrus_minimize_button_->SetProperty(views::kMarginsKey,
                                          gfx::Insets::TLBR(-3, 0, -3, 0));
   zephyrus_maximize_button_->SetProperty(views::kMarginsKey,
@@ -3964,14 +4353,10 @@ class ZephyrusWorkspaceCell : public views::Button,
       label_->SetText(std::u16string());
     }
 
-    // An EMOJI is an image: it cannot be recoloured, so it never takes the
-    // inverted ink. Only a numeral does.
-    if (!is_icon_) {
-      label_->SetEnabledColor(active_ ? zephyrus::Ground()
-                                      : SkColorSetA(ink_, 0x8C));
-    } else {
-      label_->SetEnabledColor(ink_);
-    }
+    // Colour is applied in OnThemeChanged, NOT here. The selected numeral now
+    // takes on-secondary-container, which has to be read from the
+    // ColorProvider -- and a View has none inside its own constructor, so
+    // asking here would return the Role() sentinel and paint magenta.
     SetPreferredSize(gfx::Size(kCell, kCell));
 
     if (icon_) {
@@ -4025,6 +4410,12 @@ class ZephyrusWorkspaceCell : public views::Button,
   // cell does not use is either blurry or wasteful, and nothing would catch it.
   static constexpr int size() { return kCell; }
 
+  // views::View:
+  void OnThemeChanged() override {
+    views::Button::OnThemeChanged();
+    ApplyLabelColor();
+  }
+
   void OnPaintBackground(gfx::Canvas* canvas) override {
     const bool hot =
         GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
@@ -4065,11 +4456,21 @@ class ZephyrusWorkspaceCell : public views::Button,
     // longer OFFERS an icon that disappears on white. Constraining the input is
     // cheaper than special-casing the output.
     flags.setStyle(cc::PaintFlags::kFill_Style);
-    // INK, not white. The glyph on top inverts to zephyrus::Ground(), so the
-    // disc has to be its pair or the inversion breaks the moment the theme is
-    // not dark -- white ink on a white disc.
-    flags.setColor(active_ ? zephyrus::Ink()
-                           : SkColorSetA(zephyrus::Ink(), 0x2E));
+    // SECONDARY CONTAINER for the selected cell, M3's role for a selected
+    // navigation item -- which is what this strip is.
+    //
+    // It was an INVERTED INK disc: full-strength neutral with the glyph flipped
+    // to the ground colour. That reads as a chip that has been switched off
+    // rather than a destination you are currently in, and it is the one place
+    // in the browser still using inversion to mean "selected".
+    //
+    // Hover on an unselected cell is now M3's 8% state layer instead of a
+    // hand-picked 18%, so it matches every other hover in the browser.
+    flags.setColor(
+        active_ ? zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer)
+                : zephyrus::m3::StateLayer(
+                      zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+                      zephyrus::m3::kHover));
     canvas->DrawRoundRect(body, radius, flags);
     PaintPhoto(canvas);
   }
@@ -4105,13 +4506,21 @@ class ZephyrusWorkspaceCell : public views::Button,
       cc::PaintFlags fill;
       fill.setAntiAlias(true);
       fill.setStyle(cc::PaintFlags::kFill_Style);
-      fill.setColor(active_ ? zephyrus::Ink()
-                            : SkColorSetA(zephyrus::Ink(), 0x2E));
+      // Same roles as the disc above, for the same reason.
+      fill.setColor(
+          active_ ? zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer)
+                  : zephyrus::m3::StateLayer(
+                        zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+                        zephyrus::m3::kHover));
       canvas->DrawPath(container, fill);
     }
 
-    // The glyph inverts on the filled container, exactly as the numeral does.
-    const SkColor glyph_color = active_ ? zephyrus::Ground() : ink_;
+    // ON-secondary-container, the paired ink for the fill above. Pairing is
+    // what guarantees contrast: picking the container from a role and the ink
+    // from somewhere else is how a themed surface ends up unreadable.
+    const SkColor glyph_color =
+        active_ ? zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer)
+                : ink_;
     gfx::RectF glyph_box = body;
     glyph_box.Inset(kGlyphInset);
     // A negative progress is the resting glyph. Only a hovered cell animates.
@@ -4177,7 +4586,11 @@ class ZephyrusWorkspaceCell : public views::Button,
   // How much of the cell the glyph gives back to the container. A lobed
   // silhouette (cookie, burst) pulls IN between its lobes, so a glyph sized to
   // the circle would poke through those valleys.
-  static constexpr float kGlyphInset = 5.f;
+  //
+  // 4, down from 5. Combined with the larger cell the glyph goes from 14px to
+  // 20px -- about 40% more, which is what makes the shape animations legible
+  // at arm's length. Still enough clearance for the lobed silhouettes above.
+  static constexpr float kGlyphInset = 4.f;
   // Screen pixels, not scaled with the cell -- see PaintWorkspaceGlyph.
   static constexpr float kGlyphStroke = 1.5f;
   // How far a hovered (but not current) cell's container sits toward its
@@ -4190,6 +4603,18 @@ class ZephyrusWorkspaceCell : public views::Button,
   // Null unless the stored string names one of our drawn icons; an emoji or a
   // numeral leaves this null and takes the label path.
   raw_ptr<const zephyrus::WorkspaceIcon> icon_ = nullptr;
+  // An EMOJI is an image: it cannot be recoloured, so it never takes the
+  // paired ink. Only a numeral does.
+  void ApplyLabelColor() {
+    if (is_icon_) {
+      label_->SetEnabledColor(ink_);
+      return;
+    }
+    label_->SetEnabledColor(
+        active_ ? zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer)
+                : SkColorSetA(ink_, 0x8C));
+  }
+
   bool active_;
   bool is_icon_;
   SkColor ink_;

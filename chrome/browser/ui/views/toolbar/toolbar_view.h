@@ -71,6 +71,7 @@ class ZephyrusWorkspaceButton;
 class ZephyrusProfileButton;
 class ZephyrusColorTransition;
 class ZephyrusOmniboxFocusAnimation;
+class SkRRect;
 
 namespace views {
 class Button;
@@ -95,6 +96,18 @@ enum class ExpansionMode {
 };
 
 // The Browser Window's toolbar.
+// One control's slot in a title-bar connected button group.
+struct ZephyrusGroupSegment {
+  gfx::Rect bounds;
+  // Drives the press shape-morph: M3 squares a control's corner while it is
+  // held, and the container is what shows that, not the glyph.
+  bool pressed = false;
+  bool hovered = false;
+  bool enabled = true;
+  bool close = false;
+  raw_ptr<const views::View> view = nullptr;
+};
+
 class ToolbarView : public views::AccessiblePaneView,
                     public ui::AcceleratorProvider,
                     public views::AnimationDelegateViews,
@@ -291,7 +304,11 @@ class ToolbarView : public views::AccessiblePaneView,
   void ChildPreferredSizeChanged(views::View* child) override;
   void ChildVisibilityChanged(View* child) override;
 
+  // Container geometry in the button's coordinates, shared with ink drops.
+  bool GetZephyrusButtonShape(const views::View* button, SkRRect* shape) const;
+
   friend class AvatarToolbarButtonBaseBrowserTest;
+  friend class ZephyrusTitlebarGroupsBrowserTest;
 
   // GlicSplitButtonDelegate:
   void SetGlicShowState(bool show) override;
@@ -451,8 +468,47 @@ class ToolbarView : public views::AccessiblePaneView,
   // raw_ptr<views::Button> zephyrus_profile_button_ = nullptr;
   // Liquid-glass pills painted behind the back/forward pair and the window
   // controls (positioned manually in Layout, ignored by FlexLayout).
+  // The controls that make up one M3 connected button group, in layout order
+  // and in this view's coordinates.
+  //
+  // DISCOVERED rather than listed: the contiguous run of ToolbarButtons at the
+  // leading edge (back/forward/reload/home/new tab) or, with `trailing`, at the
+  // trailing edge (extensions, overflow and friends), stopping at the first
+  // child that is not one. A control added to the bar therefore joins its group
+  // on its own; a hardcoded list left Home bare between its own neighbours.
+  //
+  // Rects are the buttons' VISUAL extent -- kInternalPaddingKey is subtracted,
+  // because maximizing widens the outermost buttons' hit area without moving
+  // anything you can see.
+  // `run_index` selects which contiguous run to take, counting from the given
+  // end of the bar. The bar has three:
+  //
+  //   leading  run 0 -- back / forward / reload / home / new tab
+  //   trailing run 0 -- minimise / maximise / close
+  //   trailing run 1 -- the toolbar actions (extensions, overflow)
+  //
+  // Runs are separated by anything that is not a control: the workspace strip
+  // and location bar break the leading one, the caption separator splits the
+  // two trailing ones. Membership is "a Button, or a container of icons"
+  // (ToolbarIconContainerView) -- the latter because extensions live in a
+  // container rather than as a direct button, and a rule that only knew about
+  // ToolbarButton left them sitting outside the group.
+  // Every title-bar button group, in bar order.
+  //
+  // Grouping is by IDENTITY, not by adjacency:
+  //
+  //   * back / forward / reload / new tab  -- one group, always
+  //   * the window controls                -- one group, always
+  //   * anything else                      -- its OWN group, alone
+  //
+  // That last line is the rule that matters: a control added through Customize
+  // is not part of the navigation cluster just because it happens to land next
+  // to it. Discovery by adjacency put Home inside the arrows and swept every
+  // added action into one long run, which is not what a button group means.
+  std::vector<std::vector<ZephyrusGroupSegment>> ZephyrusTitlebarGroups() const;
+
+  // Paints every title-bar button group's containers, behind the controls.
   raw_ptr<views::View> zephyrus_nav_pill_backdrop_ = nullptr;
-  raw_ptr<views::View> zephyrus_controls_backdrop_ = nullptr;
   raw_ptr<ToolbarButton> zephyrus_pin_button_ = nullptr;
   raw_ptr<ToolbarButton> zephyrus_adblock_button_ = nullptr;
   std::optional<SkColor> zephyrus_titlebar_color_;
@@ -494,7 +550,6 @@ class ToolbarView : public views::AccessiblePaneView,
   // defined in the .cc); stored as the base type here.
   // A hairline between the browser's own controls and the window controls, so
   // the two groups read as separate sets rather than one long row of glyphs.
-  raw_ptr<views::View> zephyrus_caption_separator_ = nullptr;
   raw_ptr<views::Button> zephyrus_minimize_button_ = nullptr;
   raw_ptr<views::Button> zephyrus_maximize_button_ = nullptr;
   raw_ptr<views::Button> zephyrus_close_button_ = nullptr;

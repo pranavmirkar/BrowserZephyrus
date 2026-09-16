@@ -11,6 +11,7 @@
 #include "ui/gfx/color_utils.h"
 #include "base/time/time.h"
 #include "ui/gfx/font_list.h"
+#include "ui/gfx/animation/tween.h"
 #include "ui/gfx/geometry/cubic_bezier.h"
 #include "ui/views/view.h"
 
@@ -155,6 +156,37 @@ const gfx::CubicBezier& Curve(Spring spring);
 // The spec's duration for `spring`.
 base::TimeDelta Duration(Spring spring);
 
+// The nearest gfx::Tween to `spring`, for COMPOSITOR-DRIVEN layer animations.
+//
+// ui::ScopedLayerAnimationSettings takes a gfx::Tween::Type and nothing else --
+// there is no seam for a cc::TimingFunction, and gfx::Tween has no bezier
+// option. So a layer animation cannot use Curve() above.
+//
+// Driving those by hand would work and is the wrong trade: transform and
+// opacity animations run on the COMPOSITOR thread, and hand-stepping them each
+// frame moves that onto the main thread, where a busy browser drops frames. An
+// approximate curve that stays off-thread beats an exact one that stutters.
+//
+// So: exact curves where we own the value (Curve), nearest Tween where the
+// compositor owns it (this). Anything animating a colour, a radius or a
+// painted value should prefer Curve().
+gfx::Tween::Type TweenFor(Spring spring);
+
+// HOT PATHS KEEP THEIR OWN DURATIONS.
+//
+// M3's durations are tuned for phone-scale motion. 350ms is right for a sheet
+// that slides up once; it is wrong for a surface opened dozens of times a day,
+// where waiting is the whole cost. The Ctrl+T overlay and the sidebar reveal
+// are both in that category and both had a reasoned short duration before this
+// system existed.
+//
+// These are those durations, named rather than retyped, so the choice is
+// visible as a choice instead of looking like nobody had checked the spec.
+inline constexpr base::TimeDelta kHotEnter = base::Milliseconds(140);
+inline constexpr base::TimeDelta kHotExit = base::Milliseconds(90);
+inline constexpr base::TimeDelta kHotSlideIn = base::Milliseconds(210);
+inline constexpr base::TimeDelta kHotSlideOut = base::Milliseconds(200);
+
 // ---------------------------------------------------------------------------
 // Rule 2 — corner concentricity
 // ---------------------------------------------------------------------------
@@ -182,6 +214,41 @@ inline constexpr float ConcentricInner(float outer, float padding) {
 inline constexpr int ConcentricInner(int outer, int padding) {
   return (outer - padding) > 0 ? (outer - padding) : 0;
 }
+
+// ---------------------------------------------------------------------------
+// Rule 2 enforcement
+// ---------------------------------------------------------------------------
+//
+// Walks `root` and reports every rounded child painted inside a rounded parent
+// whose radius is not the concentric one. Logs; it does not fix anything.
+//
+// A DCHECK would have been the obvious shape and would have been useless here:
+// out/Release is an official build with DCHECKs compiled out, so the guardrail
+// would fire in no build anyone actually runs. This is gated on a command-line
+// switch instead, so it works in the shipping configuration -- run the browser
+// with --zephyrus-audit-shape and read the log.
+//
+// It measures the gap from each child's bounds to its parent's, taking the
+// smallest of the four insets. That is an approximation where padding is
+// uneven, so it TOLERATES a pixel either way rather than reporting noise.
+// Capsules and connected-group segments are skipped, per the two exemptions.
+//
+// COVERAGE IS PARTIAL, and it is worth knowing the shape of the gap rather
+// than reading a clean run as proof of a clean browser:
+//
+//   - It sees only views whose rounding comes from a views::Background, since
+//     that is the one place a radius can be read back. Surfaces that paint
+//     their own rounded rect in OnPaintBackground are invisible to it --
+//     roughly 14 call sites against 27 it can see.
+//   - It walks BrowserView's tree, so bubble widgets (the settings sheet, the
+//     privacy popup) are outside it entirely. Those have their own trees.
+//
+// So a clean run means the Background-based nesting inside the window is
+// concentric. It does not mean every corner in the browser is.
+void AuditConcentricity(const views::View& root);
+
+// The switch that turns the audit on.
+inline constexpr char kAuditShapeSwitch[] = "zephyrus-audit-shape";
 
 }  // namespace zephyrus::m3
 

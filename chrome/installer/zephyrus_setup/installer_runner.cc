@@ -47,6 +47,104 @@ std::wstring DesktopDir() {
   return result;
 }
 
+// Installs Inter for the CURRENT USER, so the browser can use it too.
+//
+// The setup window already renders itself in Inter, but privately: it builds an
+// in-memory DirectWrite font set that lives and dies with this process. Nothing
+// else on the machine can see those bytes, which is why the browser could only
+// use Inter on machines where the user happened to have installed it.
+//
+// PER-USER, deliberately. A machine-wide font needs elevation, and this
+// installer does not have it -- mini_installer puts Zephyrus under
+// LocalAppData. A per-user font needs no rights beyond writing to the user's
+// own profile, and Windows has supported it since 1809.
+//
+// Three steps, all of them required:
+//   1. the .ttf lands in the user's Fonts directory,
+//   2. a registry value under HKCU names it -- and unlike the machine-wide
+//      hive this one must hold the FULL PATH, not a bare filename,
+//   3. WM_FONTCHANGE tells already-running programs to re-enumerate, so the
+//      font works without a sign-out.
+//
+// BEST EFFORT. Every failure path here returns quietly: a browser that
+// installed correctly must not be reported as failed because a font did not
+// copy. Zephyrus falls back to the platform UI font on its own.
+bool WriteResourceTo(HINSTANCE instance, int id, const std::wstring& path) {
+  HRSRC found = ::FindResource(instance, MAKEINTRESOURCE(id), RT_RCDATA);
+  HGLOBAL handle = found ? ::LoadResource(instance, found) : nullptr;
+  const void* data = handle ? ::LockResource(handle) : nullptr;
+  const DWORD size = found ? ::SizeofResource(instance, found) : 0;
+  if (!data || size == 0) {
+    return false;
+  }
+  HANDLE file = ::CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  DWORD written = 0;
+  const bool ok =
+      ::WriteFile(file, data, size, &written, nullptr) != 0 && written == size;
+  ::CloseHandle(file);
+  return ok;
+}
+
+void InstallInterForCurrentUser(HINSTANCE instance) {
+  const std::wstring local = LocalAppData();
+  if (local.empty()) {
+    return;
+  }
+  const std::wstring dir = local + L"\\Microsoft\\Windows\\Fonts";
+  ::SHCreateDirectoryExW(nullptr, dir.c_str(), nullptr);
+
+  HKEY key = nullptr;
+  if (::RegCreateKeyExW(HKEY_CURRENT_USER,
+                        L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts",
+                        0, nullptr, 0, KEY_SET_VALUE, nullptr, &key,
+                        nullptr) != ERROR_SUCCESS) {
+    return;
+  }
+
+  struct Face {
+    int resource;
+    const wchar_t* file;
+    // The registry NAME is what applications see in a font list. It must carry
+    // the "(TrueType)" suffix or Windows treats the entry as malformed.
+    const wchar_t* value;
+  };
+  static constexpr Face kFaces[] = {
+      {IDR_FONT_INTER_REGULAR, L"Inter-Regular.ttf", L"Inter (TrueType)"},
+      {IDR_FONT_INTER_SEMIBOLD, L"Inter-SemiBold.ttf",
+       L"Inter SemiBold (TrueType)"},
+  };
+
+  bool any = false;
+  for (const Face& face : kFaces) {
+    const std::wstring path = dir + L"\\" + face.file;
+    if (!WriteResourceTo(instance, face.resource, path)) {
+      continue;
+    }
+    // Full path, because HKCU font entries are not resolved against the
+    // system Fonts directory the way HKLM entries are.
+    ::RegSetValueExW(key, face.value, 0, REG_SZ,
+                     reinterpret_cast<const BYTE*>(path.c_str()),
+                     static_cast<DWORD>((path.size() + 1) * sizeof(wchar_t)));
+    ::AddFontResourceExW(path.c_str(), FR_NOT_ENUM, nullptr);
+    any = true;
+  }
+  ::RegCloseKey(key);
+
+  // The OFL requires the licence to accompany the font. It travelled inside
+  // this .exe until now; once the .ttf files live on disk on their own, the
+  // licence has to sit beside them or the obligation is no longer met.
+  if (any) {
+    WriteResourceTo(instance, IDR_LICENSE_INTER_OFL,
+                    dir + L"\\Inter-OFL.txt");
+    ::SendMessageTimeoutW(HWND_BROADCAST, WM_FONTCHANGE, 0, 0, SMTO_ABORTIFHUNG,
+                          1000, nullptr);
+  }
+}
+
 bool Exists(const std::wstring& path) {
   return ::GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
 }
@@ -301,6 +399,14 @@ void InstallerRunner::Run(HINSTANCE instance) {
                L"changed.");
     return;
   }
+
+  // Inter, now that the browser is definitely on disk. AFTER the success check
+  // on purpose: a font installed beside a browser that failed to install is
+  // litter in the user's profile.
+  //
+  // Not checked, not reported. See InstallInterForCurrentUser -- the browser
+  // works without it.
+  InstallInterForCurrentUser(instance);
 
   progress_.store(1.f, std::memory_order_relaxed);
   phase_.store(Phase::kDone, std::memory_order_relaxed);

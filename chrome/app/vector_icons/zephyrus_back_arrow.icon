@@ -16,21 +16,31 @@
 //
 // FLIPS_IN_RTL: a back arrow points the other way in right-to-left locales,
 // and the old glyph never did.
+//
+// CENTRED IN THE CANVAS, which the first version was not: it spanned x 8..15,
+// centre 11.5 against a canvas centre of 12, and forward was its mirror so it
+// leaned the other way. Half a unit each, in opposite directions, is enough to
+// see -- the pair read as splayed apart inside containers that were themselves
+// perfectly centred, which is exactly what made it look like a layout bug.
+//
+// Both reps are now a 45-degree chevron on WHOLE units, centred on both axes:
+// 24 spans 9..15 and 6..18, 16 spans 6..10 and 4..12. Keep it that way. If the
+// size needs changing, change it symmetrically about the canvas centre.
 
 CANVAS_DIMENSIONS, 24,
 FLIPS_IN_RTL,
 STROKE, 2.f,
 CAP_SQUARE,
-MOVE_TO, 15, 5,
-LINE_TO, 8, 12,
-LINE_TO, 15, 19,
+MOVE_TO, 15, 6,
+LINE_TO, 9, 12,
+LINE_TO, 15, 18,
 CLOSE
 
 CANVAS_DIMENSIONS, 16,
 FLIPS_IN_RTL,
 STROKE, 1.5f,
 CAP_SQUARE,
-MOVE_TO, 10, 3.5f,
-LINE_TO, 5.5f, 8,
-LINE_TO, 10, 12.5f,
+MOVE_TO, 10, 4,
+LINE_TO, 6, 8,
+LINE_TO, 10, 12,
 CLOSE

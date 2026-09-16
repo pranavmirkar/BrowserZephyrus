@@ -142,8 +142,11 @@ constexpr int kMaxRows = 6;
 //
 // Exit is faster than entry: the user has already decided, and the system
 // should get out of the way immediately.
-constexpr base::TimeDelta kEnterDuration = base::Milliseconds(140);
-constexpr base::TimeDelta kExitDuration = base::Milliseconds(90);
+//
+// Named rather than retyped, so keeping M3's durations OFF this hot path reads
+// as a decision instead of an oversight.
+constexpr base::TimeDelta kEnterDuration = zephyrus::m3::kHotEnter;
+constexpr base::TimeDelta kExitDuration = zephyrus::m3::kHotExit;
 
 // Never from scale(0) — nothing appears from nothing. 0.96 is enough to read as
 // arriving without looking like a zoom. The exit barely shrinks (0.98): a card
@@ -695,7 +698,8 @@ void ZephyrusSearchOverlay::Reveal() {
     }
     ui::ScopedLayerAnimationSettings settings(layer->GetAnimator());
     settings.SetTransitionDuration(kEnterDuration);
-    settings.SetTweenType(gfx::Tween::EASE_OUT_4);
+    settings.SetTweenType(
+      zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
     settings.SetPreemptionStrategy(
         ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
     layer->SetOpacity(1.0f);
@@ -724,7 +728,8 @@ void ZephyrusSearchOverlay::Dismiss() {
   ui::Layer* layer = panel_->layer();
   ui::ScopedLayerAnimationSettings settings(layer->GetAnimator());
   settings.SetTransitionDuration(kExitDuration);
-  settings.SetTweenType(gfx::Tween::EASE_OUT_4);
+  settings.SetTweenType(
+      zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
   settings.SetPreemptionStrategy(
       ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
   settings.AddObserver(this);
@@ -1022,7 +1027,8 @@ void ZephyrusSearchOverlay::SetChevronOpen(bool open) {
   ui::ScopedLayerAnimationSettings settings(
       engine_chevron_->layer()->GetAnimator());
   settings.SetTransitionDuration(base::Milliseconds(140));
-  settings.SetTweenType(gfx::Tween::EASE_OUT_4);
+  settings.SetTweenType(
+      zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
   settings.SetPreemptionStrategy(
       ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
   engine_chevron_->layer()->SetTransform(flipped);

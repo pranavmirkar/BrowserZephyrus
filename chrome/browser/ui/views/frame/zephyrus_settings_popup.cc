@@ -296,14 +296,17 @@ void ZephyrusSettingsPopup::Show(Browser* browser, Section section) {
     ui::LayerAnimator* animator = layer->GetAnimator();
     auto fade = ui::LayerAnimationElement::CreateOpacityElement(
         1.0f, base::Milliseconds(150));
-    fade->set_tween_type(gfx::Tween::EASE_OUT);
+    fade->set_tween_type(
+        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastEffects));
     animator->StartAnimation(new ui::LayerAnimationSequence(std::move(fade)));
     auto grow = ui::LayerAnimationElement::CreateTransformElement(
         gfx::GetScaleTransform(center, 1.015f), base::Milliseconds(170));
-    grow->set_tween_type(gfx::Tween::EASE_OUT_2);
+    grow->set_tween_type(
+        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
     auto settle = ui::LayerAnimationElement::CreateTransformElement(
         settled, base::Milliseconds(140));
-    settle->set_tween_type(gfx::Tween::EASE_IN_OUT);
+    settle->set_tween_type(
+        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
     auto* spring = new ui::LayerAnimationSequence(std::move(grow));
     spring->AddElement(std::move(settle));
     animator->StartAnimation(spring);

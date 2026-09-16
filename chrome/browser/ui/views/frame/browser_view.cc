@@ -170,6 +170,7 @@
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_empty_background.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
 // ZEPHYRUS PROFILES FRONTEND - DISABLED.
 // #include "chrome/browser/ui/views/frame/zephyrus_profile_switcher.h"
@@ -4812,6 +4813,13 @@ void BrowserView::OnWidgetDestroying(views::Widget* widget) {
 
 void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
                                             bool active) {
+  // Rule 2 audit, off unless --zephyrus-audit-shape is set. Activation is the
+  // hook because by then the window has laid out at least once, so every child
+  // has real bounds to measure a padding from -- during construction they are
+  // all empty and every comparison would be meaningless.
+  if (active) {
+    zephyrus::m3::AuditConcentricity(*this);
+  }
   if (browser_->GetWindow()) {
     if (active) {
       if (restore_focus_on_activation_.has_value() &&
