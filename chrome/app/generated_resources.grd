@@ -9193,7 +9193,7 @@ Keep your key file in a safe place. You will need it to create new versions of y
            translation that renders "detected" as "blocked" turns an accurate
            report into a false promise of protection. -->
       <message name="IDS_ZEPHYRUS_PRIVACY_TITLE" desc="Title of the privacy panel opened from the shield button in the toolbar. No status: a panel title, reporting nothing about any tracker.">
-        Privacy
+        Privacy report
       </message>
       <message name="IDS_ZEPHYRUS_PRIVACY_HEADLINE_PROTECTED" desc="Headline of the privacy panel, shown ONLY when at least one tracker request was actually blocked on this page. Must not be shown when trackers were merely observed. Reports BLOCKED: at least one request was stopped.">
         Protected on this page
@@ -9222,6 +9222,15 @@ Keep your key file in a safe place. You will need it to create new versions of y
       </message>
       <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY" desc="Label for the Tracking Intensity score. $1 is a band name such as High. No status: a score band, not an observation about a request.">
         Tracking intensity: <ph name="BAND">$1<ex>High</ex></ph>
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY_LABEL" desc="Label above the Tracking Intensity band on the privacy report's hero card, where the band itself is on the line below. No status: a score name, not an observation about a request.">
+        Tracking intensity
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_SEGMENT_SUMMARY" desc="Name of the first of two segments in the privacy report: the summary of the page. No status.">
+        Summary
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_SEGMENT_TRACKERS" desc="Name of the second of two segments in the privacy report: the per-tracker list. $1 is how many rows that list has. No status: a count of rows, not a claim about any of them.">
+        Trackers · <ph name="COUNT">$1<ex>5</ex></ph>
       </message>
       <message name="IDS_ZEPHYRUS_PRIVACY_INTENSITY_MINIMAL" desc="Lowest Tracking Intensity band. Means nothing at all was observed. No status: a score band name.">
         Minimal

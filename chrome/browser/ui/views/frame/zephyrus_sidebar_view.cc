@@ -95,10 +95,11 @@ namespace {
 constexpr int kUnboundedScrollHeight = 100000;
 
 constexpr int kRowHeight = 36;
-// Tab rows were full pills (kRowHeight / 2) while the action rows next to them
-// used the system's 10 — two different row shapes in one panel. Both are 10
-// now, matching every other Zephyrus row (workspace dropdown, Shield toggles).
-constexpr int kRowCornerRadius = zephyrus::kCornerRadius;
+// A navigation-drawer item is a FULL pill in M3, and the pill is what says
+// "this one" -- which is why the accent bar and the hover hairline are both
+// gone from OnPaintBackground. A 10dp rounded rectangle plus a separate marker
+// was the older language saying the same thing twice.
+constexpr int kRowCornerRadius = kRowHeight / 2;
 
 // Square. The sidebar is not a card any more — it is a flush column of window
 // chrome running from the toolbar to the bottom edge, so there is no free side
@@ -212,11 +213,17 @@ class ZephyrusActionRow : public views::LabelButton {
     views::LabelButton::StateChanged(old_state);
     const bool hovered = GetState() == views::Button::STATE_HOVERED ||
                          GetState() == views::Button::STATE_PRESSED;
-    SetBackground(hovered
-                      ? views::CreateRoundedRectBackground(
-                            SkColorSetA(foreground_, 0x1A),
-                            zephyrus::kCornerRadius)
-                      : nullptr);
+    // Same shape and the same state layer as the tab rows beside it. A hover
+    // at a different radius in the same column is what made the panel read as
+    // two lists rather than one.
+    SetBackground(hovered ? views::CreateRoundedRectBackground(
+                                zephyrus::m3::StateLayer(
+                                    foreground_,
+                                    GetState() == views::Button::STATE_PRESSED
+                                        ? zephyrus::m3::kPressed
+                                        : zephyrus::m3::kHover),
+                                kRowCornerRadius)
+                          : nullptr);
   }
 
   gfx::Size CalculatePreferredSize(
@@ -692,11 +699,12 @@ class ZephyrusTabRow : public views::Button {
   // surface step, and a shadow anywhere in the tab list would be the loudest
   // thing on screen.
   //
-  // The ACTIVE row INVERTS instead. In a palette with one accent and no second
-  // colour to spend, value is what is left to say "this one" -- and inverting
-  // is unambiguous at a glance in a way that a slightly different grey is not.
-  // It is also why the row has to hand its label a different ink: text that
-  // stays dark on a now-dark row disappears.
+  // The ACTIVE row is an M3 navigation-drawer item: a full pill on
+  // secondary-container, with onSecondaryContainer ink. That container is the
+  // whole "this one" signal -- it replaced an inversion, and then an accent bar
+  // that had been standing in for the inversion. Everything drawn ON the row
+  // still has to take its ink from colors_.active_fg, because the row's ground
+  // is no longer the panel's.
   void OnPaintBackground(gfx::Canvas* canvas) override {
     const bool hovered = GetState() == views::Button::STATE_HOVERED ||
                          GetState() == views::Button::STATE_PRESSED;
@@ -710,36 +718,6 @@ class ZephyrusTabRow : public views::Button {
     fill.setStyle(cc::PaintFlags::kFill_Style);
     fill.setColor(is_active_ ? colors_.active_bg : colors_.hover_bg);
     canvas->DrawRoundRect(body, kRowCornerRadius, fill);
-
-    if (is_active_) {
-      // A short accent bar on the leading edge. This is the "you are here"
-      // mark that the inversion used to carry -- the same role the accent
-      // plays on a focus ring, and it costs the row nothing: it sits in the
-      // margin rather than under any content.
-      constexpr float kBarWidth = 3.f;
-      constexpr float kBarInsetY = 7.f;
-      gfx::RectF bar(body.x(), body.y() + kBarInsetY, kBarWidth,
-                     std::max(0.f, body.height() - 2 * kBarInsetY));
-      cc::PaintFlags accent;
-      accent.setAntiAlias(true);
-      accent.setStyle(cc::PaintFlags::kFill_Style);
-      accent.setColor(zephyrus::Accent());
-      canvas->DrawRoundRect(bar, kBarWidth / 2.f, accent);
-    }
-
-    if (!is_active_) {
-      // Hover carries a hairline so the row reads as a defined object rather
-      // than a smudge of tint. The active row does not need one -- an inverted
-      // block has its own edge.
-      cc::PaintFlags stroke;
-      stroke.setAntiAlias(true);
-      stroke.setStyle(cc::PaintFlags::kStroke_Style);
-      stroke.setStrokeWidth(zephyrus::kHairline);
-      stroke.setColor(SkColorSetA(colors_.foreground, 0x33));
-      gfx::RectF outline = body;
-      outline.Inset(zephyrus::kHairline / 2.f);
-      canvas->DrawRoundRect(outline, kRowCornerRadius, stroke);
-    }
   }
 
   void UpdateBackground() {
@@ -1855,14 +1833,19 @@ void ZephyrusSidebarView::RebuildTabList() {
   // globe, and this) -- nothing on the row inverts, so nothing on the row can
   // disappear into it.
   //
-  // What replaces the inversion as the "this one" marker is the accent bar in
-  // OnPaintBackground: a mark of its own rather than a colour every child has
-  // to compensate for.
+  // What marks "this one" is the CONTAINER: an M3 navigation-drawer item on
+  // secondary-container, fully rounded. It replaced both the inversion and the
+  // accent bar that briefly stood in for it -- a filled pill and a separate
+  // marker were the same statement made twice.
   const ZephyrusRowColors row_colors{
       .foreground = fg,
-      .active_bg = zephyrus::Raise(zephyrus::Surface(), 0x38),
-      .hover_bg = zephyrus::Surface(),
-      .active_fg = fg,
+      .active_bg = zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
+      .hover_bg = zephyrus::m3::WithStateLayer(
+          zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainer),
+          zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+          zephyrus::m3::kHover),
+      .active_fg =
+          zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer),
   };
 
   ZephyrusWorkspaceManager* workspace_manager =

@@ -11,13 +11,17 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_image.h"
-#include "ui/gfx/geometry/size.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/events/event_handler.h"
+#include "ui/gfx/animation/linear_animation.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/views/animation/animation_delegate_views.h"
 #include "ui/views/view.h"
 
 class Browser;
 class BrowserView;
+class ZephyrusCarouselItem;
+class ZephyrusCarouselRing;
 
 namespace aura {
 class Window;
@@ -35,25 +39,34 @@ class View;
 
 // Windows 11 Alt+Tab, for tabs.
 //
-// Holding Ctrl and pressing Tab opens a floating card showing every tab in the
-// current workspace as a live page thumbnail. Each further Tab moves the
-// selection; releasing Ctrl switches to the selected tab; Escape cancels and
-// leaves you where you started.
+// Holding Ctrl and pressing Tab opens a floating panel showing the tabs in the
+// current workspace, MOST RECENTLY USED FIRST. The first Tab lands on the tab
+// you were on before this one, so Ctrl+Tab and release flips between your two
+// latest tabs; each further Tab walks further back in time. Releasing Ctrl
+// switches to the selected tab; Escape cancels and leaves you where you
+// started.
+//
+// The tabs are an M3 MULTI-BROWSE CAROUSEL centred on the selection: the
+// selected tab is the large item, its neighbours are medium, and the next ones
+// out are thin slivers at the edges that say there is more. Selection is shown
+// by size and by being in front, the way an M3 carousel shows its focal item,
+// and marked with M3's focus indicator, since this is keyboard selection.
+// Moving it animates every item to its new size at once.
 //
 // The interesting mechanic is the Ctrl RELEASE. Accelerators only fire on key
 // press, so while the switcher is open it installs itself as a pre-target
 // handler on the window and watches for the Ctrl key-up itself — that is what
 // makes this feel like Alt+Tab instead of a menu that needs dismissing.
 //
-// A VIEW INSIDE THE BROWSER WINDOW, not a bubble. Two reasons: the card strip
-// carries a compositor backdrop blur, and a backdrop filter can only sample its
-// own compositor frame — as a separate widget there was nothing behind it. It
-// also removes a hazard the bubble version had, where committing closed the
-// widget and destroyed `this` mid-callstack.
+// A VIEW INSIDE THE BROWSER WINDOW, not a bubble. That removes a hazard the
+// bubble version had, where committing closed the widget and destroyed `this`
+// mid-callstack. (It was first forced by a backdrop blur, which is gone under
+// M3 Expressive.)
 //
 // The view is created once per window and kept hidden; a session shows it,
-// builds cards, and hides it again.
-class ZephyrusTabSwitcher : public views::View {
+// builds the carousel, and hides it again.
+class ZephyrusTabSwitcher : public views::View,
+                            public views::AnimationDelegateViews {
   METADATA_HEADER(ZephyrusTabSwitcher, views::View)
 
  public:
@@ -74,6 +87,12 @@ class ZephyrusTabSwitcher : public views::View {
 
   // views::View:
   void Layout(PassKey) override;
+  // Colours are applied here, not in the constructor: this view is built
+  // inside BrowserView's constructor, before any ColorProvider exists.
+  void OnThemeChanged() override;
+
+  // views::AnimationDelegateViews:
+  void AnimationProgressed(const gfx::Animation* animation) override;
 
  private:
   // views::View already derives from ui::EventHandler, so the switcher cannot
@@ -94,40 +113,50 @@ class ZephyrusTabSwitcher : public views::View {
   // Called by KeyWatcher for every key event on the window.
   void OnWindowKeyEvent(ui::KeyEvent* event);
 
-  // One card in the strip: thumbnail, favicon, title. Highlighted when
-  // selected.
-  //
-  // The label and favicon are held because SELECTION RECOLOURS THEM, not just
-  // the card behind them: an unselected card's title sits at muted weight and
-  // the selected one steps up to full ink, which is what makes the selection
-  // readable at a glance instead of hunting for a 2px outline.
+  // One tab in the carousel.
   struct Entry {
     raw_ptr<content::WebContents> contents = nullptr;
-    raw_ptr<views::View> card = nullptr;
-    raw_ptr<views::ImageView> image = nullptr;
-    raw_ptr<views::ImageView> favicon = nullptr;
-    raw_ptr<views::Label> title = nullptr;
-    // True when the site gave us nothing and we drew the globe instead. Only
-    // the fallback is ever tinted -- a real favicon keeps the site's colours.
-    bool fallback_icon = false;
+    raw_ptr<ZephyrusCarouselItem> item = nullptr;
+    // Thumbnails are asked for only as an item nears the visible slots, so a
+    // window with dozens of tabs does not subscribe to all of them at once.
+    bool thumbnail_requested = false;
     // Kept alive for as long as the switcher is open; dropping it unsubscribes.
     std::unique_ptr<ThumbnailImage::Subscription> subscription;
+    // The item's animation, in strip coordinates.
+    gfx::Rect from;
+    gfx::Rect to;
   };
 
-  // Builds the card strip from the current workspace's tabs. Returns false when
+  // One session's carousel, fixed when it is built: the tab count and the
+  // window width decide it, and neither changes while Ctrl is held.
+  struct Geometry {
+    int large = 0;
+    int height = 0;
+    // The offsets from the selected tab that get a slot, left to right.
+    std::vector<int> offsets;
+    int strip_width = 0;
+  };
+
+  // Builds the carousel from the current workspace's tabs. Returns false when
   // there is nothing worth switching between.
   bool BuildEntries();
-  // Tears the strip down between sessions. Entries are cleared before the views
-  // so their raw_ptrs never outlive what they point at.
+  // Tears the carousel down between sessions. Entries are cleared before the
+  // views so their raw_ptrs never outlive what they point at.
   void ClearEntries();
-  // Ends the session: removes the key handler, drops the cards, hides.
+  // Ends the session: removes the key handler, drops the items, hides.
   void EndSession();
-  // Asks each tab for its latest thumbnail; they arrive asynchronously.
-  void RequestThumbnails();
+  void EnsureThumbnail(size_t index);
   void OnThumbnailReceived(size_t index, gfx::ImageSkia image);
 
   void AdvanceSelection(bool forward);
-  void UpdateSelectionVisuals();
+  // Gives every item its target for the current selection, then snaps to it
+  // (`animate` false) or animates there.
+  void ApplyLayout(bool animate);
+  // Places every item `progress` of the way from `from` to `to`. Progress runs
+  // past 1.0 briefly: the spatial curve overshoots.
+  void ApplyProgress(double progress);
+  // The selected tab's favicon, title and domain, under the strip.
+  void UpdateCaption();
 
   // Activates the selected tab and closes. CancelSwitch() closes without
   // switching. (Not "Cancel" — DialogDelegate already defines that.)
@@ -135,12 +164,26 @@ class ZephyrusTabSwitcher : public views::View {
   void CancelSwitch();
 
   const raw_ptr<BrowserView> browser_view_;
-  // The card strip. `this` is a full-window scrim around it.
+  // The floating panel. `this` is a full-window scrim around it.
   raw_ptr<views::View> panel_ = nullptr;
+  // The carousel. Items are placed by hand, because their bounds ARE the
+  // animation, so it has no layout manager.
+  raw_ptr<views::View> strip_ = nullptr;
+  // The focus ring around the selected item. Lives in the strip, always on top,
+  // and follows the selected item's bounds as they animate.
+  raw_ptr<ZephyrusCarouselRing> ring_ = nullptr;
+  raw_ptr<views::View> caption_ = nullptr;
+  raw_ptr<views::ImageView> caption_favicon_ = nullptr;
+  raw_ptr<views::Label> caption_title_ = nullptr;
+  raw_ptr<views::Label> caption_domain_ = nullptr;
+
   std::vector<Entry> entries_;
   size_t selected_ = 0;
-  // Card thumbnail size, computed at build time to fit the window.
-  gfx::Size thumb_size_;
+  Geometry geometry_;
+  // False until the first placement of a session, which snaps: opening the
+  // switcher should show where you are, not animate toward it.
+  bool placed_ = false;
+  gfx::LinearAnimation cycle_animation_;
   KeyWatcher key_watcher_{this};
   // The window we registered the pre-target handler on, so we can remove it.
   raw_ptr<aura::Window> handler_target_ = nullptr;

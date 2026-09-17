@@ -5,8 +5,12 @@
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <memory>
+#include <numbers>
 #include <utility>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/containers/fixed_flat_map.h"
@@ -83,6 +87,7 @@
 #include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3_switch.h"
 #include "chrome/browser/zephyrus/agent/dev_model_client.h"
 #include "chrome/browser/ui/views/frame/zephyrus_privacy_popup.h"
 #include "chrome/browser/zephyrus/privacy/privacy_features.h"
@@ -2511,52 +2516,323 @@ constexpr base::TimeDelta kZephyrusDialogEnterDuration =
     base::Milliseconds(200);
 constexpr base::TimeDelta kZephyrusDialogExitDuration = base::Milliseconds(130);
 
-// A settings row in the Shield panel: highlights on hover and forwards a click
-// anywhere on the row to its toggle, matching the workspace dropdown's rows.
-class ZephyrusShieldToggleRow : public views::View {
-  METADATA_HEADER(ZephyrusShieldToggleRow, views::View)
+// An M3 EXPRESSIVE SHAPE holding the Shield's one number: the scalloped
+// "cookie" from M3's shape library, filled in `primary`, with the count on it
+// in `onPrimary`. It is the only emphasis in the popup, so the number reads
+// first and everything else can stay quiet.
+class ZephyrusShieldCookie : public views::View {
+  METADATA_HEADER(ZephyrusShieldCookie, views::View)
 
  public:
-  explicit ZephyrusShieldToggleRow(SkColor hover) : hover_(hover) {}
+  static constexpr int kSize = 64;
 
-  // `toggle` is used only for hit-testing; `on_activate` does the flipping, so
-  // the row never has to reach into the button's private callback.
-  void SetToggle(views::ToggleButton* toggle,
-                 base::RepeatingClosure on_activate) {
-    toggle_ = toggle;
-    on_activate_ = std::move(on_activate);
+  ZephyrusShieldCookie(const std::u16string& text, SkColor fill, SkColor ink)
+      : fill_(fill) {
+    SetLayoutManager(std::make_unique<views::FillLayout>());
+    auto* label = AddChildView(std::make_unique<views::Label>(text));
+    label->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kHeadlineSmall));
+    label->SetEnabledColor(ink);
+    label->SetBackgroundColor(fill);
+    label->SetAutoColorReadabilityEnabled(false);
+    label->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+    // The number is read by the text beside it; the shape is decoration.
+    label->GetViewAccessibility().SetIsIgnored(true);
   }
+  ZephyrusShieldCookie(const ZephyrusShieldCookie&) = delete;
+  ZephyrusShieldCookie& operator=(const ZephyrusShieldCookie&) = delete;
+  ~ZephyrusShieldCookie() override = default;
 
   // views::View:
-  void OnMouseEntered(const ui::MouseEvent& event) override {
-    SetBackground(
-        views::CreateRoundedRectBackground(hover_, kZephyrusDialogRadius));
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(kSize, kSize);
   }
-  void OnMouseExited(const ui::MouseEvent& event) override {
-    SetBackground(nullptr);
-  }
-  bool OnMousePressed(const ui::MouseEvent& event) override {
-    return event.IsOnlyLeftMouseButton();
-  }
-  void OnMouseReleased(const ui::MouseEvent& event) override {
-    // Only count as a click if the release lands inside the row, so dragging
-    // off to abort behaves the way a button does. A press on the toggle itself
-    // is the toggle's own event — don't double-flip it.
-    if (!on_activate_ || !event.IsOnlyLeftMouseButton() ||
-        !HitTestPoint(event.location()) ||
-        (toggle_ && toggle_->bounds().Contains(event.location()))) {
-      return;
+  void OnPaint(gfx::Canvas* canvas) override {
+    // Nine gentle scallops: a radius that swells and dips 8% around the
+    // circle, sampled finely enough that the outline is smooth at any scale.
+    constexpr int kLobes = 9;
+    constexpr int kSamples = 180;
+    constexpr float kDepth = 0.08f;
+    const gfx::PointF c = gfx::RectF(GetLocalBounds()).CenterPoint();
+    const float outer = std::min(width(), height()) / 2.0f;
+    SkPathBuilder builder;
+    for (int i = 0; i < kSamples; ++i) {
+      const float theta = 2.0f * std::numbers::pi_v<float> * i / kSamples -
+                          std::numbers::pi_v<float> / 2;
+      const float r =
+          outer * (1.0f - kDepth / 2 + (kDepth / 2) * std::cos(kLobes * theta));
+      const SkPoint p = SkPoint::Make(c.x() + r * std::cos(theta),
+                                      c.y() + r * std::sin(theta));
+      if (i == 0) {
+        builder.moveTo(p);
+      } else {
+        builder.lineTo(p);
+      }
     }
-    on_activate_.Run();
+    builder.close();
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(fill_);
+    canvas->DrawPath(builder.detach(), flags);
+    views::View::OnPaint(canvas);
   }
 
  private:
-  SkColor hover_;
-  raw_ptr<views::ToggleButton> toggle_ = nullptr;
-  base::RepeatingClosure on_activate_;
+  SkColor fill_;
 };
 
-BEGIN_METADATA(ZephyrusShieldToggleRow)
+BEGIN_METADATA(ZephyrusShieldCookie)
+END_METADATA
+
+// An M3 FILTER CHIP (FilterChipTokens): 32dp tall, 8dp corners, labelLarge.
+//
+//   unselected  1dp outlineVariant outline, onSurfaceVariant content
+//   selected    secondaryContainer, onSecondaryContainer content
+//
+// The leading icon is ALWAYS present -- the setting's own icon when off, M3's
+// checkmark when on -- so a chip does not change width when it is pressed, and
+// the popup around it never resizes under the pointer.
+//
+// A click flips the state first and then runs the callback, like
+// zephyrus::m3::Switch, so the callback reads the new value.
+class ZephyrusFilterChip : public views::Button {
+  METADATA_HEADER(ZephyrusFilterChip, views::Button)
+
+ public:
+  ZephyrusFilterChip(const std::u16string& label,
+                     const std::u16string& accessible_name,
+                     const gfx::VectorIcon& icon,
+                     bool selected)
+      : label_(label),
+        icon_(icon),
+        font_(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge)),
+        selected_(selected) {
+    GetViewAccessibility().SetRole(ax::mojom::Role::kCheckBox);
+    GetViewAccessibility().SetName(accessible_name);
+    SetTooltipText(accessible_name);
+    UpdateAccessibleCheckedState();
+    views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
+                                                  kRadius);
+    SetInstallFocusRingOnFocus(true);
+  }
+  ZephyrusFilterChip(const ZephyrusFilterChip&) = delete;
+  ZephyrusFilterChip& operator=(const ZephyrusFilterChip&) = delete;
+  ~ZephyrusFilterChip() override = default;
+
+  bool selected() const { return selected_; }
+
+  // views::Button:
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(kLeading + kIcon + kIconGap +
+                         gfx::GetStringWidth(label_, font_) + kTrailing,
+                     kHeight);
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    // Every colour is a role, and a role needs a Widget.
+    if (!GetWidget()) {
+      return;
+    }
+    const gfx::RectF bounds(GetLocalBounds());
+    const SkColor content = zephyrus::m3::Role(
+        *this, selected_ ? kColorZephyrusOnSecondaryContainer
+                         : kColorZephyrusOnSurfaceVariant);
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    if (selected_) {
+      flags.setColor(
+          zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer));
+      canvas->DrawRoundRect(bounds, kRadius, flags);
+    } else {
+      // Inside the bounds, so selecting a chip does not change its size.
+      gfx::RectF outline = bounds;
+      outline.Inset(0.5f);
+      flags.setStyle(cc::PaintFlags::kStroke_Style);
+      flags.setStrokeWidth(1.0f);
+      flags.setColor(zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant));
+      canvas->DrawRoundRect(outline, kRadius - 0.5f, flags);
+      flags.setStyle(cc::PaintFlags::kFill_Style);
+    }
+
+    if (GetEnabled()) {
+      const bool pressed = GetState() == STATE_PRESSED;
+      const bool hovered = GetState() == STATE_HOVERED;
+      if (pressed || hovered || HasFocus()) {
+        flags.setColor(zephyrus::m3::StateLayer(
+            content, pressed   ? zephyrus::m3::kPressed
+                     : hovered ? zephyrus::m3::kHover
+                               : zephyrus::m3::kFocus));
+        canvas->DrawRoundRect(bounds, kRadius, flags);
+      }
+    }
+
+    // Laid out in LTR and mirrored by hand: flipping the canvas would mirror
+    // the glyphs too.
+    const gfx::ImageSkia icon = gfx::CreateVectorIcon(
+        selected_ ? kCheckIcon : *icon_, kIcon, content);
+    canvas->DrawImageInt(icon, GetMirroredXWithWidthInView(kLeading, kIcon),
+                         (height() - kIcon) / 2);
+    const int text_x = kLeading + kIcon + kIconGap;
+    canvas->DrawStringRectWithFlags(
+        label_, font_, content,
+        GetMirroredRect(gfx::Rect(text_x, 0,
+                                  std::max(0, width() - text_x - kTrailing),
+                                  height())),
+        gfx::Canvas::TEXT_ALIGN_CENTER);
+  }
+
+  void StateChanged(ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    SchedulePaint();
+  }
+
+  void NotifyClick(const ui::Event& event) override {
+    selected_ = !selected_;
+    UpdateAccessibleCheckedState();
+    SchedulePaint();
+    views::Button::NotifyClick(event);
+  }
+
+  void OnFocus() override {
+    views::Button::OnFocus();
+    SchedulePaint();
+  }
+  void OnBlur() override {
+    views::Button::OnBlur();
+    SchedulePaint();
+  }
+  void OnThemeChanged() override {
+    views::Button::OnThemeChanged();
+    SchedulePaint();
+  }
+
+ protected:
+  // views::Button:
+  void UpdateAccessibleCheckedState() override {
+    GetViewAccessibility().SetCheckedState(
+        selected_ ? ax::mojom::CheckedState::kTrue
+                  : ax::mojom::CheckedState::kFalse);
+  }
+
+ private:
+  static constexpr int kHeight = 32;
+  static constexpr int kRadius = 8;
+  static constexpr int kLeading = 8;
+  static constexpr int kIcon = 18;
+  static constexpr int kIconGap = 8;
+  static constexpr int kTrailing = 16;
+
+  std::u16string label_;
+  raw_ref<const gfx::VectorIcon> icon_;
+  gfx::FontList font_;
+  bool selected_;
+};
+
+BEGIN_METADATA(ZephyrusFilterChip)
+END_METADATA
+
+// M3's CHIP GROUP: chips in a row that wraps, 8dp apart both ways.
+class ZephyrusChipGroup : public views::View {
+  METADATA_HEADER(ZephyrusChipGroup, views::View)
+
+ public:
+  ZephyrusChipGroup() = default;
+  ZephyrusChipGroup(const ZephyrusChipGroup&) = delete;
+  ZephyrusChipGroup& operator=(const ZephyrusChipGroup&) = delete;
+  ~ZephyrusChipGroup() override = default;
+
+  // views::View:
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    gfx::Rect extent;
+    for (const gfx::Rect& rect :
+         Place(available_size.width().is_bounded()
+                   ? available_size.width().value()
+                   : std::numeric_limits<int>::max())) {
+      extent.Union(rect);
+    }
+    return extent.size();
+  }
+
+  void Layout(PassKey) override {
+    const std::vector<gfx::Rect> rects = Place(width());
+    size_t i = 0;
+    for (views::View* child : children()) {
+      if (child->GetVisible()) {
+        child->SetBoundsRect(rects[i++]);
+      }
+    }
+  }
+
+ private:
+  static constexpr int kGap = 8;
+
+  // One rect per VISIBLE child, in order. Reads only preferred sizes, never
+  // this view's own, so it is safe to call from CalculatePreferredSize.
+  std::vector<gfx::Rect> Place(int max_width) const {
+    std::vector<gfx::Rect> rects;
+    int x = 0;
+    int y = 0;
+    int row_height = 0;
+    for (const views::View* child : children()) {
+      if (!child->GetVisible()) {
+        continue;
+      }
+      const gfx::Size size = child->GetPreferredSize();
+      if (x > 0 && x + size.width() > max_width) {
+        x = 0;
+        y += row_height + kGap;
+        row_height = 0;
+      }
+      rects.emplace_back(x, y, size.width(), size.height());
+      x += size.width() + kGap;
+      row_height = std::max(row_height, size.height());
+    }
+    return rects;
+  }
+};
+
+BEGIN_METADATA(ZephyrusChipGroup)
+END_METADATA
+
+// An M3 FILLED TONAL BUTTON with a trailing icon: 40dp, full-round,
+// secondaryContainer, labelLarge in onSecondaryContainer, 16dp either side.
+class ZephyrusTonalButton : public views::LabelButton {
+  METADATA_HEADER(ZephyrusTonalButton, views::LabelButton)
+
+ public:
+  ZephyrusTonalButton(PressedCallback callback,
+                      const std::u16string& text,
+                      const gfx::VectorIcon& trailing_icon,
+                      SkColor container,
+                      SkColor content)
+      : views::LabelButton(std::move(callback), text) {
+    label()->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
+    SetEnabledTextColors(content);
+    SetImageModel(STATE_NORMAL,
+                  ui::ImageModel::FromVectorIcon(trailing_icon, content, 18));
+    // ALIGN_RIGHT is what puts LabelButton's image AFTER its label.
+    SetHorizontalAlignment(gfx::ALIGN_RIGHT);
+    SetImageLabelSpacing(8);
+    SetMinSize(gfx::Size(0, 40));
+    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 16)));
+    SetBackground(views::CreateRoundedRectBackground(container, 20));
+    SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+    SetInstallFocusRingOnFocus(true);
+    views::InstallPillHighlightPathGenerator(this);
+    views::InkDropHost* const ink = views::InkDrop::Get(this);
+    ink->SetMode(views::InkDropHost::InkDropMode::ON);
+    ink->SetBaseColor(content);
+    ink->SetHighlightOpacity(zephyrus::m3::kHover / 255.0f);
+    ink->SetVisibleOpacity(zephyrus::m3::kPressed / 255.0f);
+  }
+  ZephyrusTonalButton(const ZephyrusTonalButton&) = delete;
+  ZephyrusTonalButton& operator=(const ZephyrusTonalButton&) = delete;
+  ~ZephyrusTonalButton() override = default;
+};
+
+BEGIN_METADATA(ZephyrusTonalButton)
 END_METADATA
 
 // A dialog action button (Cancel / destructive confirm).
@@ -3670,201 +3946,207 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
     return;
   }
   int this_page = 0;
+  std::u16string page_host;
   if (content::WebContents* wc =
           browser_->tab_strip_model()->GetActiveWebContents()) {
+    // Web pages only: an internal page's "host" (newtab, settings) is not a
+    // site, and naming it here would read as one.
+    const GURL& url = wc->GetLastCommittedURL();
+    if (url.SchemeIsHTTPOrHTTPS()) {
+      page_host = base::UTF8ToUTF16(url.host());
+    }
     if (auto* helper =
             zephyrus_adblock::ZephyrusAdblockTabHelper::FromWebContents(wc)) {
       this_page = helper->blocked_this_page();
     }
   }
 
-  // Surface derived from the permanent theme by the same lift() model as the
-  // workspace dropdown and the delete dialog, so all three cards are literally
-  // the same material. The old hardcoded #18181C was a neutral grey that
-  // belonged to no theme and read as a foreign panel next to them.
-  const SkColor kBase = zephyrus::Ground();
-  auto lift = [&](SkAlpha a) { return zephyrus::Raise(kBase, a); };
-  const SkColor kCardBg = lift(0x22);       // Same level as the dropdown panel.
-  const SkColor kInsetCard = lift(0x2E);    // Raised group inside the card.
-  const SkColor kRowHover = lift(0x3A);     // Same hover level as menu rows.
-  const SkColor kFg = color_utils::GetColorWithMaxContrast(kBase);
-  const SkColor kMuted = SkColorSetA(kFg, 0xB0);  // System body alpha.
-  const SkColor kFaint = SkColorSetA(kFg, 0x8A);
-  const SkColor kAccent = zephyrus::Accent();
-  constexpr int kWidth = 288;
+  // M3 ROLES, read from the TOOLBAR: it is in a Widget and has a
+  // ColorProvider, which the bubble's own views do not have until the bubble
+  // is shown. (The chips read theirs at paint time, once they are in one.)
+  const SkColor kContainer =
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainer);
+  const SkColor kOnSurface = zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
+  const SkColor kOnVariant =
+      zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant);
+  const SkColor kPrimary = zephyrus::m3::Role(*this, kColorZephyrusPrimary);
+  const SkColor kOnPrimary = zephyrus::m3::Role(*this, kColorZephyrusOnPrimary);
+  const SkColor kPrimaryContainer =
+      zephyrus::m3::Role(*this, kColorZephyrusPrimaryContainer);
+  const SkColor kOnPrimaryContainer =
+      zephyrus::m3::Role(*this, kColorZephyrusOnPrimaryContainer);
+  const SkColor kSecondaryContainer =
+      zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer);
+  const SkColor kOnSecondaryContainer =
+      zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer);
+
+  // COMPACT. This used to be 336dp wide with a stats card and four 56dp switch
+  // rows, and hid a large part of the page under it. The master switch now
+  // lives in the header, the three secondary settings are filter chips, and
+  // the two lifetime stats are one line of supporting text.
+  constexpr int kWidth = 300;
+  constexpr int kInset = 16;
+  constexpr int kGap = 16;
 
   auto content = std::make_unique<views::View>();
   content->SetBackground(
-      views::CreateRoundedRectBackground(kCardBg, kZephyrusDialogRadius));
+      views::CreateRoundedRectBackground(kContainer, kZephyrusDialogRadius));
   auto* col = content->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(18, 18), 0));
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(kInset), kGap));
   col->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kStretch);
 
   auto make_label = [](const std::u16string& text, SkColor color,
-                       int size_delta, gfx::Font::Weight weight) {
+                       zephyrus::m3::Type type) {
     auto label = std::make_unique<views::Label>(text);
     label->SetEnabledColor(color);
     label->SetAutoColorReadabilityEnabled(false);
     label->SetSubpixelRenderingEnabled(false);
-    label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    label->SetFontList(
-        label->font_list().DeriveWithSizeDelta(size_delta).DeriveWithWeight(
-            weight));
+    label->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
+    label->SetFontList(zephyrus::m3::Font(type));
     return label;
   };
-  auto add_spacer = [&content](int height) {
-    content->AddChildView(std::make_unique<views::View>())
-        ->SetPreferredSize(gfx::Size(1, height));
-  };
 
-  // ---- Header: shield glyph + title -----------------------------------------
+  // ---- Header: icon in a primaryContainer circle, title, master switch ----
   auto* header = content->AddChildView(std::make_unique<views::View>());
   auto* hl = header->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 9));
+      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 12));
   hl->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kCenter);
-  header->AddChildView(std::make_unique<views::ImageView>(
-      ui::ImageModel::FromVectorIcon(kZephyrusShieldIcon, kAccent, 18)));
-  // Title weight/size matches the delete dialog's title, so a Zephyrus panel
-  // header reads the same wherever it appears.
-  auto* title = header->AddChildView(
-      make_label(u"Zephyrus Shield", kFg, 2, gfx::Font::Weight::SEMIBOLD));
-  hl->SetFlexForView(title, 1);
+  auto* badge = header->AddChildView(std::make_unique<views::ImageView>(
+      ui::ImageModel::FromVectorIcon(kZephyrusShieldIcon, kOnPrimaryContainer,
+                                     20)));
+  badge->SetPreferredSize(gfx::Size(40, 40));
+  badge->SetBackground(
+      views::CreateRoundedRectBackground(kPrimaryContainer, 20));
+  auto* titles = header->AddChildView(std::make_unique<views::View>());
+  titles->SetLayoutManager(std::make_unique<views::BoxLayout>(
+                               views::BoxLayout::Orientation::kVertical))
+      ->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kStretch);
+  titles->AddChildView(
+      make_label(u"Shield", kOnSurface, zephyrus::m3::Type::kTitleMedium));
+  if (!page_host.empty()) {
+    auto* host = titles->AddChildView(
+        make_label(page_host, kOnVariant, zephyrus::m3::Type::kBodySmall));
+    host->SetElideBehavior(gfx::ELIDE_HEAD);
+  }
+  hl->SetFlexForView(titles, 1);
 
-  add_spacer(14);
+  const std::u16string kBlockingName = u"Block ads & trackers";
+  auto* master = header->AddChildView(std::make_unique<zephyrus::m3::Switch>());
+  // Before the callback exists, so the initial value never reads as a change.
+  master->SetIsOn(service->enabled());
+  master->GetViewAccessibility().SetName(kBlockingName);
+  master->SetTooltipText(kBlockingName);
+  master->SetCallback(base::BindRepeating(
+      [](zephyrus::m3::Switch* s,
+         zephyrus_adblock::ZephyrusAdblockService* service) {
+        service->SetEnabled(s->GetIsOn());
+      },
+      base::Unretained(master), base::Unretained(service)));
 
-  // ---- Hero: blocked-on-this-page count -------------------------------------
-  // The number carries the whole message, so it gets the size and the caption
-  // sits tight underneath it rather than floating a line away.
-  content->AddChildView(make_label(base::NumberToString16(this_page), kFg, 20,
-                                   gfx::Font::Weight::BOLD));
-  content->AddChildView(make_label(u"trackers & ads blocked on this page",
-                                   kMuted, 0, gfx::Font::Weight::NORMAL));
+  // ---- Hero: the page's count on an expressive shape ----------------------
+  auto* hero = content->AddChildView(std::make_unique<views::View>());
+  auto* herol = hero->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 16));
+  herol->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kCenter);
+  hero->AddChildView(std::make_unique<ZephyrusShieldCookie>(
+      this_page > 999 ? u"999+" : base::FormatNumber(this_page), kPrimary,
+      kOnPrimary));
+  auto* hero_text = hero->AddChildView(std::make_unique<views::View>());
+  hero_text->SetLayoutManager(std::make_unique<views::BoxLayout>(
+                                  views::BoxLayout::Orientation::kVertical,
+                                  gfx::Insets(), 2))
+      ->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kStretch);
+  herol->SetFlexForView(hero_text, 1);
+  hero_text->AddChildView(make_label(u"blocked on this page", kOnSurface,
+                                     zephyrus::m3::Type::kBodyLarge));
+  auto* lifetime = hero_text->AddChildView(make_label(
+      base::FormatNumber(static_cast<int64_t>(service->total_blocked())) +
+          u" blocked in total",
+      kOnVariant, zephyrus::m3::Type::kBodySmall));
+  lifetime->SetMultiLine(true);
+  auto* rules = hero_text->AddChildView(make_label(
+      base::FormatNumber(static_cast<int64_t>(service->rule_count())) +
+          u" rules active",
+      kOnVariant, zephyrus::m3::Type::kBodySmall));
+  rules->SetMultiLine(true);
+  // The whole line is one statement to a screen reader.
+  hero->GetViewAccessibility().SetRole(ax::mojom::Role::kGroup);
+  hero->GetViewAccessibility().SetName(
+      base::FormatNumber(this_page) + u" blocked on this page");
 
-  add_spacer(16);
-
-  // ---- Secondary stats, grouped on a raised card ----------------------------
-  // Previously two full-bleed 1px dividers chopped the card into bands. The
-  // system groups by raising a surface instead, which reads as one object and
-  // needs no lines.
-  auto* stats = content->AddChildView(std::make_unique<views::View>());
-  stats->SetBackground(
-      views::CreateRoundedRectBackground(kInsetCard, kZephyrusDialogRadius));
-  auto* sl = stats->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(11, 14), 0));
-  auto add_stat_col = [&](const std::u16string& value,
-                          const std::u16string& caption) {
-    auto* c = stats->AddChildView(std::make_unique<views::View>());
-    c->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
-    c->AddChildView(make_label(value, kFg, 3, gfx::Font::Weight::MEDIUM));
-    // Sentence case, not ALL CAPS — nothing else in the system shouts.
-    c->AddChildView(make_label(caption, kFaint, -1, gfx::Font::Weight::NORMAL));
-    sl->SetFlexForView(c, 1);
+  // ---- Chips: the three secondary settings --------------------------------
+  auto* chips = content->AddChildView(std::make_unique<ZephyrusChipGroup>());
+  auto add_chip = [&](const std::u16string& label,
+                      const std::u16string& accessible_name,
+                      const gfx::VectorIcon& icon, bool selected,
+                      base::RepeatingCallback<void(bool)> on_change) {
+    auto* chip = chips->AddChildView(std::make_unique<ZephyrusFilterChip>(
+        label, accessible_name, icon, selected));
+    chip->SetCallback(base::BindRepeating(
+        [](ZephyrusFilterChip* c, base::RepeatingCallback<void(bool)> cb) {
+          cb.Run(c->selected());
+        },
+        base::Unretained(chip), std::move(on_change)));
   };
-  add_stat_col(base::NumberToString16(service->total_blocked()),
-               u"Blocked total");
-  add_stat_col(base::NumberToString16(service->rule_count()), u"Filter rules");
+  add_chip(u"Pop-ups", u"Aggressive pop-up blocking", kOpenInNewIcon,
+           service->aggressive_popup_blocking(),
+           base::BindRepeating(
+               [](zephyrus_adblock::ZephyrusAdblockService* s, bool on) {
+                 s->SetAggressivePopupBlocking(on);
+               },
+               base::Unretained(service)));
+  add_chip(u"Cookies", u"Block third-party cookies", vector_icons::kCookieIcon,
+           service->third_party_cookie_blocking(),
+           base::BindRepeating(
+               [](zephyrus_adblock::ZephyrusAdblockService* s, bool on) {
+                 s->SetThirdPartyCookieBlocking(on);
+               },
+               base::Unretained(service)));
 
-  add_spacer(14);
-
-  // ---- Toggle rows ----------------------------------------------------------
-  // Rows highlight on hover at the same lift level and 10px radius as the
-  // workspace dropdown's rows, so a settings row behaves identically wherever
-  // you meet one. Clicking anywhere on the row flips the switch — a 40px
-  // target instead of asking for the toggle itself.
-  auto add_toggle = [&](const std::u16string& text, bool is_on,
-                        const base::RepeatingCallback<void(bool)>& on_change) {
-    auto* row = content->AddChildView(
-        std::make_unique<ZephyrusShieldToggleRow>(kRowHover));
-    auto* rl = row->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(7, 10), 8));
-    rl->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kCenter);
-    auto* label = row->AddChildView(
-        make_label(text, kFg, 0, gfx::Font::Weight::NORMAL));
-    rl->SetFlexForView(label, 1);
-    auto* toggle = row->AddChildView(std::make_unique<views::ToggleButton>());
-    toggle->SetIsOn(is_on);
-    toggle->SetTrackOnColor(kAccent);
-    toggle->GetViewAccessibility().SetName(text);
-    toggle->SetCallback(base::BindRepeating(
-        [](views::ToggleButton* t,
-           base::RepeatingCallback<void(bool)> cb) { cb.Run(t->GetIsOn()); },
-        base::Unretained(toggle), on_change));
-    // ToggleButton::SetIsOn() is programmatic and does not fire the callback,
-    // so the row runs the change handler itself.
-    row->SetToggle(
-        toggle, base::BindRepeating(
-                    [](views::ToggleButton* t,
-                       base::RepeatingCallback<void(bool)> cb) {
-                      t->SetIsOn(!t->GetIsOn());
-                      cb.Run(t->GetIsOn());
-                    },
-                    base::Unretained(toggle), on_change));
-  };
-  add_toggle(u"Block ads & trackers", service->enabled(),
-             base::BindRepeating(
-                 [](zephyrus_adblock::ZephyrusAdblockService* s,
-                    bool on) { s->SetEnabled(on); },
-                 base::Unretained(service)));
-  add_spacer(4);
-  add_toggle(u"Aggressive pop-up blocking",
-             service->aggressive_popup_blocking(),
-             base::BindRepeating(
-                 [](zephyrus_adblock::ZephyrusAdblockService* s,
-                    bool on) { s->SetAggressivePopupBlocking(on); },
-                 base::Unretained(service)));
-  add_spacer(4);
-  add_toggle(u"Block third-party cookies",
-             service->third_party_cookie_blocking(),
-             base::BindRepeating(
-                 [](zephyrus_adblock::ZephyrusAdblockService* s,
-                    bool on) { s->SetThirdPartyCookieBlocking(on); },
-                 base::Unretained(service)));
-
-  // Advanced: force encrypted DNS (DoH "secure"). DoH is a single browser-wide
-  // setting — it can't be scoped to one workspace — so this affects every tab.
-  // Default is "automatic" (DoH when the network supports it, safe fallback);
-  // "secure" always uses DoH and fails closed, which can break captive-portal
-  // and DoH-blocking networks. Off the record, this pref reads through to local
+  // Force encrypted DNS (DoH "secure"). DoH is a single browser-wide setting --
+  // it can't be scoped to one workspace -- so this affects every tab. Default
+  // is "automatic" (DoH when the network supports it, safe fallback); "secure"
+  // always uses DoH and fails closed, which can break captive-portal and
+  // DoH-blocking networks. Off the record, this pref reads through to local
   // state, so read/write the real local state directly.
   if (PrefService* local_state = g_browser_process->local_state()) {
-    const bool secure_dns =
-        local_state->GetString(prefs::kDnsOverHttpsMode) ==
-        SecureDnsConfig::kModeSecure;
-    add_toggle(
-        l10n_util::GetStringUTF16(IDS_ZEPHYRUS_ALWAYS_ENCRYPTED_DNS), secure_dns,
-        base::BindRepeating([](bool on) {
-          if (PrefService* ls = g_browser_process->local_state()) {
-            ls->SetString(prefs::kDnsOverHttpsMode,
-                          on ? SecureDnsConfig::kModeSecure
-                             : SecureDnsConfig::kModeAutomatic);
-          }
-        }));
+    add_chip(u"Secure DNS",
+             l10n_util::GetStringUTF16(IDS_ZEPHYRUS_ALWAYS_ENCRYPTED_DNS),
+             vector_icons::kLockIcon,
+             local_state->GetString(prefs::kDnsOverHttpsMode) ==
+                 SecureDnsConfig::kModeSecure,
+             base::BindRepeating([](bool on) {
+               if (PrefService* ls = g_browser_process->local_state()) {
+                 ls->SetString(prefs::kDnsOverHttpsMode,
+                               on ? SecureDnsConfig::kModeSecure
+                                  : SecureDnsConfig::kModeAutomatic);
+               }
+             }));
   }
 
   // Privacy Intelligence (§6.1). Entry point rather than inline content: the
-  // Shield panel answers "what is the blocker doing", and the privacy panel
-  // answers "what happened on this page" — related, but two different
+  // Shield panel answers "what is the blocker doing", and the privacy report
+  // answers "what happened on this page" -- related, but two different
   // questions, and merging them would make both longer and neither clearer.
-  // Opening it closes this bubble first, so the two never stack.
   if (zephyrus_privacy::IsCollectionEnabled()) {
-    add_spacer(10);
-    auto* privacy_link = content->AddChildView(
-        std::make_unique<views::LabelButton>(
-            base::BindRepeating(
-                [](ToolbarView* toolbar) {
-                  // No explicit close of this bubble, and no posted task:
-                  // BubbleDialogDelegate closes on deactivation, so the Shield
-                  // panel dismisses itself the moment the privacy panel takes
-                  // activation. Calling Close() here would tear down the view
-                  // that owns this very callback.
-                  toolbar->ShowZephyrusPrivacyBubble();
-                },
-                base::Unretained(this)),
-            l10n_util::GetStringUTF16(
-                IDS_ZEPHYRUS_PRIVACY_SEE_WHAT_HAPPENED)));
-    privacy_link->SetEnabledTextColors(kAccent);
-    privacy_link->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    auto* footer = content->AddChildView(std::make_unique<views::View>());
+    footer->SetLayoutManager(std::make_unique<views::BoxLayout>(
+                                 views::BoxLayout::Orientation::kHorizontal))
+        ->set_main_axis_alignment(views::BoxLayout::MainAxisAlignment::kEnd);
+    footer->AddChildView(std::make_unique<ZephyrusTonalButton>(
+        base::BindRepeating(
+            [](ToolbarView* toolbar) {
+              // No explicit close of this bubble, and no posted task:
+              // BubbleDialogDelegate closes on deactivation, so the Shield
+              // panel dismisses itself once the report takes focus. Calling
+              // Close() here would tear down the view that owns this very
+              // callback.
+              toolbar->ShowZephyrusPrivacyBubble();
+            },
+            base::Unretained(this)),
+        l10n_util::GetStringUTF16(IDS_ZEPHYRUS_PRIVACY_TITLE),
+        kArrowForwardIcon, kSecondaryContainer, kOnSecondaryContainer));
   }
 
   content->SetPreferredSize(
@@ -3881,7 +4163,7 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
   bubble->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   bubble->set_margins(gfx::Insets());
   zephyrus::ConfigureBubble(bubble.get());
-  bubble->SetBackgroundColor(kCardBg);
+  bubble->SetBackgroundColor(kContainer);
   bubble->SetContentsView(std::move(content));
   views::BubbleDialogDelegate* bubble_ptr = bubble.get();
   views::Widget* widget = views::BubbleDialogDelegate::CreateBubbleDeprecated(

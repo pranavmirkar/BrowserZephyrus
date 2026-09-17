@@ -4056,6 +4056,8 @@ static_library("ui") {
       "views/frame/zephyrus_bubble_style.h",
       "views/frame/zephyrus_m3.cc",
       "views/frame/zephyrus_m3.h",
+      "views/frame/zephyrus_m3_switch.cc",
+      "views/frame/zephyrus_m3_switch.h",
       "views/frame/zephyrus_agent_panel.cc",
       "views/frame/zephyrus_customize_panel.cc",
       "views/frame/zephyrus_customize_panel.h",

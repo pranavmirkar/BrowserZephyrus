@@ -20,13 +20,13 @@
 
 #include "base/command_line.h"
 #include "base/i18n/rtl.h"
-#include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
-#include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3_switch.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/browser/zephyrus/privacy/privacy_event.h"
 #include "chrome/browser/zephyrus/privacy/privacy_features.h"
@@ -41,8 +41,9 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/ui_base_switches.h"
+#include "ui/views/test/button_test_api.h"
 #include "ui/views/view.h"
-#include "ui/views/widget/any_widget_observer.h"
+#include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 
 namespace zephyrus_privacy {
@@ -77,23 +78,33 @@ class PrivacyPopupBrowserTest : public InProcessBrowserTest {
   }
 
   // The panel is built after a hop to the privacy sequence for attribution, so
-  // the widget does not exist when ShowPrivacyPopup() returns.
-  views::Widget* ShowAndWait() {
-    // AnyWidgetObserver rather than NamedWidgetShownWaiter: the bubble is a
-    // plain views::BubbleDialogDelegate with no subclass, so it has no
-    // distinctive widget name to wait on, and matching the wrong name is
-    // indistinguishable from the panel never opening at all.
-    views::Widget* shown = nullptr;
-    base::RunLoop loop;
-    views::AnyWidgetObserver observer{views::test::AnyWidgetTestPasskey{}};
-    observer.set_shown_callback(
-        base::BindLambdaForTesting([&](views::Widget* widget) {
-          shown = widget;
-          loop.Quit();
-        }));
+  // the sheet does not exist when ShowPrivacyPopup() returns. It is a view in
+  // the browser window rather than a widget, so it is waited for by looking.
+  views::View* ShowAndWait() {
     ShowPrivacyPopup(browser(), anchor());
-    loop.Run();
-    return shown;
+    if (!base::test::RunUntil(
+            [&] { return GetPrivacySheetForTesting(browser()) != nullptr; })) {
+      return nullptr;
+    }
+    return GetPrivacySheetForTesting(browser());
+  }
+
+  // The window the sheet lives in. A sheet that closed THIS instead of itself
+  // is the regression the toggle test guards.
+  views::Widget* window() {
+    return BrowserView::GetBrowserViewForBrowser(browser())->GetWidget();
+  }
+
+  static zephyrus::m3::Switch* FindSwitch(views::View* root) {
+    if (auto* found = views::AsViewClass<zephyrus::m3::Switch>(root)) {
+      return found;
+    }
+    for (views::View* child : root->children()) {
+      if (auto* found = FindSwitch(child)) {
+        return found;
+      }
+    }
+    return nullptr;
   }
 
   base::test::ScopedFeatureList features_;
@@ -110,10 +121,10 @@ IN_PROC_BROWSER_TEST_F(PrivacyPopupBrowserTest, OpensOnAPageWithTrackers) {
   RecordRequest("analytics.example", TrackerStatus::kDetected);
   RecordRequest("cdn.example", TrackerStatus::kAllowed);
 
-  views::Widget* widget = ShowAndWait();
-  ASSERT_TRUE(widget);
-  EXPECT_FALSE(widget->IsClosed());
-  widget->CloseNow();
+  views::View* sheet = ShowAndWait();
+  ASSERT_TRUE(sheet);
+  EXPECT_TRUE(sheet->GetVisible());
+  ClosePrivacySheetForTesting(browser());
 }
 
 // The empty state. Distinct code path: no rows, and Protection Applied is
@@ -122,10 +133,10 @@ IN_PROC_BROWSER_TEST_F(PrivacyPopupBrowserTest, OpensOnACleanPage) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       browser(), embedded_test_server()->GetURL("clean.test", "/title1.html")));
 
-  views::Widget* widget = ShowAndWait();
-  ASSERT_TRUE(widget);
-  EXPECT_FALSE(widget->IsClosed());
-  widget->CloseNow();
+  views::View* sheet = ShowAndWait();
+  ASSERT_TRUE(sheet);
+  EXPECT_TRUE(sheet->GetVisible());
+  ClosePrivacySheetForTesting(browser());
 }
 
 // Layer 2 is built in the constructor but starts hidden, so it is realised on
@@ -140,10 +151,10 @@ IN_PROC_BROWSER_TEST_F(PrivacyPopupBrowserTest, BuildsBothLayersWithManyRows) {
                   i % 2 ? TrackerStatus::kBlocked : TrackerStatus::kAllowed);
   }
 
-  views::Widget* widget = ShowAndWait();
-  ASSERT_TRUE(widget);
-  EXPECT_FALSE(widget->IsClosed());
-  widget->CloseNow();
+  views::View* sheet = ShowAndWait();
+  ASSERT_TRUE(sheet);
+  EXPECT_TRUE(sheet->GetVisible());
+  ClosePrivacySheetForTesting(browser());
 }
 
 // §6.10's partial case: one domain where some requests were blocked and some
@@ -157,10 +168,10 @@ IN_PROC_BROWSER_TEST_F(PrivacyPopupBrowserTest, OpensWithAPartiallyBlockedRow) {
   RecordRequest("partial.example", TrackerStatus::kBlocked);
   RecordRequest("partial.example", TrackerStatus::kAllowed);
 
-  views::Widget* widget = ShowAndWait();
-  ASSERT_TRUE(widget);
-  EXPECT_FALSE(widget->IsClosed());
-  widget->CloseNow();
+  views::View* sheet = ShowAndWait();
+  ASSERT_TRUE(sheet);
+  EXPECT_TRUE(sheet->GetVisible());
+  ClosePrivacySheetForTesting(browser());
 }
 
 // A URL with no registrable domain has no site to describe (§9.7). The panel
@@ -168,10 +179,10 @@ IN_PROC_BROWSER_TEST_F(PrivacyPopupBrowserTest, OpensWithAPartiallyBlockedRow) {
 IN_PROC_BROWSER_TEST_F(PrivacyPopupBrowserTest, OpensOnAPageWithNoSite) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
 
-  views::Widget* widget = ShowAndWait();
-  ASSERT_TRUE(widget);
-  EXPECT_FALSE(widget->IsClosed());
-  widget->CloseNow();
+  views::View* sheet = ShowAndWait();
+  ASSERT_TRUE(sheet);
+  EXPECT_TRUE(sheet->GetVisible());
+  ClosePrivacySheetForTesting(browser());
 }
 
 // §14.1: "RTL layout tested for the popup, the tracker list, and the
@@ -199,13 +210,49 @@ IN_PROC_BROWSER_TEST_F(PrivacyPopupRtlBrowserTest, OpensAndLaysOutInRtl) {
   RecordRequest("ads.example", TrackerStatus::kBlocked);
   RecordRequest("analytics.example", TrackerStatus::kAllowed);
 
-  views::Widget* widget = ShowAndWait();
-  ASSERT_TRUE(widget);
-  EXPECT_FALSE(widget->IsClosed());
-  // The panel must have real width in RTL too: a mirrored layout that collapses
+  views::View* sheet = ShowAndWait();
+  ASSERT_TRUE(sheet);
+  // The sheet must have real width in RTL too: a mirrored layout that collapses
   // is a layout bug that "it did not crash" would happily miss.
-  EXPECT_GT(widget->GetContentsView()->bounds().width(), 0);
-  widget->CloseNow();
+  EXPECT_GT(sheet->bounds().width(), 0);
+  // And it must be on the TRAILING edge, which in RTL is the left: mirrored,
+  // its x is the card's own margin from the window edge.
+  EXPECT_LE(sheet->GetMirroredX(), 16);
+  ClosePrivacySheetForTesting(browser());
+}
+
+// The allow-site switch closes the SHEET. When the panel was a bubble it ended
+// with GetWidget()->Close(); inside the browser window that same call closes the
+// window, so this checks the one and not the other.
+IN_PROC_BROWSER_TEST_F(PrivacyPopupBrowserTest, AllowSiteClosesSheetNotWindow) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("allow.test", "/title1.html")));
+  RecordRequest("ads.example", TrackerStatus::kBlocked);
+
+  views::View* sheet = ShowAndWait();
+  ASSERT_TRUE(sheet);
+  zephyrus::m3::Switch* toggle = FindSwitch(sheet);
+  ASSERT_TRUE(toggle);
+  EXPECT_FALSE(toggle->GetIsOn());
+
+  views::test::ButtonTestApi(toggle).NotifyDefaultMouseClick();
+
+  EXPECT_FALSE(window()->IsClosed());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return GetPrivacySheetForTesting(browser()) == nullptr; }));
+  EXPECT_FALSE(window()->IsClosed());
+}
+
+// Pressing the shield again closes the open sheet rather than stacking a
+// second one on top of it.
+IN_PROC_BROWSER_TEST_F(PrivacyPopupBrowserTest, ShieldTogglesTheSheet) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("toggle.test", "/title1.html")));
+  ASSERT_TRUE(ShowAndWait());
+
+  ShowPrivacyPopup(browser(), anchor());
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return GetPrivacySheetForTesting(browser()) == nullptr; }));
 }
 
 }  // namespace

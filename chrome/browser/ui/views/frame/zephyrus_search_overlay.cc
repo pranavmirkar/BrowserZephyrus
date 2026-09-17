@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
 
+#include <optional>
+
 #include <memory>
 #include <string>
 #include <utility>
@@ -90,11 +92,6 @@ constexpr int kFieldHeight = 52;
 constexpr int kFieldRadius = zephyrus::kPillRadius;
 constexpr int kFieldHPadding = 16;
 constexpr int kFieldGap = 12;
-// Figma specifies a background-blur of 25, paired with the 60% fill. Dialled
-// back to 15 on 2026-08-10 after seeing it in the product: 25 over live web
-// content smeared the page into an indistinct wash, where 15 still reads as
-// glass but keeps some sense of what is behind the card.
-constexpr float kFieldBlurSigma = 15.0f;
 
 constexpr int kEngineRadius = zephyrus::kPillRadius;
 constexpr int kEngineFaviconSize = 18;
@@ -181,11 +178,10 @@ gfx::Transform ScaleAboutCenter(views::View* view, float scale) {
 
 // Hover/press feedback is painted as the chip's OWN fill rather than with an
 // ink drop. InkDropHost inserts its layer with LayerRegion::kBelow — under the
-// host's painted background — which on these glass chips put a 10% white wash
-// beneath a 60%-opaque navy fill: smothered where it overlapped the chip and
-// visible only where it spilled past it, at neither the chip's bounds nor its
-// radius. A background swap cannot be mispositioned, and it lands above the
-// backdrop blur where the design puts it.
+// host's painted background — which put the wash beneath the chip's own fill:
+// smothered where it overlapped the chip and visible only where it spilled
+// past it, at neither the chip's bounds nor its radius. A background swap
+// cannot be mispositioned.
 //
 // The swap is instant by design. Hover is the one moment where any delay reads
 // as the control not having noticed the pointer, so this is the same call as
@@ -205,25 +201,32 @@ struct ChipFills {
 // palette they would still be. Both now derive from the live palette, which is
 // also why they can no longer be constexpr.
 //
-// The chip comes FORWARD on hover rather than being washed lighter, so the row
-// keeps one material instead of gaining a second.
-ChipFills GlassFills() {
-  const SkColor base = zephyrus::Ground();
+// OPAQUE, and on the same container as the field. The translucent fills were
+// half of a glass effect whose other half was a backdrop blur; M3 Expressive
+// has no blur, and a translucent chip with nothing blurring behind it just
+// shows the page through as a muddy tint. Hover and press are M3 state layers
+// over that one container.
+ChipFills ShortcutFills(const views::View& view) {
+  const SkColor container =
+      zephyrus::m3::Role(view, kColorZephyrusSurfaceContainerHigh);
+  const SkColor ink = zephyrus::m3::Role(view, kColorZephyrusOnSurface);
   return {
-      SkColorSetA(base, 0x99),
-      SkColorSetA(zephyrus::Raise(base, 0x28), 0xB8),
-      SkColorSetA(zephyrus::Raise(base, 0x3C), 0xB8),
+      container,
+      zephyrus::m3::WithStateLayer(container, ink, zephyrus::m3::kHover),
+      zephyrus::m3::WithStateLayer(container, ink, zephyrus::m3::kPressed),
   };
 }
 
 // The engine chip sits inside the field on that same material, so its resting
 // state is a faint lift of the ink and hover simply deepens it.
-ChipFills EngineFills() {
-  const SkColor ink = zephyrus::Ink();
+ChipFills EngineFills(const views::View& view) {
+  const SkColor ink = zephyrus::m3::Role(view, kColorZephyrusOnSurface);
+  // The engine chip sits INSIDE the field, so it is a state layer over the
+  // field's container rather than a container of its own.
   return {
       SkColorSetA(ink, 0x0A),
-      SkColorSetA(ink, 0x1C),
-      SkColorSetA(ink, 0x28),
+      SkColorSetA(ink, zephyrus::m3::kHover),
+      SkColorSetA(ink, zephyrus::m3::kPressed),
   };
 }
 
@@ -284,8 +287,8 @@ class SuggestionRow : public views::Button {
     headline_ = column->AddChildView(std::make_unique<views::Label>());
     headline_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     headline_->SetAutoColorReadabilityEnabled(false);
-    // The card paints to a translucent blurred layer, and subpixel text AA
-    // needs an opaque backing. Views DCHECKs on this in debug builds.
+    // The list paints to a non-opaque layer (rounded corners), and subpixel
+    // text AA needs an opaque backing. Views DCHECKs on this in debug builds.
     headline_->SetSubpixelRenderingEnabled(false);
     headline_->SetElideBehavior(gfx::ELIDE_TAIL);
 
@@ -309,11 +312,13 @@ class SuggestionRow : public views::Button {
     headline_->SetText(two_line ? match.description
                                 : (match.contents.empty() ? match.description
                                                           : match.contents));
-    headline_->SetEnabledColor(zephyrus::Ink());
+    headline_->SetEnabledColor(
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurface));
     supporting_->SetVisible(two_line);
     if (two_line) {
       supporting_->SetText(match.contents);
-      supporting_->SetEnabledColor(zephyrus::Muted());
+      supporting_->SetEnabledColor(
+          zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant));
     }
     SetPreferredSize(
         gfx::Size(kContentWidth, two_line ? kRowHeightTwoLine : kRowHeight));
@@ -324,7 +329,8 @@ class SuggestionRow : public views::Button {
       // Generic glyph immediately; the favicon replaces it if one arrives.
       icon_->SetImage(ui::ImageModel::FromVectorIcon(
           is_search ? vector_icons::kSearchIcon : vector_icons::kGlobeIcon,
-          zephyrus::Muted(), kRowIconSize));
+          zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant),
+          kRowIconSize));
     }
     return changed;
   }
@@ -369,7 +375,10 @@ class SuggestionRow : public views::Button {
       alpha = zephyrus::m3::kHover;
     }
     SetBackground(alpha ? views::CreateSolidBackground(
-                              SkColorSetA(zephyrus::Ink(), alpha))
+                              SkColorSetA(
+                              zephyrus::m3::Role(
+                                  *this, kColorZephyrusOnSurface),
+                              alpha))
                         : nullptr);
     SchedulePaint();
   }
@@ -396,9 +405,7 @@ class EngineChip : public views::Button {
 
  public:
   explicit EngineChip(PressedCallback callback)
-      : views::Button(std::move(callback)) {
-    ApplyFill();
-  }
+      : views::Button(std::move(callback)) {}
   EngineChip(const EngineChip&) = delete;
   EngineChip& operator=(const EngineChip&) = delete;
   ~EngineChip() override = default;
@@ -408,55 +415,70 @@ class EngineChip : public views::Button {
     views::Button::StateChanged(old_state);
     ApplyFill();
   }
+  void OnThemeChanged() override {
+    views::Button::OnThemeChanged();
+    ApplyFill();
+  }
 
  private:
+  // The fill is a colour ROLE, and a View has no ColorProvider until it is in a
+  // Widget — asking earlier returns the sentinel, which is what painted these
+  // chips magenta while the fill was still applied from the constructor.
   void ApplyFill() {
+    if (!GetWidget()) {
+      return;
+    }
     SetBackground(views::CreateRoundedRectBackground(
-        FillForState(EngineFills(), GetState()), kEngineRadius));
+        FillForState(EngineFills(*this), GetState()), kEngineRadius));
   }
 };
 
 BEGIN_METADATA(EngineChip)
 END_METADATA
 
-// A shortcut chip: the same glass as the field above it, and the same
+// A shortcut chip: the same container as the field above it, and the same
 // fill-swap hover as the engine chip.
-class GlassChip : public views::LabelButton {
-  METADATA_HEADER(GlassChip, views::LabelButton)
+class ShortcutChip : public views::LabelButton {
+  METADATA_HEADER(ShortcutChip, views::LabelButton)
 
  public:
-  GlassChip(PressedCallback callback, const std::u16string& text)
+  ShortcutChip(PressedCallback callback, const std::u16string& text)
       : views::LabelButton(std::move(callback), text) {
     SetPaintToLayer();
     layer()->SetFillsBoundsOpaquely(false);
     layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kChipRadius));
-    layer()->SetBackgroundBlur(kFieldBlurSigma);
-    // LabelButton owns an internal Label with subpixel antialiasing on by
-    // default, and the layer above is deliberately non-opaque so the blur
-    // shows through. views::Label DCHECKs on that pair, and without DCHECKs it
-    // renders colour-fringed text over transparency. Every chip in the row is
-    // one of these, so this is the same defect as engine_label_ multiplied.
+    // The layer is still non-opaque — its rounded corners are transparent --
+    // and LabelButton's internal Label defaults to subpixel antialiasing.
+    // views::Label DCHECKs on that pair, and without DCHECKs it renders
+    // colour-fringed text.
     label()->SetSubpixelRenderingEnabled(false);
-    ApplyFill();
   }
-  GlassChip(const GlassChip&) = delete;
-  GlassChip& operator=(const GlassChip&) = delete;
-  ~GlassChip() override = default;
+  ShortcutChip(const ShortcutChip&) = delete;
+  ShortcutChip& operator=(const ShortcutChip&) = delete;
+  ~ShortcutChip() override = default;
 
   // views::LabelButton:
   void StateChanged(ButtonState old_state) override {
     views::LabelButton::StateChanged(old_state);
     ApplyFill();
   }
+  void OnThemeChanged() override {
+    views::LabelButton::OnThemeChanged();
+    ApplyFill();
+  }
 
  private:
+  // See EngineChip::ApplyFill: never before the chip is in a Widget.
   void ApplyFill() {
+    if (!GetWidget()) {
+      return;
+    }
     SetBackground(views::CreateRoundedRectBackground(
-        FillForState(GlassFills(), GetState()), kChipRadius));
+        FillForState(ShortcutFills(*this), GetState()), kChipRadius));
   }
 };
 
-BEGIN_METADATA(GlassChip)
+BEGIN_METADATA(ShortcutChip)
 END_METADATA
 
 }  // namespace
@@ -487,27 +509,15 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
   // and the text field. The engine selector lives INSIDE the field because it
   // qualifies the query being typed, not the panel as a whole.
   auto* field = container->AddChildView(std::make_unique<views::View>());
-  // 60% navy, exactly as drawn. Pranav chose the design value over a more
-  // opaque one on 2026-08-10, having seen it float: the panel has no card
-  // behind it, so the field tints the page rather than covering it. Note this
-  // is the one place a light page can wash the pill out, which the backdrop
-  // blur below is what saves.
-  //
-  // Fill at 60% PLUS a backdrop blur of 25 — the two together, as in the
-  // design. Either alone is wrong: the fill without blur is a washed-out tint,
-  // and blur behind an opaque fill is invisible, which is exactly why the
-  // sidebar's blur reads as flat today.
-  //
-  // This works only because this view lives in the browser window. A backdrop
-  // filter samples its own compositor frame, so here it sees the web contents;
-  // as a separate bubble widget there was nothing behind it at all — the same
-  // reason DWM window backdrops failed for menus.
+  // An M3 search bar: an OPAQUE surfaceContainerHigh pill, applied in
+  // OnThemeChanged. This used to be a 60% fill plus a compositor backdrop blur;
+  // M3 Expressive has no blur, and translucency without one only lets the page
+  // bleed through.
   field->SetPaintToLayer();
   field->layer()->SetFillsBoundsOpaquely(false);
   field->layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kFieldRadius));
-  field->layer()->SetBackgroundBlur(kFieldBlurSigma);
-  field->SetBackground(views::CreateRoundedRectBackground(
-      SkColorSetA(zephyrus::Ground(), 0x99), kFieldRadius));
+  field_ = field;
+  // Background comes from OnThemeChanged; there is no provider here yet.
   field->SetBorder(views::CreateRoundedRectBorder(
       1, kFieldRadius, SkColorSetARGB(0x08, 0x00, 0x00, 0x00)));
   field->SetPreferredSize(gfx::Size(kContentWidth, kFieldHeight));
@@ -536,17 +546,16 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
       gfx::Size(kEngineFaviconSize, kEngineFaviconSize));
 
   engine_label_ = engine->AddChildView(std::make_unique<views::Label>());
-  engine_label_->SetEnabledColor(SkColorSetA(zephyrus::Ink(), 0xE6));
   engine_label_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
   // Subpixel antialiasing needs an opaque backing to blend against, and this
-  // label sits inside `field`, whose layer is deliberately NOT opaque so the
-  // glass effect works. views::Label DCHECKs on exactly that combination, and
+  // label sits inside `field`, whose layer is not opaque (its rounded corners
+  // are transparent). views::Label DCHECKs on exactly that combination, and
   // in a release build it silently produces colour-fringed text over
   // transparency instead. Greyscale AA is the correct rendering here.
   engine_label_->SetSubpixelRenderingEnabled(false);
 
   engine_chevron_ = engine->AddChildView(std::make_unique<views::ImageView>(
-      ui::ImageModel::FromVectorIcon(kZephyrusDropdownIcon, zephyrus::Ink(),
+      ui::ImageModel::FromVectorIcon(kZephyrusDropdownIcon, gfx::kPlaceholderColor,
                                      10)));
   engine_chevron_->SetImageSize(gfx::Size(10, 10));
   // Its own layer so the open/close flip can be a transform rather than a
@@ -563,11 +572,9 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
   divider->SetPreferredSize(gfx::Size(1, kDividerHeight));
 
   // The pixel magnifier, then the field itself.
-  auto* glyph = field->AddChildView(std::make_unique<views::ImageView>(
-      ui::ImageModel::FromVectorIcon(kZephyrusSearchIcon,
-                                     SkColorSetA(zephyrus::Ink(), 0xB3),
-                                     kSearchGlyphSize)));
+  auto* glyph = field->AddChildView(std::make_unique<views::ImageView>());
   glyph->SetImageSize(gfx::Size(kSearchGlyphSize, kSearchGlyphSize));
+  search_glyph_ = glyph;
 
   input_ = field->AddChildView(std::make_unique<views::Textfield>());
   input_->set_controller(this);
@@ -605,11 +612,8 @@ ZephyrusSearchOverlay::ZephyrusSearchOverlay(BrowserView* browser_view)
   list->layer()->SetFillsBoundsOpaquely(false);
   list->layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kListRadius));
   list->layer()->SetIsFastRoundedCorner(true);
-  // Same blur and fill as the field, so the two read as one material rather
-  // than a translucent bar with an opaque panel hanging off it.
-  list->layer()->SetBackgroundBlur(kFieldBlurSigma);
-  list->SetBackground(views::CreateRoundedRectBackground(
-      SkColorSetA(zephyrus::Ground(), 0x99), kListRadius));
+  // Same container as the field, so the two read as one material.
+  // Background comes from OnThemeChanged, same as the field's.
   list->SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(8, 0), 0));
   list->SetVisible(false);
@@ -650,6 +654,37 @@ bool ZephyrusSearchOverlay::ShowForNewTab(Browser* browser) {
   }
   Show(browser);
   return true;
+}
+
+void ZephyrusSearchOverlay::OnThemeChanged() {
+  views::View::OnThemeChanged();
+
+  // The field and the list share one material so they read as a single
+  // surface rather than a translucent bar with an opaque panel below it.
+  const SkColor material =
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
+  if (field_) {
+    field_->SetBackground(
+        views::CreateRoundedRectBackground(material, kFieldRadius));
+  }
+  if (suggestions_list_) {
+    suggestions_list_->SetBackground(
+        views::CreateRoundedRectBackground(material, kListRadius));
+  }
+  const SkColor ink = zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
+  if (engine_label_) {
+    engine_label_->SetEnabledColor(SkColorSetA(ink, 0xE6));
+  }
+  if (engine_chevron_) {
+    engine_chevron_->SetImage(
+        ui::ImageModel::FromVectorIcon(kZephyrusDropdownIcon, ink, 10));
+  }
+  if (search_glyph_) {
+    search_glyph_->SetImage(ui::ImageModel::FromVectorIcon(
+        kZephyrusSearchIcon,
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant),
+        kSearchGlyphSize));
+  }
 }
 
 void ZephyrusSearchOverlay::Show(Browser* browser) {
@@ -935,8 +970,9 @@ void ZephyrusSearchOverlay::RebuildSuggestionRows() {
       favicons->GetFaviconImageForPageURL(
           match.destination_url,
           base::BindOnce(&ZephyrusSearchOverlay::OnRowFaviconReady,
-                         weak_factory_.GetWeakPtr(), row->icon()),
-          &favicon_tracker_);
+                         weak_factory_.GetWeakPtr(), i,
+                         match.destination_url),
+          &row_favicon_tracker_);
     }
   }
 
@@ -957,13 +993,27 @@ void ZephyrusSearchOverlay::RebuildSuggestionRows() {
 }
 
 void ZephyrusSearchOverlay::OnRowFaviconReady(
-    views::ImageView* icon,
+    size_t index,
+    const GURL& destination,
     const favicon_base::FaviconImageResult& result) {
-  // `icon` is a raw view pointer that outlived an async hop. It is safe only
-  // because RebuildSuggestionRows cancels this tracker before destroying rows;
-  // without that cancel this would be a use-after-free on every keystroke.
-  if (!icon || result.image.IsEmpty()) {
-    return;  // Keeps the generic glyph.
+  // This used to receive the row's ImageView as a raw pointer and was
+  // documented as safe "only because RebuildSuggestionRows cancels this
+  // tracker before destroying rows". Rows stopped being rebuilt wholesale --
+  // they grow and shrink in place, so the hover highlight survives provider
+  // updates — and the cancel went with the rebuild. Every keystroke that
+  // shortened the list then freed a row whose favicon was still in flight,
+  // and the reply wrote into freed memory. It only showed with browsing
+  // history, because only URL matches ask for favicons.
+  //
+  // Cancelling on shrink would not fix it properly either: it would also
+  // cancel the requests of rows that SURVIVE, and those only re-request when
+  // their destination changes, so they would keep the generic glyph.
+  if (result.image.IsEmpty() || index >= suggestion_rows_.size()) {
+    return;
+  }
+  auto* row = views::AsViewClass<SuggestionRow>(suggestion_rows_[index]);
+  if (!row || row->destination() != destination || !row->icon()) {
+    return;  // Gone, or reused for something else since the request.
   }
   gfx::ImageSkia image = result.image.AsImageSkia();
   if (image.width() != kRowIconSize || image.height() != kRowIconSize) {
@@ -971,7 +1021,7 @@ void ZephyrusSearchOverlay::OnRowFaviconReady(
         image, skia::ImageOperations::RESIZE_BEST,
         gfx::Size(kRowIconSize, kRowIconSize));
   }
-  icon->SetImage(ui::ImageModel::FromImageSkia(image));
+  row->icon()->SetImage(ui::ImageModel::FromImageSkia(image));
 }
 
 void ZephyrusSearchOverlay::ApplySelectionHighlight() {
@@ -1053,6 +1103,11 @@ void ZephyrusSearchOverlay::OnShortcutsReady(
   if (!chips_row_) {
     return;
   }
+  // The chips below are about to be destroyed; nothing still in flight for
+  // them may land. The generation check in OnShortcutFaviconReady is what
+  // guarantees that, the cancel just saves the work.
+  shortcut_favicon_tracker_.TryCancelAll();
+  ++shortcuts_generation_;
   chips_row_->RemoveAllChildViews();
 
   Profile* profile = browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
@@ -1085,15 +1140,18 @@ void ZephyrusSearchOverlay::OnShortcutsReady(
   }
 
   for (const auto& [label, url] : shortcuts) {
-    // Dark glass, matching the field above rather than the light pills the
-    // first pass used: one material for the whole card.
-    auto chip = std::make_unique<GlassChip>(
+    // The field's container, so the whole card is one material.
+    auto chip = std::make_unique<ShortcutChip>(
         base::BindRepeating(&ZephyrusSearchOverlay::OpenUrl,
                             base::Unretained(this), url),
         label);
+    // Safe to ask for a role here: this runs from the shortcuts callback, well
+    // after the overlay is in a widget.
+    const SkColor chip_ink =
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
     chip->SetTextColor(views::Button::STATE_NORMAL,
-                       SkColorSetA(zephyrus::Ink(), 0xE6));
-    chip->SetTextColor(views::Button::STATE_HOVERED, zephyrus::Ink());
+                       SkColorSetA(chip_ink, 0xE6));
+    chip->SetTextColor(views::Button::STATE_HOVERED, chip_ink);
     chip->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(8, 14)));
     chip->SetImageLabelSpacing(8);
     chip->SetMaxSize(gfx::Size(180, 0));  // Long titles elide, not stretch.
@@ -1108,23 +1166,40 @@ void ZephyrusSearchOverlay::OnShortcutsReady(
       chip_ptr->SetImageModel(
           views::Button::STATE_NORMAL,
           ui::ImageModel::FromVectorIcon(vector_icons::kSearchIcon,
-                                         zephyrus::Muted(),
+                                         zephyrus::m3::Role(
+                                             *this,
+                                             kColorZephyrusOnSurfaceVariant),
                                          kChipFaviconSize));
+      const std::optional<size_t> chip_index =
+          chips_row_->GetIndexOf(chip_ptr);
+      if (!chip_index) {
+        continue;
+      }
       favicons->GetFaviconImageForPageURL(
           url,
           base::BindOnce(&ZephyrusSearchOverlay::OnShortcutFaviconReady,
-                         weak_factory_.GetWeakPtr(), chip_ptr),
-          &favicon_tracker_);
+                         weak_factory_.GetWeakPtr(), shortcuts_generation_,
+                         *chip_index),
+          &shortcut_favicon_tracker_);
     }
   }
   DeprecatedLayoutImmediately();
 }
 
 void ZephyrusSearchOverlay::OnShortcutFaviconReady(
-    views::LabelButton* chip,
+    size_t generation,
+    size_t index,
     const favicon_base::FaviconImageResult& result) {
-  if (!chip || result.image.IsEmpty()) {
-    return;  // Keeps the generic glyph.
+  // Same defect as OnRowFaviconReady had: a raw chip pointer, and a rebuild
+  // that destroyed every chip without cancelling their lookups.
+  if (result.image.IsEmpty() || generation != shortcuts_generation_ ||
+      !chips_row_ || index >= chips_row_->children().size()) {
+    return;
+  }
+  auto* chip =
+      views::AsViewClass<views::LabelButton>(chips_row_->children()[index]);
+  if (!chip) {
+    return;
   }
   gfx::ImageSkia icon = result.image.AsImageSkia();
   if (icon.width() != kChipFaviconSize || icon.height() != kChipFaviconSize) {
@@ -1154,7 +1229,7 @@ void ZephyrusSearchOverlay::RefreshEngineLabel() {
 
   // The engine's own mark, if one is cached locally. Cancel any earlier lookup
   // so a previous engine's icon cannot land after a newer choice.
-  favicon_tracker_.TryCancelAll();
+  engine_favicon_tracker_.TryCancelAll();
   Profile* profile = zephyrus::ActiveProfile(browser_view_->browser());
   TemplateURLService* service =
       profile ? TemplateURLServiceFactory::GetForProfile(profile) : nullptr;
@@ -1169,7 +1244,7 @@ void ZephyrusSearchOverlay::RefreshEngineLabel() {
         def->favicon_url(),
         base::BindOnce(&ZephyrusSearchOverlay::OnEngineFaviconReady,
                        weak_factory_.GetWeakPtr()),
-        &favicon_tracker_);
+        &engine_favicon_tracker_);
   }
   // No engine configured is possible (policy, or a half-set-up profile); fall
   // back to a neutral label rather than an empty chip.

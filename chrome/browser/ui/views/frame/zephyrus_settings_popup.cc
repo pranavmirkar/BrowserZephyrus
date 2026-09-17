@@ -61,11 +61,16 @@
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/image_button.h"
+#include "ui/views/animation/ink_drop.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/controls/scroll_view.h"
+#include "ui/views/controls/scrollbar/overlay_scroll_bar.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/layout/box_layout_view.h"
 #include "ui/views/vector_icons.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
@@ -90,49 +95,53 @@ ZephyrusSettingsPopup* g_active_popup = nullptr;
 // at 1.25x (35), 1.5x (42) and 2x (56).
 constexpr int kPopupCornerRadius = zephyrus::kRadiusPopup;
 constexpr int kRailWidth = 208;
-constexpr int kRowHeight = 34;
-constexpr int kRowRadius = zephyrus::kCornerRadius;
-constexpr int kRowIconSize = 16;
+constexpr int kRailInset = 12;
 
-// Derived from the permanent theme rather than the neutral greys this used to
-// carry (#141418 / #1B1B1F), which belonged to no theme and read as a
-// different product next to the title bar. Still deliberately quiet: a rail at
-// the base theme color, monochrome icons, and one small accent detail on the
-// selected row — no colored chips, no filled accent slabs.
+// The rail is a column of M3 NAVIGATION DRAWER ITEMS, with the numbers taken
+// from Material's NavigationDrawerTokens rather than chosen: a 56dp item, a
+// full-pill active indicator on secondaryContainer, a 24dp icon and a
+// labelLarge label; the active item's content is onSecondaryContainer and
+// every other item's is onSurfaceVariant.
+constexpr int kItemHeight = 56;
+constexpr int kItemIconSize = 24;
+constexpr int kItemIconLabelGap = 12;
+constexpr int kItemLeadingPadding = 16;
+constexpr int kItemTrailingPadding = 24;
+
+// An M3 standard icon button: a 40dp target around a 24dp icon.
+constexpr int kIconButtonSize = 40;
+constexpr int kIconSize = 24;
+
+// An M3 divider between the rail's groups: 1dp of outlineVariant, inset.
+constexpr int kDividerInsetH = 16;
+constexpr int kDividerInsetV = 8;
+
+// Effectively unbounded: ScrollView::ClipHeightTo needs a real maximum.
+constexpr int kUnboundedScrollHeight = 100000;
+
+// Colours are ROLES, and a role can only be read from a view that is in a
+// Widget.
 //
-// The rail IS the theme color, so the popup's edge continues the title bar.
-// All of these were constexpr against the single permanent theme. They cannot
-// be: the palette is resolved from the OS at paint time now, so they are
-// functions that read it. Same names, same roles, one pair of parentheses.
-SkColor RailColor() {
-  return zephyrus::Ground();
+// The rail and the page base are the SAME role, and that is measured, not a
+// shortcut. The base was `surface` for a tonal split against the rail, and it
+// produced a 1px dark line instead: at 1.5x the web contents lands a device
+// pixel inside the WebView, so the WebView's own background shows at the edge
+// — 19,19,20 between a rail at 31,32,32 and a page at 32,33,36. The page
+// paints its OWN background, which is Chromium's WebUI colour and not ours,
+// so a split here cannot show until WebUI is aligned (overhaul Phase 6).
+// Until then the honest result is one dialog surface, with the base matching
+// it so neither the sliver nor the pre-paint flash stands out.
+SkColor RailColor(const views::View& view) {
+  return zephyrus::m3::Role(view, kColorZephyrusSurfaceContainer);
 }
-SkColor RailHairline() {
-  return zephyrus::Rule();
-}
-SkColor Foreground() {
-  return zephyrus::Ink();
-}
-SkColor MutedForeground() {
-  return zephyrus::Muted();
-}
-// Selection is a stronger, persistent state rather than a pointer one, so it
-// keeps its own value; hover is M3's 8% state layer, up from a hand-picked 6%.
-SkColor SelectedRowFill() {
-  return SkColorSetA(zephyrus::Ink(), 0x1F);
-}
-SkColor HoverRowFill() {
-  return zephyrus::m3::StateLayer(zephyrus::Ink(), zephyrus::m3::kHover);
-}
-// The content half, one surface step off the rail so the popup still reads as
-// two halves in either theme.
-SkColor WebViewBase() {
-  return zephyrus::Surface();
+SkColor ContentBase(const views::View& view) {
+  return RailColor(view);
 }
 
-// A rail entry: monochrome icon + label. Selection is a soft neutral
-// rounded fill with a small accent notch on the left edge; hover is an even
-// softer fill.
+// A rail entry: an M3 navigation drawer item. Selection is the full-pill
+// active indicator on secondaryContainer — the whole signal. The accent notch
+// that used to sit on its leading edge was the retired design language saying
+// "selected" a second time. Hover and press are M3 state layers.
 class ZephyrusNavPill : public views::LabelButton {
   METADATA_HEADER(ZephyrusNavPill, views::LabelButton)
 
@@ -142,11 +151,16 @@ class ZephyrusNavPill : public views::LabelButton {
                   const gfx::VectorIcon& icon)
       : views::LabelButton(std::move(callback), label), icon_(icon) {
     SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    SetImageLabelSpacing(10);
-    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(7, 12)));
-    SetMinSize(gfx::Size(kRailWidth - 24, kRowHeight));
+    SetImageLabelSpacing(kItemIconLabelGap);
+    SetBorder(views::CreateEmptyBorder(
+        gfx::Insets::TLBR(0, kItemLeadingPadding, 0, kItemTrailingPadding)));
+    SetMinSize(gfx::Size(0, kItemHeight));
+    this->label()->SetFontList(
+        zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
     GetViewAccessibility().SetName(label);
-    UpdateColors();
+    // No colour here. A role read from a view that is not yet in a Widget comes
+    // back as the sentinel; OnThemeChanged applies the real ones, and runs
+    // before the first paint.
   }
 
   void SetSelected(bool selected) {
@@ -161,43 +175,62 @@ class ZephyrusNavPill : public views::LabelButton {
   // views::LabelButton:
   void StateChanged(views::Button::ButtonState old_state) override {
     views::LabelButton::StateChanged(old_state);
-    UpdateColors();
+    // Only the state layer changes with hover and press; M3 does not brighten
+    // the label, so there is nothing to recolour.
     SchedulePaint();
   }
 
+  void OnThemeChanged() override {
+    views::LabelButton::OnThemeChanged();
+    UpdateColors();
+  }
+
   void OnPaintBackground(gfx::Canvas* canvas) override {
-    const bool hovered = GetState() == views::Button::STATE_HOVERED ||
-                         GetState() == views::Button::STATE_PRESSED;
-    if (!selected_ && !hovered) {
+    if (!GetWidget()) {
       return;
+    }
+    const bool hovered = GetState() == views::Button::STATE_HOVERED;
+    const bool pressed = GetState() == views::Button::STATE_PRESSED;
+    if (!selected_ && !hovered && !pressed) {
+      return;
+    }
+    const SkColor content = Ink();
+    SkColor fill =
+        selected_ ? zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer)
+                  : SK_ColorTRANSPARENT;
+    if (hovered || pressed) {
+      const SkAlpha layer =
+          pressed ? zephyrus::m3::kPressed : zephyrus::m3::kHover;
+      fill = selected_ ? zephyrus::m3::WithStateLayer(fill, content, layer)
+                       : zephyrus::m3::StateLayer(content, layer);
     }
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    flags.setColor(selected_ ? SelectedRowFill() : HoverRowFill());
-    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kRowRadius, flags);
-    if (selected_) {
-      // Small accent notch, vertically centered on the left edge.
-      constexpr float kNotchWidth = 3.0f;
-      constexpr float kNotchHeight = 14.0f;
-      flags.setColor(zephyrus::Accent());
-      const float y = (height() - kNotchHeight) / 2.0f;
-      canvas->DrawRoundRect(gfx::RectF(0, y, kNotchWidth, kNotchHeight),
-                            kNotchWidth / 2.0f, flags);
-    }
+    flags.setColor(fill);
+    const gfx::RectF bounds(GetLocalBounds());
+    // Full pill: the drawer's active indicator is ShapeKeyTokens.CornerFull.
+    canvas->DrawRoundRect(bounds, bounds.height() / 2.0f, flags);
   }
 
  private:
+  SkColor Ink() const {
+    return zephyrus::m3::Role(*this, selected_
+                                         ? kColorZephyrusOnSecondaryContainer
+                                         : kColorZephyrusOnSurfaceVariant);
+  }
+
   void UpdateColors() {
-    const bool hovered = GetState() == views::Button::STATE_HOVERED ||
-                         GetState() == views::Button::STATE_PRESSED;
-    const SkColor fg =
-        (selected_ || hovered) ? Foreground() : MutedForeground();
-    SetTextColor(views::Button::STATE_NORMAL, fg);
-    SetTextColor(views::Button::STATE_HOVERED, Foreground());
-    SetTextColor(views::Button::STATE_PRESSED, Foreground());
-    SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(*icon_, fg, kRowIconSize));
+    if (!GetWidget()) {
+      return;
+    }
+    const SkColor ink = Ink();
+    for (views::Button::ButtonState state :
+         {views::Button::STATE_NORMAL, views::Button::STATE_HOVERED,
+          views::Button::STATE_PRESSED}) {
+      SetTextColor(state, ink);
+    }
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromVectorIcon(*icon_, ink, kItemIconSize));
   }
 
   const raw_ref<const gfx::VectorIcon> icon_;
@@ -228,6 +261,71 @@ GURL SectionURL(ZephyrusSettingsPopup::Section section) {
       return GURL("chrome://settings/help");
   }
 }
+
+// The popup's contents. It exists to apply the theme to the parts that do
+// not colour themselves: this whole tree is built inside the dialog's
+// constructor, before any Widget or ColorProvider exists, so nothing built
+// there may ask for a role. OnThemeChanged runs once the popup is in its
+// Widget and before the first paint, and again on every theme change.
+class SettingsPopupContents : public views::View {
+  METADATA_HEADER(SettingsPopupContents, views::View)
+
+ public:
+  SettingsPopupContents() = default;
+  SettingsPopupContents(const SettingsPopupContents&) = delete;
+  SettingsPopupContents& operator=(const SettingsPopupContents&) = delete;
+  ~SettingsPopupContents() override = default;
+
+  void set_rail(views::View* rail) { rail_ = rail; }
+  void add_divider(views::View* divider) { dividers_.push_back(divider); }
+  void set_close_button(views::ImageButton* button) { close_button_ = button; }
+  void set_version(views::Label* version) { version_ = version; }
+  void set_web_view(views::WebView* web_view) { web_view_ = web_view; }
+
+  // views::View:
+  void OnThemeChanged() override {
+    views::View::OnThemeChanged();
+    if (rail_) {
+      rail_->SetBackground(views::CreateSolidBackground(RailColor(*this)));
+    }
+    const SkColor divider =
+        zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant);
+    for (views::View* line : dividers_) {
+      line->SetBackground(views::CreateSolidBackground(divider));
+    }
+    const SkColor variant =
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant);
+    if (close_button_) {
+      close_button_->SetImageModel(
+          views::Button::STATE_NORMAL,
+          ui::ImageModel::FromVectorIcon(kZephyrusCloseIcon, variant,
+                                         kIconSize));
+      // An M3 icon button shows hover and press as a state layer in the
+      // content colour, not by recolouring the icon.
+      views::InkDrop::Get(close_button_)->SetBaseColor(variant);
+    }
+    if (version_) {
+      version_->SetEnabledColor(variant);
+    }
+    if (web_view_) {
+      const SkColor base = ContentBase(*this);
+      web_view_->SetBackground(views::CreateSolidBackground(base));
+      if (content::WebContents* contents = web_view_->GetWebContents()) {
+        contents->SetPageBaseBackgroundColor(base);
+      }
+    }
+  }
+
+ private:
+  raw_ptr<views::View> rail_ = nullptr;
+  std::vector<raw_ptr<views::View>> dividers_;
+  raw_ptr<views::ImageButton> close_button_ = nullptr;
+  raw_ptr<views::Label> version_ = nullptr;
+  raw_ptr<views::WebView> web_view_ = nullptr;
+};
+
+BEGIN_METADATA(SettingsPopupContents)
+END_METADATA
 
 }  // namespace
 
@@ -369,25 +467,26 @@ ZephyrusSettingsPopup::~ZephyrusSettingsPopup() {
 std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
     const gfx::Size& size,
     Section initial_section) {
-  auto root = std::make_unique<views::View>();
+  auto root = std::make_unique<SettingsPopupContents>();
+  SettingsPopupContents* const contents = root.get();
   root->SetPreferredSize(size);
   root->SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal));
   auto* root_layout =
       static_cast<views::BoxLayout*>(root->GetLayoutManager());
 
-  // ---- Left: pill navigation rail -----------------------------------------
+  // ---- Left: M3 navigation drawer items -----------------------------------
+  // No hairline against the page: the rail's tone does that now. Colours are
+  // applied by SettingsPopupContents::OnThemeChanged.
   auto* rail = root->AddChildView(std::make_unique<views::View>());
+  contents->set_rail(rail);
   rail->SetPreferredSize(gfx::Size(kRailWidth, size.height()));
-  rail->SetBackground(views::CreateSolidBackground(RailColor()));
-  // Hairline between the rail and the hosted page gives the split definition.
-  rail->SetBorder(views::CreateSolidSidedBorder(gfx::Insets::TLBR(0, 0, 0, 1),
-                                                RailHairline()));
   auto* rail_layout = rail->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical, gfx::Insets::TLBR(12, 12, 12, 11),
-      4));
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(kRailInset), 0));
+  rail_layout->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kStretch);
 
-  // A single close (✕) button at the top of the rail.
+  // Close, as an M3 standard icon button at the top of the rail.
   auto* header = rail->AddChildView(std::make_unique<views::View>());
   header->SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kHorizontal,
@@ -399,21 +498,43 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
                 self->ClosePopup();
               },
               base::Unretained(this))));
-  close_button->SetImageModel(
-      views::Button::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(kZephyrusCloseIcon, MutedForeground(), 16));
-  close_button->SetImageModel(
-      views::Button::STATE_HOVERED,
-      ui::ImageModel::FromVectorIcon(kZephyrusCloseIcon, Foreground(), 16));
+  contents->set_close_button(close_button);
   close_button->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
   close_button->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
-  close_button->SetPreferredSize(gfx::Size(28, 28));
+  close_button->SetPreferredSize(gfx::Size(kIconButtonSize, kIconButtonSize));
   close_button->GetViewAccessibility().SetName(u"Close settings");
   close_button->SetTooltipText(u"Close");
   views::InstallCircleHighlightPathGenerator(close_button);
+  views::InkDrop::Get(close_button)
+      ->SetMode(views::InkDropHost::InkDropMode::ON);
+  views::InkDrop::Get(close_button)
+      ->SetHighlightOpacity(zephyrus::m3::kHover / 255.0f);
+  views::InkDrop::Get(close_button)
+      ->SetVisibleOpacity(zephyrus::m3::kPressed / 255.0f);
 
-  // Rail items: (section, icon, label), in three quiet groups —
-  // browser configuration, the user's content, and about.
+  // The items SCROLL. At M3's 56dp the eight of them, the dividers and the
+  // header come to roughly 584dp, and the popup is allowed down to 480 on a
+  // small window — without this the last items and the version would simply
+  // be cut off. Set up exactly as the sidebar's tab list, which learned both
+  // halves the hard way: ClipHeightTo is required, and the scrollbar must be
+  // an overlay.
+  auto* scroll = rail->AddChildView(std::make_unique<views::ScrollView>());
+  scroll->ClipHeightTo(0, kUnboundedScrollHeight);
+  scroll->SetBackgroundColor(std::nullopt);
+  scroll->SetDrawOverflowIndicator(false);
+  scroll->SetHorizontalScrollBarMode(
+      views::ScrollView::ScrollBarMode::kDisabled);
+  scroll->SetVerticalScrollBar(std::make_unique<views::OverlayScrollBar>(
+      views::ScrollBar::Orientation::kVertical));
+  auto item_list = std::make_unique<views::BoxLayoutView>();
+  item_list->SetOrientation(views::BoxLayout::Orientation::kVertical);
+  item_list->SetCrossAxisAlignment(
+      views::BoxLayout::CrossAxisAlignment::kStretch);
+  views::View* const list = scroll->SetContents(std::move(item_list));
+  rail_layout->SetFlexForView(scroll, 1);
+
+  // Rail items: (section, icon, label), in three groups — browser
+  // configuration, the user's content, and about — divided by M3 dividers.
   const std::tuple<Section, const gfx::VectorIcon*, const char16_t*> items[] =
       {
           {Section::kSettings, &vector_icons::kSettingsIcon, u"Settings"},
@@ -426,21 +547,21 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
            u"Extensions"},
           {Section::kAbout, &vector_icons::kInfoIcon, u"About Zephyrus"},
       };
-  auto add_group_gap = [&rail]() {
-    auto* gap = rail->AddChildView(std::make_unique<views::View>());
-    gap->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(4, 10), 0));
-    auto* line = gap->AddChildView(std::make_unique<views::View>());
-    line->SetBackground(views::CreateSolidBackground(RailHairline()));
+  auto add_divider = [list, contents]() {
+    auto* holder = list->AddChildView(std::make_unique<views::View>());
+    holder->SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical,
+        gfx::Insets::VH(kDividerInsetV, kDividerInsetH), 0));
+    auto* line = holder->AddChildView(std::make_unique<views::View>());
     line->SetPreferredSize(gfx::Size(1, 1));
+    contents->add_divider(line);
   };
   for (const auto& [item_section, item_icon, item_label] : items) {
-    // Hairline gaps between the groups.
     if (item_section == Section::kHistory ||
         item_section == Section::kAbout) {
-      add_group_gap();
+      add_divider();
     }
-    auto* pill = rail->AddChildView(std::make_unique<ZephyrusNavPill>(
+    auto* pill = list->AddChildView(std::make_unique<ZephyrusNavPill>(
         base::BindRepeating(
             [](ZephyrusSettingsPopup* self, Section section,
                const ui::Event&) { self->SwitchTo(section); },
@@ -448,23 +569,17 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
         item_label, *item_icon));
     pills_.emplace_back(item_section, pill);
   }
-  // Ignore the return value; the rail is fixed-width so no flex is needed,
-  // but keep the pills top-aligned by letting trailing space collapse.
-  rail_layout->set_main_axis_alignment(
-      views::BoxLayout::MainAxisAlignment::kStart);
 
-  // Zephyrus version, pinned to the foot of the rail (a flexible spacer above
-  // pushes it down). Visible across all settings sections, including About.
-  auto* spacer = rail->AddChildView(std::make_unique<views::View>());
-  rail_layout->SetFlexForView(spacer, 1);
+  // Zephyrus version at the foot of the rail, below the scrolling items.
   auto* version = rail->AddChildView(std::make_unique<views::Label>(
       u"Zephyrus " + std::u16string(zephyrus::kVersion)));
+  contents->set_version(version);
   version->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  version->SetEnabledColor(MutedForeground());
   version->SetAutoColorReadabilityEnabled(false);
   version->SetSubpixelRenderingEnabled(false);
   version->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
-  version->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(0, 20, 14, 12)));
+  version->SetBorder(views::CreateEmptyBorder(
+      gfx::Insets::TLBR(8, kItemLeadingPadding, 2, 0)));
 
   // ---- Right: embedded WebUI ----------------------------------------------
   auto* web_view =
@@ -474,15 +589,23 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
   // Clip the native web contents to the popup's rounded right corners.
   web_view->holder()->SetCornerRadii(
       gfx::RoundedCornersF(0, kPopupCornerRadius, kPopupCornerRadius, 0));
-  // Dark base under/behind the page so opening the popup and switching
-  // sections never flashes white before the (dark) WebUI paints.
-  web_view->SetBackground(views::CreateSolidBackground(WebViewBase()));
+  contents->set_web_view(web_view);
+  // A base under the page, so opening the popup and switching sections never
+  // flashes white before the WebUI paints. This tree has no ColorProvider yet,
+  // so the first value is read from the BROWSER WINDOW, which does; the
+  // contents view re-applies it in OnThemeChanged.
+  BrowserView* const browser_view =
+      BrowserView::GetBrowserViewForBrowser(browser_);
   // Register the embedding context BEFORE the first navigation: hosted WebUIs
   // (history clusters, settings subpages, ...) resolve their browser through
   // webui::GetBrowserWindowInterface() since they are not in a tab here.
   content::WebContents* web_contents = web_view->GetWebContents();
   webui::SetBrowserWindowInterface(web_contents, browser_);
-  web_contents->SetPageBaseBackgroundColor(WebViewBase());
+  if (browser_view) {
+    web_view->SetBackground(
+        views::CreateSolidBackground(ContentBase(*browser_view)));
+    web_contents->SetPageBaseBackgroundColor(ContentBase(*browser_view));
+  }
   web_contents->SetDelegate(this);
   // Observe navigations so the rail highlight follows pages the popup did not
   // navigate to itself (e.g. history's "Delete browsing data" subpage).

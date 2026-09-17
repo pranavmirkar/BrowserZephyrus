@@ -22,16 +22,27 @@ namespace zephyrus_privacy {
 // one maps to exactly one translated string — see the §2.4 comment block in
 // generated_resources.grd. Nothing on this panel is computed here.
 //
-// **The design is provisional.** The Figma for this screen does not exist yet;
-// what is settled is the information architecture and the accuracy rules, and
-// those are what the code enforces. The visual treatment reuses the Shield
-// panel's material so it does not read as a foreign surface in the meantime,
-// and is expected to be replaced wholesale.
+// **Shown as an M3 modal SIDE SHEET**, not a popup: it slides in from the
+// window's trailing edge over a scrim, holds the summary and the per-tracker
+// breakdown in one scrolling column, and closes on its close button, Escape, a
+// click on the scrim, or a change of active tab (the analysis belongs to one
+// page). The information architecture and the accuracy rules are unchanged;
+// only the host and the components are M3.
 //
-// Shows the panel anchored to `anchor`. Does nothing when the feature is off or
-// the profile has no service (incognito), which is a legitimate state and not
-// an error — see PrivacyIntelligenceServiceFactory.
+// Does nothing when the feature is off or the profile has no service
+// (incognito), which is a legitimate state and not an error — see
+// PrivacyIntelligenceServiceFactory. `anchor` is the control the user came
+// from; the sheet is not attached to it, and it is kept so callers need not
+// change.
 void ShowPrivacyPopup(Browser* browser, views::View* anchor);
+
+// The open sheet's surface in `browser`'s window, or null. For tests: the sheet
+// is a view inside the browser window, not a widget, so a widget observer does
+// not see it open.
+views::View* GetPrivacySheetForTesting(Browser* browser);
+
+// Removes the open sheet at once, without its exit animation. For tests.
+void ClosePrivacySheetForTesting(Browser* browser);
 
 }  // namespace zephyrus_privacy
 

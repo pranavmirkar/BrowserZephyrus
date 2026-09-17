@@ -5,12 +5,16 @@
 #include "chrome/browser/ui/views/frame/zephyrus_tab_switcher.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
+#include <numeric>
 #include <string>
 #include <utility>
 
 #include "base/functional/bind.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
+#include "cc/paint/paint_flags.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_tab_helper.h"
@@ -21,46 +25,170 @@
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/gfx/color_utils.h"
+#include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/aura/window.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/compositor/layer.h"
-#include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
-#include "ui/gfx/font_list.h"
+#include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
-#include "ui/gfx/image/image_skia_operations.h"
+#include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/scoped_canvas.h"
 #include "ui/views/background.h"
-#include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/widget/widget.h"
+#include "url/gurl.h"
 
 namespace {
 
-// Card geometry. Thumbnails are 16:10 and sized at runtime: we aim for
-// kThumbWidthDesired but shrink toward kThumbWidthMin so the strip always fits
-// inside the window instead of running off the edge with many tabs.
-constexpr int kThumbWidthDesired = 260;
-constexpr int kThumbWidthMin = 150;
-// Spacing on an 8dp grid, which is the one thing Material's layout actually
-// asks for. 14/10/12 were near-misses of it and read as slightly arbitrary.
-constexpr int kCardSpacing = 12;
-constexpr int kCardPadding = 8;
-constexpr int kPanelPadding = 8;
+// M3 MULTI-BROWSE CAROUSEL, centred on the selected tab.
+//
+// The sizing is Material's, taken from its component source rather than
+// remembered: small items are 40-56dp (m3_carousel_small_item_size_min/max), a
+// small item is the large one divided by three and clamped into that range,
+// and a medium item is halfway between the two (Compose's
+// multiBrowseKeylineList).
+//
+// Items are MASKED, not scaled. Every item draws its page at the large size and
+// shows the middle slice that fits, so a medium or small item reads as the same
+// page seen through a narrower window rather than as a shrunken picture.
+constexpr int kLargePreferred = 360;
+constexpr int kLargeMin = 200;
+constexpr int kSmallMin = 40;
+constexpr int kSmallMax = 56;
+constexpr int kItemGap = 8;
 
-// The meta row under each thumbnail: favicon + title.
+// M3's extra-large shape (m3_carousel_small_item_default_corner_size), which
+// makes a 56dp small item a full pill.
+constexpr int kItemRadius = zephyrus::kRadiusXLarge;
+
+// CONCENTRIC: the panel's radius is the item radius plus the padding between
+// them, 28 + 20 = 48, which is also a step on the shape scale. An item at 28
+// inside a panel at 28 would be visibly too round for its space (Rule 2).
+constexpr int kPanelPadding = 20;
+constexpr int kPanelCornerRadius = kItemRadius + kPanelPadding;
+
+// The selected tab's favicon, title and domain, under the strip. M3 carousel
+// items carry no text of their own at medium and small sizes, so the label
+// belongs to the focal item and moves with the selection.
+constexpr int kCaptionGap = 16;
+constexpr int kCaptionHeight = 24;
+constexpr int kCaptionSpacing = 8;
 constexpr int kFaviconSize = 16;
-constexpr int kMetaGap = 8;
-constexpr int kMetaHeight = 20;
 
-// 16:10, matching the shape of a browser viewport closely enough to read.
-int ThumbHeightFor(int width) {
-  return width * 10 / 16;
+// M3's FOCUS INDICATOR on the selected item, from Material's focus-ring
+// tokens: a 3dp stroke in `secondary`, held 2dp outside the element, with the
+// element's radius plus that offset — so the ring is concentric with what it
+// surrounds by construction, not by a second number that has to agree.
+constexpr float kRingWidth = 3.0f;
+constexpr float kRingOffset = 2.0f;
+// How far the ring reaches past its item. The strip is grown by this on every
+// side so the ring is never cut off by the strip's own clip.
+constexpr int kRingExtent = 5;
+static_assert(kRingExtent == static_cast<int>(kRingOffset + kRingWidth));
+static_assert(kPanelPadding >= kRingExtent,
+              "the ring would reach past the panel's rounded edge");
+
+// Kept clear on either side of the panel.
+constexpr int kWindowMargin = 48;
+
+// Far enough to reach every tab most people have open, without building views
+// for every tab in a very large window.
+constexpr size_t kMaxEntries = 50;
+
+// HOT PATH. Tapping Tab with Ctrl held is among the most repeated motions in
+// the browser, so this does not take M3's 350ms fast-spatial duration -- see
+// the hot-path note in zephyrus_m3.h. It keeps the spatial CURVE, overshoot and
+// all, because a carousel settling into place is what that curve is for.
+constexpr base::TimeDelta kCycleDuration = base::Milliseconds(200);
+
+// An item's corner radius at `size`: the extra-large shape, clamped so the
+// corners never cross while an item is narrower than a full pill
+// mid-animation. The ring derives its radius from this, so the two can never
+// disagree.
+SkScalar ItemRadiusFor(const gfx::Size& size) {
+  return std::min<SkScalar>(
+      kItemRadius, std::min(size.width(), size.height()) / 2.0f);
+}
+
+// 16:10, close enough to a browser viewport to read as one.
+int HeightFor(int large) {
+  return large * 10 / 16;
+}
+
+int WidthForOffset(int offset, int large) {
+  const int small = std::clamp(large / 3, kSmallMin, kSmallMax);
+  switch (std::abs(offset)) {
+    case 0:
+      return large;
+    case 1:
+      return (large + small) / 2;
+    default:
+      return small;
+  }
+}
+
+int StripWidth(const std::vector<int>& offsets, int large) {
+  int total = 0;
+  for (int offset : offsets) {
+    total += WidthForOffset(offset, large);
+  }
+  if (!offsets.empty()) {
+    total += kItemGap * static_cast<int>(offsets.size() - 1);
+  }
+  return total;
+}
+
+// The largest focal item, stepping down from the preferred size, that lets
+// `offsets` fit in `available`.
+int FitLarge(const std::vector<int>& offsets, int available) {
+  int large = kLargePreferred;
+  while (large > kLargeMin && StripWidth(offsets, large) > available) {
+    large -= 4;
+  }
+  return large;
+}
+
+// Which offsets from the selected tab get a slot, left to right, for `count`
+// tabs: the selection, then its neighbours outward to `max_distance`, each tab
+// at most once. Two tabs give {0, +1}; three give {-1, 0, +1}; five or more
+// give the full {-2 .. +2}.
+std::vector<int> OffsetsFor(size_t count, int max_distance) {
+  const int n = static_cast<int>(count);
+  std::vector<bool> used(count, false);
+  std::vector<int> offsets;
+  for (int distance = 0; distance <= max_distance; ++distance) {
+    for (int offset : {distance, -distance}) {
+      const int index = ((offset % n) + n) % n;
+      if (!used[index]) {
+        used[index] = true;
+        offsets.push_back(offset);
+      }
+    }
+  }
+  std::sort(offsets.begin(), offsets.end());
+  return offsets;
+}
+
+// Where tab `index` sits relative to the selection, wrapped into (-n/2, n/2].
+// It has to agree with OffsetsFor, which prefers the positive side for the one
+// ambiguous position when the count is even.
+int SignedOffset(size_t index, size_t selected, size_t count) {
+  const int n = static_cast<int>(count);
+  int offset = (static_cast<int>(index) - static_cast<int>(selected)) % n;
+  if (offset < 0) {
+    offset += n;
+  }
+  if (offset > n / 2) {
+    offset -= n;
+  }
+  return offset;
 }
 
 // Null when the site has given us nothing yet; the caller draws the globe.
@@ -72,97 +200,166 @@ gfx::ImageSkia GetTabFavicon(content::WebContents* contents) {
   return gfx::ImageSkia();
 }
 
-// Alphas of WHITE lift a dark surface and do nothing on a light one, so
-// these are palette steps now.
-SkColor CardBg() {
-  return zephyrus::Surface();
-}
-
-// The selected card, as TONAL elevation plus the faintest accent tint.
-//
-// This is Material's own preference -- MD3 moved elevation from drop shadows to
-// a surface tint -- and it is the only reading of "material" that survives
-// contact with this design language, which forbids shadows outright
-// (zephyrus_bubble_style.h: separation is a line, never a shadow).
-//
-// The accent appears here at 0x12, which is a tint and not a fill. That is
-// deliberate restraint: the accent's entire value is how rarely it shows, and
-// this is not a NEW use of it -- it reinforces the outline that already marks
-// the selection, on the same card, for the same reason.
-SkColor CardSelectedBg() {
-  return color_utils::AlphaBlend(zephyrus::Accent(),
-                                 zephyrus::Raise(zephyrus::Surface(), 0x3A),
-                                 SkAlpha{0x12});
-}
-
-// Behind a thumbnail that has not arrived. A step off the card rather than the
-// rule colour: a hairline tone used as a large fill reads as a grey slab, which
-// is most of why the empty state looked dead.
-SkColor Placeholder() {
-  return zephyrus::Raise(zephyrus::Surface(), 0x14);
-}
-
-// Matches the spotlight card, so the two frosted surfaces read as the same
-// material rather than two different treatments.
-constexpr float kPanelBlurSigma = 15.0f;
-// The switcher FLOATS over the page, so it takes the popup radius rather than
-// the card one -- the same value the context menus and omnibox results use.
-constexpr int kPanelCornerRadius = zephyrus::kRadiusPopup;
-
-// CONCENTRIC, not copied.
-//
-// Nested corners share a centre only when the inner radius is the outer radius
-// minus the gap between them. Give a child the same number as its parent and
-// its corner is visibly too round for the space it sits in; give it an
-// unrelated number and the two curves fight. Deriving it means the relationship
-// survives anyone later retuning the padding.
-//
-//   panel 28 - panel padding  8 -> card  20
-//   card  20 - card padding   8 -> thumb 12
-//
-// This is RULE 2 (see chrome/browser/zephyrus/M3_UI_OVERHAUL.md), and the
-// values are derived rather than chosen, so they follow kRadiusPopup
-// automatically -- these three moved from 24/16/8 to 28/20/12 when the popup
-// step did, with no edit here.
-//
-// The note that used to sit here apologised for the cards landing at 16,
-// because the old binary-radius rule ("pill or card, nothing in between")
-// rejected the mid-range. That rule is retired along with the rest of the
-// Nothing OS language; a derived radius never needed its permission anyway.
-constexpr int kCardCornerRadius = kPanelCornerRadius - kPanelPadding;
-constexpr int kThumbCornerRadius = kCardCornerRadius - kCardPadding;
-
 // Only one switching session at a time.
 ZephyrusTabSwitcher* g_switcher = nullptr;
 
 }  // namespace
 
+// One tab in the carousel: its page, masked to whatever width the item has.
+class ZephyrusCarouselItem : public views::View {
+  METADATA_HEADER(ZephyrusCarouselItem, views::View)
+
+ public:
+  ZephyrusCarouselItem() = default;
+  ZephyrusCarouselItem(const ZephyrusCarouselItem&) = delete;
+  ZephyrusCarouselItem& operator=(const ZephyrusCarouselItem&) = delete;
+  ~ZephyrusCarouselItem() override = default;
+
+  // The page is always drawn at `page_size` -- the large item's size -- and
+  // centred, so a narrower item shows the middle slice of the same page.
+  void SetPageSize(const gfx::Size& page_size) { page_size_ = page_size; }
+
+  void SetPage(const gfx::ImageSkia& page) {
+    page_ = page;
+    SchedulePaint();
+  }
+
+  void SetPlaceholderColor(SkColor color) {
+    placeholder_ = color;
+    SchedulePaint();
+  }
+
+  // views::View:
+  void OnPaint(gfx::Canvas* canvas) override {
+    const gfx::Rect bounds = GetLocalBounds();
+    if (bounds.IsEmpty()) {
+      return;
+    }
+    const SkScalar radius = ItemRadiusFor(bounds.size());
+    gfx::ScopedCanvas scoped(canvas);
+    canvas->ClipPath(SkPath::RRect(SkRRect::MakeRectXY(
+                         gfx::RectToSkRect(bounds), radius, radius)),
+                     /*do_anti_alias=*/true);
+
+    cc::PaintFlags fill;
+    fill.setColor(placeholder_);
+    canvas->DrawRect(bounds, fill);
+
+    if (page_.isNull() || page_size_.IsEmpty()) {
+      return;
+    }
+    const int x = bounds.CenterPoint().x() - page_size_.width() / 2;
+    canvas->DrawImageInt(page_, 0, 0, page_.width(), page_.height(), x, 0,
+                         page_size_.width(), page_size_.height(),
+                         /*filter=*/true);
+  }
+
+ private:
+  gfx::ImageSkia page_;
+  gfx::Size page_size_;
+  SkColor placeholder_ = SK_ColorTRANSPARENT;
+};
+
+BEGIN_METADATA(ZephyrusCarouselItem)
+END_METADATA
+
+// The focus indicator around the selected item. Its bounds are the item's
+// bounds grown by kRingExtent on every side.
+class ZephyrusCarouselRing : public views::View {
+  METADATA_HEADER(ZephyrusCarouselRing, views::View)
+
+ public:
+  ZephyrusCarouselRing() { SetCanProcessEventsWithinSubtree(false); }
+  ZephyrusCarouselRing(const ZephyrusCarouselRing&) = delete;
+  ZephyrusCarouselRing& operator=(const ZephyrusCarouselRing&) = delete;
+  ~ZephyrusCarouselRing() override = default;
+
+  void SetColor(SkColor color) {
+    color_ = color;
+    SchedulePaint();
+  }
+
+  // views::View:
+  void OnPaint(gfx::Canvas* canvas) override {
+    const gfx::Size item(std::max(0, width() - 2 * kRingExtent),
+                         std::max(0, height() - 2 * kRingExtent));
+    if (item.IsEmpty()) {
+      return;
+    }
+    // A stroke is centred on its path, so the path sits half a stroke inside
+    // the ring's outer edge — and its radius is the item's plus the offset
+    // plus that half stroke.
+    gfx::RectF path(GetLocalBounds());
+    path.Inset(kRingWidth / 2.0f);
+    cc::PaintFlags stroke;
+    stroke.setAntiAlias(true);
+    stroke.setStyle(cc::PaintFlags::kStroke_Style);
+    stroke.setStrokeWidth(kRingWidth);
+    stroke.setColor(color_);
+    canvas->DrawRoundRect(
+        path, ItemRadiusFor(item) + kRingOffset + kRingWidth / 2.0f, stroke);
+  }
+
+ private:
+  SkColor color_ = SK_ColorTRANSPARENT;
+};
+
+BEGIN_METADATA(ZephyrusCarouselRing)
+END_METADATA
+
 ZephyrusTabSwitcher::ZephyrusTabSwitcher(BrowserView* browser_view)
-    : browser_view_(browser_view) {
+    : views::AnimationDelegateViews(this),
+      browser_view_(browser_view),
+      cycle_animation_(this) {
   // Full-window scrim, hidden until a session starts. Needs its own layer to
   // composite above the web contents.
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
   SetVisible(false);
 
-  // The card strip, frosted over the page. Fill and blur are one setting in two
-  // halves: an opaque fill would hide the blur entirely, which is what the
-  // sidebar did before it was corrected.
+  // The panel: an OPAQUE surfaceContainer popup, coloured in OnThemeChanged.
+  // Its layer clips the carousel to the rounded panel, which is what gives the
+  // strip clean edges as items grow out of them and shrink back in.
   panel_ = AddChildView(std::make_unique<views::View>());
   panel_->SetPaintToLayer();
   panel_->layer()->SetFillsBoundsOpaquely(false);
   panel_->layer()->SetRoundedCornerRadius(
       gfx::RoundedCornersF(kPanelCornerRadius));
-  panel_->layer()->SetBackgroundBlur(kPanelBlurSigma);
-  panel_->SetBackground(views::CreateRoundedRectBackground(
-      SkColorSetA(zephyrus::Surface(), 0xF2), kPanelCornerRadius));
-  panel_->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(kPanelPadding),
-      kCardSpacing));
+
+  strip_ = panel_->AddChildView(std::make_unique<views::View>());
+
+  caption_ = panel_->AddChildView(std::make_unique<views::View>());
+  auto* caption_layout =
+      caption_->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kHorizontal, gfx::Insets(),
+          kCaptionSpacing));
+  caption_layout->set_main_axis_alignment(
+      views::BoxLayout::MainAxisAlignment::kCenter);
+  caption_layout->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kCenter);
+
+  caption_favicon_ =
+      caption_->AddChildView(std::make_unique<views::ImageView>());
+  caption_favicon_->SetImageSize(gfx::Size(kFaviconSize, kFaviconSize));
+
+  caption_title_ = caption_->AddChildView(std::make_unique<views::Label>());
+  caption_title_->SetFontList(
+      zephyrus::m3::Font(zephyrus::m3::Type::kTitleMedium));
+  caption_domain_ = caption_->AddChildView(std::make_unique<views::Label>());
+  caption_domain_->SetFontList(
+      zephyrus::m3::Font(zephyrus::m3::Type::kBodyMedium));
+  for (views::Label* label : {caption_title_.get(), caption_domain_.get()}) {
+    label->SetAutoColorReadabilityEnabled(false);
+    // The panel's layer is non-opaque (its corners are transparent), and
+    // subpixel antialiasing needs an opaque backing. Views DCHECKs on the pair.
+    label->SetSubpixelRenderingEnabled(false);
+    label->SetElideBehavior(gfx::ELIDE_TAIL);
+    label->SetMultiLine(false);
+  }
 }
 
 ZephyrusTabSwitcher::~ZephyrusTabSwitcher() {
-  // The view outlives individual sessions now, so this only runs at window
+  // The view outlives individual sessions, so this only runs at window
   // teardown — but the handler must still come off, or it dangles.
   if (handler_target_) {
     handler_target_->RemovePreTargetHandler(&key_watcher_);
@@ -173,13 +370,37 @@ ZephyrusTabSwitcher::~ZephyrusTabSwitcher() {
   }
 }
 
+void ZephyrusTabSwitcher::OnThemeChanged() {
+  views::View::OnThemeChanged();
+  panel_->SetBackground(views::CreateRoundedRectBackground(
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainer),
+      kPanelCornerRadius));
+  const SkColor placeholder =
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHighest);
+  for (Entry& entry : entries_) {
+    if (entry.item) {
+      entry.item->SetPlaceholderColor(placeholder);
+    }
+  }
+  if (ring_) {
+    ring_->SetColor(zephyrus::m3::Role(*this, kColorZephyrusSecondary));
+  }
+  UpdateCaption();
+}
+
 void ZephyrusTabSwitcher::ClearEntries() {
-  // Entries first: they hold raw_ptrs into the card views, so dropping them
+  // A stopped animation leaves items where they are and calls nothing that
+  // needs them, so this is safe before the entries go.
+  cycle_animation_.Stop();
+  // Entries first: they hold raw_ptrs into the item views, so dropping them
   // before the views means those pointers never dangle.
   entries_.clear();
+  ring_ = nullptr;
   selected_ = 0;
-  if (panel_) {
-    panel_->RemoveAllChildViews();
+  placed_ = false;
+  geometry_ = Geometry();
+  if (strip_) {
+    strip_->RemoveAllChildViews();
   }
 }
 
@@ -196,14 +417,24 @@ void ZephyrusTabSwitcher::EndSession() {
 }
 
 void ZephyrusTabSwitcher::Layout(PassKey) {
-  if (!panel_) {
+  if (!panel_ || geometry_.strip_width == 0) {
     return;
   }
-  const gfx::Size preferred = panel_->GetPreferredSize();
-  const int panel_width = std::min(preferred.width(), width());
+  const int panel_width =
+      std::min(geometry_.strip_width + 2 * kPanelPadding, width());
+  const int panel_height = kPanelPadding + geometry_.height + kCaptionGap +
+                           kCaptionHeight + kPanelPadding;
   panel_->SetBounds((width() - panel_width) / 2,
-                    std::max(0, (height() - preferred.height()) / 2),
-                    panel_width, preferred.height());
+                    std::max(0, (height() - panel_height) / 2), panel_width,
+                    panel_height);
+  // Grown by the ring's reach on every side, inside the panel padding, so the
+  // ring is never clipped. Items are placed kRingExtent in from its edges.
+  strip_->SetBounds(kPanelPadding - kRingExtent, kPanelPadding - kRingExtent,
+                    geometry_.strip_width + 2 * kRingExtent,
+                    geometry_.height + 2 * kRingExtent);
+  caption_->SetBounds(kPanelPadding,
+                      kPanelPadding + geometry_.height + kCaptionGap,
+                      geometry_.strip_width, kCaptionHeight);
 }
 
 // static
@@ -266,8 +497,6 @@ bool ZephyrusTabSwitcher::BuildEntries() {
   ZephyrusWorkspaceManager* workspaces =
       browser_view_ ? browser_view_->zephyrus_workspace_manager() : nullptr;
 
-  // Collect the eligible tabs first: the card size depends on how many there
-  // are, so nothing can be laid out until the count is known.
   std::vector<content::WebContents*> tabs;
   for (int i = 0; i < model->count(); ++i) {
     content::WebContents* contents = model->GetWebContentsAt(i);
@@ -287,149 +516,73 @@ bool ZephyrusTabSwitcher::BuildEntries() {
     return false;  // A switcher for one tab is UI for nothing.
   }
 
-  // HOW MANY FIT, and WHICH ones -- both used to be wrong.
+  // RECENCY ORDER, most recent first, which makes the first Tab land on the
+  // tab you were on before this one — the Alt+Tab contract.
   //
-  // This collected the first kMaxCards (8) tabs in model order and stopped. Two
-  // problems: the number was fixed regardless of how wide the window was, and
-  // truncating from index 0 meant that past eight tabs the ACTIVE tab was
-  // usually not among the cards shown. A switcher that cannot show you where
-  // you are is worse than no switcher.
-  //
-  // The cap is now what actually fits at the minimum card size, and the window
-  // of tabs is centred on the active one, so the current tab and its immediate
-  // neighbours are always on screen. Some tabs are still unreachable when there
-  // are more than fit -- that is a real limit of a one-row strip, not something
-  // a different number would solve.
-  const int strip_width =
-      browser_view_ ? browser_view_->width() - 96 : kThumbWidthDesired * 4;
-  const int min_card = kThumbWidthMin + 2 * kCardPadding + kCardSpacing;
-  const size_t max_cards = static_cast<size_t>(
-      std::max(2, (strip_width + kCardSpacing) / std::max(1, min_card)));
-
-  if (tabs.size() > max_cards) {
-    content::WebContents* const active_contents = model->GetActiveWebContents();
-    size_t active_pos = 0;
-    for (size_t i = 0; i < tabs.size(); ++i) {
-      if (tabs[i] == active_contents) {
-        active_pos = i;
-        break;
-      }
-    }
-    // Centre the window on the active tab, then clamp it inside the list so the
-    // strip is always full rather than short at either end.
-    const size_t half = max_cards / 2;
-    size_t first = active_pos > half ? active_pos - half : 0;
-    if (first + max_cards > tabs.size()) {
-      first = tabs.size() - max_cards;
-    }
-    tabs = std::vector<content::WebContents*>(
-        tabs.begin() + static_cast<ptrdiff_t>(first),
-        tabs.begin() + static_cast<ptrdiff_t>(first + max_cards));
+  // GetLastActiveTimeTicks() is set when a tab is shown, but ALSO when it is
+  // created, so a link just opened in the background ranks as recent even if
+  // it was never looked at. That is Chromium's own notion of recency, used by
+  // its tab search, and it is kept rather than second-guessed here. The active
+  // tab is pinned first explicitly rather than trusted to have the newest
+  // timestamp; stable_sort keeps tab-strip order for exact ties.
+  content::WebContents* const active_contents = model->GetActiveWebContents();
+  std::stable_sort(tabs.begin(), tabs.end(),
+                   [active_contents](content::WebContents* a,
+                                     content::WebContents* b) {
+                     if ((a == active_contents) != (b == active_contents)) {
+                       return a == active_contents;
+                     }
+                     return a->GetLastActiveTimeTicks() >
+                            b->GetLastActiveTimeTicks();
+                   });
+  // The cap bounds how many item views one session builds. In recency order
+  // it simply keeps the most recently used tabs.
+  if (tabs.size() > kMaxEntries) {
+    tabs.resize(kMaxEntries);
   }
 
-  // Fit the strip to the window: start from the desired card size and shrink
-  // (never below kThumbWidthMin) until the whole row fits with margins.
+  // Fit the carousel to the window. The edge slivers are the first thing to go
+  // in a narrow window: a strip of medium-large-medium still browses, a large
+  // item squeezed below its minimum does not.
   const int available =
-      browser_view_ ? browser_view_->width() - 96 : kThumbWidthDesired * 4;
-  const int count = static_cast<int>(tabs.size());
-  int thumb_width = kThumbWidthDesired;
-  if (count > 0) {
-    const int per_card =
-        (available - kCardSpacing * (count - 1)) / count - 2 * kCardPadding;
-    thumb_width = std::clamp(per_card, kThumbWidthMin, kThumbWidthDesired);
+      browser_view_ ? std::max(0, browser_view_->width() -
+                                      2 * (kWindowMargin + kPanelPadding))
+                    : kLargePreferred * 3;
+  std::vector<int> offsets = OffsetsFor(tabs.size(), 2);
+  int large = FitLarge(offsets, available);
+  if (StripWidth(offsets, large) > available) {
+    offsets = OffsetsFor(tabs.size(), 1);
+    large = FitLarge(offsets, available);
   }
-  const int thumb_height = ThumbHeightFor(thumb_width);
+  geometry_.large = large;
+  geometry_.height = HeightFor(large);
+  geometry_.strip_width = StripWidth(offsets, large);
+  geometry_.offsets = std::move(offsets);
 
+  const SkColor placeholder =
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHighest);
   for (content::WebContents* contents : tabs) {
-
-    auto* card = panel_->AddChildView(std::make_unique<views::View>());
-    card->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical,
-        gfx::Insets(kCardPadding), kMetaGap));
-    card->SetBackground(views::CreateRoundedRectBackground(
-        CardBg(), kCardCornerRadius));
-    // Pin the card. Without this it sizes to its title label, so a tab with a
-    // long title got a visibly wider card than its neighbours.
-    card->SetPreferredSize(
-        gfx::Size(thumb_width + 2 * kCardPadding,
-                  thumb_height + 2 * kCardPadding + kMetaGap + kMetaHeight));
-
-    auto* image = card->AddChildView(std::make_unique<views::ImageView>());
-    image->SetImageSize(gfx::Size(thumb_width, thumb_height));
-    image->SetPreferredSize(gfx::Size(thumb_width, thumb_height));
-    // Until the real thumbnail arrives, a flat panel rather than empty space.
-    image->SetBackground(views::CreateRoundedRectBackground(
-        Placeholder(), kThumbCornerRadius));
-    // CLIP the thumbnail to the same radius.
-    //
-    // The rounded background above was only ever visible while the placeholder
-    // showed: the delivered thumbnail is a plain bitmap and painted square
-    // straight over those corners. A rounded card with square pictures in it is
-    // most of what read as unfinished.
-    image->SetPaintToLayer();
-    image->layer()->SetFillsBoundsOpaquely(false);
-    image->layer()->SetRoundedCornerRadius(
-        gfx::RoundedCornersF(kThumbCornerRadius));
-    image->layer()->SetIsFastRoundedCorner(true);
-
-    // The meta row: favicon, then title. This is the line the switcher was
-    // missing -- a page is recognised by its mark long before its title is
-    // read, which is why a strip of grey thumbnails with text under them takes
-    // real effort to scan.
-    auto* meta = card->AddChildView(std::make_unique<views::View>());
-    auto* meta_layout = meta->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), kMetaGap));
-    meta_layout->set_cross_axis_alignment(
-        views::BoxLayout::CrossAxisAlignment::kCenter);
-    meta->SetPreferredSize(gfx::Size(thumb_width, kMetaHeight));
-
-    auto* favicon_view = meta->AddChildView(std::make_unique<views::ImageView>());
-    favicon_view->SetImageSize(gfx::Size(kFaviconSize, kFaviconSize));
-    favicon_view->SetPreferredSize(gfx::Size(kFaviconSize, kFaviconSize));
-    const gfx::ImageSkia favicon = GetTabFavicon(contents);
-    const bool fallback_icon = favicon.isNull();
-    if (!fallback_icon) {
-      // A real favicon is an IMAGE and is never recoloured -- sites keep their
-      // own colour here, exactly as they do in the sidebar's tab list.
-      favicon_view->SetImage(ui::ImageModel::FromImageSkia(favicon));
-    }
-
-    std::u16string title = contents->GetTitle();
-    if (title.empty()) {
-      title = base::UTF8ToUTF16(contents->GetVisibleURL().host());
-    }
-    auto* label = meta->AddChildView(std::make_unique<views::Label>(title));
-    label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    // Colour is set by UpdateSelectionVisuals, not here: it depends on whether
-    // this card is the selected one, and that is not known yet.
-    label->SetAutoColorReadabilityEnabled(false);
-    // The panel paints to a TRANSLUCENT layer, so subpixel text antialiasing --
-    // which needs an opaque backing -- has to be off. The sidebar carries the
-    // same note for the same reason, and Views DCHECKs on it in debug builds.
-    label->SetSubpixelRenderingEnabled(false);
-    label->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
-    label->SetElideBehavior(gfx::ELIDE_TAIL);
-    label->SetMultiLine(false);
-    // Fixed, not just capped: a preferred size that grows with the text is what
-    // made the cards uneven in the first place.
-    const int label_width = std::max(0, thumb_width - kFaviconSize - kMetaGap);
-    label->SetPreferredSize(gfx::Size(label_width, kMetaHeight));
-    label->SetMaximumWidth(label_width);
-    meta_layout->SetFlexForView(label, 1);
-
+    auto* item =
+        strip_->AddChildView(std::make_unique<ZephyrusCarouselItem>());
+    item->SetPageSize(gfx::Size(geometry_.large, geometry_.height));
+    item->SetPlaceholderColor(placeholder);
     Entry entry;
     entry.contents = contents;
-    entry.card = card;
-    entry.image = image;
-    entry.favicon = favicon_view;
-    entry.title = label;
-    entry.fallback_icon = fallback_icon;
+    entry.item = item;
     entries_.push_back(std::move(entry));
   }
 
-  thumb_size_ = gfx::Size(thumb_width, thumb_height);
+  ring_ = strip_->AddChildView(std::make_unique<ZephyrusCarouselRing>());
+  ring_->SetColor(zephyrus::m3::Role(*this, kColorZephyrusSecondary));
 
-  // Start on the active tab, so the first Advance moves off it.
+  // Set once per session rather than in Layout(): a maximum width that changes
+  // invalidates the label's preferred size, and doing that from Layout() is
+  // how a layout pass re-enters itself.
+  caption_title_->SetMaximumWidth(geometry_.strip_width * 3 / 5);
+  caption_domain_->SetMaximumWidth(geometry_.strip_width / 3);
+
+  // Start on the active tab, which recency order has put first, so the first
+  // Advance moves to the previously used tab.
   content::WebContents* active = model->GetActiveWebContents();
   for (size_t i = 0; i < entries_.size(); ++i) {
     if (entries_[i].contents == active) {
@@ -437,30 +590,32 @@ bool ZephyrusTabSwitcher::BuildEntries() {
       break;
     }
   }
-  RequestThumbnails();
-  UpdateSelectionVisuals();
   return true;
 }
 
-void ZephyrusTabSwitcher::RequestThumbnails() {
-  for (size_t i = 0; i < entries_.size(); ++i) {
-    ThumbnailTabHelper* helper =
-        ThumbnailTabHelper::FromWebContents(entries_[i].contents);
-    if (!helper) {
-      continue;
-    }
-    scoped_refptr<ThumbnailImage> thumbnail = helper->thumbnail();
-    if (!thumbnail) {
-      continue;
-    }
-    entries_[i].subscription = thumbnail->Subscribe();
-    entries_[i].subscription->SetSizeHint(thumb_size_);
-    entries_[i].subscription->SetUncompressedImageCallback(
-        base::BindRepeating(&ZephyrusTabSwitcher::OnThumbnailReceived,
-                            weak_factory_.GetWeakPtr(), i));
-    // Delivery is async; the placeholder shows until it lands.
-    thumbnail->RequestThumbnailImage();
+void ZephyrusTabSwitcher::EnsureThumbnail(size_t index) {
+  if (index >= entries_.size() || entries_[index].thumbnail_requested) {
+    return;
   }
+  Entry& entry = entries_[index];
+  entry.thumbnail_requested = true;
+  ThumbnailTabHelper* helper = ThumbnailTabHelper::FromWebContents(entry.contents);
+  if (!helper) {
+    return;
+  }
+  scoped_refptr<ThumbnailImage> thumbnail = helper->thumbnail();
+  if (!thumbnail) {
+    return;
+  }
+  entry.subscription = thumbnail->Subscribe();
+  // At the LARGE size: every item masks the same full-size page.
+  entry.subscription->SetSizeHint(
+      gfx::Size(geometry_.large, geometry_.height));
+  entry.subscription->SetUncompressedImageCallback(
+      base::BindRepeating(&ZephyrusTabSwitcher::OnThumbnailReceived,
+                          weak_factory_.GetWeakPtr(), index));
+  // Delivery is async; the placeholder shows until it lands.
+  thumbnail->RequestThumbnailImage();
 }
 
 void ZephyrusTabSwitcher::OnThumbnailReceived(size_t index,
@@ -468,11 +623,9 @@ void ZephyrusTabSwitcher::OnThumbnailReceived(size_t index,
   if (index >= entries_.size() || image.isNull()) {
     return;
   }
-  views::ImageView* view = entries_[index].image;
-  if (!view) {
-    return;
+  if (ZephyrusCarouselItem* item = entries_[index].item) {
+    item->SetPage(image);
   }
-  view->SetImage(ui::ImageModel::FromImageSkia(image));
 }
 
 void ZephyrusTabSwitcher::AdvanceSelection(bool forward) {
@@ -480,55 +633,164 @@ void ZephyrusTabSwitcher::AdvanceSelection(bool forward) {
     return;
   }
   const size_t count = entries_.size();
-  selected_ = forward ? (selected_ + 1) % count : (selected_ + count - 1) % count;
-  UpdateSelectionVisuals();
+  selected_ =
+      forward ? (selected_ + 1) % count : (selected_ + count - 1) % count;
+  ApplyLayout(/*animate=*/placed_);
+  placed_ = true;
+  UpdateCaption();
 }
 
-void ZephyrusTabSwitcher::UpdateSelectionVisuals() {
-  // Selection moves THREE things, not one.
-  //
-  // It used to move only the card's fill and outline, which meant every title
-  // in the strip was the same weight and the selected card had to be found by
-  // spotting a 2px line. Stepping the text and the fallback glyph from muted to
-  // full ink on the selected card is what makes the row scannable -- the eye
-  // lands on the brightest text, not on the thinnest border.
-  const SkColor ink = zephyrus::Ink();
-  const SkColor muted = zephyrus::Muted();
+void ZephyrusTabSwitcher::ApplyLayout(bool animate) {
+  const size_t count = entries_.size();
+  if (count == 0 || geometry_.offsets.empty()) {
+    return;
+  }
 
-  for (size_t i = 0; i < entries_.size(); ++i) {
-    const Entry& entry = entries_[i];
-    views::View* card = entry.card;
-    if (!card) {
+  // The slot for each visible offset, left to right, in strip coordinates.
+  std::vector<std::pair<int, gfx::Rect>> slots;
+  int x = kRingExtent;
+  for (int offset : geometry_.offsets) {
+    const int width = WidthForOffset(offset, geometry_.large);
+    slots.emplace_back(offset,
+                       gfx::Rect(x, kRingExtent, width, geometry_.height));
+    x += width + kItemGap;
+  }
+  // An item outside the slots waits at zero width on the edge it will come in
+  // from or has just left, so it grows out of that edge and shrinks back into
+  // it rather than sliding across the strip.
+  const auto edge = [this](int offset) {
+    return gfx::Rect(
+        kRingExtent + (offset < 0 ? 0 : geometry_.strip_width), kRingExtent,
+        0, geometry_.height);
+  };
+
+  for (size_t i = 0; i < count; ++i) {
+    Entry& entry = entries_[i];
+    if (!entry.item) {
       continue;
     }
-    const bool is_selected = (i == selected_);
+    const int offset = SignedOffset(i, selected_, count);
+    const auto slot =
+        std::find_if(slots.begin(), slots.end(),
+                     [offset](const auto& s) { return s.first == offset; });
+    const bool visible = slot != slots.end();
+    const gfx::Rect current = entry.item->bounds();
+    const bool was_visible = !current.IsEmpty();
 
-    card->SetBackground(views::CreateRoundedRectBackground(
-        is_selected ? CardSelectedBg() : CardBg(), kCardCornerRadius));
-    // The unselected border is not empty any more: an unselected card carries a
-    // hairline of the rule colour at the SAME inset, so nothing shifts by two
-    // pixels as the selection moves, and the cards read as objects rather than
-    // as floating tone patches.
-    card->SetBorder(
-        is_selected
-            ? views::CreateRoundedRectBorder(zephyrus::kHairline * 2.f,
-                                             kCardCornerRadius,
-                                             zephyrus::Accent())
-            : views::CreateRoundedRectBorder(zephyrus::kHairline * 2.f,
-                                             kCardCornerRadius,
-                                             zephyrus::Rule()));
+    entry.to = visible ? slot->second : edge(offset);
+    if (!animate) {
+      entry.from = entry.to;
+    } else if (was_visible) {
+      entry.from = current;
+    } else if (visible) {
+      // Entering: from the edge on its NEW side, which need not be the edge it
+      // last left by.
+      entry.from = edge(offset);
+    } else {
+      entry.from = entry.to;
+    }
 
-    if (entry.title) {
-      entry.title->SetEnabledColor(is_selected ? ink : muted);
+    // Ask for a thumbnail one step before an item comes into view, so it has
+    // usually arrived by the time it is shown.
+    if (offset >= geometry_.offsets.front() - 1 &&
+        offset <= geometry_.offsets.back() + 1) {
+      EnsureThumbnail(i);
     }
-    // Only the fallback globe is ever tinted. A real favicon keeps the site's
-    // own colours whether the card is selected or not.
-    if (entry.favicon && entry.fallback_icon) {
-      entry.favicon->SetImage(ui::ImageModel::FromVectorIcon(
-          vector_icons::kGlobeIcon, is_selected ? ink : muted, kFaviconSize));
-    }
-    card->SchedulePaint();
   }
+
+  // Z-ORDER. The focal item is in front and each step out sits further back,
+  // as an M3 carousel stacks them. It matters whenever an item crosses the
+  // strip -- with five tabs or fewer every tab is on screen, so the one leaving
+  // one edge travels to the other, and it should pass BEHIND the others.
+  std::vector<size_t> order(count);
+  std::iota(order.begin(), order.end(), size_t{0});
+  std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+    return std::abs(SignedOffset(a, selected_, count)) >
+           std::abs(SignedOffset(b, selected_, count));
+  });
+  for (size_t z = 0; z < order.size(); ++z) {
+    if (ZephyrusCarouselItem* item = entries_[order[z]].item) {
+      strip_->ReorderChildView(item, z);
+    }
+  }
+  if (ring_) {
+    strip_->ReorderChildView(ring_, strip_->children().size() - 1);
+  }
+
+  // A tap mid-animation restarts from where every item currently is. Stop()
+  // leaves them there, which is exactly the `from` captured above.
+  cycle_animation_.Stop();
+  if (animate) {
+    cycle_animation_.SetDuration(kCycleDuration);
+    cycle_animation_.Start();
+  } else {
+    ApplyProgress(1.0);
+  }
+}
+
+void ZephyrusTabSwitcher::ApplyProgress(double progress) {
+  const auto lerp = [progress](int a, int b) {
+    return static_cast<int>(std::lround(a + (b - a) * progress));
+  };
+  for (Entry& entry : entries_) {
+    if (!entry.item) {
+      continue;
+    }
+    // Every item shares one progress value, and every slot's gap is the same
+    // at both ends, so the gaps hold even while the curve overshoots. Only a
+    // shrinking width can go negative, and that is clamped.
+    entry.item->SetBounds(lerp(entry.from.x(), entry.to.x()), entry.to.y(),
+                          std::max(0, lerp(entry.from.width(), entry.to.width())),
+                          entry.to.height());
+  }
+  // The ring jumps to the NEW selection at once and then grows with it, so it
+  // is always on the tab Ctrl-up would open, never trailing the old one.
+  if (ring_ && selected_ < entries_.size() && entries_[selected_].item) {
+    gfx::Rect ring = entries_[selected_].item->bounds();
+    ring.Inset(-kRingExtent);
+    ring_->SetBoundsRect(ring);
+  }
+}
+
+void ZephyrusTabSwitcher::AnimationProgressed(const gfx::Animation* animation) {
+  ApplyProgress(zephyrus::m3::Curve(zephyrus::m3::Spring::kFastSpatial)
+                    .Solve(animation->GetCurrentValue()));
+}
+
+void ZephyrusTabSwitcher::UpdateCaption() {
+  // Colours are roles, so this waits for a Widget like everything else here.
+  if (selected_ >= entries_.size() || !GetWidget()) {
+    return;
+  }
+  content::WebContents* const contents = entries_[selected_].contents;
+  if (!contents) {
+    return;
+  }
+  const GURL url = contents->GetVisibleURL();
+  const std::u16string domain = base::UTF8ToUTF16(url.host());
+  std::u16string title = contents->GetTitle();
+  if (title.empty()) {
+    title = domain;
+  }
+
+  const SkColor on_surface = zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
+  const SkColor on_variant =
+      zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant);
+
+  caption_title_->SetText(title);
+  caption_title_->SetEnabledColor(on_surface);
+  caption_domain_->SetText(domain);
+  caption_domain_->SetEnabledColor(on_variant);
+  // Pages with no title fall back to the domain; saying it twice is noise.
+  caption_domain_->SetVisible(!domain.empty() && domain != title);
+
+  // A real favicon is an IMAGE and is never recoloured; only the fallback
+  // globe takes a role.
+  const gfx::ImageSkia favicon = GetTabFavicon(contents);
+  caption_favicon_->SetImage(
+      favicon.isNull() ? ui::ImageModel::FromVectorIcon(
+                             vector_icons::kGlobeIcon, on_variant, kFaviconSize)
+                       : ui::ImageModel::FromImageSkia(favicon));
 }
 
 void ZephyrusTabSwitcher::KeyWatcher::OnKeyEvent(ui::KeyEvent* event) {

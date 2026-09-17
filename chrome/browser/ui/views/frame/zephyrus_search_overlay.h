@@ -19,6 +19,8 @@
 #include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/views/view.h"
 
+class GURL;
+
 class Browser;
 class BrowserView;
 
@@ -40,12 +42,10 @@ class Textfield;
 // same way the omnibox would (URL vs. default-engine search) and opens it in a
 // new foreground tab; Escape or clicking away dismisses it.
 //
-// This is a VIEW INSIDE THE BROWSER WINDOW, not a bubble widget, and that is
-// load-bearing: the field carries a compositor backdrop blur, and a backdrop
-// filter can only sample content in its own compositor frame. As a separate
-// widget there was nothing behind it to blur — the same reason DWM window
-// backdrops failed for menus. Hosted here, it samples the web contents, which
-// is exactly what the design's "background blur 25 + 60% fill" describes.
+// This is a VIEW INSIDE THE BROWSER WINDOW, not a bubble widget. That was
+// originally forced by a backdrop blur, which can only sample its own
+// compositor frame; the blur is gone under M3 Expressive, but the view stays a
+// view for the scrim and click-away behaviour described below.
 //
 // Being a view rather than a widget means the behaviour a bubble gave for free
 // is implemented here instead: this view is a full-window scrim, so a click
@@ -94,6 +94,13 @@ class ZephyrusSearchOverlay : public views::View,
   // ui::ImplicitAnimationObserver: hides the card once the exit finishes.
   void OnImplicitAnimationsCompleted() override;
 
+  // Every theme-dependent colour in this overlay is applied HERE, not in the
+  // constructor. A View has no ColorProvider until it is in a Widget, so a role
+  // looked up during construction comes back as the sentinel; and this runs
+  // again on a theme change, which is what makes the overlay follow a live
+  // light/dark switch instead of needing a restart.
+  void OnThemeChanged() override;
+
  private:
   // Resolves `text` to a destination and opens it in a new foreground tab.
   void OpenQuery(const std::u16string& text);
@@ -134,17 +141,30 @@ class ZephyrusSearchOverlay : public views::View,
   bool OpenSelectedSuggestion();
   void ApplySelectionHighlight();
 
-  void OnRowFaviconReady(views::ImageView* icon,
+  // Favicon lookups are async, and typing destroys and reuses suggestion rows
+  // between the request and the reply. So a reply never carries a pointer to
+  // the view it was for: it carries WHERE that view was and WHAT it was
+  // showing, and is dropped unless a row is still there showing the same
+  // destination. That also stops an older, slower reply from painting over a
+  // newer icon on a reused row.
+  void OnRowFaviconReady(size_t index,
+                         const GURL& destination,
                          const favicon_base::FaviconImageResult& result);
 
   void RequestShortcuts();
   void OnShortcutsReady(const history::MostVisitedURLList& sites);
-  void OnShortcutFaviconReady(views::LabelButton* chip,
+  // Chips are rebuilt wholesale, so a reply is matched by the build it came
+  // from (`generation`) and its position in the row.
+  void OnShortcutFaviconReady(size_t generation,
+                              size_t index,
                               const favicon_base::FaviconImageResult& result);
 
   const raw_ptr<BrowserView> browser_view_;
   // The centred card. `this` is the full-window scrim around it.
   raw_ptr<views::View> panel_ = nullptr;
+  // Held so OnThemeChanged can recolour them.
+  raw_ptr<views::View> field_ = nullptr;
+  raw_ptr<views::ImageView> search_glyph_ = nullptr;
   raw_ptr<views::Textfield> input_ = nullptr;
   // A container button, not a LabelButton: LabelButton always paints its
   // image before its text, which put the chevron in front of the engine
@@ -176,7 +196,13 @@ class ZephyrusSearchOverlay : public views::View,
   // hiding, so a re-open mid-exit reverses instead of hiding afterwards.
   bool hiding_ = false;
 
-  base::CancelableTaskTracker favicon_tracker_;
+  // One tracker per consumer. They used to share one, so choosing a search
+  // engine cancelled every in-flight row and chip favicon along with it.
+  base::CancelableTaskTracker row_favicon_tracker_;
+  base::CancelableTaskTracker shortcut_favicon_tracker_;
+  base::CancelableTaskTracker engine_favicon_tracker_;
+  // Bumped every time the shortcut chips are rebuilt.
+  size_t shortcuts_generation_ = 0;
   base::WeakPtrFactory<ZephyrusSearchOverlay> weak_factory_{this};
 };
 
