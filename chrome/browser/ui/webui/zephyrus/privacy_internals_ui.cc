@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/webui/zephyrus/privacy_internals_ui.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -13,6 +14,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/webui/theme_source.h"
 #include "base/feature_list.h"
 #include "chrome/browser/zephyrus/privacy/privacy_features.h"
 #include "chrome/browser/zephyrus/privacy/privacy_intelligence_service.h"
@@ -20,30 +22,76 @@
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/browser/web_ui.h"
+#include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui_data_source.h"
 
 namespace zephyrus_privacy {
 
 namespace {
 
-// Zephyrus's one fixed colour, so the page looks like part of the browser
-// rather than a stray debug dump.
+// The browser's own M3 roles, from chrome://theme/colors.css?sets=zephyrus,
+// so the page looks like part of the browser rather than a stray debug dump.
+//
+// Same grammar as chrome://privacy: a row of tonal tiles for the numbers that
+// say whether the pipeline is healthy, then SEGMENTED lists (2dp apart, 4dp
+// inner corners, 24dp at the group's ends) instead of ruled tables, and every
+// state as a tonal pill -- tertiary for working, error for a state §5.3/§4.4.1
+// require to be visible, neutral for off.
 constexpr char kStyle[] =
-    "body{background:#0e1123;color:#e6e8f0;font:13px/1.6 system-ui,sans-serif;"
-    "margin:0;padding:28px 32px}"
-    "h1{font-size:17px;font-weight:600;margin:0 0 4px}"
-    "p.sub{color:#8b90a8;margin:0 0 24px;font-size:12px}"
-    "h2{font-size:12px;font-weight:600;text-transform:uppercase;"
-    "letter-spacing:.06em;color:#8b90a8;margin:24px 0 8px}"
-    "table{border-collapse:collapse;width:100%;max-width:640px}"
-    "td{padding:6px 0;border-bottom:1px solid #1b2038}"
-    "td.v{text-align:right;font-variant-numeric:tabular-nums;font-weight:600}"
-    "td.k{color:#b8bcd0}"
-    ".warn{color:#ffb454}.ok{color:#7ee0a0}.off{color:#8b90a8}";
+    ":root{--s:var(--color-zephyrus-surface);"
+    "--c:var(--color-zephyrus-surface-container);"
+    "--chh:var(--color-zephyrus-surface-container-highest);"
+    "--on:var(--color-zephyrus-on-surface);"
+    "--onv:var(--color-zephyrus-on-surface-variant);"
+    "--p:var(--color-zephyrus-primary);"
+    "--tc:var(--color-zephyrus-tertiary-container);"
+    "--ontc:var(--color-zephyrus-on-tertiary-container);"
+    "--ec:var(--color-zephyrus-error-container);"
+    "--onec:var(--color-zephyrus-on-error-container)}"
+    "body{background:var(--s);color:var(--on);"
+    "font:14px/20px system-ui,sans-serif;letter-spacing:.25px;margin:0;"
+    "padding:48px 24px 64px}"
+    "main{max-width:720px;margin:0 auto}"
+    "h1{font-size:36px;line-height:44px;font-weight:400;margin:0}"
+    "p.sub{color:var(--onv);font-size:16px;line-height:24px;margin:8px 0 32px}"
+    // M3 list subheader: titleSmall in primary.
+    "h2{font-size:14px;line-height:20px;font-weight:500;letter-spacing:.1px;"
+    "color:var(--p);margin:32px 20px 12px}"
+    ".tiles{display:grid;grid-template-columns:repeat(auto-fit,"
+    "minmax(160px,1fr));gap:8px}"
+    ".tile{background:var(--c);border-radius:24px;padding:20px}"
+    ".tile.warn{background:var(--ec);color:var(--onec)}"
+    ".tile .n{font-size:36px;line-height:44px;"
+    "font-variant-numeric:tabular-nums}"
+    ".tile .l{margin-top:4px}"
+    ".list{display:flex;flex-direction:column;gap:2px}"
+    ".item{background:var(--c);border-radius:4px;padding:14px 20px;"
+    "display:flex;gap:16px;align-items:center;justify-content:space-between}"
+    ".item:first-child{border-start-start-radius:24px;"
+    "border-start-end-radius:24px}"
+    ".item:last-child{border-end-start-radius:24px;"
+    "border-end-end-radius:24px}"
+    ".k{color:var(--onv)}"
+    ".v{text-align:end;font-variant-numeric:tabular-nums;font-weight:500;"
+    "overflow-wrap:anywhere;min-width:0}"
+    ".ok,.warn,.off{display:inline-block;border-radius:8px;padding:2px 10px;"
+    "font-weight:500}"
+    ".ok{background:var(--tc);color:var(--ontc)}"
+    ".warn{background:var(--ec);color:var(--onec)}"
+    ".off{background:var(--chh);color:var(--onv)}";
 
 std::string Row(std::string_view key, const std::string& value) {
   return base::StrCat(
-      {"<tr><td class=k>", key, "</td><td class=v>", value, "</td></tr>"});
+      {"<div class=item><span class=k>", key, "</span><span class=v>", value,
+       "</span></div>"});
+}
+
+// A headline counter. `warn` only for the one number whose being non-zero is
+// itself the problem, so the tile row reads at a glance.
+std::string Tile(std::string_view label, uint64_t n, bool warn = false) {
+  return base::StrCat({"<div class='tile", warn ? " warn" : "",
+                       "'><div class=n>", base::NumberToString(n),
+                       "</div><div class=l>", label, "</div></div>"});
 }
 
 std::string Num(uint64_t n) {
@@ -155,12 +203,20 @@ std::string BuildPage(const PipelineStats& stats,
   std::string out = base::StrCat({
       "<!doctype html><meta charset=utf-8>"
       "<meta http-equiv=refresh content=2>"
-      "<title>Privacy Intelligence internals</title><style>",
+      "<meta name=color-scheme content='light dark'>"
+      "<title>Privacy Intelligence internals</title>"
+      "<link rel=stylesheet href='chrome://theme/colors.css?sets=zephyrus'>"
+      "<style>",
       kStyle,
-      "</style><h1>Privacy Intelligence</h1>"
+      "</style><main><h1>Privacy Intelligence</h1>"
       "<p class=sub>Pipeline diagnostics. Counters only &mdash; this page "
-      "never shows a site, domain or entity.</p>"
-      "<h2>Collection</h2><table>",
+      "never shows a site, domain or entity.</p><div class=tiles>",
+      Tile("Events recorded", stats.events_recorded),
+      Tile("Rows handed to the database", stats.rows_flushed),
+      // A dropped event is data the dashboard will never show; the one
+      // counter here whose being non-zero is the finding.
+      Tile("Events dropped", stats.events_dropped, stats.events_dropped > 0),
+      "</div><h2>Collection</h2><div class=list>",
       Row("Mode", ModeName(stats.mode)),
       Row("Persistence", PersistenceLine(stats)),
       Row("Entity dataset", DatasetLine(stats)),
@@ -169,7 +225,7 @@ std::string BuildPage(const PipelineStats& stats,
       Row("Dataset source", Escape(stats.dataset_source)),
       Row("Dataset licence", Escape(stats.dataset_licence)),
       Row("Dataset age", FreshnessLine(stats)),
-      "</table><h2>Event pipeline</h2><table>",
+      "</div><h2>Event pipeline</h2><div class=list>",
       Row("Events recorded", Num(stats.events_recorded)),
       Row("Events drained", Num(stats.events_drained)),
       Row("Events dropped (ring full)", Num(stats.events_dropped)),
@@ -177,7 +233,7 @@ std::string BuildPage(const PipelineStats& stats,
       Row("Ring depth peak", Num(stats.peak_ring_depth)),
       Row("Names in the string channel", Num(stats.known_domain_strings)),
       Row("Rows handed to the database", Num(stats.rows_flushed)),
-      "</table><h2>Stored</h2><table>",
+      "</div><h2>Stored</h2><div class=list>",
   });
 
   if (db) {
@@ -192,7 +248,7 @@ std::string BuildPage(const PipelineStats& stats,
   } else {
     out += Row("Database", "<span class=off>Not open</span>");
   }
-  out += "</table>";
+  out += "</div></main>";
   return out;
 }
 
@@ -245,6 +301,9 @@ PrivacyInternalsUI::PrivacyInternalsUI(content::WebUI* web_ui)
   Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       profile, chrome::kChromeUIZephyrusPrivacyInternalsHost);
+  // colors.css lives on chrome://theme, which is registered per profile by
+  // whichever page asks first. This page may BE the first, so ask.
+  content::URLDataSource::Add(profile, std::make_unique<ThemeSource>(profile));
   source->SetRequestFilter(
       base::BindRepeating(
           [](const std::string& path) { return true; }),

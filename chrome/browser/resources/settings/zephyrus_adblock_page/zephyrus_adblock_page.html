@@ -1,31 +1,163 @@
 <style include="cr-shared-style settings-shared">
-  .allowlist-row {
-    justify-content: space-between;
+  /* M3 Expressive. The page opens on a hero card with what the blocker has
+     done, the switches become icon rows (the tonal circles come from
+     settings-toggle-button itself, see its stylesheet), and the allowlist is a
+     row of input chips instead of a bare list. Colours are the --color-sys-*
+     roles from chrome://theme/colors.css, i.e. the browser's own scheme. */
+  #hero {
+    align-items: center;
+    background: var(--color-sys-primary-container);
+    border-radius: 28px;
+    color: var(--color-sys-on-primary-container);
+    display: flex;
+    gap: 20px;
+    margin: var(--cr-section-vertical-margin) auto 0;
+    padding: 24px;
   }
 
-  .allowlist-domain {
+  /* Off is not an error, so it is neutral rather than red: the page must not
+     nag a user who turned blocking off on purpose. */
+  #hero[off] {
+    background: var(--color-zephyrus-surface-container-high);
+    color: var(--color-sys-on-surface);
+  }
+
+  #badge {
+    flex: none;
+    height: 72px;
+    width: 72px;
+  }
+
+  #badge .shape {
+    fill: var(--color-sys-primary);
+  }
+
+  #badge .glyph {
+    fill: var(--color-sys-on-primary);
+  }
+
+  #hero[off] #badge .shape {
+    fill: var(--color-zephyrus-surface-container-highest);
+  }
+
+  #hero[off] #badge .glyph {
+    fill: var(--color-sys-on-surface-variant);
+  }
+
+  #heroCount {
+    font-size: 45px;
+    font-variant-numeric: tabular-nums;
+    line-height: 52px;
+  }
+
+  #heroLabel {
+    font-size: 16px;
+    line-height: 24px;
+  }
+
+  #heroRules {
+    font-size: 14px;
+    line-height: 20px;
+    margin-top: 8px;
+  }
+
+  #hero[off] #heroRules {
+    color: var(--color-sys-on-surface-variant);
+  }
+
+  #allowlist {
+    padding: 0 var(--cr-section-padding) var(--cr-section-vertical-padding);
+  }
+
+  #addRow {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+  }
+
+  /* A filled M3 text field, full-round to sit with the search bar above it
+     rather than the underlined field the settings pages default to. */
+  #addRow cr-input {
+    --cr-input-background-color: var(--color-zephyrus-surface-container-highest);
+    --cr-input-border-radius: 24px;
+    --cr-input-min-height: 48px;
+    --cr-input-padding-start: 20px;
+    --cr-input-padding-end: 20px;
+    --cr-input-border-bottom: none;
+    --cr-input-underline-display: none;
+    --cr-input-width: 100%;
+    flex: 1;
+  }
+
+  #addRow cr-button {
+    --cr-button-height: 40px;
+    border-radius: 20px;
+  }
+
+  #chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 16px;
+  }
+
+  /* The flex display above would otherwise beat the [hidden] attribute. */
+  #chips[hidden] {
+    display: none;
+  }
+
+  /* M3 input chip: 32dp, 8dp corners, outlined, trailing remove. */
+  .chip {
+    align-items: center;
+    border: 1px solid var(--color-zephyrus-outline-variant,
+        var(--cr-separator-color));
+    border-radius: 8px;
+    box-sizing: border-box;
+    display: inline-flex;
+    gap: 2px;
+    min-height: 32px;
+    padding-inline: 12px 4px;
+  }
+
+  .chip span {
     overflow-wrap: anywhere;
   }
 
-  #addRow cr-input {
-    --cr-input-width: 100%;
-    margin-inline-end: 16px;
+  .chip cr-icon-button {
+    --cr-icon-button-icon-size: 16px;
+    --cr-icon-button-size: 24px;
+    margin: 0;
+  }
+
+  #empty {
+    color: var(--cr-secondary-text-color);
+    margin-top: 16px;
   }
 </style>
-<settings-section page-title="$i18n{zephyrusResetIdsSectionTitle}"
-    class="cr-centered-card-container">
-  <settings-toggle-button
-      id="resetIdsToggle"
-      pref="{{prefs.zephyrus.privacy.auto_reset_ids}}"
-      label="$i18n{zephyrusResetIdsLabel}"
-      sub-label="$i18n{zephyrusResetIdsSubLabel}">
-  </settings-toggle-button>
-</settings-section>
+<div id="hero" class="cr-centered-card-container"
+    off$="[[!prefs.zephyrus.adblock.enabled.value]]">
+  <svg id="badge" viewBox="0 0 100 100" aria-hidden="true">
+    <path class="shape" d="M50.0 0.5L52.8 1.2L55.5 3.1L57.8 5.7L59.9 8.4L61.8 10.6L63.9 11.9L66.3 12.3L69.2 11.8L72.5 11.0L76.0 10.5L79.2 10.8L81.8 12.1L83.6 14.4L84.4 17.6L84.5 21.1L84.3 24.5L84.3 27.4L85.1 29.7L86.7 31.6L89.3 33.1L92.3 34.6L95.3 36.1L97.8 38.0L99.2 40.4L99.5 43.2L98.5 46.2L96.7 49.0L94.8 51.5L93.5 53.8L93.1 56.2L93.6 58.8L94.9 61.8L96.3 64.9L97.2 67.9L97.1 70.7L95.8 73.0L93.6 74.6L90.6 75.5L87.3 75.9L84.4 76.3L82.2 77.2L80.8 79.1L80.0 81.9L79.6 85.1L79.2 88.4L78.2 91.2L76.4 93.3L73.9 94.4L71.0 94.4L67.8 93.4L64.8 91.9L62.2 90.4L59.8 89.6L57.4 89.9L55.1 91.1L52.8 93.1L50.0 94.9L47.2 96.0L44.4 95.9L41.9 94.6L39.8 92.3L37.8 89.7L35.8 87.3L33.6 85.9L31.0 85.6L28.0 86.2L24.7 87.0L21.5 87.2L18.7 86.4L16.8 84.4L15.9 81.4L15.6 77.8L15.6 74.2L15.5 71.2L14.6 68.9L12.8 67.2L10.2 65.9L7.3 64.6L4.6 63.0L2.8 60.7L2.0 58.0L2.5 55.1L3.9 52.1L5.6 49.3L6.8 46.7L7.1 44.3L6.4 41.8L5.1 38.9L3.9 35.7L3.4 32.7L3.9 30.0L5.6 27.9L8.2 26.8L11.4 26.4L14.7 26.1L17.5 25.4L19.4 23.8L20.4 21.2L20.8 17.9L21.3 14.6L22.3 11.6L24.2 9.4L26.8 8.5L29.9 8.7L33.1 9.7L36.2 11.0L38.8 11.8L41.1 11.5L43.2 10.1L45.3 7.7L47.6 5.1L50.0 2.7Z"/>
+    <path class="glyph" transform="translate(26 26)"
+        d="M24 4 8 10v11c0 10.2 6.8 19.6 16 22 9.2-2.4 16-11.8 16-22V10L24 4zm-3.2 29.4-7.6-7.6 2.8-2.8 4.8 4.8 11.6-11.6 2.8 2.8-14.4 14.4z"/>
+  </svg>
+  <div>
+    <template is="dom-if" if="[[prefs.zephyrus.adblock.enabled.value]]">
+      <div id="heroCount">[[blockedText_]]</div>
+      <div id="heroLabel">$i18n{zephyrusAdblockHeroBlocked}</div>
+    </template>
+    <template is="dom-if" if="[[!prefs.zephyrus.adblock.enabled.value]]">
+      <div id="heroLabel">$i18n{zephyrusAdblockHeroOff}</div>
+    </template>
+    <div id="heroRules">[[rulesText_]]</div>
+  </div>
+</div>
 
 <settings-section page-title="$i18n{zephyrusAdblockSectionTitle}"
     class="cr-centered-card-container">
   <settings-toggle-button
       id="enabledToggle"
+      icon="settings20:shield"
       pref="{{prefs.zephyrus.adblock.enabled}}"
       label="$i18n{zephyrusAdblockEnabledLabel}"
       sub-label="$i18n{zephyrusAdblockEnabledSubLabel}">
@@ -34,47 +166,58 @@
   <settings-toggle-button
       id="popupToggle"
       class="hr"
+      icon="settings:block"
       pref="{{prefs.zephyrus.adblock.aggressive_popup}}"
       label="$i18n{zephyrusAdblockPopupLabel}"
       sub-label="$i18n{zephyrusAdblockPopupSubLabel}">
   </settings-toggle-button>
+</settings-section>
 
-  <div class="cr-row">
+<settings-section page-title="$i18n{zephyrusAdblockAllowlistLabel}"
+    class="cr-centered-card-container">
+  <div class="cr-row first">
     <div class="flex cr-padded-text">
-      <div>$i18n{zephyrusAdblockStatsLabel}</div>
-      <div class="secondary" id="statsValue">[[statsText_]]</div>
-    </div>
-  </div>
-
-  <div class="cr-row">
-    <div class="flex cr-padded-text">
-      <div>$i18n{zephyrusAdblockAllowlistLabel}</div>
       <div class="secondary">$i18n{zephyrusAdblockAllowlistSubLabel}</div>
     </div>
   </div>
+  <div id="allowlist">
+    <div id="addRow">
+      <cr-input value="{{newDomain_}}"
+          placeholder="$i18n{zephyrusAdblockAllowlistPlaceholder}"
+          aria-label="$i18n{zephyrusAdblockAllowlistLabel}"
+          on-keydown="onDomainKeydown_">
+      </cr-input>
+      <cr-button class="tonal-button" on-click="onAddDomain_">
+        $i18n{zephyrusAdblockAdd}
+      </cr-button>
+    </div>
 
-  <div class="cr-row continuation" id="addRow">
-    <cr-input class="flex" value="{{newDomain_}}"
-        placeholder="$i18n{zephyrusAdblockAllowlistPlaceholder}"
-        on-keydown="onDomainKeydown_">
-    </cr-input>
-    <cr-button on-click="onAddDomain_">$i18n{zephyrusAdblockAdd}</cr-button>
+    <template is="dom-if" if="[[allowlistEmpty_]]">
+      <div id="empty">$i18n{zephyrusAdblockAllowlistEmpty}</div>
+    </template>
+
+    <div id="chips" hidden="[[allowlistEmpty_]]">
+      <template is="dom-repeat"
+          items="[[prefs.zephyrus.adblock.allowlist.value]]">
+        <span class="chip">
+          <span>[[item]]</span>
+          <cr-icon-button iron-icon="cr:clear" on-click="onRemoveDomain_"
+              title="$i18n{zephyrusAdblockRemove}"
+              aria-label="[[removeLabel_(item)]]">
+          </cr-icon-button>
+        </span>
+      </template>
+    </div>
   </div>
+</settings-section>
 
-  <template is="dom-if" if="[[allowlistEmpty_]]">
-    <div class="cr-row continuation">
-      <div class="secondary">$i18n{zephyrusAdblockAllowlistEmpty}</div>
-    </div>
-  </template>
-
-  <template is="dom-repeat"
-      items="[[prefs.zephyrus.adblock.allowlist.value]]">
-    <div class="cr-row continuation allowlist-row">
-      <div class="allowlist-domain">[[item]]</div>
-      <cr-icon-button class="icon-clear" on-click="onRemoveDomain_"
-          title="$i18n{zephyrusAdblockRemove}"
-          aria-label="$i18n{zephyrusAdblockRemove}">
-      </cr-icon-button>
-    </div>
-  </template>
+<settings-section page-title="$i18n{zephyrusResetIdsSectionTitle}"
+    class="cr-centered-card-container">
+  <settings-toggle-button
+      id="resetIdsToggle"
+      icon="settings20:id-card"
+      pref="{{prefs.zephyrus.privacy.auto_reset_ids}}"
+      label="$i18n{zephyrusResetIdsLabel}"
+      sub-label="$i18n{zephyrusResetIdsSubLabel}">
+  </settings-toggle-button>
 </settings-section>

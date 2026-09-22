@@ -35,6 +35,7 @@
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/pointer/touch_ui_controller.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/views/accessible_pane_view.h"
 #include "ui/views/animation/animation_delegate_views.h"
 #include "ui/views/controls/button/menu_button.h"
@@ -107,6 +108,17 @@ struct ZephyrusGroupSegment {
   bool close = false;
   raw_ptr<const views::View> view = nullptr;
 };
+
+// The container shape for one control in a connected run: fully rounded on the
+// group's outside, small corners on the inside, and grown to close the seam
+// between neighbours. `group[index].bounds` are in whatever coordinate space
+// the caller paints in.
+//
+// Declared here rather than kept file-local so the geometry has one owner:
+// the container shape, the ink-drop mask and anything that re-lays these
+// controls out all read it from the same place.
+SkRRect ZephyrusSegmentShape(const std::vector<ZephyrusGroupSegment>& group,
+                             size_t index);
 
 class ToolbarView : public views::AccessiblePaneView,
                     public ui::AcceleratorProvider,
@@ -238,6 +250,34 @@ class ToolbarView : public views::AccessiblePaneView,
   // auto-hides; updates the icon/tooltip to reflect the current pinned state.
   void AddZephyrusPinButton();
   void UpdateZephyrusPinButton();
+
+  // Zephyrus COMPACT MODE. While the title bar is hidden, its controls are
+  // LENT to `host` -- reparented, not rebuilt: same views, same look, same
+  // behaviour, just somewhere else. The window controls and the pin button
+  // stay, because they belong to the window rather than to the page.
+  //
+  // Reparenting rather than hiding-and-substituting is deliberate. Hiding
+  // means every owner that shows its own button on a state change (a download
+  // finishing, an extension asking for attention) drops a stray control onto
+  // an otherwise empty bar, and substituting means maintaining a second set
+  // of controls that drift from the real ones.
+  void LendZephyrusChromeTo(views::View* host);
+  // Puts every lent control back where it was, in its original order.
+  void ReclaimZephyrusChrome();
+  // The lent controls, in the order they had on the bar. Empty unless
+  // they are currently lent.
+  std::vector<views::View*> ZephyrusLentViews() const;
+  bool IsZephyrusCompact() const { return zephyrus_compact_; }
+  // The workspace switcher, so a host can place it apart from the rest.
+  views::View* zephyrus_workspace_strip() {
+    return zephyrus_workspace_strip_;
+  }
+  // The new-tab control, which the sidebar puts beside its tab count.
+  views::View* zephyrus_new_tab_button();
+
+  // Narrow-host mode for the workspace switcher: its cells share the width
+  // and it drops its own add button, which the host then owns.
+  void SetZephyrusWorkspaceStripCompact(bool compact);
 
   // Keeps the Shield's blocked-count badge bound to the active tab's counter.
   void ObserveZephyrusAdblockCount();
@@ -509,6 +549,12 @@ class ToolbarView : public views::AccessiblePaneView,
 
   // Paints every title-bar button group's containers, behind the controls.
   raw_ptr<views::View> zephyrus_nav_pill_backdrop_ = nullptr;
+  // See LendZephyrusChromeTo().
+  bool zephyrus_compact_ = false;
+  // Controls currently lent to the sidebar, with the index each one occupied
+  // here. Restored in reverse so earlier indices stay valid.
+  std::vector<std::pair<views::View*, size_t>> zephyrus_lent_children_;
+
   raw_ptr<ToolbarButton> zephyrus_pin_button_ = nullptr;
   raw_ptr<ToolbarButton> zephyrus_adblock_button_ = nullptr;
   std::optional<SkColor> zephyrus_titlebar_color_;

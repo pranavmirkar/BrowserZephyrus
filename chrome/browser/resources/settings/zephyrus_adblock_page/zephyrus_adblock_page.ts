@@ -46,10 +46,16 @@ export class SettingsZephyrusAdblockPageElement extends
         value: '',
       },
 
-      statsText_: {
+      blockedText_: {
         type: String,
-        computed: 'computeStatsText_(' +
-            'prefs.zephyrus.adblock.total_blocked.value, ' +
+        computed: 'computeBlockedText_(' +
+            'prefs.zephyrus.adblock.total_blocked.value)',
+      },
+
+      rulesText_: {
+        type: String,
+        computed: 'computeRulesText_(' +
+            'prefs.zephyrus.adblock.enabled.value, ' +
             'prefs.zephyrus.adblock.rule_count.value)',
       },
 
@@ -62,12 +68,27 @@ export class SettingsZephyrusAdblockPageElement extends
   }
 
   declare private newDomain_: string;
-  declare private statsText_: string;
+  declare private blockedText_: string;
+  declare private rulesText_: string;
   declare private allowlistEmpty_: boolean;
 
-  private computeStatsText_(blocked: number, rules: number): string {
-    return loadTimeData.getStringF(
-        'zephyrusAdblockStatsValue', blocked || 0, rules || 0);
+  // Grouped for the reader's locale: "118,146", not "118146".
+  private computeBlockedText_(blocked: number): string {
+    return (blocked || 0).toLocaleString();
+  }
+
+  // Off says what off means instead of a rule count that is not being used.
+  private computeRulesText_(enabled: boolean, rules: number): string {
+    return enabled ?
+        loadTimeData.getStringF(
+            'zephyrusAdblockHeroRules', (rules || 0).toLocaleString()) :
+        loadTimeData.getString('zephyrusAdblockHeroOffSub');
+  }
+
+  // Each chip's remove button names its site: a screen reader otherwise
+  // hears a row of identical "Remove" buttons.
+  private removeLabel_(domain: string): string {
+    return loadTimeData.getStringF('zephyrusAdblockRemoveSite', domain);
   }
 
   private computeAllowlistEmpty_(): boolean {

@@ -1,0 +1,129 @@
+/* Copyright 2024 The Chromium Authors
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file. */
+
+/* #css_wrapper_metadata_start
+ * #type=style-lit
+ * #import=../cr_hidden_style_lit.css.js
+ * #import=../cr_shared_vars.css.js
+ * #scheme=relative
+ * #include=cr-hidden-style-lit
+ * #css_wrapper_metadata_end */
+
+:host {
+  display: block;
+  width: 200px;
+  position: relative;
+  overflow: hidden;
+}
+
+#progressContainer {
+  position: relative;
+}
+
+#progressContainer,
+/* the stripe for the indeterminate animation*/
+:host([indeterminate]) #primaryProgress::after {
+  height: var(--cr-progress-height, 4px);
+  background: var(--cr-progress-container-color, var(--google-grey-300));
+}
+
+#primaryProgress,
+:host([indeterminate]) #primaryProgress::after {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
+#primaryProgress {
+  transform-origin: left center;
+  transform: scaleX(0);
+  will-change: transform;
+  background: var(--cr-progress-active-color, var(--google-green-500));
+}
+
+:host([disabled]) #primaryProgress {
+  background: var(--cr-progress-disabled-active-color,
+                  var(--google-grey-500));
+}
+
+:host([indeterminate]:not([disabled])) #primaryProgress {
+  transform-origin: right center;
+  animation: indeterminate-bar
+      var(--cr-progress-indeterminate-cycle-duration, 2s) linear infinite;
+}
+
+:host([indeterminate]:not([disabled])) #primaryProgress::after {
+  content: '';
+  transform-origin: center center;
+
+  animation: indeterminate-splitter
+      var(--cr-progress-indeterminate-cycle-duration, 2s) linear infinite;
+}
+
+@keyframes indeterminate-bar {
+  0% {
+    transform: scaleX(1) translateX(-100%);
+  }
+  50% {
+    transform: scaleX(1) translateX(0%);
+  }
+  75% {
+    transform: scaleX(1) translateX(0%);
+    animation-timing-function: cubic-bezier(.28,.62,.37,.91);
+  }
+  100% {
+    transform: scaleX(0) translateX(0%);
+  }
+}
+
+@keyframes indeterminate-splitter {
+  0% {
+    transform: scaleX(.75) translateX(-125%);
+  }
+  30% {
+    transform: scaleX(.75) translateX(-125%);
+    animation-timing-function: cubic-bezier(.42,0,.6,.8);
+  }
+  90% {
+    transform: scaleX(.75) translateX(125%);
+  }
+  100% {
+    transform: scaleX(.75) translateX(125%);
+  }
+}
+
+/* Zephyrus: the M3 Expressive WAVY progress indicator, opt-in with [wavy].
+   The active part is a travelling sine wave, the remaining track stays a flat
+   line after a 4px gap. The indicator is drawn full width and CLIPPED to the
+   value rather than scaled -- a scaleX would compress the wavelength along
+   with the bar -- so the TS publishes the ratio as --cr-progress-ratio.
+   Indeterminate keeps the stock animation. */
+:host([wavy]:not([indeterminate])) #progressContainer {
+  --cr-progress-wave-remaining: calc((1 - var(--cr-progress-ratio, 0)) * 100%);
+  background: linear-gradient(var(--cr-progress-container-color),
+      var(--cr-progress-container-color)) no-repeat right center /
+      max(0px, calc(var(--cr-progress-wave-remaining) - 4px)) 4px;
+  height: 10px;
+}
+
+:host([wavy]:not([indeterminate])) #primaryProgress {
+  animation: cr-progress-wave 1s linear infinite;
+  clip-path: inset(0 var(--cr-progress-wave-remaining) 0 0);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='10'%3E%3Cpath d='M0 5Q5 1 10 5T20 5' fill='none' stroke='black' stroke-width='3'/%3E%3C/svg%3E") repeat-x 0 0 / 20px 10px;
+  transform: none !important;
+}
+
+@keyframes cr-progress-wave {
+  to {
+    mask-position: 20px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :host([wavy]) #primaryProgress {
+    animation: none;
+  }
+}

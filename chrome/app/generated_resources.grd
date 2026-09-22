@@ -9430,6 +9430,12 @@ Keep your key file in a safe place. You will need it to create new versions of y
       <message name="IDS_ZEPHYRUS_PRIVACY_DASH_STAT_SEEN_NOTE" desc="Clarifies that the seen count is a superset, so DETECTED and BLOCKED are not read as alternatives.">
         Includes the blocked ones: everything stopped was also seen.
       </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_TILE_COMPANIES" desc="Label under a large number on the dashboard: how many distinct third-party companies reached the user today. Reports DETECTED, never a rating. COUNT is that number; the number itself is shown separately above the label, so the label does not repeat it.">
+        {COUNT, plural, =1 {company reached you today} other {companies reached you today}}
+      </message>
+      <message name="IDS_ZEPHYRUS_PRIVACY_DASH_TILE_CROSSSITE" desc="Label under a large number on the dashboard: how many companies were seen on three or more of the sites the user visited (section 6.4). Reports DETECTED; must not claim the company linked anything. COUNT is that number, shown separately above the label.">
+        {COUNT, plural, =1 {company seen on three or more sites} other {companies seen on three or more sites}}
+      </message>
       <message name="IDS_ZEPHYRUS_PRIVACY_DASH_EXPOSURE_HEADING" desc="Section 6.7 heading. No status: a section title.">
         Who tried to reach you
       </message>

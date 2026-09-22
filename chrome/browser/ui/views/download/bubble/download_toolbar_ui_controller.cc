@@ -636,6 +636,32 @@ void DownloadToolbarUIController::ShowDetails() {
   ShowBubble(DownloadBubbleMode::kPartial);
 }
 
+views::Widget* DownloadToolbarUIController::ZephyrusShowDetailsAnchoredTo(
+    views::View* anchor,
+    views::BubbleBorder::Arrow arrow) {
+  if (!anchor || bubble_delegate_ || pending_bubble_) {
+    return nullptr;
+  }
+  // COMPLETE, not the partial view ShowDetails() uses. The partial view lists
+  // only downloads the user has not seen yet, which is right for a button that
+  // appears when a download starts and wrong for one that is always on the
+  // panel: clicking it after dismissing a download would open an empty bubble.
+  if (bubble_controller_->GetMainView().empty()) {
+    return nullptr;
+  }
+  primary_view_mode_ = DownloadBubbleMode::kComplete;
+  pending_security_content_ = std::nullopt;
+  zephyrus_arrow_ = arrow;
+  if (use_auto_close_bubble_timer_) {
+    auto_close_bubble_timer_.Reset();
+  }
+  // Synchronous: the anchor is already in hand, so there is nothing to
+  // assemble. Anchoring is all this path skips -- everything the bubble is
+  // made of below is the toolbar's own.
+  OnBubbleAnchorAssembled(views::BubbleAnchor(anchor));
+  return bubble_delegate_ ? bubble_delegate_->GetWidget() : nullptr;
+}
+
 void DownloadToolbarUIController::HideDetails() {
   if (IsShowingDetails()) {
     CloseDialog(views::Widget::ClosedReason::kUnspecified);
@@ -970,11 +996,13 @@ void DownloadToolbarUIController::OnBubbleAnchorAssembled(
   // The bubble should not show if the button doesn't exist since it would have
   // nothing to anchor to.
   if (!anchor.has_value()) {
+    zephyrus_arrow_.reset();
     return;
   }
   std::vector<DownloadUIModel::DownloadUIModelPtr> primary_view_models =
       GetPrimaryViewModels();
   if (primary_view_models.empty()) {
+    zephyrus_arrow_.reset();
     return;
   }
 
@@ -989,8 +1017,11 @@ void DownloadToolbarUIController::OnBubbleAnchorAssembled(
   }
   // Zephyrus: TOP_CENTER so the popup centres under the downloads button and
   // the nub lands in the middle of its top edge.
+  const views::BubbleBorder::Arrow zephyrus_arrow =
+      zephyrus_arrow_.value_or(views::BubbleBorder::TOP_CENTER);
+  zephyrus_arrow_.reset();
   auto bubble_delegate = std::make_unique<views::BubbleDialogDelegate>(
-      anchor.value(), views::BubbleBorder::TOP_CENTER,
+      anchor.value(), zephyrus_arrow,
       // Zephyrus: STANDARD_SHADOW, not DIALOG_SHADOW. DIALOG_SHADOW is
       // drawn by the platform and the widget is sized tight to the bubble,
       // which clips the nub and the top corners' curve off the top edge.

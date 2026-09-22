@@ -870,6 +870,12 @@ void AddZephyrusAdblockStrings(content::WebUIDataSource* html_source) {
                          u"No sites added yet");
   html_source->AddString("zephyrusAdblockAdd", u"Add");
   html_source->AddString("zephyrusAdblockRemove", u"Remove");
+  html_source->AddString("zephyrusAdblockRemoveSite", u"Remove $1");
+  html_source->AddString("zephyrusAdblockHeroBlocked", u"items blocked");
+  html_source->AddString("zephyrusAdblockHeroRules", u"$1 rules active");
+  html_source->AddString("zephyrusAdblockHeroOff", u"Ad blocking is off");
+  html_source->AddString("zephyrusAdblockHeroOffSub",
+                         u"Ads and trackers load normally on every site.");
 }
 
 void AddDownloadsStrings(content::WebUIDataSource* html_source) {

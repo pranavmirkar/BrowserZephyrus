@@ -4,7 +4,9 @@
 
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 
+#include "chrome/browser/ui/color/zephyrus_color_mixer.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 
 #include <algorithm>
 #include <map>
@@ -994,18 +996,6 @@ void LocationBarView::Layout(PassKey) {
     location_icon_view_->SetVisible(false);
   }
 
-  // Zephyrus: the search-engine pill, immediately after the leading icon. It is
-  // always present rather than only while editing — a user looking at a page
-  // should be able to see and change which engine the next search will use
-  // without first having to focus the omnibox.
-  if (zephyrus_engine_pill_) {
-    zephyrus_engine_pill_->SetVisible(true);
-    leading_decorations.AddDecoration(
-        vertical_padding, location_height, /*auto_collapse=*/false,
-        kLeadingDecorationMaxFraction, /*intra_item_padding=*/6,
-        /*edge_padding=*/0, zephyrus_engine_pill_);
-  }
-
   auto add_trailing_decoration = [&](View* view, int intra_item_padding,
                                      int edge_padding) {
     if (view->GetVisible()) {
@@ -1077,6 +1067,21 @@ void LocationBarView::Layout(PassKey) {
       add_trailing_decoration(intent_chip_, kIntentChipIntraItemPadding,
                               /*edge_padding=*/trailing_decorations_edge_padding);
     }
+  }
+
+  // Zephyrus: the search-engine mark, at the far right of the field. Added
+  // FIRST because trailing decorations are placed right-to-left in the order
+  // they are added, so this is the outermost one.
+  //
+  // It is always present rather than only while editing: someone looking at a
+  // page should be able to see and change which engine the next search will use
+  // without first having to focus the omnibox. At 24dp it fits at every width
+  // the field can be, which the old named chip did not -- that one hid itself
+  // below a 260dp field and took the leading edge with it.
+  if (zephyrus_engine_pill_) {
+    zephyrus_engine_pill_->SetVisible(true);
+    add_trailing_decoration(zephyrus_engine_pill_, /*intra_item_padding=*/6,
+                            /*edge_padding=*/6);
   }
 
   add_trailing_decoration(clear_all_button_, /*intra_item_padding=*/0,
@@ -1638,23 +1643,39 @@ void LocationBarView::RefreshBackground() {
     background_color_ = gfx::Tween::ColorValueBetween(opacity, normal, hovered);
   }
 
-  // Zephyrus (Figma Search Bar): an elevated surface pill in every state.
-  // The Figma white is illustrative — the real fill follows the dynamic
-  // theme, deriving from the (page-adapted) title bar color so the bar reads
-  // as an elevated card on any page. Hover brightens it slightly.
+  // Zephyrus: an M3 OUTLINED text field.
+  //
+  // It was a filled pill -- an elevated card on the title bar. Two surfaces
+  // stacked in the same band is the one place this UI could least afford it:
+  // the field is the widest thing in the chrome, so its fill was also the
+  // largest block of colour competing with the page below. Outlined, the band
+  // reads as one surface and the field is drawn on it by a line.
+  //
+  // The fill is the BACKDROP, not a surface of its own. It has to be opaque
+  // (the textfield needs an opaque background for subpixel AA), so "unfilled"
+  // means painting exactly what is behind: the page-adapted title bar colour.
+  // Hover lifts it by one state layer, which is the whole hover affordance.
+  const SkColor zephyrus_backdrop =
+      zephyrus_titlebar_color_.value_or(zephyrus::Ground());
   background_color_ = gfx::Tween::ColorValueBetween(
-      opacity, ZephyrusSurfaceColor(), ZephyrusSurfaceColor(/*hovered=*/true));
+      opacity, zephyrus_backdrop,
+      zephyrus::m3::WithStateLayer(
+          zephyrus_backdrop,
+          zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+          zephyrus::m3::kHover));
 
-  // Zephyrus: no border on the clean search bar (the fill + purple focus ring
-  // carry it). Only accessibility high-contrast mode still gets a stroke.
-  // Zephyrus: the search bar carries a wine outline on the warm theme. It is
-  // load-bearing, not decoration -- with a near-white fill on a near-white
-  // ground the outline is the only thing that separates the field from the
-  // title bar behind it.
-  SkColor border_color = SK_ColorTRANSPARENT;
-  if (!color_utils::IsDark(background_color_)) {
-    border_color = zephyrus::Rule();
-  }
+  // The outline carries the state, per M3: outline-variant at rest, and the
+  // full primary at 2dp once the caret is in.
+  //
+  // The focused outline is painted in OnPaintBorder, not here -- this painter
+  // only draws a 1px stroke, and a focus indicator that differs from rest by
+  // colour alone is a weak signal on a dark backdrop, where primary is a pale
+  // tone. So the background stroke is dropped while focused and the 2dp ring
+  // replaces it: one outline in either state, never two.
+  SkColor border_color =
+      is_caret_visible
+          ? SK_ColorTRANSPARENT
+          : zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant);
   if (high_contrast) {
     border_color =
         is_caret_visible
@@ -1745,32 +1766,65 @@ std::optional<SkColor> LocationBarView::GetZephyrusOmniboxTextColor() const {
 
 std::optional<SkColor> LocationBarView::GetZephyrusOmniboxColor(
     ui::ColorId id) const {
-  // Dynamic (searchbar_resultdropdown): the card elevates off the page color;
-  // the selected/hero row uses a slightly stronger elevation and is further
-  // distinguished by its border + shadow + width in OmniboxResultView. Text and
-  // icons are softened max-contrast ink derived from the surface.
-  const SkColor surface = ZephyrusSurfaceColor();
-  const SkColor surface_hover = ZephyrusSurfaceColor(/*hovered=*/true);
-  const SkColor ink = zephyrus::InkFor(surface);
-  const SkColor text = color_utils::AlphaBlend(ink, surface, SkAlpha{0xC8});
-  const SkColor dim = color_utils::AlphaBlend(ink, surface, SkAlpha{0x85});
+  // The field itself -- the pill in the title bar -- keeps the surface it was
+  // settled on with the title bar; only its text colour is answered here.
+  if (id == kColorOmniboxText) {
+    const SkColor surface = ZephyrusSurfaceColor();
+    return color_utils::AlphaBlend(zephyrus::InkFor(surface), surface,
+                                   SkAlpha{0xC8});
+  }
+
+  // The results card is an M3 SEARCH VIEW, in M3 roles.
+  //
+  // It bypassed the providers entirely: white overlays on the retired palette
+  // base for the surfaces, softened "ink" for the text, and the selected row
+  // told apart by a hairline, a shadow and 27px of overhang. Now the card is
+  // surfaceContainerHigh, a row's highlight is an M3 state layer on it (focus
+  // strength for the selected row, hover strength under the pointer), and text
+  // is onSurface over onSurfaceVariant.
+  //
+  // Read from this view, which is in the browser window's Widget whenever the
+  // popup asks: the popup only exists while the omnibox has focus.
+  if (!GetWidget()) {
+    return std::nullopt;
+  }
+  const SkColor container =
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
+  const SkColor on_surface = zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
+  const SkColor on_variant =
+      zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant);
+  // M3's roles for a SELECTED list item, which is what the keyboard-focused
+  // row is. It was a state layer on the same surface -- 12% of on-surface over
+  // surface-container-high, which measured four shades apart from the rest of
+  // the list. On a list you scan by eye before pressing Enter, "which row am I
+  // on" cannot be a shade; the pair below is a different colour, and its ink
+  // comes with it so the contrast holds whatever the page tint does.
+  const SkColor selected =
+      zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer);
+  const SkColor on_selected =
+      zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer);
   switch (id) {
     case kColorOmniboxResultsBackground:
-      return surface;
+      return container;
     case kColorOmniboxResultsBackgroundSelected:
+      return selected;
     case kColorOmniboxResultsBackgroundHovered:
-      return surface_hover;
-    case kColorOmniboxText:
+      return zephyrus::m3::WithStateLayer(container, on_surface,
+                                          zephyrus::m3::kHover);
     case kColorOmniboxResultsTextSelected:
-    case kColorOmniboxResultsUrl:
     case kColorOmniboxResultsUrlSelected:
-      return text;
-    case kColorOmniboxResultsTextDimmed:
+      return on_selected;
+    case kColorOmniboxResultsUrl:
+      return on_surface;
+    // The URL line of a selected row is the paired ink at reduced emphasis --
+    // NOT on-surface-variant, which is mixed for the list's own surface and
+    // goes muddy on the selection's.
     case kColorOmniboxResultsTextDimmedSelected:
-      return dim;
-    case kColorOmniboxResultsIcon:
     case kColorOmniboxResultsIconSelected:
-      return text;
+      return SkColorSetA(on_selected, 0xB8);
+    case kColorOmniboxResultsTextDimmed:
+    case kColorOmniboxResultsIcon:
+      return on_variant;
     default:
       return std::nullopt;
   }
@@ -2003,8 +2057,31 @@ void LocationBarView::OnFocus() {
 }
 
 void LocationBarView::OnPaintBorder(gfx::Canvas* canvas) {
-  // Zephyrus: a minimal blue segment travels around the omnibox border while the
-  // active page is loading.
+  // Zephyrus: the M3 outlined field's FOCUSED outline -- 2dp of primary,
+  // replacing the 1px rest outline that RefreshBackground drops while the caret
+  // is in. Drawn inset by half its stroke so it sits where the rest outline
+  // was, rather than growing the field by a pixel when it gains focus.
+  // is_initialized_ guards the controller exactly as the focus-ring predicate
+  // above does: a paint can land before Init() has built the edit model.
+  if (is_initialized_ &&
+      GetOmniboxController()->edit_model()->is_caret_visible()) {
+    constexpr float kFocusStroke = 2.0f;
+    gfx::RectF ring(GetLocalBounds());
+    ring.Inset(kFocusStroke / 2.0f);
+    const float radius = std::max(
+        0.0f, static_cast<float>(GetBorderRadius()) - kFocusStroke / 2.0f);
+    cc::PaintFlags flags;
+    flags.setStyle(cc::PaintFlags::kStroke_Style);
+    flags.setStrokeWidth(kFocusStroke);
+    flags.setAntiAlias(true);
+    flags.setColor(zephyrus::m3::Role(*this, kColorZephyrusPrimary));
+    canvas->DrawRoundRect(ring, radius, flags);
+  }
+
+  // Zephyrus: a minimal accent segment travels around the omnibox border while
+  // the active page is loading. Drawn after the focus outline, so a page
+  // loading while you type reads as a segment running over the focused edge
+  // rather than as a second ring.
   if (zephyrus_loading_) {
     constexpr float kStrokeWidth = 2.0f;
     gfx::RectF ring_bounds(GetLocalBounds());

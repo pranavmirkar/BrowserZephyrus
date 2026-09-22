@@ -159,6 +159,9 @@ class ZephyrusSidebarView : public views::View,
   void OnResizeFinished();
   void ResetWidthToDefault();
 
+  // Called by BrowserView when the title bar is pinned or unpinned.
+  void OnCompactModeChanged();
+
   // Pinned: the sidebar stays out and never auto-tucks. Mirrors the title bar's
   // pin (BrowserView::ToggleZephyrusTitlebarPinned).
   bool is_pinned() const { return pinned_; }
@@ -296,6 +299,47 @@ class ZephyrusSidebarView : public views::View,
   // duration to keep in sync by hand.
   gfx::SlideAnimation reveal_animation_{this};
   bool pinned_ = false;
+
+  // Rounds the ends of each run of rows in `container` (see the .cc).
+  static void AssignSegmentPositions(views::View* container);
+
+  // COMPACT MODE. True while the title bar is unpinned, which is when the
+  // chrome that used to live in it belongs to this panel instead.
+  bool IsCompactMode() const;
+  // Borrows the title bar's controls into the panel, or hands them back.
+  void RebuildCompactChrome();
+  // Creates the panel's own add-workspace button, once.
+  void EnsureAddWorkspaceButton();
+  // The foot bar's downloads control. Opens the browser's own downloads
+  // bubble, anchored to the button in the panel rather than to the toolbar's
+  // (which is hidden, and often does not exist at all, in compact mode).
+  void ShowDownloads(const ui::Event& event);
+  // Releases one hold taken by a popup anchored into the panel. See
+  // reveal_holds_.
+  void ReleaseRevealHold();
+  // Takes the borrowed new-tab button out of the tab list before that list is
+  // rebuilt (rebuilding it deletes its children, and that button is not ours).
+  void ParkBorrowedNewTabButton();
+
+  // Where the title bar's own controls live while it is hidden. Empty (and
+  // hidden) whenever the title bar is pinned.
+  raw_ptr<views::View> compact_chrome_ = nullptr;
+  raw_ptr<views::View> compact_address_row_ = nullptr;
+  raw_ptr<views::View> compact_controls_row_ = nullptr;
+  raw_ptr<views::View> compact_hidden_ = nullptr;
+  // The workspace switcher's place at the foot of the panel.
+  raw_ptr<views::View> compact_workspaces_ = nullptr;
+  raw_ptr<views::View> add_workspace_button_ = nullptr;
+  // Built with the foot bar and never rebuilt, so it is safe to anchor to.
+  raw_ptr<views::View> downloads_button_ = nullptr;
+  // Popups currently anchored INTO the panel. While any is open the panel
+  // cannot tuck away: tucking slides the anchor off the screen edge and the
+  // popup, which tracks its anchor, follows it out of sight.
+  int reveal_holds_ = 0;
+  // The "Tabs" heading of the current list, which carries the new-tab button
+  // in compact mode. A plain View because the heading class lives in the .cc's
+  // anonymous namespace; null between rebuilds.
+  raw_ptr<views::View> tabs_header_ = nullptr;
 
   // Hidden when there are no bookmarks, so the heading never labels nothing.
   raw_ptr<views::View> favorites_header_ = nullptr;

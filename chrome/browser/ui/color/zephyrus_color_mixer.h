@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_COLOR_ZEPHYRUS_COLOR_MIXER_H_
 #define CHROME_BROWSER_UI_COLOR_ZEPHYRUS_COLOR_MIXER_H_
 
+#include <string>
+
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -126,5 +128,14 @@ enum ZephyrusColorIds : ui::ColorId {
 // reaches every surface; only the tone assignment changes.
 void AddZephyrusColorMixer(ui::ColorProvider* provider,
                            const ui::ColorProviderKey& key);
+
+// The CSS custom property for an M3 role, e.g. "--color-zephyrus-surface" for
+// kColorZephyrusSurface. chrome://theme/colors.css?sets=zephyrus emits every
+// role under these names from the SAME ColorProvider the native UI reads, so a
+// WebUI page styled with them cannot drift from the browser around it.
+//
+// Covers kColorZephyrusPrimary up to (not including) the legacy shim roles,
+// which are deliberately not exposed: nothing new may be built on them.
+std::string ZephyrusColorIdCssName(ui::ColorId id);
 
 #endif  // CHROME_BROWSER_UI_COLOR_ZEPHYRUS_COLOR_MIXER_H_

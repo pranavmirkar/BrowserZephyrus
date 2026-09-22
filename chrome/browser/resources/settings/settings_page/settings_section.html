@@ -1,0 +1,85 @@
+    <style>
+      :host {
+        display: flex;
+        flex-direction: column;
+        outline: none;
+        position: relative;
+      }
+
+      #header {
+        display: flex;
+        justify-content: space-between;
+        padding-inline-end: var(--cr-section-padding);
+      }
+
+      #header .title {
+        color: var(--cr-primary-text-color);
+        font-size: 108%;
+        font-weight: 400;
+        letter-spacing: .25px;
+        margin-bottom: 12px;
+        margin-top: var(--cr-section-vertical-margin);
+        outline: none;
+        padding-bottom: 4px;
+        padding-top: 8px;
+      }
+
+      #feedback {
+        margin-top: var(--cr-section-vertical-margin);
+      }
+
+      #card {
+        background-color: var(--cr-card-background-color);
+        border-radius: var(--cr-card-border-radius);
+        box-shadow: var(--cr-card-shadow);
+        flex: 1;
+        overflow: hidden;
+      }
+
+      /* Zephyrus, M3 Expressive: a section is a SEGMENTED list, not a card
+         with ruled rows. The card loses its shadow and takes a 24dp corner;
+         the separators that used to be hairlines become 2dp gaps in the page
+         colour, so every row reads as its own item and the group's first and
+         last rows take the card's rounding through overflow:hidden. Scoped to
+         the card, not the page: dialogs and drawers keep real separators.
+         The title is a list subheader, titleSmall in primary. */
+      :host-context([webui-refresh-2026]) #card {
+        /* The LINE, not its parts: --cr-separator-line is resolved where it
+           is declared (html), so overriding its height/colour here would
+           change nothing it has already computed. */
+        --cr-separator-line: 2px solid var(--color-webui-page-background);
+        border-radius: 24px;
+        box-shadow: none;
+      }
+
+      :host-context([webui-refresh-2026]) #header .title {
+        color: var(--color-sys-primary);
+        font-size: 14px;
+        font-weight: 500;
+        letter-spacing: .1px;
+        line-height: 20px;
+        padding-inline-start: 20px;
+      }
+
+      @media (forced-colors: active) {
+        /* Use border instead of box-shadow (which does not work) in Windows
+           HCM. */
+        #card {
+          border: var(--cr-border-hcm);
+        }
+      }
+    </style>
+    <div id="header">
+      <h2 id="title" class="title" tabindex="-1"
+          aria-hidden$="[[getTitleHiddenStatus_(pageTitle)]]">[[pageTitle]]</h2>
+      <template is="dom-if" if="[[showSendFeedbackButton]]">
+        <cr-icon-button id="feedback" iron-icon="settings:feedback"
+            aria-labelledby="title" suppress-rtl-flip
+            aria-roledescription="$i18n{sendFeedbackButton}"
+            on-click="onSendFeedbackClick_">
+        </cr-icon-button>
+      </template>
+    </div>
+    <div id="card">
+      <slot></slot>
+    </div>

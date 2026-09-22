@@ -734,19 +734,20 @@ gfx::Rect OmniboxPopupViewViews::GetTargetBounds() const {
     popup_height += contextual_group_view_->GetCurrentHeight();
   }
 
-  // Add space at the bottom for aesthetic reasons. It's expected that this
-  // space is dead unclickable/unhighlightable space. This extra padding is not
-  // added if the results section has no height (result set is empty or all
-  // results are hidden). See https://crbug.com/40128770 for additional context.
+  // Height for the card's own padding, above the first row and below the last.
+  //
+  // Upstream adds a cushion here "for aesthetic reasons" -- 8, or 2 under a
+  // toolbelt -- and in a borderless dropdown that is exactly right. Inside a
+  // card it is a second opinion about how far a row sits from an edge, and it
+  // won: the sides of the card were 4dp from the pill and the bottom was 12,
+  // so the bottom corners did not nest the way the top ones did.
+  //
+  // The card already states that distance. Twice the padding, because the
+  // contents are inset by it at BOTH ends -- this is the height those two
+  // insets consume, so the rows land where the padding says and the last one
+  // is not clipped.
   if (popup_height != 0) {
-    // The amount of extra space is dependent on whether the last match is the
-    // toolbelt or not. The toolbelt doesn't have an icon or image on the left
-    // like a regular suggestion nor a big background highlight like an IPH
-    // suggestion so it doesn't require as much space.
-    const size_t last_result_index = result_size - 1;
-    int extra_bottom_padding =
-        GetMatchAtIndex(last_result_index).IsToolbelt() ? 2 : 8;
-    popup_height += extra_bottom_padding;
+    popup_height += 2 * RoundedOmniboxResultsFrame::kZephyrusCardPadding;
   }
 
   // Add enough space on the top and bottom so it looks like there is the same

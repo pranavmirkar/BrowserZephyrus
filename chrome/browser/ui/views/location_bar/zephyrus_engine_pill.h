@@ -20,8 +20,8 @@ namespace favicon_base {
 struct FaviconImageResult;
 }
 
-// A pill inside the omnibox naming the current search engine; clicking it opens
-// the engine picker.
+// The current search engine mark, at the TRAILING edge of the omnibox; clicking
+// it opens the engine picker.
 //
 // This exists as its own control rather than as a click handler on the leading
 // magnifier. That was tried first and is wrong: the magnifier IS the security
@@ -46,6 +46,10 @@ class ZephyrusEnginePill : public views::LabelButton,
   // TemplateURLServiceObserver:
   void OnTemplateURLServiceChanged() override;
   void OnTemplateURLServiceShuttingDown() override;
+
+  // views::View:
+  void OnThemeChanged() override;
+  void OnPaintBackground(gfx::Canvas* canvas) override;
 
  private:
   void OpenPicker();

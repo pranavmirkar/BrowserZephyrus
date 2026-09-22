@@ -1573,9 +1573,19 @@ void AutocompleteController::UpdateResult(UpdateType update_type,
   //
   // Only history-derived matches are touched. Demoting what-you-typed or search
   // suggestions would break the omnibox's most basic promise.
+  //
+  // By TYPE, an allowlist. This used to exclude only search types, so the
+  // URL-what-you-typed match fell through and was demoted too: once a workspace
+  // had any history, every address it had not seen was "outside" it, the typed
+  // URL dropped 400 below search-what-you-typed, and Enter on a freshly typed
+  // URL ran a SEARCH for it instead of opening it.
   for (AutocompleteMatch& match : internal_result_) {
-    if (!AutocompleteMatch::IsSearchType(match.type) &&
-        match.destination_url.is_valid() &&
+    const bool history_derived =
+        match.type == AutocompleteMatchType::HISTORY_URL ||
+        match.type == AutocompleteMatchType::HISTORY_TITLE ||
+        match.type == AutocompleteMatchType::HISTORY_BODY ||
+        match.type == AutocompleteMatchType::HISTORY_KEYWORD;
+    if (history_derived && match.destination_url.is_valid() &&
         provider_client_->IsUrlOutsideCurrentWorkspace(match.destination_url)) {
       match.relevance = std::max(0, match.relevance - 400);
     }

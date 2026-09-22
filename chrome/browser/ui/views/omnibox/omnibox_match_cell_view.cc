@@ -3,6 +3,9 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/omnibox/omnibox_match_cell_view.h"
+#include "chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.h"
+#include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 
 #include <algorithm>
 #include <optional>
@@ -52,6 +55,31 @@
 #include "ui/views/style/typography.h"
 
 namespace {
+
+// Zephyrus: the favicon's container. 32dp is M3's leading-element size for a
+// list item.
+constexpr int kZephyrusIconContainer = 32;
+// DERIVED, not chosen. The container nests inside the row's selection pill,
+// which nests inside the card, so its corner is the third link in one chain:
+//
+//   card 28  ->  pill 28 - 4  ->  container (pill - the padding around it)
+//
+// A hand-picked number here is how a nest stops looking like a nest -- see
+// zephyrus::m3::ConcentricInner.
+constexpr float kZephyrusPillRadius = zephyrus::m3::ConcentricInner(
+    static_cast<float>(zephyrus::kRadiusPopup),
+    static_cast<float>(RoundedOmniboxResultsFrame::kZephyrusPillInsideCard));
+constexpr float kZephyrusIconContainerPad =
+    (OmniboxMatchCellView::kZephyrusTwoLineRowHeight -
+     kZephyrusIconContainer) /
+        2.f -
+    RoundedOmniboxResultsFrame::kZephyrusPillRowInset;
+constexpr float kZephyrusIconContainerRadius =
+    zephyrus::m3::ConcentricInner(kZephyrusPillRadius,
+                                  kZephyrusIconContainerPad);
+// One M3 state layer's worth. Enough to separate the mark from the row,
+// quiet enough that a column of them does not read as a second list.
+constexpr SkAlpha kZephyrusIconContainerAlpha = 0x14;
 
 // The edge length of the favicon, answer icon, and entity backgrounds.
 static constexpr int kUniformRowHeightIconSize = 28;
@@ -472,6 +500,48 @@ void OmniboxMatchCellView::SetImage(const gfx::ImageSkia& image,
   }
 }
 
+// Zephyrus: is this row drawn as an M3 two-line list item -- title as the
+// headline, URL as supporting text beneath it?
+//
+// Only a match that HAS both can be: a search suggestion carries one string,
+// and stacking it would give it a blank second line. Answers, IPH and the
+// toolbelt all have their own layouts and are left alone.
+bool OmniboxMatchCellView::ZephyrusIsTwoLine() const {
+  return layout_style_ == LayoutStyle::DEFAULT_NON_SEARCH_SUGGESTION &&
+         description_view_->GetVisible() &&
+         !description_view_->GetText().empty() &&
+         !content_view_->GetText().empty();
+}
+
+// Zephyrus: a tonal container behind the favicon.
+//
+// Favicons are whatever shape and colour a site chose, so a column of bare
+// ones has no common silhouette to scan down -- a pale square logo also has
+// nothing to sit against on a dark list. A container gives every row the same
+// leading shape and gives light marks a surface.
+//
+// Painted as a TRANSLUCENT state layer rather than an opaque tone, so it lifts
+// whatever is behind it: the list surface on an ordinary row, the selection's
+// own colour on the selected one, with no second colour to keep in step.
+void OmniboxMatchCellView::OnPaintBackground(gfx::Canvas* canvas) {
+  if (!ZephyrusIsTwoLine()) {
+    return;
+  }
+  const views::View* image_view = icon_view_.get();
+  if (!image_view->GetVisible() || image_view->bounds().IsEmpty()) {
+    return;
+  }
+  gfx::RectF box(image_view->bounds());
+  box.ClampToCenteredSize(
+      gfx::SizeF(kZephyrusIconContainer, kZephyrusIconContainer));
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setStyle(cc::PaintFlags::kFill_Style);
+  flags.setColor(SkColorSetA(GetColorProvider()->GetColor(kColorOmniboxText),
+                             kZephyrusIconContainerAlpha));
+  canvas->DrawRoundRect(box, kZephyrusIconContainerRadius, flags);
+}
+
 gfx::Insets OmniboxMatchCellView::GetInsets() const {
   const int vertical_margin = 0;
   // Toolbelt text bounds are set to match the UX spec. IPH text bounds should
@@ -535,6 +605,29 @@ void OmniboxMatchCellView::Layout(PassKey) {
     return;
   }
 
+  if (ZephyrusIsTwoLine()) {
+    // Zephyrus (M3 two-line list item). The title and the URL used to share a
+    // line, joined by " - ": they read as one sentence, and because the URL
+    // came last it was always the half that got elided -- so the part that
+    // says WHICH page this is disappeared first. Stacked, each gets a whole
+    // line and its own role colour.
+    //
+    // The separator is sized to nothing rather than hidden: the 1-line branch
+    // below gives it a size, and a stale one would paint a dash between two
+    // lines it no longer sits between.
+    separator_view_->SetSize(gfx::Size());
+    const int content_height = content_view_->GetLineHeight();
+    const int description_height = description_view_->GetLineHeight();
+    const int block = content_height + description_height;
+    // Centred as a BLOCK. Centring each line in half the row instead lets the
+    // gap between them grow with the row, which stops reading as one item.
+    const int top = y + std::max(0, (row_height - block) / 2);
+    content_view_->SetBounds(x, top, text_width, content_height);
+    description_view_->SetBounds(x, top + content_height, text_width,
+                                 description_height);
+    return;
+  }
+
   int content_width = content_view_->GetPreferredSize().width();
   int description_width = description_view_->GetVisible()
                               ? description_view_->GetPreferredSize().width()
@@ -594,7 +687,14 @@ gfx::Size OmniboxMatchCellView::CalculatePreferredSize(
         description_view_->GetVisible()
             ? description_view_->GetPreferredSize().width()
             : 0;
-    if (description_width > 0) {
+    if (ZephyrusIsTwoLine()) {
+      // Stacked, the row is as wide as its WIDEST line, not as wide as both
+      // laid end to end.
+      width = GetInsets().width() + GetTextIndent() +
+              tail_suggest_common_prefix_width_ +
+              std::max(content_view_->GetPreferredSize().width(),
+                       description_width);
+    } else if (description_width > 0) {
       width += separator_view_->GetPreferredSize().width() + description_width;
     }
   }
@@ -618,6 +718,11 @@ gfx::Size OmniboxMatchCellView::CalculatePreferredSize(
                description_view_->GetLineHeight() + kHistoryEmbeddingAnswerGap +
                kHistoryEmbeddingAnswerBottomPadding;
     }
+  } else if (ZephyrusIsTwoLine()) {
+    // Zephyrus: room for two lines plus M3's list-item padding. The spec's
+    // 2-line item is 72dp; a browser popup is denser than a settings list and
+    // this is the height at which the two lines stop touching.
+    height = kZephyrusTwoLineRowHeight;
   } else if (layout_style_ == LayoutStyle::IPH_SUGGESTION ||
              layout_style_ == LayoutStyle::TOOLBELT) {
     // IPH and toolbelt suggestions have extra height.

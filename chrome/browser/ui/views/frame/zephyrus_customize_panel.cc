@@ -11,6 +11,7 @@
 #include "base/numerics/safe_conversions.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/color/zephyrus_color_mixer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
@@ -180,7 +181,7 @@ void ZephyrusCustomizePanel::RoundWebContents() {
   //
   // What actually paints at these corners is a stack, and each member clips
   // only itself:
-  //   1. the panel's background/border  -- rounded in ApplyPalette()
+  //   1. the panel's background         -- rounded in ApplyPalette()
   //   2. the WebView's own layer        -- below; ALSO clips its descendants
   //   3. the native view host           -- below
   // The renderer's compositor surface is a descendant, and rounding (3) alone
@@ -188,22 +189,10 @@ void ZephyrusCustomizePanel::RoundWebContents() {
   // top and bottom edges. ContentsContainerView::UpdateBorderRoundedCorners
   // hit exactly this on the page card and records the same conclusion.
   //
-  // RULE 2 YIELDS TO DPI HERE, deliberately.
-  //
-  // The WebView sits 1px inside the border, so concentricity
-  // (zephyrus::m3::ConcentricInner) would put it at kRadiusCard - 1 = 11. That
-  // is not a whole number of device pixels at 1.5x (16.5) and a layer-rounded
-  // corner at a fractional value renders blurry -- the note on
-  // kPopupCornerRadius in ZephyrusSettingsPopup records measuring exactly that.
-  //
-  // So it takes the container's own radius. This is the one case where the two
-  // constraints genuinely conflict, and DPI wins because a blurred corner is a
-  // visible defect while a 1px concentricity error is not: a 12 arc inset by 1
-  // still falls inside the border's arc, so nothing bleeds past the card.
-  //
-  // This is NOT a licence to skip Rule 2 elsewhere. It applies only where the
-  // gap is 1px; at any real padding the derived value is both correct and
-  // DPI-safe, because every step on the scale is a multiple of 4.
+  // The WebView fills the panel edge to edge now that the 1px hairline is
+  // gone, so it takes the container's own radius and is concentric by
+  // definition. (With the border it sat 1px inside, and concentricity would
+  // have asked for 11 -- 16.5 device pixels at 1.5x, which renders blurry.)
   web_view_->holder()->SetCornerRadii(radii);
   if (ui::Layer* layer = web_view_->layer()) {
     layer->SetRoundedCornerRadius(radii);
@@ -260,28 +249,22 @@ void ZephyrusCustomizePanel::OnThemeChanged() {
 }
 
 void ZephyrusCustomizePanel::ApplyPalette() {
-  // The same card as the agent panel: a rounded surface and a 1px hairline.
-  // Separation is a line, not a shadow.
+  // M3 TONAL SEPARATION, no hairline.
   //
-  // A flush, borderless version painted in the window's colour was tried on
-  // 2026-09-10 and reverted -- it dissolved the panel into the chrome, which
-  // took the card language with it.
-  const Palette palette = PaletteFor(*this);
-  // SURFACE, not ground -- i.e. M3's surface-container, the same role the title
-  // bar and the sidebar now take.
+  // The 1px outline this used to carry is the retired language. It is safe to
+  // drop here where a flush version was reverted on 2026-09-10 because the
+  // page inside now paints its own surface: MEASURED 60,60,60 against the
+  // frame's 31,32,32 in dark, so the panel still reads as a card by tone --
+  // which is how M3 separates surfaces.
   //
-  // This panel is chrome, so it belongs on the chrome plane. It was on `ground`
-  // (M3 `surface`, the PAGE plane), which put it one tone off both of its
-  // neighbours: 98 against their 94 in light, 6 against 12 in dark. Small, but
-  // it is a seam running the full height of the window.
-  //
-  // Deliberately NOT fixed by moving kColorSysBase: that token is the page
-  // plane for everything upstream, and collapsing the two planes into one value
-  // is what flattened the window on 2026-09-10. The two planes stay distinct;
-  // this panel simply moves onto the correct one.
-  const SkColor ground = palette.surface;
+  // surfaceContainer: the chrome plane, the same role the title bar and the
+  // sidebar take. Deliberately NOT kColorSysBase, the page plane for everything
+  // upstream; collapsing the two planes is what flattened the window on
+  // 2026-09-10. It shows only while the page has not painted yet.
+  const SkColor ground =
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainer);
   SetBackground(views::CreateRoundedRectBackground(ground, kRadiusCard));
-  SetBorder(views::CreateRoundedRectBorder(1, kRadiusCard, palette.rule));
+  SetBorder(nullptr);
 
   if (!web_view_) {
     return;

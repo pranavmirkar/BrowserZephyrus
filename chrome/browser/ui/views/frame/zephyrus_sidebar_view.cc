@@ -36,7 +36,12 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/zephyrus/adblock/zephyrus_adblock_tab_helper.h"
+#include "chrome/browser/ui/views/download/bubble/download_toolbar_ui_controller.h"
+#include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
+#include "chrome/browser/ui/views/frame/zephyrus_settings_popup.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/favicon/content/content_favicon_driver.h"
@@ -44,12 +49,14 @@
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/display/screen.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/cursor/cursor.h"
+#include "ui/views/bubble/bubble_border.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/compositor/layer.h"
@@ -57,6 +64,7 @@
 #include "cc/paint/paint_flags.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/compositor/layer_animation_element.h"
@@ -84,6 +92,8 @@
 #include "ui/views/controls/scrollbar/overlay_scroll_bar.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
+#include "ui/views/layout/fill_layout.h"
+#include "ui/views/layout/table_layout.h"
 #include "ui/views/mouse_watcher_view_host.h"
 #include "ui/views/vector_icons.h"
 #include "ui/views/view_utils.h"
@@ -95,11 +105,10 @@ namespace {
 constexpr int kUnboundedScrollHeight = 100000;
 
 constexpr int kRowHeight = 36;
-// A navigation-drawer item is a FULL pill in M3, and the pill is what says
-// "this one" -- which is why the accent bar and the hover hairline are both
-// gone from OnPaintBackground. A 10dp rounded rectangle plus a separate marker
-// was the older language saying the same thing twice.
-constexpr int kRowCornerRadius = kRowHeight / 2;
+// The full pill that used to mark the active row is gone with it: every row
+// is a filled SEGMENT now (see kSegmentInnerRadius below), so a pill would
+// only have applied to one row in a column of rounded rectangles. What says
+// "this one" is still the container -- its colour, not its shape.
 
 // Square. The sidebar is not a card any more — it is a flush column of window
 // chrome running from the toolbar to the bottom edge, so there is no free side
@@ -107,7 +116,279 @@ constexpr int kRowCornerRadius = kRowHeight / 2;
 // briefly when it was still being treated as a panel.
 constexpr int kPanelCornerRadius = 0;
 constexpr int kFaviconSize = 16;
-constexpr int kRowSpacing = 3;
+// M3 Expressive SEGMENTED list. A row is a filled segment, not a label
+// floating on the panel: 2dp between segments, small inner corners, and the
+// group's outer corners on the first and last row of a run. It is the same
+// shape language the redesigned WebUI pages use, and it is what gives the
+// panel a body -- before this the sidebar was six titles over empty dark.
+constexpr int kRowSpacing = 2;
+constexpr int kSegmentInnerRadius = 4;
+
+// Gap between the title bar's controls once they are in the panel. The bar
+// spaced them with its own pitch, which a 230dp column has no room for.
+// The run's own metrics in the panel: 2dp seams between cells, 4dp corners
+// inside the run, and a little height around the glyphs.
+constexpr int kZephyrusCompactSeam = 2;
+constexpr int kZephyrusCompactInnerRadius = 4;
+constexpr int kZephyrusCompactRowPad = 3;
+
+// One run of the title bar's controls, stretched across the panel.
+//
+// On the bar a control is a 24dp cell in a row as wide as the window; here the
+// row is 230dp and there are only a handful of controls, so the cells take an
+// equal share of the width and the run ends flush with the omnibox below it.
+// The BUTTONS keep their own size and sit centred in their cell -- a
+// ToolbarButton right-aligns its icon, so stretching the button itself throws
+// every glyph off centre by the slack (this is a bug we have already paid for
+// once, in the title bar).
+//
+// Container geometry is the bar's: fully rounded on the run's outside, 4dp
+// corners inside, 2dp seams, and the state layer on the container rather than
+// the glyph.
+class ZephyrusControlRow : public views::View {
+  METADATA_HEADER(ZephyrusControlRow, views::View)
+
+ public:
+  ZephyrusControlRow() = default;
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    int height = 0;
+    for (const views::View* child : children()) {
+      if (child->GetVisible()) {
+        height = std::max(height, child->GetPreferredSize().height());
+      }
+    }
+    if (height == 0) {
+      return gfx::Size();
+    }
+    return gfx::Size(available_size.width().is_bounded()
+                         ? available_size.width().value()
+                         : 0,
+                     height + 2 * kZephyrusCompactRowPad);
+  }
+
+  void Layout(PassKey key) override {
+    const std::vector<views::View*> cells = VisibleChildren();
+    if (cells.empty()) {
+      return;
+    }
+    const std::vector<gfx::Rect> rects =
+        CellRects(cells, std::max(0, width()));
+    for (size_t i = 0; i < cells.size(); ++i) {
+      const gfx::Rect& cell = rects[i];
+      const gfx::Size size = cells[i]->GetPreferredSize();
+      // A control never spills past its own container. Six cells in a 180dp
+      // panel are narrower than a toolbar button's preferred width, and a
+      // button drawn wider than the cell it is painted in silently takes the
+      // clicks that land on its neighbour's container.
+      const int cell_w = std::min(size.width(), cell.width());
+      const int cell_h = std::min(size.height(), cell.height());
+      cells[i]->SetBounds(cell.x() + (cell.width() - cell_w) / 2,
+                          cell.y() + (cell.height() - cell_h) / 2, cell_w,
+                          cell_h);
+    }
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    const std::vector<views::View*> cells = VisibleChildren();
+    if (cells.empty()) {
+      return;
+    }
+    const int count = static_cast<int>(cells.size());
+    const std::vector<gfx::Rect> rects = CellRects(cells, width());
+    const SkColor container =
+        zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer);
+    const SkColor ink =
+        zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer);
+    cc::PaintFlags fill;
+    fill.setAntiAlias(true);
+    fill.setStyle(cc::PaintFlags::kFill_Style);
+    for (int i = 0; i < count; ++i) {
+      const gfx::Rect& cell = rects[i];
+      const auto* button = views::AsViewClass<views::Button>(cells[i]);
+      SkColor color = container;
+      if (button && (button->GetState() == views::Button::STATE_PRESSED ||
+                     button->GetState() == views::Button::STATE_HOVERED)) {
+        color = zephyrus::m3::WithStateLayer(
+            container, ink,
+            button->GetState() == views::Button::STATE_PRESSED
+                ? zephyrus::m3::kPressed
+                : zephyrus::m3::kHover);
+      }
+      fill.setColor(color);
+      const SkScalar outer = cell.height() / 2.f;
+      const SkScalar inner = kZephyrusCompactInnerRadius;
+      const SkScalar left = i == 0 ? outer : inner;
+      const SkScalar right = i + 1 == count ? outer : inner;
+      const SkVector radii[4] = {{left, left}, {right, right},
+                                 {right, right}, {left, left}};
+      SkRRect rrect;
+      rrect.setRectRadii(gfx::RectToSkRect(cell), radii);
+      canvas->sk_canvas()->drawRRect(rrect, fill);
+    }
+  }
+
+  // The containers track the pointer, so the row repaints on state changes:
+  // a child repainting itself only covers its glyph.
+  void OnMouseMoved(const ui::MouseEvent& event) override { SchedulePaint(); }
+  void OnMouseExited(const ui::MouseEvent& event) override { SchedulePaint(); }
+
+ private:
+  std::vector<views::View*> VisibleChildren() const {
+    std::vector<views::View*> cells;
+    for (views::View* child : children()) {
+      if (child->GetVisible()) {
+        cells.push_back(child);
+      }
+    }
+    return cells;
+  }
+
+  // Widths for the whole run, so Layout() and OnPaintBackground() cannot
+  // disagree about where a seam is.
+  //
+  // Cells are equal EXCEPT for one that genuinely needs more: the shield grows
+  // into a pill carrying the blocked-request count, and an equal cell clips
+  // that number off -- which is what drew a capsule with nothing in it. A
+  // counter you cannot read is worse than an uneven run, so the pill keeps its
+  // own width and the others divide what is left.
+  std::vector<gfx::Rect> CellRects(const std::vector<views::View*>& cells,
+                                   int span) const {
+    const int count = static_cast<int>(cells.size());
+    const int seams = (count - 1) * kZephyrusCompactSeam;
+    const int usable = std::max(0, span - seams);
+    const int share = usable / count;
+    // A wide control may not starve its neighbours: whatever it claims, it
+    // leaves every other cell at least kFloor. (With a single control there is
+    // nothing to protect, so the cap is the whole run -- halving it there would
+    // draw one control in half a strip.)
+    constexpr int kFloor = 16;
+    const int cap = std::max(share, usable - (count - 1) * kFloor);
+
+    std::vector<int> widths(count, 0);
+    int claimed = 0;
+    int equal_cells = 0;
+    for (int i = 0; i < count; ++i) {
+      // Only a control carrying TEXT may outgrow its share. Nothing lent to
+      // the panel does today -- the blocked-request count is a badge ON the
+      // shield now, so the shield is an ordinary cell -- but the rule is what
+      // keeps the run even: a glyph is legible in any cell the run can offer,
+      // and letting wide glyph buttons claim their preferred width made the
+      // run ragged, three cell widths across five controls.
+      const auto* labelled = views::AsViewClass<views::LabelButton>(cells[i]);
+      const int preferred = cells[i]->GetPreferredSize().width();
+      if (labelled && !labelled->GetText().empty() && preferred > share) {
+        widths[i] = std::min(preferred, cap);
+        claimed += widths[i];
+      } else {
+        ++equal_cells;
+      }
+    }
+    if (equal_cells > 0) {
+      const int rest = std::max(0, usable - claimed);
+      // Distribute the remainder one pixel at a time rather than letting it
+      // fall off the end, or the last cell is short of the panel edge.
+      const int base = rest / equal_cells;
+      int extra = rest % equal_cells;
+      for (int i = 0; i < count; ++i) {
+        if (widths[i] == 0) {
+          widths[i] = base + (extra-- > 0 ? 1 : 0);
+        }
+      }
+    }
+
+    std::vector<gfx::Rect> rects;
+    rects.reserve(count);
+    int x = 0;
+    for (int i = 0; i < count; ++i) {
+      rects.emplace_back(x, 0, widths[i], height());
+      x += widths[i] + kZephyrusCompactSeam;
+    }
+    return rects;
+  }
+};
+
+BEGIN_METADATA(ZephyrusControlRow)
+END_METADATA
+
+// A plain icon button for the panel's own actions -- the foot bar's downloads
+// shortcut. Sidebar-native, and only where the title bar has nothing to lend:
+// its download button lives inside the pinned-actions container, which stays
+// on the bar with the rest of the user's controls.
+class ZephyrusFootIconButton : public views::ImageButton {
+  METADATA_HEADER(ZephyrusFootIconButton, views::ImageButton)
+
+ public:
+  ZephyrusFootIconButton(PressedCallback callback,
+                         const gfx::VectorIcon& icon,
+                         const std::u16string& name)
+      : views::ImageButton(std::move(callback)), icon_(icon) {
+    SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
+    SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
+    GetViewAccessibility().SetName(name);
+    SetTooltipText(name);
+    views::InstallCircleHighlightPathGenerator(this);
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(28, 28);
+  }
+
+  void OnThemeChanged() override {
+    views::ImageButton::OnThemeChanged();
+    SetImageModel(
+        views::Button::STATE_NORMAL,
+        ui::ImageModel::FromVectorIcon(
+            *icon_, zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant),
+            18));
+    SchedulePaint();
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (GetState() != views::Button::STATE_HOVERED &&
+        GetState() != views::Button::STATE_PRESSED) {
+      return;
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(zephyrus::m3::StateLayer(
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+        GetState() == views::Button::STATE_PRESSED ? zephyrus::m3::kPressed
+                                                   : zephyrus::m3::kHover));
+    canvas->DrawCircle(GetLocalBounds().CenterPoint(), width() / 2, flags);
+  }
+
+ private:
+  const raw_ref<const gfx::VectorIcon> icon_;
+};
+
+BEGIN_METADATA(ZephyrusFootIconButton)
+END_METADATA
+constexpr int kSegmentEndRadius = 16;
+
+// Fills `bounds` as one segment. `first`/`last` say which end of the run this
+// is; a lone row gets the outer radius on both ends.
+void PaintSegment(gfx::Canvas* canvas,
+                  const gfx::Rect& bounds,
+                  SkColor color,
+                  bool first,
+                  bool last) {
+  const SkScalar top = first ? kSegmentEndRadius : kSegmentInnerRadius;
+  const SkScalar bottom = last ? kSegmentEndRadius : kSegmentInnerRadius;
+  // Order is top-left, top-right, bottom-right, bottom-left.
+  const SkVector radii[4] = {{top, top}, {top, top}, {bottom, bottom},
+                             {bottom, bottom}};
+  SkRRect rrect;
+  rrect.setRectRadii(gfx::RectToSkRect(bounds), radii);
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setStyle(cc::PaintFlags::kFill_Style);
+  flags.setColor(color);
+  canvas->sk_canvas()->drawRRect(rrect, flags);
+}
 
 // Sidebar row context-menu command ids.
 constexpr int kCloseTabCommand = 1;
@@ -177,8 +458,11 @@ std::u16string GetTabTitle(content::WebContents* contents) {
 // Colors a sidebar row adapts to (derived from the active page color).
 struct ZephyrusRowColors {
   SkColor foreground;  // Text, favicon fallback, close glyph.
+  SkColor idle_bg;     // Resting segment fill -- every row has one now.
   SkColor active_bg;   // Active row background.
   SkColor hover_bg;    // Hovered row background.
+  SkColor pressed_bg;  // Pressed row background (M3's 10% state layer).
+  SkColor active_pressed_bg;  // Pressed, on the active row's own container.
   SkColor active_fg;   // Ink ON the active row -- it is inverted, so this is
                        // the ground colour, not the ink.
 };
@@ -208,22 +492,33 @@ class ZephyrusActionRow : public views::LabelButton {
     GetViewAccessibility().SetName(text.empty() ? u"Action" : text);
   }
 
+  // Which end of the favourites run this row is, as for the tab rows.
+  void SetSegmentPosition(bool first, bool last) {
+    first_in_run_ = first;
+    last_in_run_ = last;
+    SchedulePaint();
+  }
+
   // views::LabelButton:
   void StateChanged(views::Button::ButtonState old_state) override {
     views::LabelButton::StateChanged(old_state);
-    const bool hovered = GetState() == views::Button::STATE_HOVERED ||
-                         GetState() == views::Button::STATE_PRESSED;
-    // Same shape and the same state layer as the tab rows beside it. A hover
-    // at a different radius in the same column is what made the panel read as
-    // two lists rather than one.
-    SetBackground(hovered ? views::CreateRoundedRectBackground(
-                                zephyrus::m3::StateLayer(
-                                    foreground_,
-                                    GetState() == views::Button::STATE_PRESSED
-                                        ? zephyrus::m3::kPressed
-                                        : zephyrus::m3::kHover),
-                                kRowCornerRadius)
-                          : nullptr);
+    SchedulePaint();
+  }
+
+  // A filled segment in every state, like the tab rows below it: two lists in
+  // one column must not use two different shapes.
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    const SkColor container =
+        zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
+    SkColor fill = container;
+    if (GetState() == views::Button::STATE_PRESSED) {
+      fill = zephyrus::m3::WithStateLayer(container, foreground_,
+                                          zephyrus::m3::kPressed);
+    } else if (GetState() == views::Button::STATE_HOVERED) {
+      fill = zephyrus::m3::WithStateLayer(container, foreground_,
+                                          zephyrus::m3::kHover);
+    }
+    PaintSegment(canvas, GetLocalBounds(), fill, first_in_run_, last_in_run_);
   }
 
   gfx::Size CalculatePreferredSize(
@@ -234,9 +529,82 @@ class ZephyrusActionRow : public views::LabelButton {
  private:
   const SkColor foreground_;
   const raw_ref<const gfx::VectorIcon> icon_;
+  bool first_in_run_ = true;
+  bool last_in_run_ = true;
 };
 
 BEGIN_METADATA(ZephyrusActionRow)
+END_METADATA
+
+// The foot of the panel: one filled M3 button, where the version label used
+// to sit.
+//
+// The panel offers exactly one action, and a sidebar whose only fixed element
+// was a version string spent its bottom edge on something nobody acts on. The
+// version is still on chrome://settings/help.
+//
+// Tonal rather than a full primary fill: the active tab is the loudest thing
+// in this column and has to stay that way.
+class ZephyrusNewTabButton : public views::LabelButton {
+  METADATA_HEADER(ZephyrusNewTabButton, views::LabelButton)
+
+ public:
+  explicit ZephyrusNewTabButton(PressedCallback callback)
+      : views::LabelButton(std::move(callback), u"New tab") {
+    SetHorizontalAlignment(gfx::ALIGN_CENTER);
+    SetImageLabelSpacing(8);
+    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 16)));
+    label()->SetSubpixelRenderingEnabled(false);
+    label()->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelMedium,
+                                            /*emphasized=*/true));
+    GetViewAccessibility().SetName(u"New tab");
+    SetTooltipText(u"New tab");
+  }
+
+  // views::LabelButton:
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(0, 40);
+  }
+
+  void OnThemeChanged() override {
+    views::LabelButton::OnThemeChanged();
+    const SkColor ink = zephyrus::m3::Role(*this, kColorZephyrusPrimary);
+    for (auto state : {views::Button::STATE_NORMAL,
+                       views::Button::STATE_HOVERED,
+                       views::Button::STATE_PRESSED}) {
+      SetTextColor(state, ink);
+    }
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromVectorIcon(vector_icons::kAdd2Icon, ink,
+                                                 20));
+    SchedulePaint();
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    // A NEUTRAL container with brand-coloured ink, not a brand-filled slab.
+    // Filled with primary-container it was the loudest thing in the panel --
+    // louder than the active tab, which is the one row that has to win.
+    const SkColor container =
+        zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
+    const SkColor ink = zephyrus::m3::Role(*this, kColorZephyrusPrimary);
+    SkColor fill = container;
+    if (GetState() == views::Button::STATE_PRESSED) {
+      fill = zephyrus::m3::WithStateLayer(container, ink,
+                                          zephyrus::m3::kPressed);
+    } else if (GetState() == views::Button::STATE_HOVERED) {
+      fill = zephyrus::m3::WithStateLayer(container, ink, zephyrus::m3::kHover);
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kFill_Style);
+    flags.setColor(fill);
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kSegmentEndRadius,
+                          flags);
+  }
+};
+
+BEGIN_METADATA(ZephyrusNewTabButton)
 END_METADATA
 
 // Small quiet section caption ("Favorites", "Tabs", ...).
@@ -251,19 +619,72 @@ END_METADATA
 // The outlined pill chips this replaces were correct for the previous
 // language. Here they would be twelve extra rounded rectangles stacked down a
 // narrow rail, competing with the rows they are supposed to be labelling.
-std::unique_ptr<views::View> MakeSectionHeader(const std::u16string& text,
-                                               SkColor foreground) {
-  auto header = std::make_unique<views::Label>(base::i18n::ToUpper(text));
-  header->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  header->SetEnabledColor(SkColorSetA(foreground, 0x8C));
-  header->SetAutoColorReadabilityEnabled(false);
-  header->SetSubpixelRenderingEnabled(false);
-  // label-small. These are the uppercase section headings ("Favorites"), which
-  // is exactly the utilitarian role M3 sizes label-small for.
-  header->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
-  header->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(14, 12, 5, 12)));
-  return header;
-}
+// An M3 list subheader.
+//
+// Was an ALL-CAPS label-small in 55% ink -- the Nothing OS section marker,
+// which the overhaul retired. M3 labels a list group with title-small in the
+// PRIMARY colour, in sentence case: the colour is what separates a heading
+// from a row, so the type does not have to shout it.
+//
+// The count on the trailing edge answers "how many tabs do I have open" from
+// the panel itself, which previously meant counting rows.
+//
+// A view rather than a bare label because it reads its own roles in
+// OnThemeChanged. The Favorites heading is built once in the constructor and
+// never rebuilt, so a colour captured at construction stayed stale through
+// every later theme change.
+class ZephyrusSectionHeader : public views::View {
+  METADATA_HEADER(ZephyrusSectionHeader, views::View)
+
+ public:
+  explicit ZephyrusSectionHeader(const std::u16string& text) {
+    SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal,
+        gfx::Insets::TLBR(18, 12, 6, 12), 8));
+    label_ = AddChildView(std::make_unique<views::Label>(text));
+    label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    label_->SetElideBehavior(gfx::ELIDE_TAIL);
+    label_->SetAutoColorReadabilityEnabled(false);
+    label_->SetSubpixelRenderingEnabled(false);
+    label_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kTitleSmall));
+
+    count_ = AddChildView(std::make_unique<views::Label>());
+    count_->SetAutoColorReadabilityEnabled(false);
+    count_->SetSubpixelRenderingEnabled(false);
+    count_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelMedium));
+    count_->SetVisible(false);
+    static_cast<views::BoxLayout*>(GetLayoutManager())
+        ->SetFlexForView(label_, 1);
+  }
+
+  void SetCount(size_t count) {
+    count_->SetText(base::NumberToString16(count));
+    count_->SetVisible(true);
+  }
+
+  // Adopts a control onto the heading's trailing edge -- the new-tab button,
+  // beside the count of what it adds to.
+  void SetTrailingView(views::View* view) {
+    AddChildView(view);
+  }
+
+  // views::View:
+  void OnThemeChanged() override {
+    views::View::OnThemeChanged();
+    label_->SetEnabledColor(
+        zephyrus::m3::Role(*this, kColorZephyrusPrimary));
+    count_->SetEnabledColor(
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant));
+  }
+
+ private:
+  raw_ptr<views::Label> label_ = nullptr;
+  raw_ptr<views::Label> count_ = nullptr;
+};
+
+BEGIN_METADATA(ZephyrusSectionHeader)
+END_METADATA
+
 
 // The tab's close button.
 //
@@ -345,8 +766,12 @@ class ZephyrusTabRow : public views::Button {
         model_index_(model_index),
         colors_(colors) {
     const std::u16string accessible_title = title.empty() ? u"Tab" : title;
+    full_title_ = accessible_title;
     GetViewAccessibility().SetName(accessible_title);
-    SetTooltipText(accessible_title);
+    // The tooltip is set in Layout(), and only when the title is actually cut
+    // off. Every row used to carry one, so pointing at a row whose title was
+    // fully readable still popped a box repeating it over the row below.
+    InvalidateLayout();
 
     // Stay "hovered" while the cursor is over the child close button; otherwise
     // showing the close button under the cursor makes the row flip-flop between
@@ -356,13 +781,25 @@ class ZephyrusTabRow : public views::Button {
     // Wider horizontal padding so content sits comfortably inside the pill.
     SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kHorizontal,
-        gfx::Insets::VH(0, 12), 8));
+        gfx::Insets::VH(0, 12), 10));
 
     favicon_view_ = AddChildView(std::make_unique<views::ImageView>());
     favicon_view_->SetImageSize(gfx::Size(kFaviconSize, kFaviconSize));
     SetFaviconImage(favicon);
 
     title_label_ = AddChildView(std::make_unique<views::Label>(title));
+    // The ACTIVE row says so in its type as well as its container: M3 sets a
+    // selected navigation item in the emphasized weight. The fill alone did
+    // the whole job before, which left the difference between "this tab" and
+    // "the tab under the cursor" resting on a tone step -- the thing that
+    // collapses first on the dark scheme.
+    // body-small, not body-medium. At 14px the titles filled the row edge to
+    // edge and the list read as a wall of text; the segments need air inside
+    // them more than the titles need size.
+    title_label_->SetFontList(zephyrus::m3::Font(
+        is_active_ ? zephyrus::m3::Type::kLabelMedium
+                   : zephyrus::m3::Type::kBodySmall,
+        /*emphasized=*/is_active_));
     title_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     title_label_->SetElideBehavior(gfx::ELIDE_TAIL);
     title_label_->SetEnabledColor(colors_.foreground);
@@ -427,6 +864,27 @@ class ZephyrusTabRow : public views::Button {
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override {
     return gfx::Size(0, kRowHeight);
+  }
+
+  // Which end of its run this row sits at, so the group rounds only on the
+  // outside. Set by the sidebar after the list is built -- a row cannot know
+  // it, because headers and split cards break the runs.
+  void SetSegmentPosition(bool first, bool last) {
+    if (first == first_in_run_ && last == last_in_run_) {
+      return;
+    }
+    first_in_run_ = first;
+    last_in_run_ = last;
+    SchedulePaint();
+  }
+
+  void Layout(PassKey key) override {
+    LayoutSuperclass<views::Button>(this);
+    // Elision is only known once the label has been given its width, which
+    // has just happened.
+    SetTooltipText(title_label_ && title_label_->IsDisplayTextTruncated()
+                       ? full_title_
+                       : std::u16string());
   }
 
   int model_index() const { return model_index_; }
@@ -637,8 +1095,12 @@ class ZephyrusTabRow : public views::Button {
     SetFaviconImage(favicon);
     title_label_->SetText(title);
     const std::u16string accessible_title = title.empty() ? u"Tab" : title;
+    full_title_ = accessible_title;
     GetViewAccessibility().SetName(accessible_title);
-    SetTooltipText(accessible_title);
+    // The tooltip is set in Layout(), and only when the title is actually cut
+    // off. Every row used to carry one, so pointing at a row whose title was
+    // fully readable still popped a box repeating it over the row below.
+    InvalidateLayout();
     if (is_active_ != is_active) {
       is_active_ = is_active;
       UpdateBackground();
@@ -706,18 +1168,24 @@ class ZephyrusTabRow : public views::Button {
   // still has to take its ink from colors_.active_fg, because the row's ground
   // is no longer the panel's.
   void OnPaintBackground(gfx::Canvas* canvas) override {
-    const bool hovered = GetState() == views::Button::STATE_HOVERED ||
-                         GetState() == views::Button::STATE_PRESSED;
-    if (!is_active_ && !hovered) {
-      return;
+    // Hover and press are DIFFERENT states in M3 -- 8% and 10% layers -- and
+    // painting one fill for both meant pressing a row acknowledged nothing.
+    // The active row gets its press layer over its own container, because its
+    // ground is the container and not the panel.
+    const views::Button::ButtonState state = GetState();
+    const bool pressed = state == views::Button::STATE_PRESSED;
+    const bool hovered = state == views::Button::STATE_HOVERED;
+    SkColor fill;
+    if (is_active_) {
+      fill = pressed ? colors_.active_pressed_bg : colors_.active_bg;
+    } else if (pressed) {
+      fill = colors_.pressed_bg;
+    } else if (hovered) {
+      fill = colors_.hover_bg;
+    } else {
+      fill = colors_.idle_bg;
     }
-
-    gfx::RectF body(GetLocalBounds());
-    cc::PaintFlags fill;
-    fill.setAntiAlias(true);
-    fill.setStyle(cc::PaintFlags::kFill_Style);
-    fill.setColor(is_active_ ? colors_.active_bg : colors_.hover_bg);
-    canvas->DrawRoundRect(body, kRowCornerRadius, fill);
+    PaintSegment(canvas, GetLocalBounds(), fill, first_in_run_, last_in_run_);
   }
 
   void UpdateBackground() {
@@ -743,6 +1211,9 @@ class ZephyrusTabRow : public views::Button {
 
   bool is_active_;
   int model_index_;
+  std::u16string full_title_;
+  bool first_in_run_ = true;
+  bool last_in_run_ = true;
   int press_y_ = 0;
   gfx::Point press_point_;
   bool dragging_ = false;
@@ -1015,13 +1486,45 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   // navigation rather than providing it, at the cost of the top third of the
   // panel on every window.
   //
-  // `fg_ink` stays: the sections below it still need the row ink.
-  const SkColor fg_ink = GetForegroundColor();
+  // Nothing here needs the row ink any more either: section headers read
+  // their own roles (see ZephyrusSectionHeader), and the favourite rows take
+  // theirs in RebuildFavorites.
+
+  // ---- Compact-mode chrome --------------------------------------------------
+  // First child, so the address bar sits where the title bar used to be: at
+  // the top of the window. Built on demand -- see RebuildCompactChrome().
+  compact_chrome_ = AddChildView(std::make_unique<views::View>());
+  compact_chrome_->SetLayoutManager(std::make_unique<views::BoxLayout>(
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 6));
+  compact_chrome_->SetVisible(false);
+  // Controls first, omnibox under them: the buttons are what the hand goes
+  // for, and putting the address bar on top pushed them into the middle of
+  // the panel where they read as a loose scatter of glyphs.
+  // ONE run, not the bar's two.
+  //
+  // The bar splits navigation from the page actions because a centred omnibox
+  // sits between them and they would otherwise read as one long bar. Stacked
+  // in a 180dp panel there is no omnibox between them, and two runs of three
+  // read as two unrelated controls -- plus they cost a second row of height in
+  // the narrowest place in the browser. Six cells across one run is the same
+  // information in half the space.
+  compact_controls_row_ =
+      compact_chrome_->AddChildView(std::make_unique<ZephyrusControlRow>());
+  compact_address_row_ =
+      compact_chrome_->AddChildView(std::make_unique<views::View>());
+  compact_address_row_->SetLayoutManager(
+      std::make_unique<views::FillLayout>());
+  compact_address_row_->SetVisible(false);
+  // Parking space for the bar's controls that are currently hidden.
+  compact_hidden_ =
+      compact_chrome_->AddChildView(std::make_unique<views::View>());
+  compact_hidden_->SetVisible(false);
 
   // ---- Favorites (bookmark bar entries) -------------------------------------
   // Kept so the heading can be hidden when there are no bookmarks, rather than
   // labelling an empty space.
-  favorites_header_ = AddChildView(MakeSectionHeader(u"Favorites", fg_ink));
+  favorites_header_ =
+      AddChildView(std::make_unique<ZephyrusSectionHeader>(u"Favorites"));
   favorites_container_ = AddChildView(std::make_unique<views::View>());
   favorites_container_->SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical, gfx::Insets(), kRowSpacing));
@@ -1079,21 +1582,32 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   // to the very bottom of the panel.
   box_layout->SetFlexForView(tab_scroll, 1);
 
-  // Zephyrus product version, quiet at the foot of the sidebar.
-  auto* version = AddChildView(std::make_unique<views::Label>(
-      u"Zephyrus " + std::u16string(zephyrus::kVersion)));
-  version->SetHorizontalAlignment(gfx::ALIGN_CENTER);
-  version->SetAutoColorReadabilityEnabled(false);
-  version->SetSubpixelRenderingEnabled(false);
-  // on-surface-variant, not a hand-rolled 40% of the ink.
+
+  // The foot bar, while the title bar is hidden: downloads on the left, the
+  // workspace switcher taking the middle, and add-workspace on the right.
   //
-  // 0x66 of the foreground is M3's DISABLED strength territory, and this label
-  // is not disabled -- it is secondary. At 12px on a light surface it fell
-  // below readable contrast, which is what made it look broken rather than
-  // quiet. M3 has a role for exactly this and it stays legible on both themes.
-  version->SetEnabledColor(zephyrus::Muted());
-  version->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
-  version->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(6, 0, 2, 0)));
+  // The add button lives HERE rather than inside the switcher: the switcher
+  // is as wide as its workspaces, and when it ran out of room the bar simply
+  // cut off whatever came last -- which was that button. Out here it cannot
+  // be cut off, and the switcher shrinks instead (ToolbarView::
+  // SetZephyrusWorkspaceStripCompact).
+  compact_workspaces_ = AddChildView(std::make_unique<views::View>());
+  auto* foot_layout = compact_workspaces_->SetLayoutManager(
+      std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kHorizontal,
+          gfx::Insets::TLBR(8, 4, 0, 4), 4));
+  foot_layout->set_cross_axis_alignment(
+      views::BoxLayout::CrossAxisAlignment::kCenter);
+  // Downloads opens the real downloads bubble -- the same popup the toolbar's
+  // own button opens, through the controller that owns it. The button itself
+  // cannot be borrowed: it lives inside the pinned-actions container, which
+  // stays on the bar with the rest of the user's controls.
+  downloads_button_ = compact_workspaces_->AddChildView(
+      std::make_unique<ZephyrusFootIconButton>(
+          base::BindRepeating(&ZephyrusSidebarView::ShowDownloads,
+                              base::Unretained(this)),
+          kDownloadToolbarButtonChromeRefreshOldIcon, u"Downloads"));
+  compact_workspaces_->SetVisible(false);
 
   // Start tucked off-screen and transparent to events so it doesn't intercept
   // input over the web contents until revealed.
@@ -1220,7 +1734,13 @@ void ZephyrusSidebarView::TuckAway() {
   // never ends: no release, no drop, and the drop indicator left on screen with
   // nothing to take it down. Mouse capture cannot rescue that, because the
   // subtree has been switched off underneath it.
-  if (!revealed_ || pinned_ || resizing_ || dragging_row_) {
+  // reveal_holds_ is the same kind of guard as dragging_row_ above: a popup
+  // anchored into the panel (the downloads bubble) is positioned from its
+  // anchor view, so sliding the panel out drags the popup off the screen edge
+  // with it. That is what made the downloads button look like it opened
+  // nothing -- the bubble was created, shown, and carried away.
+  if (!revealed_ || pinned_ || resizing_ || dragging_row_ ||
+      reveal_holds_ > 0) {
     return;
   }
   revealed_ = false;
@@ -1373,11 +1893,206 @@ void ZephyrusSidebarView::RebuildFavorites() {
         node->GetTitle(), vector_icons::kGlobeIcon, fg_ink));
     ++added;
   }
+  const auto& fav_rows = favorites_container_->children();
+  for (size_t i = 0; i < fav_rows.size(); ++i) {
+    if (auto* fav = views::AsViewClass<ZephyrusActionRow>(fav_rows[i])) {
+      fav->SetSegmentPosition(i == 0, i + 1 == fav_rows.size());
+    }
+  }
+
   // Don't leave a "Favorites" heading standing over an empty space when the
   // user has no bookmarks.
   if (favorites_header_) {
     favorites_header_->SetVisible(added > 0);
+    // The member is typed as a plain View because the class lives in this
+    // file's anonymous namespace and the header cannot name it.
+    views::AsViewClass<ZephyrusSectionHeader>(favorites_header_)
+        ->SetCount(added);
   }
+}
+
+// Moves the borrowed new-tab button out of the tab list, if that is where it
+// currently lives. Safe to call at any time.
+void ZephyrusSidebarView::ParkBorrowedNewTabButton() {
+  if (!browser_view_ || !compact_hidden_) {
+    return;
+  }
+  ToolbarView* toolbar = browser_view_->toolbar();
+  if (!toolbar || !toolbar->IsZephyrusCompact()) {
+    return;
+  }
+  views::View* new_tab = toolbar->zephyrus_new_tab_button();
+  if (!new_tab || !new_tab->parent() || new_tab->parent() == compact_hidden_) {
+    return;
+  }
+  if (tab_list_container_ && tab_list_container_->Contains(new_tab)) {
+    compact_hidden_->AddChildView(new_tab);
+  }
+}
+
+// The panel's own add-workspace button: created once, and always the last
+// thing in the foot bar so nothing can push it off the end.
+void ZephyrusSidebarView::ShowDownloads(const ui::Event& event) {
+  Browser* browser = browser_view_ ? browser_view_->browser() : nullptr;
+  if (!browser) {
+    return;
+  }
+  if (auto* downloads = DownloadToolbarUIController::From(browser)) {
+    // BOTTOM_CENTER: the button is at the foot of the panel, so the popup
+    // grows upward over the tab list instead of off the bottom of the window.
+    if (views::Widget* popup = downloads->ZephyrusShowDetailsAnchoredTo(
+            downloads_button_, views::BubbleBorder::BOTTOM_CENTER)) {
+      ++reveal_holds_;
+      popup->widget_delegate()->RegisterWindowClosingCallback(
+          base::BindOnce(&ZephyrusSidebarView::ReleaseRevealHold,
+                         weak_factory_.GetWeakPtr()));
+      return;
+    }
+  }
+  // Nothing recent to show. This button is always on the panel, unlike the
+  // toolbar's, so it always has to do something: a control that answers a
+  // click with silence reads as broken, which is exactly how the bubble's own
+  // "no anchor, no downloads, return" path felt here.
+  chrome::ShowDownloads(browser);
+}
+
+void ZephyrusSidebarView::ReleaseRevealHold() {
+  if (reveal_holds_ > 0) {
+    --reveal_holds_;
+  }
+  // The cursor has usually left the panel by the time a popup is dismissed,
+  // and the mouse watcher does not fire again for a cursor that is already
+  // outside -- so without this the panel would stay out until the user
+  // happened to re-enter and leave it.
+  TuckAwayIfCursorLeft();
+}
+
+void ZephyrusSidebarView::EnsureAddWorkspaceButton() {
+  if (add_workspace_button_ || !compact_workspaces_ || !browser_view_) {
+    return;
+  }
+  add_workspace_button_ = compact_workspaces_->AddChildView(
+      std::make_unique<ZephyrusFootIconButton>(
+          base::BindRepeating(
+              [](ZephyrusSidebarView* self, const ui::Event&) {
+                if (ZephyrusWorkspaceManager* manager =
+                        self->browser_view_->zephyrus_workspace_manager()) {
+                  manager->AddWorkspace();
+                }
+              },
+              base::Unretained(this)),
+          vector_icons::kAdd2Icon, u"New workspace"));
+}
+
+bool ZephyrusSidebarView::IsCompactMode() const {
+  return browser_view_ && !browser_view_->IsZephyrusTitlebarPinned();
+}
+
+void ZephyrusSidebarView::OnCompactModeChanged() {
+  // RebuildTabList() rebuilds the chrome block as its last step, and the list
+  // itself changes shape here: pinned tabs become the essentials grid, so
+  // their rows have to go.
+  RebuildTabList();
+  InvalidateLayout();
+}
+
+// Borrows the title bar's controls while it is hidden, and hands them back
+// when it returns.
+//
+// They are MOVED, not re-made: the same back button, the same omnibox, the
+// same three-dot menu, with their own look and their own behaviour. Nothing
+// here changes what a control IS -- only where it sits.
+//
+// The three containers are permanent and are never emptied with
+// RemoveAllChildViews: that DELETES children, and these children belong to the
+// toolbar -- destroying them left the toolbar holding dangling pointers and
+// took the browser down on the next layout. Placement only ever moves a view
+// from one container to another, which reparents without destroying.
+//
+// Placement is redone on every call because which controls are on the bar is
+// not fixed: most of them (home, extensions, the avatar, the battery saver)
+// are hidden most of the time, and a hidden control must not hold a space in
+// the panel. Hidden ones go to a zero-size holder so they still have a parent
+// to be reclaimed from.
+void ZephyrusSidebarView::RebuildCompactChrome() {
+  if (!compact_chrome_ || !browser_view_) {
+    return;
+  }
+  ToolbarView* toolbar = browser_view_->toolbar();
+  const bool compact = IsCompactMode();
+  compact_chrome_->SetVisible(compact);
+  if (!toolbar) {
+    return;
+  }
+
+  if (compact_workspaces_) {
+    compact_workspaces_->SetVisible(compact);
+  }
+  if (!compact) {
+    if (toolbar->IsZephyrusCompact()) {
+      // Reclaim takes each view back by pointer, whatever it is parented to
+      // now.
+      toolbar->ReclaimZephyrusChrome();
+      toolbar->SetZephyrusWorkspaceStripCompact(false);
+    }
+    return;
+  }
+  if (!toolbar->IsZephyrusCompact()) {
+    toolbar->LendZephyrusChromeTo(compact_chrome_);
+    toolbar->SetZephyrusWorkspaceStripCompact(true);
+  }
+  EnsureAddWorkspaceButton();
+  if (!compact_address_row_ || !compact_controls_row_ || !compact_hidden_ ||
+      !compact_workspaces_) {
+    return;
+  }
+
+  views::View* location_bar = toolbar->location_bar_view();
+  views::View* workspaces = toolbar->zephyrus_workspace_strip();
+  views::View* new_tab = toolbar->zephyrus_new_tab_button();
+  bool address_visible = false;
+  bool workspaces_visible = false;
+  bool controls_visible = false;
+  for (views::View* view : toolbar->ZephyrusLentViews()) {
+    if (view == location_bar) {
+      compact_address_row_->AddChildView(view);
+      address_visible = view->GetVisible();
+    } else if (view == workspaces) {
+      // The workspace switcher goes to the FOOT of the panel, away from the
+      // page controls: switching workspace is not the same kind of act as
+      // going back or reloading. It carries its own "new workspace" button at
+      // its trailing edge.
+      // Straight after downloads, taking whatever width is left.
+      compact_workspaces_->AddChildViewAt(view, 1);
+      static_cast<views::BoxLayout*>(compact_workspaces_->GetLayoutManager())
+          ->SetFlexForView(view, 1);
+      workspaces_visible = view->GetVisible();
+    } else if (view == new_tab) {
+      // New tab belongs to the tab list, beside its count -- not with the
+      // page controls, which act on the page you are already on.
+      auto* tabs_header =
+          views::AsViewClass<ZephyrusSectionHeader>(tabs_header_);
+      if (tabs_header && view->GetVisible()) {
+        tabs_header->SetTrailingView(view);
+      } else {
+        compact_hidden_->AddChildView(view);
+      }
+    } else if (!view->GetVisible() ||
+               view->GetPreferredSize().IsEmpty()) {
+      // Zero-width children (the toolbar divider, an empty container) are not
+      // controls; giving them a cell each is what put blank cells in the run.
+      compact_hidden_->AddChildView(view);
+    } else {
+      // In the bar's own left-to-right order: back, forward, reload, then the
+      // page actions. Nothing reorders them, so the strip in the panel is the
+      // strip the user already knows from the title bar.
+      compact_controls_row_->AddChildView(view);
+      controls_visible = true;
+    }
+  }
+  compact_address_row_->SetVisible(address_visible);
+  compact_workspaces_->SetVisible(workspaces_visible);
+  compact_controls_row_->SetVisible(controls_visible);
 }
 
 void ZephyrusSidebarView::ScheduleRebuildTabList() {
@@ -1804,6 +2519,13 @@ void ZephyrusSidebarView::CancelRowDrag() {
 }
 
 void ZephyrusSidebarView::RebuildTabList() {
+  // The tab list is about to be cleared, and clearing DELETES children. The
+  // new-tab button in the heading belongs to the toolbar, so it goes back to
+  // the parking view first; RebuildCompactChrome() re-adopts it at the end of
+  // this function.
+  ParkBorrowedNewTabButton();
+  tabs_header_ = nullptr;
+
   if (!tab_list_container_) {
     return;
   }
@@ -1839,11 +2561,24 @@ void ZephyrusSidebarView::RebuildTabList() {
   // marker were the same statement made twice.
   const ZephyrusRowColors row_colors{
       .foreground = fg,
+      // One step ABOVE the panel, which already paints surface-container:
+      // a segment filled with its own background is an invisible segment
+      // (measured -- rows and panel came out at exactly 31,32,32).
+      .idle_bg = zephyrus::m3::Role(*this,
+                                    kColorZephyrusSurfaceContainerHigh),
       .active_bg = zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
       .hover_bg = zephyrus::m3::WithStateLayer(
-          zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainer),
+          zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh),
           zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
           zephyrus::m3::kHover),
+      .pressed_bg = zephyrus::m3::WithStateLayer(
+          zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh),
+          zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+          zephyrus::m3::kPressed),
+      .active_pressed_bg = zephyrus::m3::WithStateLayer(
+          zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
+          zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer),
+          zephyrus::m3::kPressed),
       .active_fg =
           zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer),
   };
@@ -1948,10 +2683,13 @@ void ZephyrusSidebarView::RebuildTabList() {
     }
   }
 
-  const SkColor header_ink = GetForegroundColor();
-  if (!pinned.empty()) {
-    tab_list_container_->AddChildView(
-        MakeSectionHeader(u"Pinned tabs", header_ink));
+  // In compact mode the pinned tabs are the essentials grid at the top of the
+  // panel (RebuildCompactChrome), so listing them here as well would show
+  // every pinned tab twice.
+  if (!pinned.empty() && !IsCompactMode()) {
+    tab_list_container_
+        ->AddChildView(std::make_unique<ZephyrusSectionHeader>(u"Pinned tabs"))
+        ->SetCount(pinned.size());
     for (int index : pinned) {
       if (consumed.count(index)) {
         continue;
@@ -1962,7 +2700,18 @@ void ZephyrusSidebarView::RebuildTabList() {
     }
   }
   if (!unpinned.empty()) {
-    tab_list_container_->AddChildView(MakeSectionHeader(u"Tabs", header_ink));
+    // In compact mode the heading names the WORKSPACE whose tabs these are --
+    // the title bar's workspace chip is at the foot now, and a list headed
+    // "Tabs" above a switcher reads as though the two are unrelated.
+    std::u16string heading = u"Tabs";
+    if (IsCompactMode() && workspace_manager &&
+        !workspace_manager->current_workspace_name().empty()) {
+      heading = workspace_manager->current_workspace_name();
+    }
+    auto* tabs_header = tab_list_container_->AddChildView(
+        std::make_unique<ZephyrusSectionHeader>(heading));
+    tabs_header->SetCount(unpinned.size());
+    tabs_header_ = tabs_header;
     for (int index : unpinned) {
       if (consumed.count(index)) {
         continue;
@@ -1971,6 +2720,51 @@ void ZephyrusSidebarView::RebuildTabList() {
         add_row(index);
       }
     }
+  }
+
+  AssignSegmentPositions(tab_list_container_);
+
+  // The New tab button is part of the LIST, not the panel: it sits directly
+  // under the last tab and scrolls with it, rather than anchoring the bottom
+  // edge of the sidebar where the workspace bar now lives.
+  tab_list_container_->AddChildView(
+      std::make_unique<ZephyrusNewTabButton>(base::BindRepeating(
+          [](ZephyrusSidebarView* self, const ui::Event&) {
+            // kNewTabButton: this IS the new-tab button in Zephyrus -- the
+            // horizontal strip that would otherwise carry one is hidden.
+            chrome::NewTab(self->browser_view_->browser(),
+                           NewTabTypes::kNewTabButton);
+          },
+          base::Unretained(this))));
+
+  // Same beats, same data: whatever moved the tab list (a switch, a
+  // navigation, a workspace change) also moved the address, the back/forward
+  // states and the pinned set.
+  RebuildCompactChrome();
+}
+
+// Rounds the outside of each RUN of rows and nothing in between.
+//
+// A run ends at anything that is not a plain row -- a section header, or a
+// split card, which is its own object with its own corners. Done here rather
+// than in the rows because a row cannot see its neighbours, and the same walk
+// serves the favourites list.
+// static
+void ZephyrusSidebarView::AssignSegmentPositions(views::View* container) {
+  if (!container) {
+    return;
+  }
+  const auto& children = container->children();
+  for (size_t i = 0; i < children.size(); ++i) {
+    auto* row = views::AsViewClass<ZephyrusTabRow>(children[i]);
+    if (!row) {
+      continue;
+    }
+    const bool first =
+        i == 0 || !views::AsViewClass<ZephyrusTabRow>(children[i - 1]);
+    const bool last = i + 1 == children.size() ||
+                      !views::AsViewClass<ZephyrusTabRow>(children[i + 1]);
+    row->SetSegmentPosition(first, last);
   }
 }
 

@@ -64,7 +64,6 @@ constexpr int kZephyrusCardRadius = zephyrus::kRadiusPopup;
 constexpr int kZephyrusCardGap = 0;
 // (The card's side inset is computed by GetZephyrusCardInset() so the card
 // lands flush with the search bar; the hero row overhangs it.)
-constexpr int kZephyrusCardPadding = 6;  // card's inner vertical padding
 
 #if !defined(USE_AURA)
 
@@ -542,8 +541,8 @@ gfx::Insets RoundedOmniboxResultsFrame::GetContentInsets() {
   // hidden — the detached card starts below the bar), plus the gap and the
   // card's own vertical padding.
   return gfx::Insets::TLBR(GetNonResultSectionHeight(true) + kZephyrusCardGap +
-                               kZephyrusCardPadding,
-                           0, kZephyrusCardPadding, 0);
+                               RoundedOmniboxResultsFrame::kZephyrusCardPadding,
+                           0, RoundedOmniboxResultsFrame::kZephyrusCardPadding, 0);
 }
 
 BEGIN_METADATA(RoundedOmniboxResultsFrame)

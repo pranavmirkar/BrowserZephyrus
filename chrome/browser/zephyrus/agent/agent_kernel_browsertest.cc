@@ -13,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "base/process/process.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/test/bind.h"
@@ -20,6 +21,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
+#include "ui/views/controls/scroll_view.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_task_controller.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_tool_surface.h"
@@ -760,6 +762,54 @@ IN_PROC_BROWSER_TEST_F(ZephyrusAgentPanelBrowserTest, AnswersAQuestionInPlace) {
 // lines were missing. Both shipped. A line with zero size, or one laid out
 // beyond the panel's own bounds, is invisible however correct the code above it
 // is, and nothing but a person looking at the window was catching it.
+// A new line must not move a reader who scrolled back, and must follow one
+// who is at the end.
+//
+// The panel used to call ScrollViewToVisible() on each new line before layout
+// had given it bounds. A view still at (0,0) scrolled into view is the TOP of
+// the log, so every step the agent took threw the reader back to the start --
+// whether they had scrolled away or not.
+IN_PROC_BROWSER_TEST_F(ZephyrusAgentPanelBrowserTest,
+                       NewLinesRespectWhereTheReaderIs) {
+  ASSERT_TRUE(panel());
+  panel()->Open();
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+
+  // Enough lines that the log scrolls.
+  for (int i = 0; i < 60; ++i) {
+    panel()->OnAgentProgress("Step " + base::NumberToString(i));
+  }
+  browser_view->DeprecatedLayoutImmediately();
+  views::ScrollView* scroll = panel()->log_scroll_for_testing();
+  ASSERT_GT(panel()->log_for_testing()->height(),
+            scroll->GetVisibleRect().height())
+      << "the log never got long enough to scroll; this test would prove "
+         "nothing";
+
+  // At the end: a new line is followed, and there is nothing to jump to.
+  EXPECT_FALSE(panel()->IsJumpToLatestVisibleForTesting());
+  panel()->OnAgentProgress("Followed");
+  EXPECT_GE(scroll->GetVisibleRect().bottom(),
+            panel()->log_for_testing()->height() - 24)
+      << "a reader at the end was left behind by a new line";
+
+  // Scrolled back to the top to read: a new line leaves them where they are,
+  // and offers the way back.
+  scroll->ScrollToOffset(gfx::PointF(0, 0));
+  ASSERT_EQ(scroll->GetVisibleRect().y(), 0);
+  panel()->OnAgentProgress("Arrived while reading");
+  browser_view->DeprecatedLayoutImmediately();
+  EXPECT_EQ(scroll->GetVisibleRect().y(), 0)
+      << "a new line moved a reader who had scrolled away";
+  EXPECT_TRUE(panel()->IsJumpToLatestVisibleForTesting());
+
+  // The button takes them to the end and goes away.
+  panel()->JumpToLatestForTesting();
+  EXPECT_GE(scroll->GetVisibleRect().bottom(),
+            panel()->log_for_testing()->height() - 24);
+  EXPECT_FALSE(panel()->IsJumpToLatestVisibleForTesting());
+}
+
 IN_PROC_BROWSER_TEST_F(ZephyrusAgentPanelBrowserTest, LogLinesAreActuallyVisible) {
   ASSERT_TRUE(panel());
   panel()->Open();

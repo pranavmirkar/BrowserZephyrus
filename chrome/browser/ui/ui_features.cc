@@ -66,7 +66,16 @@ BASE_FEATURE_PARAM(bool,
                    true);
 BASE_FEATURE(kMenuSimplification, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kTabGroupColorRefresh, base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kWebuiRefresh2026, base::FEATURE_DISABLED_BY_DEFAULT);
+// Zephyrus: ENABLED. This is the switch that makes chrome://settings,
+// history, downloads, bookmarks, extensions and the password manager load
+// chrome://theme/colors.css at all. Without it they render from the hardcoded
+// --cr-fallback-color-* values in cr_shared_vars.css, which are Google's
+// BASELINE blue scheme -- so a Pomegranate browser drew blue toggles, focus
+// rings and buttons on every settings page, MEASURED as #a8c7fa / #062e6f. With
+// it they read the same ColorProvider the native UI does, and follow theme
+// changes live through ColorChangeUpdater. The only colour it moves outside
+// those pages is kColorToolbarSearchFieldBackground, their own search field.
+BASE_FEATURE(kWebuiRefresh2026, base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kAppMenuGlowUp, base::FEATURE_DISABLED_BY_DEFAULT);
 
 bool IsTabStripDeclutterEnabled() {

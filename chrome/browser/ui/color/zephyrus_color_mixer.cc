@@ -9,6 +9,64 @@
 #include "ui/color/color_recipe.h"
 #include "ui/color/color_transform.h"
 
+std::string ZephyrusColorIdCssName(ui::ColorId id) {
+  switch (id) {
+    case kColorZephyrusPrimary: return "--color-zephyrus-primary";
+    case kColorZephyrusOnPrimary: return "--color-zephyrus-on-primary";
+    case kColorZephyrusPrimaryContainer:
+      return "--color-zephyrus-primary-container";
+    case kColorZephyrusOnPrimaryContainer:
+      return "--color-zephyrus-on-primary-container";
+    case kColorZephyrusSecondary: return "--color-zephyrus-secondary";
+    case kColorZephyrusOnSecondary: return "--color-zephyrus-on-secondary";
+    case kColorZephyrusSecondaryContainer:
+      return "--color-zephyrus-secondary-container";
+    case kColorZephyrusOnSecondaryContainer:
+      return "--color-zephyrus-on-secondary-container";
+    case kColorZephyrusTertiary: return "--color-zephyrus-tertiary";
+    case kColorZephyrusOnTertiary: return "--color-zephyrus-on-tertiary";
+    case kColorZephyrusTertiaryContainer:
+      return "--color-zephyrus-tertiary-container";
+    case kColorZephyrusOnTertiaryContainer:
+      return "--color-zephyrus-on-tertiary-container";
+    case kColorZephyrusError: return "--color-zephyrus-error";
+    case kColorZephyrusOnError: return "--color-zephyrus-on-error";
+    case kColorZephyrusErrorContainer:
+      return "--color-zephyrus-error-container";
+    case kColorZephyrusOnErrorContainer:
+      return "--color-zephyrus-on-error-container";
+    case kColorZephyrusSurface: return "--color-zephyrus-surface";
+    case kColorZephyrusSurfaceContainerLowest:
+      return "--color-zephyrus-surface-container-lowest";
+    case kColorZephyrusSurfaceContainerLow:
+      return "--color-zephyrus-surface-container-low";
+    case kColorZephyrusSurfaceContainer:
+      return "--color-zephyrus-surface-container";
+    case kColorZephyrusSurfaceContainerHigh:
+      return "--color-zephyrus-surface-container-high";
+    case kColorZephyrusSurfaceContainerHighest:
+      return "--color-zephyrus-surface-container-highest";
+    case kColorZephyrusOnSurface: return "--color-zephyrus-on-surface";
+    case kColorZephyrusOnSurfaceVariant:
+      return "--color-zephyrus-on-surface-variant";
+    case kColorZephyrusOutline: return "--color-zephyrus-outline";
+    case kColorZephyrusOutlineVariant:
+      return "--color-zephyrus-outline-variant";
+    case kColorZephyrusInverseSurface:
+      return "--color-zephyrus-inverse-surface";
+    case kColorZephyrusInverseOnSurface:
+      return "--color-zephyrus-inverse-on-surface";
+    case kColorZephyrusInversePrimary:
+      return "--color-zephyrus-inverse-primary";
+    case kColorZephyrusScrim: return "--color-zephyrus-scrim";
+    case kColorZephyrusShadow: return "--color-zephyrus-shadow";
+    default:
+      // Legacy shim roles and anything outside the M3 scheme: unnamed, so a
+      // caller that iterates past the range gets nothing it could style with.
+      return std::string();
+  }
+}
+
 void AddZephyrusColorMixer(ui::ColorProvider* provider,
                            const ui::ColorProviderKey& key) {
   ui::ColorMixer& mixer = provider->AddMixer();

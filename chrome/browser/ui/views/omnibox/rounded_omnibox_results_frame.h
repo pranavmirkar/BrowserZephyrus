@@ -51,9 +51,35 @@ class RoundedOmniboxResultsFrame : public views::View {
   // the selected hero row overhangs it by kZephyrusHeroOverhang.
   static int GetZephyrusCardInset();
 
-  // How far the selected "hero" row extends past the card on each side
-  // (Figma: hero is 531 vs the card's 477 — 27px per side).
+  // The margin the popup keeps around the card on each side (Figma: card 477
+  // inside a 531 frame, 27px per side). It is what lets the card land flush
+  // with the search bar: the popup is widened by it and the card inset by it.
+  //
+  // It used to be the room the selected "hero" row grew into, past the card.
+  // Under M3 nothing overhangs -- OmniboxResultView keeps the selection inside
+  // the card -- but the popup geometry is built on this value, and setting it
+  // to 0 moved the card off the bar and let the rows' own bounds clip the
+  // selection on one side. So the margin stays; only the overhang went.
   static constexpr int kZephyrusHeroOverhang = 27;
+
+  // The gap between a row's pill and the card edge, on EVERY side. The pill's
+  // radius is derived from the card's through this number
+  // (zephyrus::m3::ConcentricInner), so the two only nest if the gap really is
+  // the same all the way round -- which is what it was not: the sides were 4
+  // and the top was 8, and a 24dp curve inside a 28dp one at two different
+  // offsets reads as a mistake even when you cannot say why.
+  static constexpr int kZephyrusPillInsideCard = 4;
+  // Half the gap between two adjacent pills; also the pill's own inset within
+  // its row. The card's vertical padding is the remainder of
+  // kZephyrusPillInsideCard once this is accounted for -- see
+  // kZephyrusCardPadding.
+  static constexpr int kZephyrusPillRowInset = 2;
+  // The card's inner vertical padding, top and bottom. DERIVED: the first and
+  // last pills must sit kZephyrusPillInsideCard from the card's edge, and each
+  // pill already insets itself by kZephyrusPillRowInset inside its row, so the
+  // card supplies only the difference.
+  static constexpr int kZephyrusCardPadding =
+      kZephyrusPillInsideCard - kZephyrusPillRowInset;
 
   // Zephyrus: the detached card's bounds in this frame's coordinates. Rows
   // anchor their selection pill to this rather than to their own bounds, so the

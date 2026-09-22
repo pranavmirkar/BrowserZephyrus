@@ -1135,14 +1135,20 @@ BrowserView::BrowserView(Browser* browser)
   // bar widget.
   find_bar_host_view_ = AddChildView(std::make_unique<View>());
 
-  // Zephyrus: the stock scrim is semi-transparent black, which does nothing
-  // over a black page — and plenty of pages are black. Tinting it with the
-  // permanent theme color instead means it reads in both directions: it dims
-  // bright content toward the app's own surface, and it *lifts* pure black
-  // enough to be perceptible. It covers the whole client area, so the toolbar
-  // and sidebar recede with the page.
-  window_scrim_view_ = AddChildView(
-      std::make_unique<ScrimView>(SkColorSetA(zephyrus::Ground(), 0xD9)));
+  // Zephyrus: M3's SCRIM -- the `scrim` role, which is neutral 0 (black) in
+  // both themes, at the spec's 32%.
+  //
+  // This was the retired palette's ground at 85%, on the grounds that a black
+  // scrim does nothing over a black page. That is true, and M3's answer is the
+  // dialog, not the scrim: the dialog sits on surfaceContainerHigh, which is
+  // distinguishable from black by tone. At 85% the scrim hid the page instead
+  // of dimming it. It was also captured once, at construction, so after a
+  // theme change it kept the OLD theme's ground; black needs no refresh.
+  // It covers the whole client area, so the toolbar and sidebar recede with
+  // the page.
+  constexpr SkAlpha kM3ScrimOpacity = 0x52;  // 32%
+  window_scrim_view_ = AddChildView(std::make_unique<ScrimView>(
+      SkColorSetA(SK_ColorBLACK, kM3ScrimOpacity)));
   window_scrim_view_->layer()->SetName("WindowScrimView");
 
 #if BUILDFLAG(IS_WIN)
@@ -3512,6 +3518,10 @@ void BrowserView::UpdateZephyrusSidebarBounds() {
 
 void BrowserView::ToggleZephyrusTitlebarPinned() {
   zephyrus_titlebar_pinned_ = !zephyrus_titlebar_pinned_;
+  // The title bar hides and reveals exactly as it always did -- the reveal
+  // poll and the slide are unchanged. What is new is that while it is hidden
+  // its controls are LENT to the sidebar, so they stay reachable without
+  // hovering the top edge for them.
   if (zephyrus_titlebar_pinned_) {
     // Snap fully shown and stop polling/animating.
     zephyrus_titlebar_reveal_timer_.Stop();
@@ -3527,6 +3537,10 @@ void BrowserView::ToggleZephyrusTitlebarPinned() {
         FROM_HERE, base::Milliseconds(100), this,
         &BrowserView::OnZephyrusTitlebarRevealPoll);
     StartZephyrusTitlebarAnim(0.0);
+  }
+  // The sidebar borrows the controls, or hands them back.
+  if (zephyrus_sidebar_) {
+    zephyrus_sidebar_->OnCompactModeChanged();
   }
   if (toolbar_) {
     toolbar_->UpdateZephyrusPinButton();

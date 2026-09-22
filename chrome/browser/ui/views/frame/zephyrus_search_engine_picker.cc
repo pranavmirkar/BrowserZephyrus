@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "base/functional/bind.h"
+#include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/color/zephyrus_color_mixer.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
@@ -28,8 +30,15 @@
 #include "components/vector_icons/vector_icons.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/image/image_skia_operations.h"
+#include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/gfx/canvas.h"
+#include "ui/gfx/paint_vector_icon.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/animation/ink_drop.h"
+#include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/compositor/layer.h"
@@ -39,8 +48,120 @@
 namespace {
 
 constexpr int kPickerWidth = 240;
-constexpr int kRowHeight = 32;
+// M3's dense menu item. The standard 48dp made a five-engine list half again
+// as tall for no gain -- and the complaint about these popups was size.
+constexpr int kRowHeight = 40;
 constexpr int kFaviconSize = 16;
+// M3 Expressive menus inset their items from the container and round them, so
+// hover and selection read as a shape inside the menu rather than a stripe
+// across it.
+constexpr int kItemInset = 4;
+// Concentric with the menu's own corners (Rule 2: inner = outer - padding):
+// 28 - 4 = 24, which on a 40dp item is a full pill. At 12 the first and last
+// items left a wedge of menu showing inside the menu's rounder corners.
+constexpr int kItemRadius =
+    zephyrus::m3::ConcentricInner(zephyrus::kRadiusPopup, kItemInset);
+constexpr int kItemPadding = 12;
+constexpr int kCheckSize = 20;
+
+// One engine in the menu: an M3 menu item.
+//
+// labelLarge; the selected engine on secondaryContainer with a trailing check,
+// the rest on the menu's own surface with an onSurface state layer. Colours are
+// applied in OnThemeChanged(), which is the first moment a role is readable --
+// the constructor runs before the menu has a Widget. (The old rows read the
+// global palette table there instead, and hovered to hardcoded WHITE text,
+// which vanished on a light theme.)
+class EngineMenuItem : public views::LabelButton {
+  METADATA_HEADER(EngineMenuItem, views::LabelButton)
+
+ public:
+  EngineMenuItem(PressedCallback callback,
+                 const std::u16string& text,
+                 bool selected)
+      : views::LabelButton(std::move(callback), text), selected_(selected) {
+    label()->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
+    SetImageLabelSpacing(kItemPadding);
+    SetMinSize(gfx::Size(0, kRowHeight));
+    // The trailing padding holds the check, whether or not this row has one,
+    // so every label is cut at the same width.
+    SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(
+        0, kItemPadding, 0, kItemPadding + kCheckSize + kItemPadding)));
+    GetViewAccessibility().SetRole(ax::mojom::Role::kMenuItemRadio);
+    GetViewAccessibility().SetCheckedState(
+        selected ? ax::mojom::CheckedState::kTrue
+                 : ax::mojom::CheckedState::kFalse);
+    SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
+    SetInstallFocusRingOnFocus(true);
+    views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
+                                                  kItemRadius);
+    views::InkDropHost* const ink = views::InkDrop::Get(this);
+    ink->SetMode(views::InkDropHost::InkDropMode::ON);
+    ink->SetHighlightOpacity(zephyrus::m3::kHover / 255.0f);
+    ink->SetVisibleOpacity(zephyrus::m3::kPressed / 255.0f);
+  }
+  EngineMenuItem(const EngineMenuItem&) = delete;
+  EngineMenuItem& operator=(const EngineMenuItem&) = delete;
+  ~EngineMenuItem() override = default;
+
+  // The engine's own favicon, once the favicon database answers.
+  void SetFavicon(const gfx::ImageSkia& icon) {
+    has_favicon_ = true;
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromImageSkia(icon));
+  }
+
+  // views::LabelButton:
+  void OnThemeChanged() override {
+    views::LabelButton::OnThemeChanged();
+    const SkColor ink = zephyrus::m3::Role(
+        *this, selected_ ? kColorZephyrusOnSecondaryContainer
+                         : kColorZephyrusOnSurface);
+    SetEnabledTextColors(ink);
+    views::InkDrop::Get(this)->SetBaseColor(ink);
+    SetBackground(
+        selected_
+            ? views::CreateRoundedRectBackground(
+                  zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
+                  kItemRadius)
+            : nullptr);
+    // A generic glyph up front, so the row never renders iconless while the
+    // real favicon is fetched, and so engines with no cached favicon still line
+    // up with the others.
+    if (!has_favicon_) {
+      SetImageModel(
+          views::Button::STATE_NORMAL,
+          ui::ImageModel::FromVectorIcon(
+              vector_icons::kSearchIcon,
+              zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant),
+              kFaviconSize));
+    }
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    views::LabelButton::PaintButtonContents(canvas);
+    if (!selected_ || !GetWidget()) {
+      return;
+    }
+    // Trailing check, mirrored by hand for RTL: LabelButton lays its own
+    // children out mirrored, but this is painted, not a child.
+    const gfx::ImageSkia check = gfx::CreateVectorIcon(
+        kCheckIcon, kCheckSize,
+        zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer));
+    canvas->DrawImageInt(
+        check,
+        GetMirroredXWithWidthInView(width() - kItemPadding - kCheckSize,
+                                    kCheckSize),
+        (height() - kCheckSize) / 2);
+  }
+
+ private:
+  const bool selected_;
+  bool has_favicon_ = false;
+};
+
+BEGIN_METADATA(EngineMenuItem)
+END_METADATA
 
 // Only one at a time, so a double-click can't stack two.
 views::Widget* g_picker_widget = nullptr;
@@ -72,23 +193,34 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
       profile_(profile),
       on_finished_(std::move(on_finished)) {
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
-  set_margins(gfx::Insets(8));
+  // M3 menu: 8dp above and below the list, the items inset from the sides.
+  set_margins(gfx::Insets::VH(8, kItemInset));
   zephyrus::ConfigureBubble(this);
-  // Opaque. A child-widget experiment (params->child = true) that would have
-  // let a backdrop blur sample the browser's compositor CRASHED the browser on
-  // 2026-08-10 — see zephyrus-menu-blur-impossible. Reverted; without the blur
-  // an alpha here only washes the bubble out.
-  SetBackgroundColor(zephyrus::Surface());
+  // Opaque, on an M3 menu's surfaceContainer. Read from the ANCHOR, which is in
+  // the browser window and has a ColorProvider; this bubble has none until it
+  // is shown. (A child-widget experiment that would have let a backdrop blur
+  // sample the browser's compositor CRASHED the browser on 2026-08-10 -- see
+  // zephyrus-menu-blur-impossible.)
+  SetBackgroundColor(
+      zephyrus::m3::Role(*anchor, kColorZephyrusSurfaceContainer));
 
   SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
+                       views::BoxLayout::Orientation::kVertical, gfx::Insets(),
+                       0))
+      ->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kStretch);
 
+  // An M3 menu's section label: labelMedium in onSurfaceVariant, on the items'
+  // own keyline.
   auto* heading =
       AddChildView(std::make_unique<views::Label>(u"Search with"));
-  heading->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-  heading->SetEnabledColor(zephyrus::Muted());
-  heading->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
-  heading->SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(2, 8, 6, 8)));
+  heading->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
+  heading->SetEnabledColor(
+      zephyrus::m3::Role(*anchor, kColorZephyrusOnSurfaceVariant));
+  heading->SetAutoColorReadabilityEnabled(false);
+  heading->SetSubpixelRenderingEnabled(false);
+  heading->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelMedium));
+  heading->SetBorder(views::CreateEmptyBorder(
+      gfx::Insets::TLBR(4, kItemPadding, 8, kItemPadding)));
 
   TemplateURLService* service = GetService(profile_);
   if (!service) {
@@ -107,31 +239,11 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
     // Bind by keyword rather than by pointer: setting the default mutates the
     // service, and a raw TemplateURL* captured in a callback can be invalidated
     // before the click is handled.
-    auto row = std::make_unique<views::LabelButton>(
+    auto row = std::make_unique<EngineMenuItem>(
         base::BindRepeating(&ZephyrusSearchEnginePicker::Choose,
                             base::Unretained(this), turl->keyword()),
-        turl->short_name());
-    // Generic glyph up front so the row never renders iconless while the real
-    // favicon is being fetched, and so engines with no cached favicon (never
-    // visited, or bundled-but-unused) still line up with the others.
-    row->SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(vector_icons::kSearchIcon,
-                                       zephyrus::Muted(),
-                                       kFaviconSize));
-    row->SetImageLabelSpacing(10);
-    row->SetTextColor(views::Button::STATE_NORMAL,
-                      selected ? zephyrus::Ink() : zephyrus::Muted());
-    row->SetTextColor(views::Button::STATE_HOVERED, SK_ColorWHITE);
-    // No font override: LabelButton exposes no public font setter (label() is
-    // protected), and the Ctrl+T shortcut chips leave it default too, so this
-    // matches them rather than reaching around the API.
+        turl->short_name(), selected);
     row->SetPreferredSize(gfx::Size(kPickerWidth, kRowHeight));
-    row->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 8)));
-    if (selected) {
-      row->SetBackground(views::CreateRoundedRectBackground(
-          zephyrus::Surface(), zephyrus::kRadiusCard));
-    }
     views::LabelButton* row_ptr = AddChildView(std::move(row));
 
     // Real favicon, if we have one cached. This reads the local favicon
@@ -162,8 +274,9 @@ void ZephyrusSearchEnginePicker::OnFaviconReady(
         icon, skia::ImageOperations::RESIZE_BEST,
         gfx::Size(kFaviconSize, kFaviconSize));
   }
-  row->SetImageModel(views::Button::STATE_NORMAL,
-                     ui::ImageModel::FromImageSkia(icon));
+  // Every row in this menu is an EngineMenuItem; the item has to know it has a
+  // real favicon, or its next theme change would put the generic glyph back.
+  static_cast<EngineMenuItem*>(row)->SetFavicon(icon);
 }
 
 ZephyrusSearchEnginePicker::~ZephyrusSearchEnginePicker() {

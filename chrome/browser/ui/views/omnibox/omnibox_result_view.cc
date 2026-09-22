@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/omnibox/omnibox_result_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 
 #include <limits.h>
 
@@ -91,41 +92,33 @@
 
 namespace {
 
-// Zephyrus: paints the selected-row "hero" pill (Figma searchbar_resultdropdown
-// 71:207) — a rounded white fill with a 0.5px #b3b3b3 border and a soft drop
-// shadow so the current result floats out of the list. `strength` (0..1) fades
-// the border and shadow in during the width-jump so the pill materializes as a
-// real surface rather than snapping on.
+// Zephyrus: paints the selected row's highlight -- an M3 list selection, a
+// state layer drawn inside the results card.
+//
+// It used to be the Figma "hero" (searchbar_resultdropdown 71:207): a fill with
+// a 0.5px hairline and a drop shadow, grown past the card so the current result
+// floated out of the list. Shadow, hairline and overhang are the retired
+// language; M3 separates by tone and keeps a list's selection in the list.
+// `strength` (0..1) still fades the fill in, so the selection arrives rather
+// than snapping on.
 void PaintZephyrusHeroPill(gfx::Canvas* canvas,
                            const gfx::RectF& rect,
                            SkColor color,
                            float radius,
                            float strength) {
-  std::vector<gfx::ShadowValue> shadows;
-  shadows.emplace_back(gfx::Vector2d(0, 3), 12,
-                       SkColorSetA(SK_ColorBLACK,
-                                   static_cast<U8CPU>(0x33 * strength)));
-  shadows.emplace_back(gfx::Vector2d(0, 1), 3,
-                       SkColorSetA(SK_ColorBLACK,
-                                   static_cast<U8CPU>(0x24 * strength)));
   cc::PaintFlags fill;
   fill.setAntiAlias(true);
-  fill.setColor(color);
-  fill.setLooper(gfx::CreateShadowDrawLooper(shadows));
+  fill.setColor(SkColorSetA(
+      color, static_cast<U8CPU>(SkColorGetA(color) * std::clamp(strength, 0.f,
+                                                                1.f))));
   canvas->DrawRoundRect(rect, radius, fill);
-  cc::PaintFlags stroke;
-  stroke.setAntiAlias(true);
-  stroke.setStyle(cc::PaintFlags::kStroke_Style);
-  stroke.setStrokeWidth(0.5f);
-  // Border adapts to the surface: a hairline grey on light cards, a faint white
-  // edge on dark ones, so the hero reads cleanly under the dynamic theme.
-  const bool dark = color_utils::IsDark(color);
-  const SkColor stroke_rgb = dark ? SK_ColorWHITE : SkColorSetRGB(0xB3, 0xB3, 0xB3);
-  const SkAlpha stroke_a = dark ? 0x59 : 0xFF;
-  stroke.setColor(
-      SkColorSetA(stroke_rgb, static_cast<U8CPU>(stroke_a * strength)));
-  canvas->DrawRoundRect(rect, radius, stroke);
 }
+
+// How far a row's highlight sits inside the card, M3 Expressive style: a shape
+// within the list rather than a stripe across it -- the same 4dp the search
+// engine menu uses.
+constexpr int kZephyrusPillInsideCard =
+    RoundedOmniboxResultsFrame::kZephyrusPillInsideCard;
 
 bool PrefersHighContrast(const views::View* view) {
   const ui::NativeTheme* const native_theme = view->GetNativeTheme();
@@ -169,18 +162,22 @@ constexpr float kIPHBackgroundBorderRadius = 8;
 int ZephyrusCardInset() {
   return RoundedOmniboxResultsFrame::GetZephyrusCardInset();
 }
+// M3: the selected row's highlight no longer grows past the card, so its
+// inset is the card's own.
 int ZephyrusHeroPillInset() {
-  return std::max(0, ZephyrusCardInset() -
-                         RoundedOmniboxResultsFrame::kZephyrusHeroOverhang);
+  return ZephyrusCardInset();
 }
 // Both track the shared popup radius. They sit inside a 28px card, and a row
 // pill with visibly tighter corners than the surface holding it reads as a
 // different design rather than a smaller one. Clamped to a pill at row height,
 // which is the intent.
-constexpr float kZephyrusHoverPillRadius =
-    static_cast<float>(zephyrus::kRadiusPopup);
-constexpr float kZephyrusHeroPillRadius =
-    static_cast<float>(zephyrus::kRadiusPopup);
+//
+// Concentric with the card (Rule 2): its radius minus the 4dp the highlight
+// sits inside it.
+constexpr float kZephyrusHoverPillRadius = static_cast<float>(
+    zephyrus::m3::ConcentricInner(zephyrus::kRadiusPopup,
+                                  kZephyrusPillInsideCard));
+constexpr float kZephyrusHeroPillRadius = kZephyrusHoverPillRadius;
 
 // Zephyrus motion. The pill is a state indicator on a surface the user scans
 // constantly, so it stays well under the 300ms UI ceiling. Enter leads with a
@@ -478,7 +475,9 @@ std::unique_ptr<views::Background> OmniboxResultView::GetPopupCellBackground(
   return views::CreateBackgroundFromPainter(
       views::Painter::CreateSolidRoundRectPainter(
           background_color, kZephyrusHoverPillRadius,
-          gfx::Insets::VH(2, ZephyrusCardInset())));
+          gfx::Insets::VH(
+              RoundedOmniboxResultsFrame::kZephyrusPillRowInset,
+              ZephyrusCardInset() + kZephyrusPillInsideCard)));
 }
 
 void OmniboxResultView::SetMatch(const AutocompleteMatch& match) {
@@ -998,14 +997,22 @@ void OmniboxResultView::OnPaintBackground(gfx::Canvas* canvas) {
   float card_right = 0.f;
   if (GetZephyrusCardEdges(&card_left, &card_right)) {
     const float overhang = ZephyrusOverhang(card_left, card_right);
-    rect = gfx::RectF(card_left - overhang, 2.f,
+    // The same inset the idle pill uses, top and bottom: the two painters draw
+    // the same shape in the same place, so a row that swaps between them must
+    // not move.
+    constexpr float kRowInset = static_cast<float>(
+        RoundedOmniboxResultsFrame::kZephyrusPillRowInset);
+    rect = gfx::RectF(card_left - overhang, kRowInset,
                       (card_right - card_left) + 2.f * overhang,
-                      static_cast<float>(height()) - 4.f);
+                      static_cast<float>(height()) - 2.f * kRowInset);
   } else {
     const float inset = ZephyrusPillInset();
+    constexpr float kRowInset = static_cast<float>(
+        RoundedOmniboxResultsFrame::kZephyrusPillRowInset);
     rect = gfx::RectF(GetLocalBounds());
-    rect.Inset(gfx::InsetsF::TLBR(2.f, inset, 2.f, inset));
+    rect.Inset(gfx::InsetsF::TLBR(kRowInset, inset, kRowInset, inset));
   }
+  rect.Inset(gfx::InsetsF::VH(0.f, kZephyrusPillInsideCard));
 
   const SkColor color =
       GetThemedColor(GetOmniboxBackgroundColorId(OmniboxPartState::SELECTED));
@@ -1038,16 +1045,10 @@ bool OmniboxResultView::GetZephyrusCardEdges(float* left, float* right) const {
 
 float OmniboxResultView::ZephyrusOverhang(float card_left,
                                           float card_right) const {
-  // Only overhang as far as BOTH sides can afford inside this row. A row's
-  // bounds can be offset from the card, and OnPaintBackground is clipped to
-  // those bounds — so taking the tighter side keeps the pill symmetric and
-  // keeps its rounded corners from being sliced off at the row's edge.
-  const float room = std::min(card_left, static_cast<float>(width()) - card_right);
-  const float max_overhang = std::clamp(
-      room, 0.f,
-      static_cast<float>(RoundedOmniboxResultsFrame::kZephyrusHeroOverhang));
-  return max_overhang *
-         static_cast<float>(zephyrus_hero_animation_.GetCurrentValue());
+  // M3 keeps a list's selection INSIDE the list, so nothing overhangs the card
+  // any more. (This grew the selected row past the card by up to
+  // kZephyrusHeroOverhang, animated -- the old Figma "hero".)
+  return 0.f;
 }
 
 float OmniboxResultView::ZephyrusPillInset() const {

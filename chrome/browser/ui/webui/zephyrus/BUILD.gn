@@ -16,7 +16,9 @@ source_set("zephyrus") {
   public_deps = [ "//content/public/browser" ]
   deps = [
     "//base",
+    "//base:i18n",
     "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/webui:theme_source",
     "//chrome/browser/zephyrus/privacy",
     "//chrome/common",
   ]
