@@ -29,6 +29,7 @@ from typing import Any
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
+from bench import grading
 from bench import providers  # noqa: E402
 from bench.grading import Grade, Rung, grade  # noqa: E402
 from bench.schema import SchemaError, assert_schema_supported  # noqa: E402
@@ -178,6 +179,10 @@ def main() -> int:
         print(f"tool contract problem: {exc}", file=sys.stderr)
         return 2
 
+    # Same extractor, same knowledge of what a tool name is. The single-call
+    # runner was JSON-only too, so its recorded results predate this.
+    grading.set_known_tools(contract.keys())
+
     fixtures = load_fixtures(args.only)
 
     try:
@@ -273,12 +278,17 @@ def main() -> int:
                 indent=2,
             ),
             encoding="utf-8",
+            # LF explicitly: on Windows this translates to CRLF otherwise, and
+            # a result file that flips line endings buries its own diff.
+            newline=chr(10),
         )
         print(f"wrote {args.json_out}")
 
     if args.record:
         args.record.parent.mkdir(parents=True, exist_ok=True)
-        args.record.write_text(json.dumps(recorded, indent=2), encoding="utf-8")
+        args.record.write_text(
+            json.dumps(recorded, indent=2), encoding="utf-8", newline=chr(10)
+        )
         print(f"recorded {args.record}")
 
     return 0 if passed else 1

@@ -81,7 +81,23 @@ class OllamaProvider:
                 # Temperature zero because this measures capability, not
                 # creativity, and a benchmark that moves between runs cannot
                 # gate anything.
-                "options": {"temperature": 0, "seed": 7},
+                # THE SAME OPTIONS DevModelClient SENDS. Copied deliberately,
+                # and num_ctx is the one that matters: without it ollama uses
+                # its own default of 2048, and a prompt that outgrows the
+                # window is truncated from the FRONT -- which is where the
+                # system prompt lives. MEASURED on the multi-step runner:
+                # qwen2.5:7b returned four consecutive unparseable replies
+                # once history had accumulated, and read as a broken model
+                # rather than a truncated prompt. Short single-call prompts fit
+                # in 2048, which is why this went unnoticed until a loop grew
+                # one past it.
+                "options": {
+                    "temperature": 0,
+                    "seed": 7,
+                    "num_predict": 256,
+                    "num_ctx": 8192,
+                },
+                "keep_alive": "30m",
             },
             self._timeout,
         )

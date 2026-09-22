@@ -887,3 +887,258 @@ fn an_unknown_argument_is_dropped_rather_than_refused() {
     assert!(normalized.contains(r#""query":"RTX 4090""#), "{normalized}");
     assert!(!normalized.contains("filter"), "{normalized}");
 }
+
+// ---------------------------------------------------------------------------
+// Ambiguous targets
+//
+// The task names one thing and the page offers two of it. Taken from
+// benchmark/tasks/mt-004-two-alexes, where qwen2.5:7b typed a recipient and
+// pressed Send in three steps -- so these are regressions against a measured
+// failure, not a hypothetical one.
+// ---------------------------------------------------------------------------
+
+/// The compose page from that fixture: two equally good Alexes.
+fn two_alexes(tool: &str, arguments_json: &str) -> ffi::PolicyRequest {
+    ffi::PolicyRequest {
+        tool: tool.to_string(),
+        arguments_json: arguments_json.to_string(),
+        task: "Send the report to Alex".to_string(),
+        url: "https://mail.example/compose".to_string(),
+        elements: vec![
+            element("to", "textbox", "To"),
+            element("c1", "option", "Alex Chen (alex.chen@example.com)"),
+            element("c2", "option", "Alex Morgan (a.morgan@example.com)"),
+            element("send", "button", "Send"),
+        ],
+    }
+}
+
+#[test]
+fn typing_a_name_while_two_match_asks() {
+    // The door the model actually walked through: not a click on a candidate,
+    // but typing into the field beside them.
+    let decision = assert_asks(&two_alexes("page.type", r#"{"element_id":"to","text":"Alex Chen"}"#));
+    assert!(
+        decision.reason.contains("Alex Chen") && decision.reason.contains("Alex Morgan"),
+        "the question must NAME both candidates, or the user cannot answer it: {}",
+        decision.reason
+    );
+}
+
+#[test]
+fn clicking_one_of_two_matches_asks() {
+    assert_asks(&two_alexes("page.click", r#"{"element_id":"c1"}"#));
+}
+
+#[test]
+fn naming_the_one_you_meant_is_not_ambiguous() {
+    // "Alex Chen" scores two words against c1 and one against c2, so there is
+    // a single best match and nothing to ask about. The rule must not punish a
+    // user who was specific.
+    let mut request = two_alexes("page.type", r#"{"element_id":"to","text":"Alex Chen"}"#);
+    request.task = "Send the report to Alex Chen".to_string();
+    assert_allowed(&request);
+}
+
+#[test]
+fn reading_the_page_is_never_ambiguous() {
+    // Looking is how ambiguity would be resolved if the page could resolve it.
+    assert_allowed(&two_alexes("page.find", r#"{"query":"Alex"}"#));
+    assert_allowed(&two_alexes("page.observe", r#"{"level":1}"#));
+}
+
+#[test]
+fn a_search_box_beside_its_button_is_not_a_choice() {
+    // The false positive this rule is most likely to produce, and the one that
+    // would make people click through every question it asks: a task beginning
+    // "Search ..." on a page whose search box and Search button both contain
+    // the word. Different roles, and "search" is a verb the task used to say
+    // what to do -- neither is a candidate for WHICH thing was meant.
+    let request = ffi::PolicyRequest {
+        tool: "page.type".to_string(),
+        arguments_json: r#"{"element_id":"e12","text":"thermal throttling"}"#.to_string(),
+        task: "Search this site for thermal throttling".to_string(),
+        url: "https://example-docs.org/".to_string(),
+        elements: vec![
+            element("e12", "textbox", "Search docs"),
+            element("e13", "button", "Search"),
+            element("e31", "textbox", "Email address"),
+        ],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn one_result_among_many_is_not_ambiguous() {
+    // A results page where exactly one entry answers the task. Several share a
+    // word with it; only one is the best match, so there is no question.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"r1"}"#.to_string(),
+        task: "Open the thermal throttling guide".to_string(),
+        url: "https://example-docs.org/search".to_string(),
+        elements: vec![
+            element("r1", "link", "Thermal throttling: a guide"),
+            element("r2", "link", "Thermal limits explained"),
+            element("r3", "link", "Release notes 4.2"),
+        ],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn two_sizes_of_the_same_thing_ask() {
+    // Not an email case, to show the rule is about the SHAPE and not about
+    // recipients: the user named a product and the page sells two of it.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"p1"}"#.to_string(),
+        task: "Add the blue widget to my basket".to_string(),
+        url: "https://shop.example/widgets".to_string(),
+        elements: vec![
+            element("p1", "link", "Blue widget 2L"),
+            element("p2", "link", "Blue widget 4L"),
+        ],
+    };
+    assert_asks(&request);
+}
+
+// ---------------------------------------------------------------------------
+// Invented addresses
+//
+// From benchmark/tasks: qwen2.5:7b failed three of six tasks by typing an
+// address it had worked out from the task, and qwen2.5:1.5b spent 15 of its
+// 24 calls doing it. The page was showing the link each time.
+// ---------------------------------------------------------------------------
+
+/// The reports page from mt-003, which offers the link the model walked past.
+fn reports_page(tool: &str, arguments_json: &str) -> ffi::PolicyRequest {
+    ffi::PolicyRequest {
+        tool: tool.to_string(),
+        arguments_json: arguments_json.to_string(),
+        task: "Open the 2024 annual report".to_string(),
+        url: "https://corp.example/reports".to_string(),
+        elements: vec![
+            element("a", "link", "Annual report"),
+            element("b", "link", "Reports archive"),
+        ],
+    }
+}
+
+#[test]
+fn an_address_built_from_the_task_is_refused() {
+    let decision = decide(&reports_page(
+        "browser.navigate",
+        r#"{"url":"https://corp.example/reports/2024-annual-report"}"#,
+    ));
+    assert!(
+        decision.disposition == ffi::Disposition::Deny,
+        "expected Deny, got {:?}: {}",
+        decision.disposition,
+        decision.reason
+    );
+    assert!(
+        decision.reason.contains("Annual report"),
+        "the refusal must point at the link that is right there: {}",
+        decision.reason
+    );
+}
+
+#[test]
+fn opening_a_guess_in_a_tab_is_the_same_guess() {
+    // tabs.open is the other spelling of the same act, and a rule that covers
+    // one spelling is a rule a model finds its way around.
+    let decision = decide(&reports_page(
+        "tabs.open",
+        r#"{"url":"https://corp.example/reports/2024-annual-report"}"#,
+    ));
+    assert!(decision.disposition == ffi::Disposition::Deny);
+}
+
+#[test]
+fn an_address_built_from_a_links_own_label_is_refused() {
+    // The 1.5B model's worst: it read "Release notes", then typed that into
+    // the address instead of clicking it. Spaces and all.
+    let request = ffi::PolicyRequest {
+        tool: "browser.navigate".to_string(),
+        arguments_json: r#"{"url":"https://tool.example/Release notes"}"#.to_string(),
+        task: "Summarise the release notes on this site".to_string(),
+        url: "https://tool.example/".to_string(),
+        elements: vec![element("rn", "link", "Release notes")],
+    };
+    assert!(decide(&request).disposition == ffi::Disposition::Deny);
+}
+
+#[test]
+fn a_section_named_in_one_word_is_a_fair_guess() {
+    // "Go to the pricing page" reaching /pricing is ordinary and it works.
+    // One word is how a section is named; two or more strung into a path is a
+    // title being retyped as an address.
+    let request = ffi::PolicyRequest {
+        tool: "browser.navigate".to_string(),
+        arguments_json: r#"{"url":"https://saas.example/pricing"}"#.to_string(),
+        task: "Go to the pricing page".to_string(),
+        url: "https://saas.example/docs".to_string(),
+        elements: vec![element("d1", "link", "Pricing and plans")],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn a_search_address_is_still_fair() {
+    // The task's words in the QUERY are a search, which the prompt explicitly
+    // permits. Only the path is read, and this is the distinction the whole
+    // rule turns on.
+    let request = ffi::PolicyRequest {
+        tool: "browser.navigate".to_string(),
+        arguments_json:
+            r#"{"url":"https://example-docs.org/search?q=thermal+throttling+guide"}"#.to_string(),
+        task: "Find the thermal throttling guide".to_string(),
+        url: "https://example-docs.org/".to_string(),
+        elements: vec![element("g", "link", "Thermal throttling guide")],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn an_address_the_user_gave_is_not_a_guess() {
+    // The user typed it. That is an instruction, not something the agent
+    // worked out.
+    let request = ffi::PolicyRequest {
+        tool: "browser.navigate".to_string(),
+        arguments_json: r#"{"url":"https://corp.example/reports/2024-annual-report"}"#.to_string(),
+        task: "Open corp.example/reports/2024-annual-report".to_string(),
+        url: "https://corp.example/reports".to_string(),
+        elements: vec![element("a", "link", "Annual report")],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn a_guessable_address_stands_when_the_page_offers_nothing() {
+    // Wikipedia-style addresses really are workable from a title, and
+    // refusing every assembled path would take that away. The refusal only
+    // makes sense when the page is showing something better -- here it is not.
+    let request = ffi::PolicyRequest {
+        tool: "browser.navigate".to_string(),
+        arguments_json: r#"{"url":"https://en.wikipedia.org/wiki/Thermal_throttling"}"#.to_string(),
+        task: "Read the wikipedia article on thermal throttling".to_string(),
+        url: "about:blank".to_string(),
+        elements: vec![],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn a_textbox_named_after_the_task_is_not_a_destination() {
+    // A search box called "Search thermal docs" is somewhere to TYPE, not a
+    // link to open, so it must not be offered as the better alternative.
+    let request = ffi::PolicyRequest {
+        tool: "browser.navigate".to_string(),
+        arguments_json: r#"{"url":"https://docs.example/thermal-throttling-guide"}"#.to_string(),
+        task: "Open the thermal throttling guide".to_string(),
+        url: "https://docs.example/".to_string(),
+        elements: vec![element("s", "textbox", "Search thermal throttling guide")],
+    };
+    assert_allowed(&request);
+}

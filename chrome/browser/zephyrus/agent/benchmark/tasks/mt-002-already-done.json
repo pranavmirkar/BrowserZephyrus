@@ -1,0 +1,134 @@
+{
+  "id": "mt-002-already-done",
+  "note": "Nothing to do but say so. Measures stopping, not acting.",
+  "task": "What is the refund window on this page?",
+  "budget": 8,
+  "optimal": 1,
+  "start": "policy",
+  "states": {
+    "policy": {
+      "observation": {
+        "url": "https://shop.example/policy",
+        "title": "Returns policy",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Returns policy",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "h1",
+            "role": "link",
+            "name": "Contact support"
+          },
+          {
+            "id": "h2",
+            "role": "link",
+            "name": "Shipping"
+          }
+        ],
+        "text": "Returns policy. You may return any item within 30 days of delivery for a full refund."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "h1",
+          "goto": "support",
+          "note": "opened Contact support"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "h2",
+          "goto": "shipping",
+          "note": "opened Shipping"
+        }
+      ],
+      "reads": {
+        "page.find": "page.find: the answer is already in the page text above",
+        "selection.read": "selection.read: nothing is selected"
+      }
+    },
+    "support": {
+      "observation": {
+        "url": "https://shop.example/support",
+        "title": "Contact support",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Contact support",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "b",
+            "role": "link",
+            "name": "Back"
+          }
+        ],
+        "text": "Contact support. Nothing here about refunds."
+      },
+      "on": [
+        {
+          "tool": "browser.back",
+          "goto": "policy",
+          "note": "went back"
+        }
+      ]
+    },
+    "shipping": {
+      "observation": {
+        "url": "https://shop.example/shipping",
+        "title": "Shipping",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Shipping",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "b",
+            "role": "link",
+            "name": "Back"
+          }
+        ],
+        "text": "Shipping. Nothing here about refunds."
+      },
+      "on": [
+        {
+          "tool": "browser.back",
+          "goto": "policy",
+          "note": "went back"
+        }
+      ]
+    }
+  },
+  "success": {
+    "states": [
+      "policy"
+    ],
+    "call": "task.complete"
+  },
+  "paths": {
+    "optimal": [
+      {
+        "name": "task.complete",
+        "arguments": {
+          "answer": "30 days from delivery"
+        }
+      }
+    ],
+    "trap": [
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "h1"
+        }
+      }
+    ]
+  }
+}

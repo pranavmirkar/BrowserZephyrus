@@ -1,0 +1,130 @@
+{
+  "id": "mt-006-already-in-a-tab",
+  "note": "The target is in tab 2. Opening a duplicate still finishes, and should show up as wasted steps rather than as a failure.",
+  "task": "Go to the pricing page",
+  "budget": 8,
+  "optimal": 2,
+  "start": "docs",
+  "states": {
+    "docs": {
+      "observation": {
+        "url": "https://saas.example/docs",
+        "title": "Docs",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Docs",
+            "active": true
+          },
+          {
+            "id": 2,
+            "title": "Pricing",
+            "active": false
+          }
+        ],
+        "elements": [
+          {
+            "id": "d1",
+            "role": "link",
+            "name": "API reference"
+          }
+        ],
+        "text": "Docs."
+      },
+      "on": [
+        {
+          "tool": "tabs.switch",
+          "tab_id": 2,
+          "goto": "pricing",
+          "note": "switched to the Pricing tab"
+        },
+        {
+          "tool": "browser.navigate",
+          "url_contains": "pricing",
+          "goto": "pricing_dupe",
+          "note": "navigated to the pricing page"
+        },
+        {
+          "tool": "tabs.open",
+          "url_contains": "pricing",
+          "goto": "pricing_dupe",
+          "note": "opened pricing in a new tab"
+        }
+      ],
+      "reads": {
+        "tabs.list": "tabs.list: 1 Docs (active), 2 Pricing"
+      }
+    },
+    "pricing": {
+      "observation": {
+        "url": "https://saas.example/pricing",
+        "title": "Pricing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Docs",
+            "active": false
+          },
+          {
+            "id": 2,
+            "title": "Pricing",
+            "active": true
+          }
+        ],
+        "elements": [],
+        "text": "Pricing. Free, Team, Enterprise."
+      }
+    },
+    "pricing_dupe": {
+      "observation": {
+        "url": "https://saas.example/pricing",
+        "title": "Pricing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Pricing",
+            "active": true
+          },
+          {
+            "id": 2,
+            "title": "Pricing",
+            "active": false
+          }
+        ],
+        "elements": [],
+        "text": "Pricing. Free, Team, Enterprise. (now open twice)"
+      }
+    }
+  },
+  "success": {
+    "states": [
+      "pricing",
+      "pricing_dupe"
+    ],
+    "call": "task.complete"
+  },
+  "paths": {
+    "optimal": [
+      {
+        "name": "tabs.switch",
+        "arguments": {
+          "tab_id": 2
+        }
+      },
+      {
+        "name": "task.complete",
+        "arguments": {
+          "answer": "on the pricing page"
+        }
+      }
+    ],
+    "trap": [
+      {
+        "name": "tabs.open",
+        "arguments": {
+          "url": "https://saas.example/pricing"
+        }
+      }
+    ]
+  }
+}

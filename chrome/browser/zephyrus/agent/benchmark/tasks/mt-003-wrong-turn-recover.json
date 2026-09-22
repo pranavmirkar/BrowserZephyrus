@@ -1,0 +1,203 @@
+{
+  "id": "mt-003-wrong-turn-recover",
+  "note": "Both links are plausible from their names. Measures recovery, not first-guess accuracy.",
+  "task": "Open the 2024 annual report",
+  "budget": 10,
+  "optimal": 3,
+  "start": "reports",
+  "states": {
+    "reports": {
+      "observation": {
+        "url": "https://corp.example/reports",
+        "title": "Reports",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Reports",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "a",
+            "role": "link",
+            "name": "Annual report"
+          },
+          {
+            "id": "b",
+            "role": "link",
+            "name": "Reports archive"
+          }
+        ],
+        "text": "Reports. The latest annual report and an archive of earlier ones."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "a",
+          "goto": "wrong_year",
+          "note": "opened Annual report"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "b",
+          "goto": "archive",
+          "note": "opened Reports archive"
+        }
+      ]
+    },
+    "wrong_year": {
+      "observation": {
+        "url": "https://corp.example/reports/2025",
+        "title": "Annual report 2025",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Annual report 2025",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "up",
+            "role": "link",
+            "name": "All reports"
+          }
+        ],
+        "text": "Annual report 2025. This is the CURRENT year, not 2024."
+      },
+      "on": [
+        {
+          "tool": "browser.back",
+          "goto": "reports",
+          "note": "went back"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "up",
+          "goto": "reports",
+          "note": "returned to Reports"
+        }
+      ]
+    },
+    "archive": {
+      "observation": {
+        "url": "https://corp.example/reports/archive",
+        "title": "Reports archive",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Reports archive",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "y24",
+            "role": "link",
+            "name": "2024"
+          },
+          {
+            "id": "y23",
+            "role": "link",
+            "name": "2023"
+          }
+        ],
+        "text": "Archive of annual reports by year."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "y24",
+          "goto": "report24",
+          "note": "opened the 2024 report"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "y23",
+          "goto": "report23",
+          "note": "opened the 2023 report"
+        }
+      ]
+    },
+    "report24": {
+      "observation": {
+        "url": "https://corp.example/reports/2024",
+        "title": "Annual report 2024",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Annual report 2024",
+            "active": true
+          }
+        ],
+        "elements": [],
+        "text": "Annual report 2024."
+      }
+    },
+    "report23": {
+      "observation": {
+        "url": "https://corp.example/reports/2023",
+        "title": "Annual report 2023",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Annual report 2023",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "up",
+            "role": "link",
+            "name": "All reports"
+          }
+        ],
+        "text": "Annual report 2023."
+      },
+      "on": [
+        {
+          "tool": "browser.back",
+          "goto": "archive",
+          "note": "went back"
+        }
+      ]
+    }
+  },
+  "success": {
+    "states": [
+      "report24"
+    ],
+    "call": "task.complete"
+  },
+  "paths": {
+    "optimal": [
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "b"
+        }
+      },
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "y24"
+        }
+      },
+      {
+        "name": "task.complete",
+        "arguments": {
+          "answer": "opened the 2024 report"
+        }
+      }
+    ],
+    "trap": [
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "a"
+        }
+      }
+    ]
+  }
+}

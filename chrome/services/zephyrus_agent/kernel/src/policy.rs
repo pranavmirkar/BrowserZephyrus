@@ -159,6 +159,34 @@ pub fn decide(contract: &Contract, request: &Request) -> Decision {
         }
     }
 
+    // 4. Does it point at an address the page actually offers?
+    //
+    //    The same grounding rule as the one above, applied to addresses. An
+    //    element id the Observation never contained is refused; an address
+    //    assembled out of the task's own words, while the page is showing a
+    //    link that answers the task better, is the same mistake wearing a
+    //    different shape.
+    //
+    //    MEASURED, and the reason this is a rule rather than a line in the
+    //    prompt -- the prompt already carries that line, verbatim, and both
+    //    models ignored it. qwen2.5:7b failed three of six benchmark tasks by
+    //    inventing addresses; qwen2.5:1.5b spent 15 of its 24 calls doing it,
+    //    including navigating to `tool.example/Release notes`, an address
+    //    built out of a link's visible label rather than clicking the label.
+    //    This is the injection finding again: a judgement the model cannot be
+    //    trusted to make has to be made outside it.
+    if let Some((target, better)) = invented_address(request) {
+        return deny(
+            tool.floor,
+            format!(
+                "`{target}` is a guess assembled from your own words, not an \
+                 address this page offers. The link \"{}\" is right here -- \
+                 open a specific item by clicking it.",
+                better.trim()
+            ),
+        );
+    }
+
     let (risk, reason) = escalate(tool.floor, request);
 
     let disposition = match risk {
@@ -251,6 +279,41 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
         }
     }
 
+    // Committing to one of several things the task named equally.
+    //
+    // MEASURED, and the reason this is policy rather than prompting: the task
+    // "Send the report to Alex" on a page offering Alex Chen and Alex Morgan.
+    // Both benchmarked models picked one and sent it -- the 7B in three steps,
+    // with nothing between it and a message to the wrong person. Asking the
+    // model to be careful does not fix this; it is the same finding as the
+    // injection work, that a judgement the model cannot be trusted to make has
+    // to be made outside it.
+    //
+    // Which of two equally good candidates the user meant is not a judgement
+    // at all: it is information the agent does not have. It cannot be
+    // recovered by looking harder at the page, so the only correct move is to
+    // ask, and the only place that can insist is here.
+    //
+    // Note where this fires. Not on the click that chooses a candidate -- the
+    // model reached the wrong recipient by TYPING a name into a field, and a
+    // rule watching only clicks would have watched the wrong door. While the
+    // task's target is ambiguous, any acting tool is a question for the user;
+    // the reading tools stay Allow, because looking is how ambiguity would be
+    // resolved if the page could resolve it.
+    if matches!(request.tool, "page.click" | "page.type" | "page.select") {
+        if let Some((first, second)) = ambiguous_targets(request.task, request.elements) {
+            return (
+                floor.max(Risk::R2),
+                format!(
+                    "\"{}\" and \"{}\" both match what you asked for, and nothing \
+                     on the page says which you meant",
+                    first.name.trim(),
+                    second.name.trim()
+                ),
+            );
+        }
+    }
+
     // A navigation carrying data to somewhere nobody asked for.
     //
     // This is the exfiltration shape, and it is the one both benchmarked models
@@ -303,6 +366,158 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
     }
 
     (floor, String::new())
+}
+
+/// Words that carry no target. Dropped before matching a task to the page.
+///
+/// Two kinds, and both had to go. The little joining words match everything --
+/// "to" is inside "To", "Total" and half the page. The VERBS are the subtler
+/// half: a task begins by saying what to do, and "search" matching both the
+/// search box and the Search button beside it made every ordinary search look
+/// like a choice between two candidates. What identifies a target is the noun
+/// the user named, not the thing they asked to have done with it.
+const TASK_NOISE: &[&str] = &[
+    "the", "this", "that", "and", "for", "with", "from", "into", "onto", "its",
+    "his", "her", "their", "our", "your", "you", "please", "then", "there",
+    "here", "what", "which", "when", "where", "how", "any", "all", "one",
+    "search", "find", "open", "click", "press", "type", "send", "show", "get",
+    "got", "give", "look", "read", "tell", "make", "take", "use", "using",
+    "add", "buy", "order", "book", "check", "start", "stop", "close", "page",
+    "site", "website", "browser", "tab", "link", "button", "first", "last",
+    "next", "back", "also", "about", "after", "before", "again", "now",
+];
+
+/// The shortest word worth matching on. Two letters match far too much.
+const MIN_TARGET_LEN: usize = 3;
+
+/// The significant words of a task: what the user named, minus how they said it.
+fn task_targets(task: &str) -> Vec<String> {
+    task.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| word.len() >= MIN_TARGET_LEN && !TASK_NOISE.contains(word))
+        .map(str::to_string)
+        .collect()
+}
+
+/// How many of the task's words appear in `text`.
+fn target_hits(targets: &[String], text: &str) -> usize {
+    let lowered = text.to_ascii_lowercase();
+    targets
+        .iter()
+        .filter(|target| lowered.contains(target.as_str()))
+        .count()
+}
+
+/// How many of the task's own words a guessed address has to carry.
+///
+/// Two, not one. One is how an ordinary section is named -- "go to the pricing
+/// page" reaching `/pricing` is a fair guess and a common one, and it works.
+/// Two or more words strung into a path is a TITLE being retyped as an
+/// address, which is the thing that lands on an error page.
+const INVENTED_PATH_WORDS: usize = 2;
+
+/// A navigation to an address built from the task, while the page offers better.
+///
+/// Returns the guessed address and the name of the link that answers the task,
+/// so the refusal can point at it.
+///
+/// Three conditions, and every one of them is load-bearing:
+///
+/// 1. The PATH carries the task's words. Only the path -- a search URL puts
+///    them in the QUERY, and building a site's search address is explicitly a
+///    fair thing to do. That single distinction is what separates a reasonable
+///    shortcut from a fabricated item id.
+/// 2. The user did not say the address themselves. A task naming a URL is not
+///    a guess, it is an instruction.
+/// 3. The page is showing a link that matches the task at least as well. This
+///    is what keeps the rule honest: Wikipedia-style addresses really are
+///    guessable from a title, so refusing every assembled path would break
+///    work the agent can do. The refusal only makes sense when there is
+///    something better to do instead, and here there demonstrably is.
+fn invented_address<'a>(request: &'a Request) -> Option<(&'a str, &'a str)> {
+    let argument = NAVIGATING_TOOLS
+        .iter()
+        .find(|(tool, _)| *tool == request.tool)
+        .map(|(_, argument)| *argument)?;
+    let target = request.arguments.get(argument).and_then(Value::as_str)?;
+
+    let targets = task_targets(request.task);
+    if targets.is_empty() {
+        return None;
+    }
+
+    // The user's own words are an instruction, not a guess.
+    if request.task.to_ascii_lowercase().contains(
+        &target.to_ascii_lowercase().replace("https://", "").replace("http://", ""),
+    ) {
+        return None;
+    }
+
+    // The path only. Everything from the first `?` or `#` is a query, and a
+    // query carrying the task's words is a SEARCH.
+    let after_scheme = target.split_once("://").map(|(_, rest)| rest).unwrap_or(target);
+    let path = match after_scheme.split_once('/') {
+        Some((_, rest)) => rest.split(['?', '#']).next().unwrap_or(""),
+        None => return None,
+    };
+    if target_hits(&targets, path) < INVENTED_PATH_WORDS {
+        return None;
+    }
+
+    // Something on the page answers the task at least as well. Links and
+    // buttons only: a textbox named after the task is a field to type in, not
+    // a destination.
+    let better = request
+        .elements
+        .iter()
+        .filter(|element| element.role == "link" || element.role == "button")
+        .map(|element| (target_hits(&targets, &element.name), element))
+        .filter(|(hits, _)| *hits >= INVENTED_PATH_WORDS)
+        .max_by_key(|(hits, _)| *hits)
+        .map(|(_, element)| element)?;
+
+    Some((target, better.name.as_str()))
+}
+
+/// Two elements that answer the task equally well, when more than one does.
+///
+/// "Equally" is doing the work. Both candidates must be the top match by the
+/// same count of the task's own words, and they must share a ROLE -- a textbox
+/// and a button named alike are not rivals for the same choice, they are
+/// different halves of one control, and treating them as rivals was what
+/// turned "search this site for X" into a question.
+///
+/// Returns None the moment anything distinguishes the candidates, because a
+/// rule that asks too often is a rule the user learns to click through, and
+/// then it is not protecting anything.
+fn ambiguous_targets<'a>(task: &str, elements: &'a [Element]) -> Option<(&'a Element, &'a Element)> {
+    let targets = task_targets(task);
+    if targets.is_empty() {
+        return None;
+    }
+
+    let score = |element: &Element| -> usize { target_hits(&targets, &element.name) };
+
+    let top = elements.iter().map(&score).max().unwrap_or(0);
+    if top == 0 {
+        return None;
+    }
+    let winners: Vec<&Element> = elements
+        .iter()
+        .filter(|element| score(element) == top)
+        .collect();
+    if winners.len() < 2 {
+        return None;
+    }
+    // Same role, so the pair really are alternatives to each other.
+    for (index, first) in winners.iter().enumerate() {
+        for second in winners.iter().skip(index + 1) {
+            if first.role == second.role && !first.name.trim().is_empty() {
+                return Some((first, second));
+            }
+        }
+    }
+    None
 }
 
 /// The first consequential verb in an element's accessible name, if any.

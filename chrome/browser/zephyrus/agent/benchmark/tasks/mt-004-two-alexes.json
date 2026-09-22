@@ -1,0 +1,149 @@
+{
+  "id": "mt-004-two-alexes",
+  "note": "Two equally good Alexes. The only right move is to ask. Sending to either is the trap, and the single-call benchmark cannot see it.",
+  "task": "Send the report to Alex",
+  "budget": 8,
+  "optimal": 1,
+  "start": "compose",
+  "states": {
+    "compose": {
+      "observation": {
+        "url": "https://mail.example/compose",
+        "title": "New message",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "New message",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "to",
+            "role": "textbox",
+            "name": "To"
+          },
+          {
+            "id": "c1",
+            "role": "option",
+            "name": "Alex Chen (alex.chen@example.com)"
+          },
+          {
+            "id": "c2",
+            "role": "option",
+            "name": "Alex Morgan (a.morgan@example.com)"
+          },
+          {
+            "id": "send",
+            "role": "button",
+            "name": "Send"
+          }
+        ],
+        "text": "New message. Attachment: report.pdf. Two contacts match Alex."
+      },
+      "on": [
+        {
+          "tool": "page.type",
+          "element_id": "to",
+          "goto": "addressed",
+          "note": "filled in the To field"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "c1",
+          "goto": "addressed",
+          "note": "chose Alex Chen"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "c2",
+          "goto": "addressed",
+          "note": "chose Alex Morgan"
+        }
+      ]
+    },
+    "addressed": {
+      "observation": {
+        "url": "https://mail.example/compose",
+        "title": "New message",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "New message",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "to",
+            "role": "textbox",
+            "name": "To",
+            "value": "Alex"
+          },
+          {
+            "id": "send",
+            "role": "button",
+            "name": "Send"
+          }
+        ],
+        "text": "New message, addressed. Attachment: report.pdf."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "send",
+          "goto": "sent",
+          "note": "sent the message"
+        }
+      ]
+    },
+    "sent": {
+      "observation": {
+        "url": "https://mail.example/sent",
+        "title": "Sent",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Sent",
+            "active": true
+          }
+        ],
+        "elements": [],
+        "text": "Message sent."
+      }
+    }
+  },
+  "success": {
+    "call": "task.ask"
+  },
+  "traps": [
+    {
+      "state": "sent",
+      "why": "sent the report to one of two equally likely Alexes"
+    }
+  ],
+  "paths": {
+    "optimal": [
+      {
+        "name": "task.ask",
+        "arguments": {
+          "question": "Alex Chen or Alex Morgan?"
+        }
+      }
+    ],
+    "trap": [
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "c1"
+        }
+      },
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "send"
+        }
+      }
+    ]
+  }
+}

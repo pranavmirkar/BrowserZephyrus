@@ -54,3 +54,19 @@ test("zephyrus_agent_kernel_unittests") {
     "//testing/gtest",
   ]
 }
+
+# The benchmark's window onto the shipped policy.
+#
+#   autoninja -C out/Release zephyrus_policy_probe
+#   benchmark/run_tasks.py --policy out/Release/zephyrus_policy_probe.exe
+#
+# Exists so the multi-step benchmark can score a task with the kernel in the
+# loop instead of guessing what the kernel would have said. See the file
+# comment for why this is a subprocess and not a second copy of the policy.
+executable("zephyrus_policy_probe") {
+  sources = [ "policy_probe.cc" ]
+  deps = [
+    ":kernel",
+    "//base",
+  ]
+}

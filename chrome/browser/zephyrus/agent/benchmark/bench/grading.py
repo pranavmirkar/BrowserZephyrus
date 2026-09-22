@@ -98,7 +98,164 @@ def extract_call(response: str) -> ToolCall | None:
             # wrong.
             return ToolCall(name=name, arguments={"__malformed__": args})
         return ToolCall(name=name, arguments=args)
-    return None
+    return extract_call_syntax(response)
+
+
+# Tool names, for the call-syntax fallback below. Set once by the runners from
+# the contract, because recognising `task.ask "why?"` as a call requires
+# knowing that `task.ask` is a real tool -- guessing at the SHAPE of a name
+# instead was tried in the kernel and failed in both directions.
+_KNOWN_TOOLS: tuple[str, ...] = ()
+# name -> its parameter names, in contract order. Positional arguments are
+# mapped onto these, which is what the kernel's contract does with them: a
+# model that writes `page.select "e1", "Price"` has said exactly what it means
+# and should not be told its arguments are not an object.
+_TOOL_PARAMS: dict[str, list[str]] = {}
+
+
+def set_known_tools(contract) -> None:
+    """Takes the contract (name -> tool), or bare names when that is all there is."""
+    global _KNOWN_TOOLS, _TOOL_PARAMS
+    _KNOWN_TOOLS = tuple(contract)
+    _TOOL_PARAMS = {}
+    if isinstance(contract, dict):
+        for name, tool in contract.items():
+            properties = (tool.get("parameters") or {}).get("properties") or {}
+            _TOOL_PARAMS[name] = list(properties)
+
+
+def extract_call_syntax(response: str, known=None) -> ToolCall | None:
+    """Recover a call written as `tool.name ...` rather than as JSON.
+
+    A PORT of kernel/src/extraction.rs, and it has to stay one. Production
+    accepts this form because real models emit it -- every branch below was
+    written there after a measured failure -- so a benchmark that takes JSON
+    alone grades a stricter browser than the one we ship.
+
+    MEASURED, and the reason this exists: qwen2.5:7b answered
+    `task.ask "Which release notes should I summarise?"` four turns running.
+    The kernel would have executed each one. The benchmark scored all four as
+    "no tool call could be read" and called the model stuck -- a failure
+    invented entirely by the harness.
+
+    The duplication is the real defect. Two extractors in two languages will
+    drift, and this one has already been the narrower for some time. The fix is
+    a shared corpus both must satisfy; until then, any change to the Rust file
+    belongs here in the same commit.
+    """
+    names = tuple(known) if known else _KNOWN_TOOLS
+    if not names:
+        return None
+    text = response.strip()
+    matches = [name for name in names if text.startswith(name)]
+    if not matches:
+        return None
+    # Longest match, so `task.complete` is never read as a shorter tool that
+    # happens to be a prefix of it.
+    name = max(matches, key=len)
+
+    after = text[len(name):]
+    # A name has to end where the name ends: `page.clicked` is not `page.click`
+    # with an argument of "ed". Checked BEFORE trimming, so the space that
+    # separates a name from its argument is still there to see.
+    if after[:1] and (after[0].isalnum() or after[0] in "_."):
+        return None
+    rest = after.strip()
+
+    # The tool listing prints `- browser.navigate [R1] Load a URL`, and models
+    # copy the tag back. We printed it; refusing to read it is our bug.
+    tag = re.match(r"^\[R\d\]\s*(.*)$", rest, re.DOTALL)
+    if tag:
+        rest = tag.group(1).strip()
+
+    if rest.startswith("("):
+        close = rest.rfind(")")
+        if close > 0:
+            rest = rest[1:close].strip()
+
+    if not rest:
+        return ToolCall(name=name, arguments={})
+    try:
+        parsed = json.loads(rest)
+    except json.JSONDecodeError:
+        pairs = _keyword_arguments(rest)
+        if pairs is not None:
+            return ToolCall(name=name, arguments=pairs)
+        positional = _positional_arguments(rest)
+        if positional is not None:
+            return ToolCall(name=name, arguments=_map_positional(name, positional))
+        # Unquoted and not JSON: the whole tail is the one argument.
+        return ToolCall(name=name, arguments=_map_positional(name, [rest]))
+    if isinstance(parsed, dict):
+        return ToolCall(name=name, arguments=parsed)
+    if isinstance(parsed, list):
+        return ToolCall(
+            name=name,
+            arguments={} if not parsed else _map_positional(name, parsed),
+        )
+    return ToolCall(name=name, arguments=_map_positional(name, [parsed]))
+
+
+def _positional_arguments(inside: str) -> list[Any] | None:
+    """`"e1", "Price"` as a list, or None if it is not that."""
+    parts = _split_top_level(inside)
+    if len(parts) < 2:
+        return None
+    values: list[Any] = []
+    for part in parts:
+        try:
+            values.append(json.loads(part))
+        except json.JSONDecodeError:
+            values.append(part.strip("'\""))
+    return values
+
+
+def _map_positional(name: str, values: list[Any]) -> dict[str, Any]:
+    """Positional arguments onto the tool's parameter names, in contract order."""
+    params = _TOOL_PARAMS.get(name) or []
+    if not params:
+        return {"__positional__": values}
+    return {key: value for key, value in zip(params, values)}
+
+
+def _keyword_arguments(inside: str) -> dict[str, Any] | None:
+    """`element_id="e3", text="hello"` as a dict, or None if it is not that."""
+    pairs: dict[str, Any] = {}
+    for part in _split_top_level(inside):
+        key, sep, value = part.partition("=")
+        if not sep or not key.strip().isidentifier():
+            return None
+        raw = value.strip()
+        try:
+            pairs[key.strip()] = json.loads(raw)
+        except json.JSONDecodeError:
+            pairs[key.strip()] = raw.strip("'\"")
+    return pairs or None
+
+
+def _split_top_level(inside: str) -> list[str]:
+    """Split on commas that are not inside quotes or brackets."""
+    parts: list[str] = []
+    depth = 0
+    quote = ""
+    current: list[str] = []
+    for ch in inside:
+        if quote:
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+            continue
+        current.append(ch)
+    parts.append("".join(current))
+    return [part.strip() for part in parts if part.strip()]
 
 
 def _candidates(response: str) -> list[str]:
