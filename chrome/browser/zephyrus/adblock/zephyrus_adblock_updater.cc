@@ -4,6 +4,7 @@
 
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_updater.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "base/containers/span.h"
@@ -11,8 +12,10 @@
 #include "base/files/important_file_writer.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/strings/strcat.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "net/base/load_flags.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
@@ -48,7 +51,15 @@ constexpr const char* kListUrls[] = {
     // uBO annoyances-cookies: keeps hard cases (dynamic CMPs) covered.
     "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/"
     "annoyances-cookies.txt",
+    // IndianList: the regional list for Indian sites (Hindi and English news,
+    // cricket and film portals) and the ad networks they run, which the
+    // global lists cover thinly.
+    "https://easylist-downloads.adblockplus.org/indianlist.txt",
 };
+
+// How many `!#include`s one list may pull in. uBO's filters.txt has ten
+// today; the cap only exists so a hostile list cannot fan the updater out.
+constexpr size_t kMaxIncludesPerList = 24;
 constexpr size_t kNumLists = std::size(kListUrls);
 
 // Safe-buffer accessor for the URL table (avoids raw C-array indexing).
@@ -72,35 +83,108 @@ constexpr size_t kMaxCombinedSize = 32u * 1024 * 1024;
 // more likely than every publisher legitimately shrinking at once.
 constexpr double kMinShrinkRatio = 0.6;
 
-// Writes `contents` to `path` atomically (temp file + rename). Runs on a
-// background thread. Returns true on success.
-bool WriteCombinedList(const base::FilePath& path,
-                       std::unique_ptr<std::string> contents) {
-  if (!base::CreateDirectory(path.DirName())) {
+// uBO's quick-fixes.txt: where the fast-moving fixes (YouTube's among them)
+// land. Its own header says "Expires: 8 hours", so it is refreshed on that
+// cadence by itself; see UpdateKind.
+constexpr size_t kQuickFixesIndex = 3;
+
+// A combined file is never written without these: EasyList, EasyPrivacy and
+// uBO's main list are the blocker. Anything else missing is tolerated.
+constexpr size_t kCoreLists[] = {0, 1, 2};
+
+// The indices above are positions in kListUrls; reordering that table must
+// not silently point them at different lists.
+static_assert(std::string_view(kListUrls[kQuickFixesIndex])
+                  .ends_with("/quick-fixes.txt"));
+static_assert(std::string_view(kListUrls[0]).ends_with("/easylist.txt"));
+static_assert(std::string_view(kListUrls[1]).ends_with("/easyprivacy.txt"));
+static_assert(std::string_view(kListUrls[2]).ends_with("/filters.txt"));
+
+// Builds the new combined file from the lists just downloaded and writes it.
+// Runs on a blocking sequence, because it reads the file it replaces.
+//
+// A list with no fresh copy -- its download failed, one of its `!#include`s
+// failed, or this was a quick-fixes-only run -- is CARRIED FORWARD from the
+// previous file rather than dropped. Dropping it was the old behaviour, and it
+// meant one host having a bad hour left every user without that list's rules
+// until the next day's update.
+bool AssembleAndWrite(const base::FilePath& path,
+                      std::vector<std::optional<std::string>> fresh,
+                      bool full_refresh,
+                      int64_t now_seconds) {
+  std::string existing;
+  if (!base::ReadFileToStringWithMaxSize(path, &existing,
+                                         kMaxCombinedSize + 1024 * 1024)) {
+    existing.clear();  // Missing, unreadable or implausibly large: start over.
+  }
+  const CombinedListHeader old_header = ParseCombinedListHeader(existing);
+
+  std::string lists;
+  lists.reserve(kMaxCombinedSize / 2);
+  size_t fresh_count = 0;
+  for (size_t i = 0; i < kNumLists; ++i) {
+    std::string_view section;
+    if (fresh[i]) {
+      section = *fresh[i];
+      ++fresh_count;
+    } else if (std::optional<std::string_view> old =
+                   FindListSection(existing, UrlAt(i))) {
+      section = *old;
+      if (full_refresh) {
+        LOG(WARNING) << "[Zephyrus] keeping the previous copy of " << UrlAt(i);
+      }
+    } else {
+      if (std::ranges::contains(kCoreLists, i)) {
+        LOG(ERROR) << "[Zephyrus] no copy of core filter list " << UrlAt(i)
+                   << "; keeping the previous combined file";
+        return false;
+      }
+      continue;
+    }
+    lists += '\n';
+    lists += ListSectionMarker(UrlAt(i));
+    lists += '\n';
+    lists += section;
+    if (!section.ends_with('\n')) {
+      lists += '\n';
+    }
+  }
+  if (fresh_count == 0) {
+    return false;  // Nothing new; leave the file (and its age) alone.
+  }
+
+  // The full-refresh stamp moves only when most lists really were refreshed;
+  // otherwise the next check retries the full download instead of treating a
+  // mostly carried-forward file as current for another day.
+  const bool refreshed = full_refresh && fresh_count * 2 >= kNumLists;
+  const int64_t stamp =
+      refreshed ? now_seconds : old_header.full_update_seconds;
+  std::string contents = CombinedListHeaderText(stamp) + lists;
+
+  if (contents.size() < kMinCombinedSize || contents.size() > kMaxCombinedSize) {
+    LOG(ERROR) << "[Zephyrus] combined filter list size implausible ("
+               << contents.size() << " bytes); keeping the previous copy";
     return false;
   }
-  return base::ImportantFileWriter::WriteFileAtomically(path, *contents,
-                                                        "ZephyrusAdBlock");
-}
-
-// Refuses an update that would shrink the stored list dramatically, then writes
-// atomically. A partial outage upstream, or a host serving a stub, should leave
-// the user on yesterday's working rules rather than a gutted file.
-bool WriteCombinedListIfNotAShrink(const base::FilePath& path,
-                                   std::unique_ptr<std::string> contents) {
-  std::optional<int64_t> existing = base::GetFileSize(path);
-  if (existing.has_value() && *existing > 0) {
-    const double ratio =
-        static_cast<double>(contents->size()) / static_cast<double>(*existing);
+  // Never replace a good list with a much smaller one: a partial outage
+  // upstream, or a host serving a stub, should leave the user on yesterday's
+  // working rules rather than a gutted file.
+  if (!existing.empty()) {
+    const double ratio = static_cast<double>(contents.size()) /
+                         static_cast<double>(existing.size());
     if (ratio < kMinShrinkRatio) {
       LOG(ERROR) << "[Zephyrus] refusing filter list update: new size "
-                 << contents->size() << " is only " << (ratio * 100)
-                 << "% of the existing " << *existing
+                 << contents.size() << " is only " << (ratio * 100)
+                 << "% of the existing " << existing.size()
                  << " bytes; keeping the previous copy";
       return false;
     }
   }
-  return WriteCombinedList(path, std::move(contents));
+  if (!base::CreateDirectory(path.DirName())) {
+    return false;
+  }
+  return base::ImportantFileWriter::WriteFileAtomically(path, contents,
+                                                        "ZephyrusAdBlock");
 }
 
 }  // namespace
@@ -149,18 +233,18 @@ bool LooksLikeFilterList(std::string_view body) {
 
 ZephyrusAdblockUpdater::ZephyrusAdblockUpdater(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    base::FilePath output_path)
+    base::FilePath output_path,
+    UpdateKind kind)
     : url_loader_factory_(std::move(url_loader_factory)),
-      output_path_(std::move(output_path)) {}
+      output_path_(std::move(output_path)),
+      kind_(kind) {}
 
 ZephyrusAdblockUpdater::~ZephyrusAdblockUpdater() = default;
 
-void ZephyrusAdblockUpdater::Start(CompletionCallback on_complete) {
-  on_complete_ = std::move(on_complete);
-  bodies_.resize(kNumLists);
-  pending_ = kNumLists;
+namespace {
 
-  net::NetworkTrafficAnnotationTag traffic_annotation =
+net::NetworkTrafficAnnotationTag ListTrafficAnnotation() {
+  return
       net::DefineNetworkTrafficAnnotation("zephyrus_adblock_list_update", R"(
         semantics {
           sender: "Zephyrus Ad Blocker"
@@ -170,35 +254,59 @@ void ZephyrusAdblockUpdater::Start(CompletionCallback on_complete) {
             "and tracker blocker stays current, including fast-moving rules "
             "such as YouTube ad blocking."
           trigger:
-            "On startup when the local copy of the lists is older than a day, "
-            "and roughly once a day while the browser is running."
+            "Shortly after startup and hourly while the browser runs: every "
+            "list is refreshed once a day, and uBlock Origin's quick-fixes "
+            "list (the one its publisher marks as expiring after 8 hours) "
+            "every 8 hours. Also fetches the files those lists include from "
+            "the same directory, and IndianList from adblockplus.org."
           data: "None. Only a plain HTTPS GET for the public list files."
           destination: WEBSITE
         }
         policy {
           cookies_allowed: NO
-          setting: "This can be turned off via the ad blocker settings."
+          setting: "Turning the ad blocker off stops these downloads."
           policy_exception_justification: "Not yet implemented."
         })");
+}
 
-  for (size_t i = 0; i < kNumLists; ++i) {
-    auto request = std::make_unique<network::ResourceRequest>();
-    request->url = GURL(UrlAt(i));
-    request->method = "GET";
-    request->credentials_mode = network::mojom::CredentialsMode::kOmit;
-    request->load_flags = net::LOAD_DO_NOT_SAVE_COOKIES;
+}  // namespace
 
-    auto loader = network::SimpleURLLoader::Create(std::move(request),
-                                                   traffic_annotation);
-    loader->SetTimeoutDuration(base::Seconds(90));
-    // Bounded download (5 MB cap); every individual upstream list is well under
-    // that (EasyList, the largest, is a few MB).
-    loader->DownloadToString(
-        url_loader_factory_.get(),
-        base::BindOnce(&ZephyrusAdblockUpdater::OnListDownloaded,
-                       weak_factory_.GetWeakPtr(), i),
-        network::SimpleURLLoader::kMaxBoundedStringDownloadSize);
-    loaders_.push_back(std::move(loader));
+void ZephyrusAdblockUpdater::Fetch(
+    const GURL& url,
+    base::OnceCallback<void(std::optional<std::string>)> on_body) {
+  auto request = std::make_unique<network::ResourceRequest>();
+  request->url = url;
+  request->method = "GET";
+  request->credentials_mode = network::mojom::CredentialsMode::kOmit;
+  request->load_flags = net::LOAD_DO_NOT_SAVE_COOKIES;
+
+  auto loader = network::SimpleURLLoader::Create(std::move(request),
+                                                 ListTrafficAnnotation());
+  loader->SetTimeoutDuration(base::Seconds(90));
+  // Bounded download (5 MB cap); every individual upstream list is well under
+  // that (EasyList, the largest, is a few MB).
+  loader->DownloadToString(
+      url_loader_factory_.get(), std::move(on_body),
+      network::SimpleURLLoader::kMaxBoundedStringDownloadSize);
+  loaders_.push_back(std::move(loader));
+}
+
+void ZephyrusAdblockUpdater::Start(CompletionCallback on_complete) {
+  on_complete_ = std::move(on_complete);
+  bodies_.resize(kNumLists);
+  std::vector<size_t> wanted;
+  if (kind_ == UpdateKind::kQuickFixes) {
+    wanted.push_back(kQuickFixesIndex);
+  } else {
+    for (size_t i = 0; i < kNumLists; ++i) {
+      wanted.push_back(i);
+    }
+  }
+  pending_ = wanted.size();
+  for (size_t i : wanted) {
+    Fetch(GURL(UrlAt(i)),
+          base::BindOnce(&ZephyrusAdblockUpdater::OnListDownloaded,
+                         weak_factory_.GetWeakPtr(), i));
   }
 }
 
@@ -217,45 +325,106 @@ void ZephyrusAdblockUpdater::OnListDownloaded(
                << UrlAt(index);
   } else {
     bodies_[index] = std::move(*body);
+    // uBO's filters.txt is mostly a table of contents: its rules live in
+    // filters-general.txt, filters-2020..2026.txt and the rest, pulled in with
+    // `!#include`. Read as comments, those lines dropped most of uBO's rules
+    // -- and nearly all its anti-adblock fixes. Includes resolve against the
+    // list's own URL, and FindListIncludes admits only bare same-directory
+    // names, so they can only reach the directory the list came from.
+    const GURL base_url(UrlAt(index));
+    std::vector<std::string> names = FindListIncludes(bodies_[index]);
+    if (names.size() > kMaxIncludesPerList) {
+      names.resize(kMaxIncludesPerList);
+    }
+    for (const std::string& name : names) {
+      const GURL url = base_url.Resolve(name);
+      if (!url.is_valid() || !url.SchemeIs(url::kHttpsScheme) ||
+          url.host() != base_url.host() || includes_.contains(url.spec())) {
+        continue;
+      }
+      includes_[url.spec()];  // Reserve: a second mention is not refetched.
+      ++pending_;
+      Fetch(url, base::BindOnce(&ZephyrusAdblockUpdater::OnIncludeDownloaded,
+                                weak_factory_.GetWeakPtr(), url.spec()));
+    }
   }
   if (--pending_ == 0) {
     OnAllDownloaded();
   }
 }
 
+void ZephyrusAdblockUpdater::OnIncludeDownloaded(
+    std::string url,
+    std::optional<std::string> body) {
+  // Included files are fragments: no header of their own, so only the markup
+  // half of LooksLikeFilterList applies. A missing include leaves the parent
+  // list's other rules in place.
+  if (body && !body->empty() &&
+      include_bytes_ + body->size() <= kMaxCombinedSize &&
+      LooksLikeFilterList(base::StrCat({"!\n", *body}))) {
+    // Bounded in total, not just per file: everything held here stays in
+    // memory until the combined list is written.
+    include_bytes_ += body->size();
+    includes_[url] = std::move(*body);
+  } else {
+    LOG(WARNING) << "[Zephyrus] filter list include failed: " << url;
+  }
+  if (--pending_ == 0) {
+    OnAllDownloaded();
+  }
+}
+
+std::optional<std::string> ZephyrusAdblockUpdater::ExpandIncludes(
+    size_t index) const {
+  const std::string& body = bodies_[index];
+  if (includes_.empty() || body.find("!#include ") == std::string::npos) {
+    return body;
+  }
+  const GURL base_url(UrlAt(index));
+  std::string out;
+  out.reserve(body.size());
+  size_t pos = 0;
+  while (pos < body.size()) {
+    size_t end = body.find('\n', pos);
+    const size_t next = end == std::string::npos ? body.size() : end + 1;
+    const std::string_view line = std::string_view(body).substr(pos, next - pos);
+    pos = next;
+    // Inlined in place, not appended: the include often sits inside an
+    // `!#if` block (filters-mobile.txt) that must still govern it.
+    std::vector<std::string> names = FindListIncludes(line);
+    if (names.size() == 1) {
+      auto it = includes_.find(base_url.Resolve(names[0]).spec());
+      if (it != includes_.end()) {
+        if (it->second.empty()) {
+          // Requested but failed: this copy of the list is missing part of
+          // its rules. Returning nothing makes the caller keep the previous,
+          // complete copy instead of adopting a hollow one.
+          return std::nullopt;
+        }
+        out.append(it->second);
+        out.push_back('\n');
+        continue;
+      }
+    }
+    out.append(line);
+  }
+  return out;
+}
+
 void ZephyrusAdblockUpdater::OnAllDownloaded() {
-  auto combined = std::make_unique<std::string>();
-  combined->reserve(8 * 1024 * 1024);
-  combined->append(
-      "! Zephyrus combined filter lists (auto-updated). Do not edit.\n");
-  for (size_t i = 0; i < bodies_.size(); ++i) {
-    if (bodies_[i].empty()) {
-      continue;
+  std::vector<std::optional<std::string>> fresh(kNumLists);
+  for (size_t i = 0; i < kNumLists; ++i) {
+    if (!bodies_[i].empty()) {
+      fresh[i] = ExpandIncludes(i);
     }
-    combined->append("\n! ===== ");
-    combined->append(UrlAt(i));
-    combined->append(" =====\n");
-    combined->append(bodies_[i]);
-    combined->append("\n");
   }
-
-  if (combined->size() < kMinCombinedSize ||
-      combined->size() > kMaxCombinedSize) {
-    // Too little (or absurdly much) came back to trust; keep the existing file.
-    LOG(ERROR) << "[Zephyrus] combined filter list size implausible ("
-               << combined->size() << " bytes); keeping the previous copy";
-    if (on_complete_) {
-      std::move(on_complete_).Run(false);
-    }
-    return;
-  }
-
-  // Never replace a good list with a much smaller one. Checked on a blocking
-  // sequence together with the write, because it has to stat the existing file.
+  bodies_.clear();
+  includes_.clear();
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
-      base::BindOnce(&WriteCombinedListIfNotAShrink, output_path_,
-                     std::move(combined)),
+      base::BindOnce(&AssembleAndWrite, output_path_, std::move(fresh),
+                     kind_ == UpdateKind::kFull,
+                     base::Time::Now().ToTimeT()),
       base::BindOnce(&ZephyrusAdblockUpdater::OnFileWritten,
                      weak_factory_.GetWeakPtr()));
 }

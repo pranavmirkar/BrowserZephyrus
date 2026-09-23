@@ -4,18 +4,44 @@
 
 #include "chrome/browser/zephyrus/privacy/zephyrus_fingerprint_seed_host.h"
 
+#include <optional>
 #include <vector>
 
 #include "chrome/browser/zephyrus/privacy/fingerprint_seed_provider.h"
 #include "chrome/browser/zephyrus/privacy/privacy_features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "url/origin.h"
 
 namespace zephyrus_privacy {
+
+NavigationSeed SeedForNavigation(content::NavigationHandle* navigation) {
+  NavigationSeed result;
+  content::RenderFrameHost* rfh = navigation->GetRenderFrameHost();
+  const std::optional<url::Origin> origin = navigation->GetOriginToCommit();
+  if (!rfh || !origin) {
+    return result;  // Unknown: the renderer falls back to asking.
+  }
+  result.known = true;
+  // The same "off" answer GetSeed gives, so a pushed document and a fetched
+  // one can never disagree about whether they are perturbed.
+  const uint32_t mask = FingerprintSurfaceMask();
+  if (mask == 0) {
+    return result;
+  }
+  auto* provider = FingerprintSeedProvider::GetOrCreate(rfh->GetBrowserContext());
+  if (!provider) {
+    return result;
+  }
+  const FingerprintSeed seed = provider->SeedForCommit(*origin, rfh);
+  result.seed.assign(seed.begin(), seed.end());
+  result.surfaces = mask;
+  return result;
+}
 
 // static
 void ZephyrusFingerprintSeedHost::Create(

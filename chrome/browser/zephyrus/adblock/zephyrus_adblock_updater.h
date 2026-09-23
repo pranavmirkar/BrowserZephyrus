@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_ZEPHYRUS_ADBLOCK_ZEPHYRUS_ADBLOCK_UPDATER_H_
 #define CHROME_BROWSER_ZEPHYRUS_ADBLOCK_ZEPHYRUS_ADBLOCK_UPDATER_H_
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,6 +16,8 @@
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+
+class GURL;
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -50,6 +53,12 @@ bool LooksLikeFilterList(std::string_view body);
 //
 // One-shot: create, call Start(), and destroy after the completion callback
 // runs (destroying earlier cancels the in-flight downloads).
+// Which lists a run fetches. Lists not fetched keep their previous copy.
+enum class UpdateKind {
+  kFull,        // Every list; the daily refresh.
+  kQuickFixes,  // Only uBO's quick-fixes.txt, which expires after 8 hours.
+};
+
 class ZephyrusAdblockUpdater {
  public:
   // `success` is true only when a fresh, plausibly-complete combined list was
@@ -58,7 +67,8 @@ class ZephyrusAdblockUpdater {
 
   ZephyrusAdblockUpdater(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      base::FilePath output_path);
+      base::FilePath output_path,
+      UpdateKind kind = UpdateKind::kFull);
   ZephyrusAdblockUpdater(const ZephyrusAdblockUpdater&) = delete;
   ZephyrusAdblockUpdater& operator=(const ZephyrusAdblockUpdater&) = delete;
   ~ZephyrusAdblockUpdater();
@@ -66,16 +76,26 @@ class ZephyrusAdblockUpdater {
   void Start(CompletionCallback on_complete);
 
  private:
+  void Fetch(const GURL& url,
+             base::OnceCallback<void(std::optional<std::string>)> on_body);
   void OnListDownloaded(size_t index, std::optional<std::string> body);
+  void OnIncludeDownloaded(std::string url, std::optional<std::string> body);
+  // bodies_[index] with each `!#include` line replaced by the file it names,
+  // or nullopt when one of those files failed to download.
+  std::optional<std::string> ExpandIncludes(size_t index) const;
   void OnAllDownloaded();
   void OnFileWritten(bool ok);
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   const base::FilePath output_path_;
+  const UpdateKind kind_;
   CompletionCallback on_complete_;
 
   std::vector<std::unique_ptr<network::SimpleURLLoader>> loaders_;
   std::vector<std::string> bodies_;  // per-list; empty string = failed/skipped
+  // Included files by resolved URL; empty = requested but failed.
+  std::map<std::string, std::string> includes_;
+  size_t include_bytes_ = 0;
   size_t pending_ = 0;
 
   base::WeakPtrFactory<ZephyrusAdblockUpdater> weak_factory_{this};

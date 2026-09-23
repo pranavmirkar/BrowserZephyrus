@@ -10,7 +10,12 @@
 
 #include <algorithm>
 
+#include <array>
+
 #include "base/functional/bind.h"
+#include "base/containers/span.h"
+#include "base/rand_util.h"
+#include "base/strings/strcat.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/json/json_writer.h"
@@ -21,6 +26,9 @@
 #include "chrome/browser/prefs/session_startup_pref.h"
 #include "chrome/browser/sessions/session_restore.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/history/history_service_factory.h"
+#include "components/keyed_service/core/service_access_type.h"
+#include "crypto/hash.h"
 #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
 #include "chrome/browser/ui/browser.h"
@@ -108,6 +116,16 @@ ZephyrusWorkspaceStore::ZephyrusWorkspaceStore(Profile* profile)
   // read regular browsing data into a session that is supposed to know none of
   // it. Skip the load: a single fresh default workspace, nothing inherited.
   const bool is_private = profile_ && profile_->IsOffTheRecord();
+  // A fresh salt, replaced by the stored one when there is state to load.
+  visit_salt_ = base::HexEncode(base::RandBytesAsVector(16));
+  // Private Workspace keeps no history database to follow, and its index dies
+  // with the session anyway.
+  if (profile_ && !is_private) {
+    if (history::HistoryService* history = HistoryServiceFactory::GetForProfile(
+            profile_, ServiceAccessType::EXPLICIT_ACCESS)) {
+      history_observation_.Observe(history);
+    }
+  }
   // Restore the saved workspace list (and the per-tab order used to re-tag
   // restored tabs). Falls back to a single default workspace on first run.
   if (is_private || !LoadState()) {
@@ -437,6 +455,7 @@ namespace {
 // record and lookup time so the two always agree. Strips what should never be
 // written to the Preferences file: embedded credentials (user:pass@host) and
 // fragments. Returns empty for URLs not worth indexing.
+// The canonical form of a URL for the visit index, before hashing.
 std::string ZephyrusVisitKey(const GURL& url) {
   if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
     return std::string();
@@ -454,13 +473,25 @@ std::string ZephyrusVisitKey(const GURL& url) {
 }
 }  // namespace
 
+std::string ZephyrusWorkspaceStore::VisitKey(const GURL& url) const {
+  const std::string spec = ZephyrusVisitKey(url);
+  if (spec.empty()) {
+    return std::string();
+  }
+  // 128 bits of a salted SHA-256: collision-free for 150 entries a workspace
+  // by a wide margin, and half the size of the full digest in the pref.
+  const std::array<uint8_t, crypto::hash::kSha256Size> digest =
+      crypto::hash::Sha256(base::StrCat({visit_salt_, "\n", spec}));
+  return base::HexEncode(base::span(digest).first<16>());
+}
+
 void ZephyrusWorkspaceStore::RecordVisit(int workspace_id, const GURL& url) {
   // Cap per workspace: this rides in a pref, and an unbounded index would grow
   // the Preferences file without limit.
   constexpr size_t kMaxVisitsPerWorkspace = 150;
   // Only ordinary web pages are worth scoping. chrome:// pages, the NTP and
   // blank entries aren't things the user "visited in a workspace".
-  const std::string spec = ZephyrusVisitKey(url);
+  const std::string spec = VisitKey(url);
   if (workspace_id == 0 || spec.empty()) {
     return;
   }
@@ -482,8 +513,48 @@ bool ZephyrusWorkspaceStore::WasVisitedInWorkspace(int workspace_id,
   const auto it = visit_lookup_.find(workspace_id);
   // Same canonical form as RecordVisit, or a URL with a #fragment would never
   // match its recorded fragment-less twin.
-  return it != visit_lookup_.end() &&
-         it->second.count(ZephyrusVisitKey(url)) > 0;
+  return it != visit_lookup_.end() && it->second.count(VisitKey(url)) > 0;
+}
+
+void ZephyrusWorkspaceStore::OnHistoryDeletions(
+    history::HistoryService* history_service,
+    const history::DeletionInfo& deletion_info) {
+  if (visit_lookup_.empty()) {
+    return;
+  }
+  if (deletion_info.IsAllHistory()) {
+    visit_order_.clear();
+    visit_lookup_.clear();
+    SchedulePersist();
+    return;
+  }
+  // Specific URLs -- chosen by the user, or aged out by history's own
+  // expiry. deleted_rows() lists the URLs with no visits left, which is the
+  // set that must no longer be known here.
+  bool changed = false;
+  for (const history::URLRow& row : deletion_info.deleted_rows()) {
+    const std::string key = VisitKey(row.url());
+    if (key.empty()) {
+      continue;
+    }
+    for (auto& [workspace_id, lookup] : visit_lookup_) {
+      if (lookup.erase(key)) {
+        std::deque<std::string>& order = visit_order_[workspace_id];
+        std::erase(order, key);
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    SchedulePersist();
+  }
+}
+
+void ZephyrusWorkspaceStore::HistoryServiceBeingDeleted(
+    history::HistoryService* history_service) {
+  // Keyed services shut down before profile user data is destroyed, so this
+  // store outlives the service it watches.
+  history_observation_.Reset();
 }
 
 void ZephyrusWorkspaceStore::EraseWorkspaceState(int workspace_id) {
@@ -668,6 +739,7 @@ std::string ZephyrusWorkspaceStore::SerializeState() const {
     visits.Set(base::NumberToString(workspace_id), std::move(urls));
   }
   dict.Set("visits", std::move(visits));
+  dict.Set("visit_salt", visit_salt_);
   return base::WriteJson(dict).value_or(std::string());
 }
 
@@ -753,8 +825,18 @@ bool ZephyrusWorkspaceStore::LoadState() {
 
   // Rebuild the visit index. Both structures are filled together so lookup and
   // eviction order stay in step.
+  //
+  // The salt first: every key below is derived from it.
+  if (const std::string* salt = dict.FindString("visit_salt");
+      salt && !salt->empty()) {
+    visit_salt_ = *salt;
+  }
   visit_order_.clear();
   visit_lookup_.clear();
+  // Earlier builds stored the URLs themselves. Those are hashed on the way in,
+  // and the store is rewritten at once so the plain URLs leave the file now
+  // rather than whenever the next visit happens to be recorded.
+  bool migrated = false;
   if (const base::DictValue* visits = dict.FindDict("visits")) {
     for (const auto [key, url_list] : *visits) {
       int workspace_id = 0;
@@ -762,12 +844,26 @@ bool ZephyrusWorkspaceStore::LoadState() {
         continue;
       }
       for (const base::Value& visit : url_list.GetList()) {
-        if (const std::string* spec = visit.GetIfString()) {
-          visit_order_[workspace_id].push_back(*spec);
-          visit_lookup_[workspace_id].insert(*spec);
+        const std::string* stored = visit.GetIfString();
+        if (!stored) {
+          continue;
+        }
+        std::string visit_key = *stored;
+        if (visit_key.find("://") != std::string::npos) {
+          visit_key = VisitKey(GURL(*stored));
+          migrated = true;
+          if (visit_key.empty()) {
+            continue;
+          }
+        }
+        if (visit_lookup_[workspace_id].insert(visit_key).second) {
+          visit_order_[workspace_id].push_back(std::move(visit_key));
         }
       }
     }
+  }
+  if (migrated) {
+    SchedulePersist();
   }
 
   // Queue the saved per-tab order so restored tabs get re-tagged in sequence --

@@ -167,6 +167,11 @@ class ZephyrusSidebarView : public views::View,
   bool is_pinned() const { return pinned_; }
   void TogglePinned();
 
+  // Called by BrowserView as its window gains or loses activation. The reveal
+  // poll runs only while the window is active: it already refused to reveal an
+  // inactive window, but woke 20 times a second to find that out.
+  void OnWindowActivationChanged(bool active);
+
   // 0 tucked, 1 fully out. Drives how much of the window column the layout
   // reserves, so the page's edge tracks the panel instead of jumping once.
   //
@@ -252,6 +257,14 @@ class ZephyrusSidebarView : public views::View,
   // Animates the layer transform to the tucked-away (off-screen) position.
   void TuckAway();
 
+  // Runs a rebuild posted by ScheduleRebuildTabList, unless one already ran.
+  void RunScheduledRebuild();
+
+  // A plain tab switch: flips the old and new active rows in place. Returns
+  // false when the list itself has to change (the new tab has no row here).
+  bool UpdateActiveRowsInPlace(content::WebContents* old_contents,
+                               content::WebContents* new_contents);
+
   // Polls the cursor position; reveals the sidebar when the cursor reaches the
   // window's left edge. Polling is used because mouse-move events over the web
   // contents don't reliably reach this overlay view.
@@ -298,6 +311,11 @@ class ZephyrusSidebarView : public views::View,
   // its end IS the moment the panel is fully off screen, so there is no
   // duration to keep in sync by hand.
   gfx::SlideAnimation reveal_animation_{this};
+
+  // A rebuild is posted and has not run yet. Tab-strip events arrive in bursts
+  // -- an insert is followed by a selection -- and each used to post its own
+  // full rebuild of every row.
+  bool rebuild_pending_ = false;
   bool pinned_ = false;
 
   // Rounds the ends of each run of rows in `container` (see the .cc).

@@ -1776,6 +1776,22 @@ void ZephyrusSidebarView::AnimationEnded(const gfx::Animation* animation) {
   browser_view_->InvalidateLayout();
 }
 
+void ZephyrusSidebarView::OnWindowActivationChanged(bool active) {
+  // The poll runs only while tucked and unpinned; Reveal() and pinning stop it
+  // themselves, and TuckAway() starts it.
+  if (pinned_ || revealed_) {
+    return;
+  }
+  if (!active) {
+    reveal_poll_timer_.Stop();
+    return;
+  }
+  if (!reveal_poll_timer_.IsRunning()) {
+    reveal_poll_timer_.Start(FROM_HERE, base::Milliseconds(50), this,
+                             &ZephyrusSidebarView::OnRevealPoll);
+  }
+}
+
 void ZephyrusSidebarView::OnRevealPoll() {
   if (pinned_) {
     reveal_poll_timer_.Stop();  // Nothing to poll for; it is already out.
@@ -1823,7 +1839,53 @@ void ZephyrusSidebarView::OnTabStripModelChanged(
   if (!revealed_) {
     return;
   }
+  // A plain tab switch changes two rows' highlight, not the list. It used to
+  // rebuild every row -- destroying and recreating the whole list, with the
+  // row under the cursor -- on every click of a tab.
+  if (change.type() == TabStripModelChange::kSelectionOnly &&
+      selection.active_tab_changed() &&
+      UpdateActiveRowsInPlace(selection.old_contents, selection.new_contents)) {
+    return;
+  }
   ScheduleRebuildTabList();
+}
+
+bool ZephyrusSidebarView::UpdateActiveRowsInPlace(
+    content::WebContents* old_contents,
+    content::WebContents* new_contents) {
+  if (!new_contents) {
+    return false;
+  }
+  const int new_index = tab_strip_model_->GetIndexOfWebContents(new_contents);
+  const int old_index =
+      old_contents ? tab_strip_model_->GetIndexOfWebContents(old_contents)
+                   : TabStripModel::kNoTab;
+  ZephyrusTabRow* new_row = nullptr;
+  ZephyrusTabRow* old_row = nullptr;
+  for (views::View* child : tab_list_container_->children()) {
+    auto* row = views::AsViewClass<ZephyrusTabRow>(child);
+    if (!row) {
+      continue;
+    }
+    if (row->model_index() == new_index) {
+      new_row = row;
+    } else if (old_index != TabStripModel::kNoTab &&
+               row->model_index() == old_index) {
+      old_row = row;
+    }
+  }
+  // The new tab has no row here -- another workspace, or a list about to
+  // change for some other reason. Only a rebuild gets that right.
+  if (!new_row) {
+    return false;
+  }
+  if (old_row) {
+    old_row->UpdateContent(GetTabFavicon(old_contents),
+                           GetTabTitle(old_contents), /*is_active=*/false);
+  }
+  new_row->UpdateContent(GetTabFavicon(new_contents), GetTabTitle(new_contents),
+                         /*is_active=*/true);
+  return true;
 }
 
 void ZephyrusSidebarView::OnTabPinnedStateChanged(tabs::TabInterface* tab,
@@ -2111,10 +2173,23 @@ void ZephyrusSidebarView::ScheduleRebuildTabList() {
     return;
   }
 
-  // Posting lets the input event unwind first.
+  // Posting lets the input event unwind first. One posted rebuild covers any
+  // number of events before it runs.
+  if (rebuild_pending_) {
+    return;
+  }
+  rebuild_pending_ = true;
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&ZephyrusSidebarView::RebuildTabList,
+      FROM_HERE, base::BindOnce(&ZephyrusSidebarView::RunScheduledRebuild,
                                 weak_factory_.GetWeakPtr()));
+}
+
+void ZephyrusSidebarView::RunScheduledRebuild() {
+  // A direct RebuildTabList() since the post already did the work.
+  if (!rebuild_pending_) {
+    return;
+  }
+  RebuildTabList();
 }
 
 void ZephyrusSidebarView::CreateDragProxy(views::View* row) {
@@ -2519,6 +2594,7 @@ void ZephyrusSidebarView::CancelRowDrag() {
 }
 
 void ZephyrusSidebarView::RebuildTabList() {
+  rebuild_pending_ = false;
   // The tab list is about to be cleared, and clearing DELETES children. The
   // new-tab button in the heading belongs to the toolbar, so it goes back to
   // the parking view first; RebuildCompactChrome() re-adopts it at the end of

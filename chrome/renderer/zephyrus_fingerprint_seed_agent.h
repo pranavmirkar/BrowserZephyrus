@@ -8,6 +8,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "components/content_settings/renderer/content_settings_agent_impl.h"
 
@@ -51,6 +52,13 @@ class FingerprintSeedAgent : public content::RenderFrameObserver {
   // §6.5 per-surface mask; 0 when nothing may perturb.
   uint32_t SurfaceMask();
 
+  // The seed the browser PUSHED for the document about to commit at `url`
+  // (fragment removed). Adopted by that commit, so Seed() needs no IPC for it;
+  // dropped by any other commit. See DocumentStartPayload.
+  void SetPushedSeed(const std::string& url,
+                     std::optional<FingerprintSeed> seed,
+                     uint32_t surface_mask);
+
   // content::RenderFrameObserver:
   void DidCommitProvisionalLoad(ui::PageTransition transition) override;
   void OnDestruct() override;
@@ -61,6 +69,13 @@ class FingerprintSeedAgent : public content::RenderFrameObserver {
   // nullopt until fetched; the inner optional is empty when not randomizing.
   std::optional<std::optional<FingerprintSeed>> cached_;
   uint32_t surface_mask_ = 0;
+
+  struct PushedSeed {
+    std::string url;
+    std::optional<FingerprintSeed> seed;
+    uint32_t surface_mask = 0;
+  };
+  std::optional<PushedSeed> pushed_;
   mojo::Remote<mojom::FingerprintSeedHost> host_;
 };
 

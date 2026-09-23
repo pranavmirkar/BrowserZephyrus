@@ -175,14 +175,18 @@ const FontData* FontFallbackList::GetFontData(
     // @font-face first, so a site's own downloaded fonts are unaffected --
     // hiding them would break pages for no privacy gain, since a web font is
     // not evidence of what is installed here.
-    const bool hidden =
-        !curr_family->FamilyIsGeneric() &&
-        font_selector_->ShouldHideLocalFontFamily(curr_family->FamilyName());
-
     const FontData* result =
         font_selector_->GetFontData(font_description, *curr_family);
     // Don't query system fonts for empty font family name.
-    if (!result && !hidden && !curr_family->FamilyName().empty()) {
+    //
+    // The hide check runs only when there is a local lookup to gate, i.e. the
+    // page's own @font-face did not answer. It used to run first, for every
+    // family of every font list -- and it reads the fingerprint seed, which
+    // before the seed was pushed meant a blocking IPC on nearly every page.
+    if (!result && !curr_family->FamilyName().empty() &&
+        !(!curr_family->FamilyIsGeneric() &&
+          font_selector_->ShouldHideLocalFontFamily(
+              curr_family->FamilyName()))) {
       result = FontCache::Get().GetFontData(font_description,
                                             curr_family->FamilyName());
     }

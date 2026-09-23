@@ -15,9 +15,12 @@
 #include "base/callback_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "base/supports_user_data.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "components/history/core/browser/history_service.h"
+#include "components/history/core/browser/history_service_observer.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/image/image_skia.h"
 
@@ -68,7 +71,8 @@ struct ZephyrusWorkspace {
 // after a restart. One store per profile means one writer with a complete view,
 // and a tab dragged between windows keeps its workspace because both windows
 // read the same map.
-class ZephyrusWorkspaceStore : public base::SupportsUserData::Data {
+class ZephyrusWorkspaceStore : public base::SupportsUserData::Data,
+                               public history::HistoryServiceObserver {
  public:
   // Creates the store on first use and ties its lifetime to `profile`.
   static ZephyrusWorkspaceStore* GetForProfile(Profile* profile);
@@ -109,6 +113,14 @@ class ZephyrusWorkspaceStore : public base::SupportsUserData::Data {
   // True once a workspace has any recorded visits. Until then, scoping must be
   // skipped entirely rather than hiding every suggestion.
   bool HasVisitData(int workspace_id) const;
+
+  // history::HistoryServiceObserver. The index is browsing history kept outside
+  // the history database, so it has to forget what the history database is
+  // told to forget -- it used to survive "Clear browsing data" untouched.
+  void OnHistoryDeletions(history::HistoryService* history_service,
+                          const history::DeletionInfo& deletion_info) override;
+  void HistoryServiceBeingDeleted(
+      history::HistoryService* history_service) override;
   // The workspace an omnibox query should be scoped to. See the .cc for why
   // this is resolved from the most recently activated window.
   int CurrentWorkspaceForOmnibox();
@@ -228,6 +240,21 @@ class ZephyrusWorkspaceStore : public base::SupportsUserData::Data {
   // lookup, kept in step. Both are keyed by URL spec.
   std::map<int, std::deque<std::string>> visit_order_;
   std::map<int, std::set<std::string>> visit_lookup_;
+
+  // The key the visit index files a URL under: a salted hash, not the URL.
+  //
+  // The index is persisted in the profile's Preferences file, and it used to
+  // hold the URLs themselves -- query strings included, so search terms and
+  // any short-lived token in a URL sat there in plain text. Scoping only asks
+  // "was this URL opened here?", which a hash answers as well as the URL did.
+  // The salt is per profile, so the same URL does not produce the same key in
+  // two profiles' files.
+  std::string VisitKey(const GURL& url) const;
+  std::string visit_salt_;
+
+  base::ScopedObservation<history::HistoryService,
+                          history::HistoryServiceObserver>
+      history_observation_{this};
 
   // Workspace photos, keyed by basename. PRESENCE means resolved -- and an
   // empty value means "tried, and there is nothing there". That distinction is

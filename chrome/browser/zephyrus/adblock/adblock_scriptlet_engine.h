@@ -42,12 +42,16 @@ class AdblockScriptletEngine {
   struct Invocation {
     std::string name;
     std::vector<std::string> args;
+    // "~sub.site.com" carve-outs from the rule's domain list.
+    std::vector<std::string> excluded;
   };
 
   // Per-domain scriptlet invocations and per-domain exceptions (#@#+js).
   std::unordered_map<std::string, std::vector<Invocation>> domain_scriptlets_;
   std::unordered_map<std::string, std::unordered_set<std::string>>
       domain_exceptions_;  // by scriptlet name
+  // Sites with a bare "#@#+js()": no scriptlets at all.
+  std::unordered_set<std::string> domain_disable_all_;
 
   size_t rule_count_ = 0;
 };

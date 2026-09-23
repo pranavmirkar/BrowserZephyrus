@@ -22,6 +22,7 @@
 #include "base/metrics/user_metrics.h"
 #include "base/metrics/user_metrics_action.h"
 #include "base/notimplemented.h"
+#include "base/strings/strcat.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
@@ -5105,6 +5106,8 @@ class ZephyrusWorkspaceStrip : public views::View,
   // add button. See SetCompact.
   bool compact_ = false;
   bool drew_once_ = false;
+  // What the strip last drew; see SetWorkspaces.
+  std::string last_signature_;
 
   using WorkspaceCallback = base::RepeatingCallback<void(int workspace_id)>;
 
@@ -5160,6 +5163,32 @@ class ZephyrusWorkspaceStrip : public views::View,
     // drew_once_ keeps the first rebuild silent: a window that animates its
     // workspace icon while it is still opening looks like a glitch, not a
     // response to anything the user did.
+    // Nothing drawn changed: keep the cells.
+    //
+    // A rebuild destroys every cell and makes new ones, which relays out the
+    // whole window (the strip's preferred size is part of the title bar's) and
+    // drops keyboard focus, hover and any open tooltip on the strip. MEASURED:
+    // a 5-second poll ran this unconditionally, so every window paid a full
+    // relayout every 5 seconds forever, with nothing on screen changing.
+    std::vector<gfx::ImageSkia> photos;
+    photos.reserve(ws.size());
+    std::string signature = base::StrCat(
+        {base::NumberToString(current_id), "|",
+         base::NumberToString(static_cast<uint32_t>(ink)), "|",
+         compact_ ? "c" : "f"});
+    for (const auto& w : ws) {
+      photos.push_back(image_for ? image_for.Run(w.id) : gfx::ImageSkia());
+      base::StrAppend(
+          &signature,
+          {"|", base::NumberToString(w.id), ":", base::UTF16ToUTF8(w.name), ":",
+           base::UTF16ToUTF8(w.emoji), ":", w.image, ":",
+           photos.back().isNull() ? "0" : "1"});
+    }
+    if (drew_once_ && signature == last_signature_) {
+      return;
+    }
+    last_signature_ = std::move(signature);
+
     const bool switched = drew_once_ && current_id != last_current_id_;
     drew_once_ = true;
     last_current_id_ = current_id;
@@ -5182,7 +5211,7 @@ class ZephyrusWorkspaceStrip : public views::View,
       // A photo outranks everything: it is the most deliberate choice on
       // offer, and the model already guarantees a workspace has a photo or an
       // emoji but never both.
-      gfx::ImageSkia photo = image_for ? image_for.Run(w.id) : gfx::ImageSkia();
+      gfx::ImageSkia photo = photos[i];
       const bool numeric_name =
           !w.name.empty() &&
           std::ranges::all_of(w.name, [](char16_t c) {
@@ -5827,6 +5856,11 @@ void ToolbarView::UpdateZephyrusWorkspaceButton() {
             base::BindRepeating(&ToolbarView::UpdateZephyrusWorkspaceButton,
                                 base::Unretained(this)));
   }
+  // Subscribed, so the poll has nothing left to do. It was named for an audio
+  // badge the strip no longer draws; what it still did was rebuild the strip,
+  // and so relayout the window, every 5 seconds -- and cover for this late
+  // subscription, which the one-shot kick at construction establishes anyway.
+  zephyrus_audio_poll_timer_.Stop();
   // Private Workspace has its own store, so its numbering is its own; showing
   // that store's list here would misrepresent which profile you are in. The
   // strip is simply hidden there -- the lock in the title bar already says

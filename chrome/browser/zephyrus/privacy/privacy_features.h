@@ -102,13 +102,16 @@ inline constexpr uint32_t kFpSurfaceFonts = 1u << 5;
 // exactly what happened when the fonts bit was first added.
 inline constexpr uint32_t kFpSurfaceAll = 0x3fu;
 
-// What actually ships on. Fonts is excluded: the other five perturb a value the
-// page reads, whereas fonts changes which typefaces a page may use, so its
-// blast radius is page rendering rather than a measurement. It needs real-world
-// exposure before it becomes a default.
+// What actually ships on: every surface. Fonts was held back at first because
+// it changes which typefaces a page may use rather than a value it measures.
+// With the font list left unprotected the browser measured as UNIQUE on
+// fingerprinting test pages, and the allowlist design (see
+// CSSFontSelector::ShouldHideLocalFontFamily) only withholds fonts that
+// arrived with applications, never the ones Windows ships, so it is on.
+// Still a separate constant from kFpSurfaceAll -- see above.
 inline constexpr uint32_t kFpSurfaceDefault =
     kFpSurfaceCanvas | kFpSurfaceAudio | kFpSurfaceWebgl |
-    kFpSurfaceNavigator | kFpSurfaceScreen;
+    kFpSurfaceNavigator | kFpSurfaceScreen | kFpSurfaceFonts;
 
 // Which surfaces may perturb. Feature param "surfaces", a decimal bitmask;
 // absent means all. Example: --enable-features=ZephyrusPrivacyFingerprint\

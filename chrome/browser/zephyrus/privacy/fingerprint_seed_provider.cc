@@ -61,6 +61,12 @@ std::optional<FingerprintSeed> FingerprintSeedProvider::SeedForOrigin(
       OriginKeyForSeed(origin.scheme(), origin.host(), origin.port()));
 }
 
+FingerprintSeed FingerprintSeedProvider::SeedForCommit(
+    const url::Origin& origin,
+    content::RenderFrameHost* rfh) const {
+  return secret_.DeriveForOriginKey(OriginKeyForOrigin(origin, rfh));
+}
+
 std::string OriginKeyForFrame(content::RenderFrameHost* rfh) {
   if (!rfh) {
     // No frame, no principal. Returning a constant would be worse than it
@@ -69,7 +75,14 @@ std::string OriginKeyForFrame(content::RenderFrameHost* rfh) {
     // never collide with it.
     return "zephyrus/fp/no-frame";
   }
-  const url::Origin& origin = rfh->GetLastCommittedOrigin();
+  return OriginKeyForOrigin(rfh->GetLastCommittedOrigin(), rfh);
+}
+
+std::string OriginKeyForOrigin(const url::Origin& origin,
+                               content::RenderFrameHost* rfh) {
+  if (!rfh) {
+    return "zephyrus/fp/no-frame";
+  }
   if (origin.opaque()) {
     // §6.5's per-origin rule, applied to a principal whose whole point is that
     // it is not equal to any other. Every opaque origin serializes to "null",

@@ -4,21 +4,59 @@
 
 module zephyrus_adblock.mojom;
 
-// Implemented in the browser, called by the renderer at document-start to fetch
-// the main-world ad-block payload for the current frame. Synchronous so the
-// payload is available before the page's own scripts run (scriptlets must patch
-// the page's objects before its ad code executes). The browser resolves the
-// frame's committed URL and profile itself from the bound RenderFrameHost.
-// Returns both the scriptlet JS (`script`) and the element-hiding CSS (`css`)
-// for the frame; either may be empty.
-interface ScriptletHost {
-  [Sync]
-  GetPayload() => (string script, string css);
+// Everything a document needs BEFORE its own scripts run, pushed by the browser
+// rather than fetched by the renderer.
+//
+// It used to be fetched: a [Sync] ScriptletHost.GetPayload() at document-start,
+// plus a [Sync] FingerprintSeedHost.GetSeed() on first use. Both waited on the
+// browser's UI thread, which is also the thread that paints the browser, so a
+// page could not start until the browser was idle. MEASURED: GetPayload alone
+// held a page's main thread for 18-46 ms before its first script, and the seed
+// fetch fired on nearly every page because the fonts surface reads it.
+//
+// Pushing at ReadyToCommitNavigation removes the wait without losing the
+// ordering guarantee the synchronous calls existed for: this is a
+// channel-associated interface, so the message arrives before the commit that
+// creates the document it is for. (The same mechanism subresource_filter uses
+// to activate a document before it loads.)
+struct DocumentStartPayload {
+  // The URL being committed, fragment removed. The renderer applies the payload
+  // only to a document with exactly this URL, so a payload can never be applied
+  // to a different document than the one it was computed for.
+  string url;
 
-  // Called again once the document exists, with the ids ("#foo") and classes
+  // Main-world scriptlet JS for `url`, and its CSS in two parts: `hide_css`
+  // (all !important, injected at user origin) and `style_css` (`:style()`
+  // overrides, injected at author origin). Any may be empty.
+  string script;
+  string hide_css;
+  string style_css;
+
+  // The fingerprinting seed for the document's origin, and the §6.5 surface
+  // mask. An empty seed with a zero mask means "do not randomize", which the
+  // renderer caches like any other answer. `fingerprint_known` is false when
+  // the browser could not determine the origin being committed; the renderer
+  // then falls back to asking, rather than guessing "off".
+  bool fingerprint_known;
+  array<uint8> fingerprint_seed;
+  uint32 fingerprint_surfaces;
+};
+
+// Implemented in the renderer, one per frame, bound as a channel-associated
+// interface. Called once per cross-document navigation.
+interface DocumentStartAgent {
+  SetDocumentStartPayload(DocumentStartPayload payload);
+};
+
+// Implemented in the browser. Asynchronous: nothing is racing it.
+interface ScriptletHost {
+  // Called once the document exists, with the ids ("#foo") and classes
   // (".bar") the renderer found in it. Returns the element-hiding CSS for the
-  // generic rules those tokens unlock — the bulk of the filter lists, and most
+  // generic rules those tokens unlock -- the bulk of the filter lists, and most
   // of the cookie-banner coverage, which cannot be resolved at document-start
-  // because there is no DOM to survey yet. Asynchronous: nothing is racing it.
+  // because there is no DOM to survey yet.
+  //
+  // The tokens come from a web page, so the browser truncates both the number
+  // of tokens and the length of each before doing any work with them.
   GetGenericCosmeticCss(array<string> tokens) => (string css);
 };

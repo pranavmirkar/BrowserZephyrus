@@ -214,6 +214,82 @@
 
 namespace {
 
+// Zephyrus: the loading segment that travels round the field, on a layer of
+// its own.
+//
+// It used to be drawn in LocationBarView::OnPaintBorder, so every tick of the
+// animation invalidated the WHOLE location bar -- the omnibox text, the
+// leading icon, the engine mark, every page-action icon -- and re-recorded all
+// of it to move one stroke. MEASURED: ~220 location-bar paints a second for as
+// long as a page loaded. On its own layer only this view re-records, and it
+// draws one path.
+class ZephyrusLoadingRingView : public views::View {
+  METADATA_HEADER(ZephyrusLoadingRingView, views::View)
+
+ public:
+  // `clock` is LocationBarView's loading animation; it outlives this view,
+  // which is its child. `radius` answers the field's current corner radius,
+  // which can change with density and focus.
+  ZephyrusLoadingRingView(const gfx::Animation* clock,
+                          base::RepeatingCallback<float()> radius)
+      : clock_(clock), radius_(std::move(radius)) {
+    SetPaintToLayer();
+    layer()->SetFillsBoundsOpaquely(false);
+    SetCanProcessEventsWithinSubtree(false);
+    GetViewAccessibility().SetIsIgnored(true);
+    SetVisible(false);
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    constexpr float kStrokeWidth = 2.0f;
+    gfx::RectF ring_bounds(GetLocalBounds());
+    ring_bounds.Inset(kStrokeWidth / 2.0f);
+    // Trace the bar's own corner radius, not a full pill. The ring is inset by
+    // half its stroke, so pull the radius in by the same amount to stay
+    // concentric with the bar's edge.
+    const float radius = std::max(0.0f, radius_.Run() - kStrokeWidth / 2.0f);
+    const SkPath path =
+        SkPath::RRect(gfx::RectFToSkRect(ring_bounds), radius, radius);
+
+    SkPathMeasure measure(path, false);
+    const float length = measure.getLength();
+    if (length <= 0.0f) {
+      return;
+    }
+    const float dash = length * 0.30f;
+    const float intervals[2] = {dash, length - dash};
+    const float phase = -static_cast<float>(clock_->GetCurrentValue()) * length;
+    cc::PaintFlags flags;
+    flags.setStyle(cc::PaintFlags::kStroke_Style);
+    flags.setStrokeWidth(kStrokeWidth);
+    flags.setStrokeCap(cc::PaintFlags::kRound_Cap);
+    flags.setAntiAlias(true);
+    // The accent is the browser's one "now" colour, and is what this stroke is
+    // for.
+    flags.setColor(zephyrus::Accent());
+    flags.setPathEffect(cc::PathEffect::MakeDash(intervals, 2, phase));
+    canvas->DrawPath(path, flags);
+  }
+
+ private:
+  const raw_ptr<const gfx::Animation> clock_;
+  const base::RepeatingCallback<float()> radius_;
+};
+
+BEGIN_METADATA(ZephyrusLoadingRingView)
+END_METADATA
+
+// Found by class rather than held in a member, so adding the ring did not
+// change location_bar_view.h -- which a large part of the browser includes.
+ZephyrusLoadingRingView* FindZephyrusLoadingRing(views::View* host) {
+  for (views::View* child : host->children()) {
+    if (auto* ring = views::AsViewClass<ZephyrusLoadingRingView>(child)) {
+      return ring;
+    }
+  }
+  return nullptr;
+}
+
 int IncrementalMinimumWidth(const views::View* view) {
   return (view && view->GetVisible()) ? view->GetMinimumSize().width() : 0;
 }
@@ -360,6 +436,16 @@ void LocationBarView::Init() {
     zephyrus_engine_pill_ =
         AddChildView(std::make_unique<ZephyrusEnginePill>(profile_));
   }
+
+  // Zephyrus: the loading ring. Added now so it is the topmost child, and
+  // hidden until a page is loading. See ZephyrusLoadingRingView.
+  AddChildView(std::make_unique<ZephyrusLoadingRingView>(
+      &loading_animation_,
+      base::BindRepeating(
+          [](const LocationBarView* view) {
+            return static_cast<float>(view->GetBorderRadius());
+          },
+          base::Unretained(this))));
 
   // Initialize the Omnibox view. browser_ can be nullptr on ChromeOS in the
   // case of simple_web_view_dialog. Or it can be nulltpr on ChromeOS and on
@@ -1180,6 +1266,11 @@ void LocationBarView::Layout(PassKey) {
     position_view(omnibox_view_, omnibox_width);
     position_view(ime_inline_autocomplete_view_, ime_inline_autocomplete_width);
     position_view(omnibox_additional_text_view_, omnibox_additional_text_width);
+  }
+
+  // The ring covers the whole field; it draws only on the edge.
+  if (ZephyrusLoadingRingView* ring = FindZephyrusLoadingRing(this)) {
+    ring->SetBoundsRect(GetLocalBounds());
   }
 
   LayoutSuperclass<View>(this);
@@ -2078,43 +2169,6 @@ void LocationBarView::OnPaintBorder(gfx::Canvas* canvas) {
     canvas->DrawRoundRect(ring, radius, flags);
   }
 
-  // Zephyrus: a minimal accent segment travels around the omnibox border while
-  // the active page is loading. Drawn after the focus outline, so a page
-  // loading while you type reads as a segment running over the focused edge
-  // rather than as a second ring.
-  if (zephyrus_loading_) {
-    constexpr float kStrokeWidth = 2.0f;
-    gfx::RectF ring_bounds(GetLocalBounds());
-    ring_bounds.Inset(kStrokeWidth / 2.0f);
-    // Trace the bar's own corner radius, not a full pill. The ring is inset by
-    // half its stroke, so pull the radius in by the same amount to stay
-    // concentric with the bar's edge.
-    const float radius = std::max(
-        0.0f, static_cast<float>(GetBorderRadius()) - kStrokeWidth / 2.0f);
-    const SkPath path =
-        SkPath::RRect(gfx::RectFToSkRect(ring_bounds), radius, radius);
-
-    SkPathMeasure measure(path, false);
-    const float length = measure.getLength();
-    if (length > 0.0f) {
-      const float dash = length * 0.30f;
-      const float intervals[2] = {dash, length - dash};
-      const float phase =
-          -static_cast<float>(loading_animation_.GetCurrentValue()) * length;
-      cc::PaintFlags flags;
-      flags.setStyle(cc::PaintFlags::kStroke_Style);
-      flags.setStrokeWidth(kStrokeWidth);
-      flags.setStrokeCap(cc::PaintFlags::kRound_Cap);
-      flags.setAntiAlias(true);
-      // Was Google Blue (#1A73E8) -- a stock-Chrome tell sitting in our own
-      // omnibox. The accent is the browser's one "now" colour and is what this
-      // stroke is for.
-      flags.setColor(zephyrus::Accent());
-      flags.setPathEffect(cc::PathEffect::MakeDash(intervals, 2, phase));
-      canvas->DrawPath(path, flags);
-    }
-  }
-
   if (!is_popup_mode_) {
     return;  // The border is painted by our Background.
   }
@@ -2336,7 +2390,10 @@ void LocationBarView::ClearInPopupStateTransition() {
 
 void LocationBarView::AnimationProgressed(const gfx::Animation* animation) {
   if (animation == &loading_animation_) {
-    SchedulePaint();
+    // Only the ring's own layer; the field under it has not changed.
+    if (ZephyrusLoadingRingView* ring = FindZephyrusLoadingRing(this)) {
+      ring->SchedulePaint();
+    }
     return;
   }
   DCHECK_EQ(animation, &hover_animation_);
@@ -2359,18 +2416,26 @@ void LocationBarView::SetZephyrusLoading(bool loading) {
     return;
   }
   zephyrus_loading_ = loading;
-  if (loading) {
+  // Reduced motion gets no travelling segment at all rather than a frozen one:
+  // a stroke parked on the edge reads as a rendering fault, not as "loading".
+  const bool animate = loading && gfx::Animation::ShouldRenderRichAnimation();
+  if (animate) {
     loading_animation_.SetDuration(base::Milliseconds(1400));
     loading_animation_.Start();
   } else {
     loading_animation_.Stop();
   }
-  SchedulePaint();
+  if (ZephyrusLoadingRingView* ring = FindZephyrusLoadingRing(this)) {
+    ring->SetVisible(animate);
+    ring->SchedulePaint();
+  }
 }
 
 void LocationBarView::AnimationCanceled(const gfx::Animation* animation) {
   if (animation == &loading_animation_) {
-    SchedulePaint();
+    if (ZephyrusLoadingRingView* ring = FindZephyrusLoadingRing(this)) {
+      ring->SchedulePaint();
+    }
     return;
   }
   DCHECK_EQ(animation, &hover_animation_);

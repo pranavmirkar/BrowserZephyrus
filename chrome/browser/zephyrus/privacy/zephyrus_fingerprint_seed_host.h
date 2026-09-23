@@ -15,10 +15,29 @@
 
 namespace content {
 class BrowserContext;
+class NavigationHandle;
 class RenderFrameHost;
 }
 
 namespace zephyrus_privacy {
+
+// The seed a navigation's document will have, computed at
+// ReadyToCommitNavigation so it can be PUSHED to the renderer ahead of the
+// commit instead of fetched synchronously after it. See DocumentStartPayload.
+//
+// Same trust rule as the host below: the origin is the browser's own
+// origin-to-commit, never anything the renderer said.
+struct NavigationSeed {
+  // False when the browser does not know the origin being committed. The
+  // renderer then asks through FingerprintSeedHost as before, rather than
+  // being told "do not randomize" -- which would silently switch the feature
+  // off for that document.
+  bool known = false;
+  // Empty with a zero mask means randomization is off for this document.
+  std::vector<uint8_t> seed;
+  uint32_t surfaces = 0;
+};
+NavigationSeed SeedForNavigation(content::NavigationHandle* navigation);
 
 // Browser side of §6.5 seed delivery, scoped to a document.
 //

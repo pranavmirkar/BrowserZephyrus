@@ -4,8 +4,10 @@
 
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_scriptlet_host.h"
 
+#include <algorithm>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service_factory.h"
@@ -30,19 +32,6 @@ ZephyrusAdblockScriptletHost::ZephyrusAdblockScriptletHost(
 
 ZephyrusAdblockScriptletHost::~ZephyrusAdblockScriptletHost() = default;
 
-void ZephyrusAdblockScriptletHost::GetPayload(GetPayloadCallback callback) {
-  std::string script;
-  std::string css;
-  if (ZephyrusAdblockService* service =
-          ZephyrusAdblockServiceFactory::GetForBrowserContext(
-              render_frame_host().GetBrowserContext())) {
-    const GURL url = render_frame_host().GetLastCommittedURL();
-    script = service->GetScriptletInjection(url);
-    css = service->GetCosmeticCss(url);
-  }
-  std::move(callback).Run(std::move(script), std::move(css));
-}
-
 void ZephyrusAdblockScriptletHost::GetGenericCosmeticCss(
     const std::vector<std::string>& tokens,
     GetGenericCosmeticCssCallback callback) {
@@ -50,8 +39,19 @@ void ZephyrusAdblockScriptletHost::GetGenericCosmeticCss(
   if (ZephyrusAdblockService* service =
           ZephyrusAdblockServiceFactory::GetForBrowserContext(
               render_frame_host().GetBrowserContext())) {
+    // Bounded before any lookup: see kMaxTokensPerSurvey.
+    std::vector<std::string> bounded;
+    bounded.reserve(std::min(tokens.size(), kMaxTokensPerSurvey));
+    for (const std::string& token : tokens) {
+      if (bounded.size() == kMaxTokensPerSurvey) {
+        break;
+      }
+      if (!token.empty() && token.size() <= kMaxTokenLength) {
+        bounded.push_back(token);
+      }
+    }
     css = service->GetGenericCosmeticCss(
-        render_frame_host().GetLastCommittedURL(), tokens);
+        render_frame_host().GetLastCommittedURL(), bounded);
   }
   std::move(callback).Run(std::move(css));
 }

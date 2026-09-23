@@ -70,6 +70,17 @@ class FingerprintSeedProvider : public base::SupportsUserData::Data {
   // key, so a caller cannot accidentally seed one.
   std::optional<FingerprintSeed> SeedForOrigin(const url::Origin& origin) const;
 
+  // The seed a document committing `origin` into `rfh` WILL have -- the value
+  // SeedForFrame(rfh) returns once that commit lands.
+  //
+  // For pushing the seed ahead of the commit rather than having the renderer
+  // fetch it synchronously afterwards. It must agree with SeedForFrame exactly,
+  // including for opaque origins (keyed on `rfh`'s frame token), or a document
+  // whose seed was pushed would perturb differently from the same document had
+  // it asked -- which is both a correctness bug and a tell.
+  FingerprintSeed SeedForCommit(const url::Origin& origin,
+                                content::RenderFrameHost* rfh) const;
+
  private:
   explicit FingerprintSeedProvider(FingerprintSessionSecret secret);
 
@@ -87,6 +98,11 @@ class FingerprintSeedProvider : public base::SupportsUserData::Data {
 // instead, which means each gets an independent seed and, correctly, a new one
 // after reload: a fresh opaque origin IS a different security principal.
 std::string OriginKeyForFrame(content::RenderFrameHost* rfh);
+
+// The key for `origin` committed in `rfh`. OriginKeyForFrame is this with the
+// frame's last committed origin.
+std::string OriginKeyForOrigin(const url::Origin& origin,
+                               content::RenderFrameHost* rfh);
 
 }  // namespace zephyrus_privacy
 

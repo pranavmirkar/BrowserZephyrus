@@ -9,6 +9,9 @@
 
 #include "base/no_destructor.h"
 #include "content/public/renderer/render_frame.h"
+#include "third_party/blink/public/web/web_document.h"
+#include "third_party/blink/public/web/web_local_frame.h"
+#include "url/gurl.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 
 namespace zephyrus_privacy {
@@ -88,6 +91,30 @@ void FingerprintSeedAgent::DidCommitProvisionalLoad(
   cached_.reset();
   surface_mask_ = 0;
   host_.reset();
+
+  // The browser pushed this document's seed ahead of the commit. Adopt it if it
+  // names this document, which makes Seed() free: the synchronous fetch below
+  // it used to cost every page that named a font -- the fonts surface reads the
+  // seed during the first layout -- a blocking round trip to the browser's UI
+  // thread. A push for a different URL is a navigation that did not happen,
+  // and is dropped rather than applied.
+  if (pushed_) {
+    content::RenderFrame* rf = render_frame();
+    const GURL url = rf && rf->GetWebFrame()
+                         ? GURL(rf->GetWebFrame()->GetDocument().Url())
+                         : GURL();
+    if (url.is_valid() && url.GetWithoutRef().spec() == pushed_->url) {
+      cached_.emplace(pushed_->seed);
+      surface_mask_ = pushed_->seed ? pushed_->surface_mask : 0;
+    }
+    pushed_.reset();
+  }
+}
+
+void FingerprintSeedAgent::SetPushedSeed(const std::string& url,
+                                         std::optional<FingerprintSeed> seed,
+                                         uint32_t surface_mask) {
+  pushed_ = PushedSeed{url, std::move(seed), surface_mask};
 }
 
 void FingerprintSeedAgent::OnDestruct() {

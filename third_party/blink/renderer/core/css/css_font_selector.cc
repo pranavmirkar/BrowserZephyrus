@@ -297,78 +297,86 @@ void CSSFontSelector::Trace(Visitor* visitor) const {
 // "SomeFont" is installed. Repeat over a few hundred names and the installed
 // font list -- one of the highest-entropy signals a browser leaks -- falls out.
 //
-// WHAT IS HIDDEN, AND WHY NOT EVERYTHING
-// --------------------------------------
-// Fonts that ship on every Windows install carry no entropy: knowing the user
-// has Arial distinguishes nobody. The identifying signal is the long tail that
-// arrives with installed applications. So the common set is always visible and
-// only the tail is subject to hiding -- that buys the privacy while leaving
-// ordinary pages looking the way their authors intended.
+// AN ALLOWLIST, NOT A RANDOM SUBSET
+// ---------------------------------
+// Fonts that ship with Windows carry no entropy: every Windows 10/11 machine
+// has them. The identifying signal is what arrives with applications -- Office,
+// Adobe, games, IDEs. So a page may see the stock Windows families and nothing
+// else: every Zephyrus user on Windows presents the same font list.
 //
-// The Indic families are in the always-visible set deliberately. Hiding one is
-// SAFE -- font_fallback_contract_browsertest.cc proves a page whose declared
-// families are all absent still shapes Devanagari, Tamil, Telugu, Bengali and
-// Gujarati correctly via the standard font -- but "safe" only means it does not
-// produce tofu. A Hindi page that asked for Nirmala UI and silently got the
-// default font is still a typography regression, and this is an India-first
-// browser. Correctness is not the same as acceptable.
+// This replaced a design that hid a random 25% of the non-allowlisted families
+// per origin. That made the list unlinkable across sites but still UNIQUE on
+// any one site -- MEASURED on fingerprinting test pages, which is exactly the
+// complaint that "the browser has a unique fingerprint". Worse, its allowlist
+// missed families Windows itself ships (Bahnschrift, Cascadia, Sitka, Ink Free,
+// Leelawadee UI), so it randomised fonts that carry no entropy at all and
+// leaked a machine-specific 75% of the ones that do.
 //
-// WHY 25% AND NOT MORE
-// --------------------
-// Cross-site unlinkability does not need a high rate. Any p strictly between 0
-// and 1 gives each origin a different visible subset, which is what defeats
-// linking. Raising p shrinks the visible set faster -- better for a
-// single-sample uniqueness score -- but every hidden family a site legitimately
-// wanted is a page that renders in the wrong font. We are optimising for
-// unlinkability, not for a scoreboard, so this takes the low end.
+// The cost is the one Tor Browser pays: a page that names an application font
+// the user happens to have renders in its fallback instead. A site's own
+// @font-face fonts are never affected (see font_fallback_list.cc), which is
+// how nearly every site that cares about its typeface gets it.
+//
+// The Indic families shipped with Windows are in the list deliberately. Hiding
+// one is SAFE -- font_fallback_contract_browsertest.cc proves a page whose
+// declared families are all absent still shapes Devanagari, Tamil, Telugu,
+// Bengali and Gujarati correctly -- but a Hindi page that asked for Nirmala UI
+// and silently got the default font is still a typography regression, and this
+// is an India-first browser.
 namespace {
 
-// FNV-1a over the lowercased family name. Only needs to be stable and well
-// spread; it is a bucket selector, not a security primitive.
-uint64_t FamilyTag(const AtomicString& family) {
-  const std::string name = family.ToAsciiLower().Utf8();
-  uint64_t hash = 0xcbf29ce484222325ULL;
-  for (unsigned char c : name) {
-    hash ^= c;
-    hash *= 0x100000001b3ULL;
-  }
-  return hash;
-}
-
-// Present on a stock Windows install, or needed for Indian-language typography.
-// Matched lowercased.
+// Windows 10/11 stock families (including the on-demand language packs
+// Windows installs for Indian locales), matched lowercased.
 bool IsAlwaysVisibleFamily(const std::string& lower) {
   static constexpr auto kAlwaysVisible = std::to_array<std::string_view>({
-      // Core Windows UI and web-safe faces.
-      "arial", "arial black", "calibri", "cambria", "candara", "comic sans ms",
-      "consolas", "constantia", "corbel", "courier new", "ebrima", "franklin gothic medium",
-      "gabriola", "gadugi", "georgia", "impact", "javanese text", "lucida console",
-      "lucida sans unicode", "malgun gothic", "marlett", "microsoft himalaya",
-      "microsoft jhenghei", "microsoft new tai lue", "microsoft phagspa",
+      "arial", "arial black", "bahnschrift", "calibri", "calibri light",
+      "cambria", "cambria math", "candara", "candara light", "cascadia code",
+      "cascadia mono", "comic sans ms", "consolas", "constantia", "corbel",
+      "corbel light", "courier", "courier new", "ebrima",
+      "franklin gothic medium", "gabriola", "gadugi", "georgia",
+      "hololens mdl2 assets", "impact", "ink free", "javanese text",
+      "leelawadee", "leelawadee ui", "lucida console", "lucida sans unicode",
+      "malgun gothic", "marlett", "microsoft himalaya", "microsoft jhenghei",
+      "microsoft jhenghei ui", "microsoft new tai lue", "microsoft phagspa",
       "microsoft sans serif", "microsoft tai le", "microsoft yahei",
-      "microsoft yi baiti", "mingliu", "mongolian baiti", "ms gothic", "ms pgothic",
-      "ms sans serif", "ms serif", "mv boli", "myanmar text", "nirmala ui",
-      "palatino linotype", "segoe mdl2 assets", "segoe print", "segoe script",
-      "segoe ui", "segoe ui emoji", "segoe ui historic", "segoe ui symbol",
-      "simsun", "sitka", "sylfaen", "symbol", "tahoma", "times new roman",
-      "trebuchet ms", "verdana", "webdings", "wingdings", "yu gothic",
-      // Indian-language faces shipped with Windows. Hiding these does not break
-      // rendering, but it does silently restyle Indian-language pages.
-      "aparajita", "gautami", "iskoola pota", "kalinga", "kartika", "khmer ui",
-      "kokila", "latha", "mangal", "meiryo", "raavi", "sanskrit text", "shruti",
-      "tunga", "utsaah", "vani", "vijaya", "vrinda",
+      "microsoft yahei ui", "microsoft yi baiti", "mingliu-extb",
+      "mingliu_hkscs-extb", "modern", "mongolian baiti", "ms gothic",
+      "ms pgothic", "ms sans serif", "ms serif", "ms ui gothic", "mv boli",
+      "myanmar text", "nirmala text", "nirmala ui", "nsimsun",
+      "palatino linotype", "pmingliu-extb", "roman", "sans serif collection",
+      "script", "segoe fluent icons", "segoe mdl2 assets", "segoe print",
+      "segoe script", "segoe ui", "segoe ui emoji", "segoe ui historic",
+      "segoe ui symbol", "segoe ui variable", "simsun", "simsun-extb",
+      "simsun-extg", "sitka", "small fonts", "sylfaen", "symbol", "system",
+      "tahoma", "terminal", "times new roman", "trebuchet ms", "verdana",
+      "webdings", "wingdings", "yu gothic", "yu gothic ui",
+      // Indian-language faces from the Windows language packs.
+      "aparajita", "gautami", "iskoola pota", "kalinga", "kartika",
+      "khmer ui", "kokila", "latha", "mangal", "meiryo", "meiryo ui", "raavi",
+      "sanskrit text", "shonar bangla", "shruti", "tunga", "utsaah", "vani",
+      "vijaya", "vrinda", "daunpenh", "dokchampa", "estrangelo edessa",
+      "euphemia", "lao ui", "moolboran", "plantagenet cherokee",
+  });
+  // Families Windows ships in several weights, named "<family> <weight>"
+  // ("Segoe UI Semibold", "Sitka Banner", "Yu Gothic UI Light").
+  static constexpr auto kWeightedFamilies = std::to_array<std::string_view>({
+      "segoe ui ", "segoe ui variable ", "sitka ", "yu gothic ",
+      "yu gothic ui ", "leelawadee ui ", "nirmala ui ", "nirmala text ",
+      "malgun gothic ", "microsoft yahei ", "microsoft jhenghei ",
+      "cascadia code ", "cascadia mono ", "bahnschrift ",
   });
   for (std::string_view candidate : kAlwaysVisible) {
     if (candidate == lower) {
       return true;
     }
   }
+  for (std::string_view prefix : kWeightedFamilies) {
+    if (lower.size() > prefix.size() && lower.starts_with(prefix)) {
+      return true;
+    }
+  }
   return false;
 }
-
-// Share of tail families hidden per origin. See the note above on why this is
-// low rather than aggressive.
-constexpr uint64_t kHiddenPercent = 25;
 
 }  // namespace
 
@@ -380,20 +388,10 @@ bool CSSFontSelector::ShouldHideLocalFontFamily(
   // Returns nullopt when the feature is off, when randomisation is off, or when
   // the fonts bit specifically is clear -- so the surface can be retired on its
   // own without touching the other five.
-  const std::optional<std::array<uint8_t, 32>> seed =
-      ZephyrusSeedForSurface(GetExecutionContext(), kZephyrusFpFonts);
-  if (!seed) {
+  if (!ZephyrusSeedForSurface(GetExecutionContext(), kZephyrusFpFonts)) {
     return false;
   }
-  const std::string lower = family.ToAsciiLower().Utf8();
-  if (IsAlwaysVisibleFamily(lower)) {
-    return false;
-  }
-  // Keyed on the family name as well as the seed, so the visible subset is
-  // stable for this origin and session -- a set that changed between two reads
-  // on one page would be detectable as randomisation, and would make text
-  // reflow mid-render.
-  return ZephyrusSurfaceValue(*seed, FamilyTag(family)) % 100 < kHiddenPercent;
+  return !IsAlwaysVisibleFamily(family.ToAsciiLower().Utf8());
 }
 
 }  // namespace blink

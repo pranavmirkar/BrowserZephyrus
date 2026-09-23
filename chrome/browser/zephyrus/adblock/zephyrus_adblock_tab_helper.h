@@ -11,6 +11,7 @@
 #include "content/public/browser/web_contents_user_data.h"
 
 namespace content {
+class NavigationHandle;
 class Page;
 }
 
@@ -45,6 +46,11 @@ class ZephyrusAdblockTabHelper
 
   // content::WebContentsObserver:
   void PrimaryPageChanged(content::Page& page) override;
+  // Pushes the committing document's start-of-document payload -- scriptlets,
+  // hiding CSS and fingerprint seed -- ahead of the commit. See
+  // DocumentStartPayload for why this replaced two synchronous fetches.
+  void ReadyToCommitNavigation(
+      content::NavigationHandle* navigation_handle) override;
 
  private:
   friend class content::WebContentsUserData<ZephyrusAdblockTabHelper>;

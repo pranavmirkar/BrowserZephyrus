@@ -1978,6 +1978,18 @@ void BrowserView::OnBookmarkBarStateChanged(
 }
 
 void BrowserView::UpdateLoadingAnimations(bool is_visible) {
+  // Zephyrus: the omnibox loading ring follows the same signal the tab
+  // throbber does. Browser calls this on every change to loading state AND to
+  // whether that loading deserves UI -- which is what keeps the ring off while
+  // an ad iframe reloads on a page that finished long ago. MEASURED before
+  // this: the ring ran for the whole of a 20 s trace on theguardian.com. An
+  // invisible (minimized, occluded) window animates nothing.
+  if (LocationBarView* location_bar = GetLocationBarView()) {
+    content::WebContents* active = GetActiveWebContents();
+    location_bar->SetZephyrusLoading(is_visible && active &&
+                                     active->ShouldShowLoadingUI());
+  }
+
   const bool tabs_need_loading_ui =
       browser_->tab_strip_model()->TabsNeedLoadingUI();
   const bool should_animate = is_visible && tabs_need_loading_ui;
@@ -2086,7 +2098,8 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
   // the omnibox loading ring to the newly active tab's loading state.
   UpdateZephyrusTitlebarColor();
   if (LocationBarView* location_bar = GetLocationBarView()) {
-    location_bar->SetZephyrusLoading(new_contents && new_contents->IsLoading());
+    location_bar->SetZephyrusLoading(new_contents &&
+                                     new_contents->ShouldShowLoadingUI());
   }
 
   // If |contents_container_| already has the correct WebContents, we can save
@@ -3091,8 +3104,11 @@ void BrowserView::DidFirstVisuallyNonEmptyPaint() {
 }
 
 void BrowserView::DidStartLoading() {
+  // ShouldShowLoadingUI, not "loading": a subframe starting to load is not the
+  // page loading, and the ring used to spin for every ad refresh.
   if (LocationBarView* location_bar = GetLocationBarView()) {
-    location_bar->SetZephyrusLoading(true);
+    location_bar->SetZephyrusLoading(web_contents() &&
+                                     web_contents()->ShouldShowLoadingUI());
   }
 }
 
@@ -4827,6 +4843,26 @@ void BrowserView::OnWidgetDestroying(views::Widget* widget) {
 
 void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
                                             bool active) {
+  // Zephyrus: the cursor polls that reveal the title bar and the sidebar only
+  // matter while this window is the one being used -- both already refused to
+  // reveal an inactive window, but kept waking the CPU 10 and 20 times a
+  // second to find that out, for every open window, forever. Stopped while
+  // inactive; resumed on activation.
+  if (!zephyrus_titlebar_pinned_) {
+    if (active) {
+      if (!zephyrus_titlebar_reveal_timer_.IsRunning()) {
+        zephyrus_titlebar_reveal_timer_.Start(
+            FROM_HERE, base::Milliseconds(100), this,
+            &BrowserView::OnZephyrusTitlebarRevealPoll);
+      }
+    } else {
+      zephyrus_titlebar_reveal_timer_.Stop();
+    }
+  }
+  if (zephyrus_sidebar_) {
+    zephyrus_sidebar_->OnWindowActivationChanged(active);
+  }
+
   // Rule 2 audit, off unless --zephyrus-audit-shape is set. Activation is the
   // hook because by then the window has laid out at least once, so every child
   // has real bounds to measure a padding from -- during construction they are

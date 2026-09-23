@@ -49,14 +49,12 @@ TEST(PrivacyFeaturesDefaultsTest, SurfacesAreOnByDefault) {
 TEST(PrivacyFeaturesDefaultsTest, RandomizationIsOnByDefault) {
   EXPECT_TRUE(IsFingerprintRandomizationEnabled());
   EXPECT_EQ(kFpSurfaceDefault, FingerprintSurfaceMask())
-      << "five of the six §6.5 surfaces ship on: canvas, audio, WebGL, "
-         "navigator, screen. FONTS is defined but deliberately NOT in the "
-         "default -- it changes which typefaces a page may use, not just a "
-         "value it reads. If this now equals kFpSurfaceAll, someone enabled "
-         "fonts for every user, which is a product decision and not a "
-         "refactor. If WebGL is later cleared "
-         "for the KHR_parallel_shader_compile cost, expect mask 27 here — that "
-         "configuration was verified clean over the full breakage corpus.";
+      << "all six 6.5 surfaces ship on. FONTS joined the default on "
+         "2026-09-23: with the installed-font list unprotected the browser "
+         "measured as unique on fingerprinting test pages. Turning any surface "
+         "off for every user is a product decision, not a refactor.";
+  EXPECT_EQ(kFpSurfaceDefault, kFpSurfaceAll)
+      << "a surface was defined without being shipped on; decide explicitly";
 }
 
 }  // namespace

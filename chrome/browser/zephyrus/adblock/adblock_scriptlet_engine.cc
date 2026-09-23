@@ -8,6 +8,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 
 namespace zephyrus_adblock {
 
@@ -28,7 +29,11 @@ var zephyrusScriptlets = (function(){
       case "''": return '';
       case '[]': return [];
       case '{}': return {};
+      case 'emptyArr': return [];
+      case 'emptyObj': return {};
       case 'noopFunc': return function(){};
+      case 'noopCallbackFunc': return function(){ return function(){}; };
+      case 'throwFunc': return function(){ throw new Error(); };
       case 'trueFunc': return function(){return true;};
       case 'falseFunc': return function(){return false;};
     }
@@ -148,23 +153,12 @@ var zephyrusScriptlets = (function(){
     try { install(self, 0); } catch(e){}
   };
   var abortOnPropertyRead = function(path){
-    var parts = path.split('.');
-    var install = function(owner, i){
-      if (owner == null) return;
-      var prop = parts[i];
-      if (i === parts.length - 1){
-        try {
-          Object.defineProperty(owner, prop, {
-            get: function(){ throw new ReferenceError(prop); },
-            set: function(){}, configurable: false
-          });
-        } catch(e){}
-        return;
-      }
-      var existing = owner[prop];
-      if (existing && typeof existing === 'object') install(existing, i + 1);
-    };
-    try { install(self, 0); } catch(e){}
+    if (!path) return;
+    whenOwner(path, function(owner, prop){
+      guardProperty(owner, prop, function(op){
+        if (op === 'get') throw abortError();
+      });
+    });
   };
   // ---- Response replacers (the modern YouTube-desktop / Shorts path) ----
   // Builds a predicate matching a request URL against a uBO propsToMatch value
@@ -358,33 +352,6 @@ var zephyrusScriptlets = (function(){
       return res;
     };
   };
-  // nano-setTimeout-booster: rescales matching setTimeout delays (used to
-  // collapse ad-countdown timers). Args: needle (substring or /re/ matched
-  // against the stringified callback), delay (exact ms, '*' = any), boost.
-  var nanoSetTimeoutBooster = function(needleRaw, delayRaw, boostRaw){
-    var reNeedle = null;
-    if (needleRaw){
-      var m = /^\/(.+)\/(\w*)$/.exec(needleRaw);
-      try { reNeedle = m ? new RegExp(m[1], m[2])
-              : new RegExp(String(needleRaw).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')); }
-      catch(e){}
-    }
-    var delay = delayRaw === '*' ? -1 : parseInt(delayRaw, 10);
-    if (isNaN(delay)) delay = 1000;
-    var boost = parseFloat(boostRaw);
-    if (isNaN(boost) || boost < 0.001 || boost > 50) boost = 0.05;
-    var realST = self.setTimeout;
-    if (typeof realST !== 'function') return;
-    self.setTimeout = function(fn, ms){
-      var ok = true;
-      if (reNeedle){ try { ok = reNeedle.test(String(fn)); } catch(e){ ok = false; } }
-      if (ok && (delay === -1 || ms === delay)){
-        arguments[1] = ms * boost;
-      }
-      return realST.apply(self, arguments);
-    };
-  };
-
   // trusted-click-element(selectors, extraMatch, delay)
   // Clicks elements as they appear. This is what dismisses YouTube's
   // "ad blockers violate our Terms of Service" dialog: the filter list points
@@ -765,6 +732,542 @@ var zephyrusScriptlets = (function(){
     };
   };
 
+  // ---- Defusers: the anti-adblock and ad-script neutralisers ----
+  // Everything below reaches the page's functions through patchMethod(), which
+  // installs a Proxy rather than a plain wrapper: a Proxy of a native function
+  // still stringifies as "[native code]", the probe the patch-detecting
+  // scripts use (see the note on trusted-json-edit-xhr-request below).
+
+  // Captured before any scriptlet runs, so a defuser aimed at setTimeout or
+  // addEventListener can never catch this library's own calls.
+  var realSetTimeout = self.setTimeout;
+  var realAddEventListener = self.EventTarget && EventTarget.prototype.addEventListener;
+  var RealMutationObserver = self.MutationObserver;
+  var later = function(fn, ms){
+    try { return Reflect.apply(realSetTimeout, self, [fn, ms || 0]); } catch(e){}
+  };
+  var listen = function(target, type, fn, opts){
+    try { Reflect.apply(realAddEventListener, target, [type, fn, opts]); } catch(e){}
+  };
+
+  // Aborted scripts die with this error; the page never sees it reported.
+  var abortMagic = 'zx' + Math.random().toString(36).slice(2);
+  listen(self, 'error', function(ev){
+    try {
+      if (ev && ev.error instanceof ReferenceError &&
+          String(ev.error.message).indexOf(abortMagic) !== -1){
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    } catch(e){}
+  }, true);
+  var abortError = function(){ return new ReferenceError(abortMagic); };
+
+  // A uBO needle: '' matches anything, '/re/flags' is a regex, a leading '!'
+  // inverts, anything else is a literal substring.
+  var makeMatcher = function(raw){
+    var s = (raw === undefined || raw === null) ? '' : String(raw);
+    var invert = false;
+    if (s.charAt(0) === '!'){ invert = true; s = s.slice(1); }
+    var test;
+    var m = /^\/(.+)\/([imsu]*)$/.exec(s);
+    var re = null;
+    if (m){ try { re = new RegExp(m[1], m[2]); } catch(e){ re = null; } }
+    if (s === '') test = function(){ return true; };
+    else if (re) test = function(t){ return re.test(t); };
+    else test = function(t){ return t.indexOf(s) !== -1; };
+    return function(value){
+      var hit;
+      try { hit = test(String(value)); } catch(e){ hit = false; }
+      return invert ? !hit : hit;
+    };
+  };
+  var textOf = function(fn){
+    try {
+      if (typeof fn === 'function') return String(fn);
+      if (fn && typeof fn.handleEvent === 'function') return String(fn.handleEvent);
+      return String(fn);
+    } catch(e){ return ''; }
+  };
+  var patchMethod = function(owner, name, handler){
+    try {
+      var real = owner[name];
+      if (typeof real !== 'function') return;
+      owner[name] = new Proxy(real, { apply: function(target, thisArg, args){
+        return handler(target, thisArg, args);
+      }});
+    } catch(e){}
+  };
+
+  // Calls onOwner(owner, prop) for the object holding the last segment of
+  // `path` -- now, or once the page creates a parent that does not exist yet.
+  var whenOwner = function(path, onOwner){
+    var parts = String(path).split('.');
+    var walk = function(owner, i){
+      if (owner == null) return;
+      var prop = parts[i];
+      if (i === parts.length - 1){ onOwner(owner, prop); return; }
+      var existing;
+      try { existing = owner[prop]; } catch(e){ return; }
+      if (existing != null &&
+          (typeof existing === 'object' || typeof existing === 'function')){
+        walk(existing, i + 1);
+        return;
+      }
+      var held = existing;
+      try {
+        Object.defineProperty(owner, prop, { configurable: true, enumerable: true,
+          get: function(){ return held; },
+          set: function(v){
+            held = v;
+            if (v != null && (typeof v === 'object' || typeof v === 'function')) walk(v, i + 1);
+          } });
+      } catch(e){}
+    };
+    walk(self, 0);
+  };
+  // Replaces `owner[prop]` with an accessor that runs `check` on every read
+  // and write, and otherwise behaves like the property it replaced.
+  var guardProperty = function(owner, prop, check){
+    var desc;
+    try { desc = Object.getOwnPropertyDescriptor(owner, prop); } catch(e){ return; }
+    if (desc && desc.configurable === false) return;
+    var getter = desc && desc.get;
+    var setter = desc && desc.set;
+    var value;
+    if (desc && 'value' in desc) value = desc.value;
+    else if (!desc) { try { value = owner[prop]; } catch(e){} }
+    try {
+      Object.defineProperty(owner, prop, {
+        configurable: true, enumerable: desc ? !!desc.enumerable : true,
+        get: function(){ check('get'); return getter ? getter.call(this) : value; },
+        set: function(v){ check('set'); if (setter) setter.call(this, v); else value = v; }
+      });
+    } catch(e){}
+  };
+
+  // abort-current-script(property, needle): throws when a <script> whose
+  // text (or src, for an external one) matches `needle` touches `property`.
+  var abortCurrentScript = function(target, needle){
+    if (!target) return;
+    var matches = makeMatcher(needle);
+    var ours = document.currentScript;
+    whenOwner(target, function(owner, prop){
+      guardProperty(owner, prop, function(){
+        var s = document.currentScript;
+        if (!s || s === ours || !('text' in s)) return;
+        var text = s.src ? s.src : s.textContent;
+        if (matches(text)) throw abortError();
+      });
+    });
+  };
+  // abort-on-property-write(property): the script assigning it dies.
+  var abortOnPropertyWrite = function(target){
+    if (!target) return;
+    whenOwner(target, function(owner, prop){
+      guardProperty(owner, prop, function(op){
+        if (op === 'set') throw abortError();
+      });
+    });
+  };
+  // abort-on-stack-trace(property, needle): the access dies when the call
+  // stack matches. 'inlineScript' and 'injectedScript' are uBO's shorthands.
+  var abortOnStackTrace = function(target, needleRaw){
+    if (!target || !needleRaw) return;
+    var needle = String(needleRaw);
+    if (needle === 'inlineScript') needle = String(location.href).split('#')[0];
+    else if (needle === 'injectedScript') needle = '<anonymous>';
+    var matches = makeMatcher(needle);
+    whenOwner(target, function(owner, prop){
+      guardProperty(owner, prop, function(){
+        var stack = '';
+        try { stack = String(new Error().stack || ''); } catch(e){}
+        // Lines 0-2 are "Error", this check and the accessor: ours.
+        stack = stack.split('\n').slice(3).join('\n');
+        if (matches(stack)) throw abortError();
+      });
+    });
+  };
+
+  // no-setTimeout-if / no-setInterval-if / no-requestAnimationFrame-if:
+  // matching callbacks are swapped for a no-op (the timer id is still real).
+  // uBO treats a call with no arguments as "log only", so that is a no-op.
+  var preventTimer = function(which){
+    return function(needleRaw, delayRaw){
+      var hasNeedle = needleRaw !== undefined && needleRaw !== '';
+      var hasDelay = delayRaw !== undefined && delayRaw !== '';
+      if (!hasNeedle && !hasDelay) return;
+      var matches = makeMatcher(needleRaw);
+      var delay = null, delayInvert = false;
+      if (hasDelay){
+        var d = String(delayRaw);
+        if (d.charAt(0) === '!'){ delayInvert = true; d = d.slice(1); }
+        delay = parseInt(d, 10);
+        if (isNaN(delay)) delay = null;
+      }
+      patchMethod(self, which, function(target, thisArg, args){
+        var hit = matches(textOf(args[0]));
+        if (hit && delay !== null){
+          var same = Number(args[1]) === delay;
+          hit = delayInvert ? !same : same;
+        }
+        if (hit){
+          args = Array.prototype.slice.call(args);
+          args[0] = function(){};
+        }
+        return Reflect.apply(target, thisArg, args);
+      });
+    };
+  };
+  // nano-setTimeout-booster / nano-setInterval-booster: rescale matching
+  // delays (ad countdowns). Args: needle, delay ('*' = any), boost factor.
+  var nanoBooster = function(which){
+    return function(needleRaw, delayRaw, boostRaw){
+      var matches = makeMatcher(needleRaw);
+      var delay = delayRaw === '*' ? -1 : parseInt(delayRaw, 10);
+      if (isNaN(delay)) delay = 1000;
+      var boost = parseFloat(boostRaw);
+      if (isNaN(boost) || boost < 0.001 || boost > 50) boost = 0.05;
+      patchMethod(self, which, function(target, thisArg, args){
+        if ((delay === -1 || Number(args[1]) === delay) && matches(textOf(args[0]))){
+          args = Array.prototype.slice.call(args);
+          args[1] = Number(args[1]) * boost;
+        }
+        return Reflect.apply(target, thisArg, args);
+      });
+    };
+  };
+
+  // prevent-addEventListener(type, needle): matching listeners are dropped.
+  var preventAddEventListener = function(typeRaw, needleRaw){
+    if (!typeRaw && !needleRaw) return;
+    var typeOk = makeMatcher(typeRaw);
+    var needleOk = makeMatcher(needleRaw);
+    if (!self.EventTarget) return;
+    patchMethod(EventTarget.prototype, 'addEventListener', function(target, thisArg, args){
+      var type;
+      try { type = String(args[0]); } catch(e){ type = ''; }
+      if (typeOk(type) && needleOk(textOf(args[1]))) return undefined;
+      return Reflect.apply(target, thisArg, args);
+    });
+  };
+
+  // prevent-window-open(needle): pop-ups whose URL matches never open. The
+  // opener gets a stand-in window, since a null return is itself the signal
+  // popunder scripts use to detect a blocker.
+  var preventWindowOpen = function(needleRaw){
+    var matches = makeMatcher(needleRaw);
+    patchMethod(self, 'open', function(target, thisArg, args){
+      var url = '';
+      try { url = args.length ? String(args[0]) : ''; } catch(e){}
+      if (!matches(url)) return Reflect.apply(target, thisArg, args);
+      var noop = function(){};
+      var fake = {
+        closed: false, name: '', opener: null,
+        location: { href: url, assign: noop, replace: noop, reload: noop },
+        document: { open: noop, write: noop, writeln: noop, close: noop },
+        focus: noop, blur: noop, postMessage: noop, print: noop,
+        close: function(){ fake.closed = true; }
+      };
+      return fake;
+    });
+  };
+
+  // prevent-fetch(props): matching fetches resolve to an empty 200 without
+  // leaving the page. `props` is "url:x method:POST ..." or just a URL needle.
+  var preventFetch = function(propsRaw, bodyKind){
+    if (!propsRaw) return;
+    var keys = { url: 1, method: 1, body: 1, mode: 1, credentials: 1,
+                 cache: 1, redirect: 1, referrer: 1, referrerPolicy: 1 };
+    var conds = [];
+    String(propsRaw).split(/\s+/).forEach(function(tok){
+      if (!tok) return;
+      var i = tok.indexOf(':');
+      var key = i > 0 ? tok.slice(0, i) : '';
+      if (keys[key] === 1) conds.push([key, makeMatcher(tok.slice(i + 1))]);
+      else conds.push(['url', makeMatcher(tok)]);
+    });
+    if (!conds.length) return;
+    patchMethod(self, 'fetch', function(target, thisArg, args){
+      var input = args[0];
+      var init = args[1] || {};
+      var details = {};
+      try {
+        details.url = (input && typeof input === 'object' && 'url' in input)
+            ? String(input.url) : String(input);
+      } catch(e){ details.url = ''; }
+      try { details.method = String(init.method || (input && input.method) || 'GET'); }
+      catch(e){ details.method = 'GET'; }
+      var hit = conds.every(function(c){
+        var v = details[c[0]];
+        if (v === undefined){ try { v = init[c[0]]; } catch(e){} }
+        return v !== undefined && c[1](v);
+      });
+      if (!hit) return Reflect.apply(target, thisArg, args);
+      var body = bodyKind === 'emptyObj' ? '{}' : bodyKind === 'emptyArr' ? '[]' : '';
+      try {
+        var resp = new Response(body, { status: 200, statusText: 'OK' });
+        // Absolute, as a real response's url always is.
+        var absolute = details.url;
+        try { absolute = new URL(details.url, document.baseURI).href; } catch(e){}
+        try { Object.defineProperty(resp, 'url', { value: absolute }); } catch(e){}
+        try { Object.defineProperty(resp, 'type', { value: 'basic' }); } catch(e){}
+        return Promise.resolve(resp);
+      } catch(e){ return Reflect.apply(target, thisArg, args); }
+    });
+  };
+
+  // Runs `apply` now, when the DOM is parsed, and (coalesced) after mutations.
+  var watchDom = function(apply, attributeFilter){
+    var run = function(){ try { apply(); } catch(e){} };
+    var pending = false;
+    var schedule = function(){
+      if (pending) return;
+      pending = true;
+      later(function(){ pending = false; run(); }, 50);
+    };
+    run();
+    if (document.readyState === 'loading') listen(document, 'DOMContentLoaded', run, { once: true });
+    if (!RealMutationObserver) return;
+    try {
+      var options = { childList: true, subtree: true };
+      if (attributeFilter){ options.attributes = true; options.attributeFilter = attributeFilter; }
+      new RealMutationObserver(schedule).observe(document.documentElement || document, options);
+    } catch(e){}
+  };
+  // remove-attr(attrs, selector) / remove-class(classes, selector): strip
+  // them wherever they appear, and keep stripping as the page re-adds them.
+  var removeAttr = function(attrsRaw, selectorRaw){
+    if (!attrsRaw) return;
+    var attrs = String(attrsRaw).split(/\s*\|\s*/).filter(function(a){
+      return /^[A-Za-z_:][\w:.-]*$/.test(a);
+    });
+    if (!attrs.length) return;
+    var selector = selectorRaw ? String(selectorRaw)
+        : attrs.map(function(a){ return '[' + a + ']'; }).join(',');
+    watchDom(function(){
+      var nodes = document.querySelectorAll(selector);
+      for (var i = 0; i < nodes.length; i++){
+        for (var j = 0; j < attrs.length; j++){
+          if (nodes[i].hasAttribute(attrs[j])) nodes[i].removeAttribute(attrs[j]);
+        }
+      }
+    }, attrs);
+  };
+  var removeClass = function(classesRaw, selectorRaw){
+    if (!classesRaw) return;
+    var classes = String(classesRaw).split(/\s*\|\s*/).filter(function(c){
+      return /^-?[A-Za-z_][\w-]*$/.test(c);
+    });
+    if (!classes.length) return;
+    var selector = selectorRaw ? String(selectorRaw)
+        : classes.map(function(c){ return '.' + c; }).join(',');
+    watchDom(function(){
+      var nodes = document.querySelectorAll(selector);
+      for (var i = 0; i < nodes.length; i++){
+        for (var j = 0; j < classes.length; j++) nodes[i].classList.remove(classes[j]);
+      }
+    }, ['class']);
+  };
+
+  // noeval-if(needle): matching eval() calls return undefined unrun.
+  var noEvalIf = function(needleRaw){
+    var matches = makeMatcher(needleRaw);
+    patchMethod(self, 'eval', function(target, thisArg, args){
+      if (matches(textOf(args[0]))) return undefined;
+      return Reflect.apply(target, thisArg, args);
+    });
+  };
+
+  // Stand-ins for the BlockAdBlock / FuckAdBlock detector libraries: always
+  // report "no blocker", and run the page's not-detected callback.
+  var detectorStub = function(names, signatures){
+    return function(){
+      var chain = function(){ return this; };
+      var Detector = function(){};
+      Detector.prototype = {
+        check: chain, clearEvent: chain, emitEvent: chain, onDetected: chain,
+        setOption: chain, options: { set: chain, get: function(){} },
+        on: function(detected, fn){
+          if (!detected && typeof fn === 'function'){ try { fn(); } catch(e){} }
+          return this;
+        },
+        onNotDetected: function(fn){
+          if (typeof fn === 'function'){ try { fn(); } catch(e){} }
+          return this;
+        }
+      };
+      var instance = new Detector();
+      names.forEach(function(n){
+        var v = n.charAt(0) === n.charAt(0).toUpperCase() ? Detector : instance;
+        try {
+          Object.defineProperty(self, n, { configurable: true,
+            get: function(){ return v; }, set: function(){} });
+        } catch(e){}
+      });
+      // Inlined, obfuscated copies never touch those names; they are caught
+      // by their tell-tale strings as they are scheduled or eval'd.
+      if (signatures){
+        var re = new RegExp(signatures, 'i');
+        var hit = function(code){
+          return typeof code !== 'undefined' && re.test(textOf(code));
+        };
+        patchMethod(self, 'setTimeout', function(target, thisArg, args){
+          if (hit(args[0])){
+            args = Array.prototype.slice.call(args);
+            args[0] = function(){};
+          }
+          return Reflect.apply(target, thisArg, args);
+        });
+        patchMethod(self, 'eval', function(target, thisArg, args){
+          if (hit(args[0])) return undefined;
+          return Reflect.apply(target, thisArg, args);
+        });
+      }
+    };
+  };
+
+  // popads-dummy: pretend the PopAds loader already ran. popads.net: make
+  // the loader die on the globals it needs.
+  var popadsDummy = function(){
+    ['PopAds', 'popns'].forEach(function(n){
+      try { delete self[n]; } catch(e){}
+      try { Object.defineProperty(self, n, { configurable: true, value: {} }); } catch(e){}
+    });
+  };
+  var popadsNet = function(){
+    ['_pop', 'PopAds', 'popns'].forEach(function(n){
+      try {
+        Object.defineProperty(self, n, { configurable: true,
+          get: function(){ throw abortError(); },
+          set: function(){ throw abortError(); } });
+      } catch(e){}
+    });
+  };
+
+  // nowebrtc: ad networks open peer connections to fingerprint the local
+  // network and to tunnel ads past network filters.
+  var noWebrtc = function(){
+    var never = function(){ return new Promise(function(){}); };
+    var noop = function(){};
+    var Stub = function(){};
+    Stub.prototype = {
+      close: noop, addEventListener: noop, removeEventListener: noop,
+      createDataChannel: function(){ return { close: noop, send: noop, addEventListener: noop }; },
+      createOffer: never, createAnswer: never, setLocalDescription: never,
+      setRemoteDescription: never, addIceCandidate: never, getStats: never
+    };
+    ['RTCPeerConnection', 'webkitRTCPeerConnection'].forEach(function(n){
+      if (typeof self[n] !== 'function') return;
+      try { self[n] = new Proxy(self[n], { construct: function(){ return new Stub(); } }); } catch(e){}
+    });
+  };
+
+  // set-cookie / set-local-storage-item: record a consent or dismissal flag.
+  // Values are limited to flag-like ones, as in uBO -- a list must not be
+  // able to plant an arbitrary identifier in a site's storage.
+  var safeValue = function(raw){
+    var v = raw === undefined ? '' : String(raw);
+    var flags = ['', 'true', 'false', 'yes', 'y', 'no', 'n', 'ok', 'on', 'off',
+      'accept', 'accepted', 'reject', 'rejected', 'allow', 'allowed', 'deny',
+      'denied', 'checked', 'unchecked', 'dismiss', 'dismissed', 'hide', 'hidden',
+      'done', 'necessary', 'required', 'essential', 'nonessential', 'approved',
+      'disapproved', 'enable', 'enabled', 'disable', 'disabled', 'null', 'undefined'];
+    if (flags.indexOf(v.toLowerCase()) !== -1) return v;
+    if (/^-?\d{1,5}$/.test(v) && Math.abs(parseInt(v, 10)) <= 32767) return v;
+    return null;
+  };
+  var setCookie = function(name, value, path){
+    if (!name || !/^[\w.\-]{1,64}$/.test(name)) return;
+    var v = safeValue(value);
+    if (v === null) return;
+    var pair = name + '=' + encodeURIComponent(v);
+    try {
+      if (String(document.cookie).split(/;\s*/).indexOf(pair) !== -1) return;
+      document.cookie = pair + (path === 'none' ? '' : '; path=/');
+    } catch(e){}
+  };
+  var setStorageItem = function(which){
+    return function(key, value){
+      if (!key) return;
+      var storage;
+      try { storage = self[which]; } catch(e){ return; }
+      if (!storage) return;
+      try {
+        if (value === '$remove$'){ storage.removeItem(key); return; }
+        var v = value === 'emptyArr' ? '[]' : value === 'emptyObj' ? '{}' : safeValue(value);
+        if (v !== null) storage.setItem(key, v);
+      } catch(e){}
+    };
+  };
+  // trusted-set-cookie / trusted-set-local-storage-item: the consent
+  // lists record "the user already answered" in the exact format each CMP
+  // expects, so the value is free-form. Bounded instead of allowlisted: no
+  // ';' (it would start a second attribute), a length cap, a plain name, and
+  // an existing value is never overwritten -- so a list can pre-answer a
+  // banner but cannot replace an identifier the site already set.
+  var expandToken = function(v){
+    if (v === '$now$') return String(Date.now());
+    if (v === '$currentDate$') return new Date().toUTCString();
+    if (v === '$currentISODate$') return new Date().toISOString();
+    return v;
+  };
+  var trustedSetCookie = function(name, value, offsetRaw, path){
+    if (!name || !/^[\w.\-%]{1,128}$/.test(name) || value === undefined) return;
+    var v = expandToken(String(value));
+    if (v.length > 1024 || /[;\r\n]/.test(v)) return;
+    try {
+      var jar = String(document.cookie).split(/;\s*/);
+      for (var i = 0; i < jar.length; i++){
+        if (jar[i].split('=')[0] === name) return;
+      }
+      var cookie = name + '=' + v + (path === 'none' ? '' : '; path=/');
+      var offset = String(offsetRaw || '');
+      var seconds = offset === '1day' ? 86400 : offset === '1year' ? 31536000
+          : parseInt(offset, 10);
+      if (seconds > 0 && seconds <= 400 * 86400){
+        cookie += '; expires=' + new Date(Date.now() + seconds * 1000).toUTCString();
+      }
+      document.cookie = cookie;
+    } catch(e){}
+  };
+  var trustedSetStorageItem = function(which){
+    return function(key, value){
+      if (!key || String(key).length > 256 || value === undefined) return;
+      var storage;
+      try { storage = self[which]; } catch(e){ return; }
+      if (!storage) return;
+      try {
+        if (value === '$remove$'){ storage.removeItem(key); return; }
+        var v = expandToken(String(value));
+        if (v.length > 4096 || storage.getItem(key) !== null) return;
+        storage.setItem(key, v);
+      } catch(e){}
+    };
+  };
+  // cookie-remover(needle): deletes matching cookies now and after load.
+  var cookieRemover = function(needleRaw){
+    if (!needleRaw) return;
+    var matches = makeMatcher(needleRaw);
+    var expire = function(){
+      var names;
+      try { names = String(document.cookie).split(/;\s*/); } catch(e){ return; }
+      var host = location.hostname;
+      names.forEach(function(pair){
+        var name = pair.split('=')[0];
+        if (!name || !matches(name)) return;
+        var dead = name + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
+        try {
+          document.cookie = dead;
+          document.cookie = dead + '; domain=' + host;
+          document.cookie = dead + '; domain=.' + host.split('.').slice(-2).join('.');
+        } catch(e){}
+      });
+    };
+    expire();
+    listen(self, 'load', expire, { once: true });
+  };
+
   var table = {
     'json-prune': jsonPrune,
     'jp': jsonPrune,
@@ -777,8 +1280,59 @@ var zephyrusScriptlets = (function(){
     'trusted-replace-fetch-response': trustedReplaceFetchResponse,
     'trusted-replace-xhr-response': trustedReplaceXhrResponse,
     'trusted-prevent-dom-bypass': trustedPreventDomBypass,
-    'nano-setTimeout-booster': nanoSetTimeoutBooster,
-    'nano-stb': nanoSetTimeoutBooster,
+    'nano-setTimeout-booster': nanoBooster('setTimeout'),
+    'nano-stb': nanoBooster('setTimeout'),
+    'nano-setInterval-booster': nanoBooster('setInterval'),
+    'nano-sib': nanoBooster('setInterval'),
+    'trusted-set-constant': setConstant,
+    'trusted-set': setConstant,
+    'abort-current-script': abortCurrentScript,
+    'abort-current-inline-script': abortCurrentScript,
+    'acs': abortCurrentScript,
+    'acis': abortCurrentScript,
+    'abort-on-property-write': abortOnPropertyWrite,
+    'aopw': abortOnPropertyWrite,
+    'abort-on-stack-trace': abortOnStackTrace,
+    'aost': abortOnStackTrace,
+    'no-setTimeout-if': preventTimer('setTimeout'),
+    'prevent-setTimeout': preventTimer('setTimeout'),
+    'nostif': preventTimer('setTimeout'),
+    'no-setInterval-if': preventTimer('setInterval'),
+    'prevent-setInterval': preventTimer('setInterval'),
+    'nosiif': preventTimer('setInterval'),
+    'no-requestAnimationFrame-if': preventTimer('requestAnimationFrame'),
+    'norafif': preventTimer('requestAnimationFrame'),
+    'addEventListener-defuser': preventAddEventListener,
+    'prevent-addEventListener': preventAddEventListener,
+    'aeld': preventAddEventListener,
+    'no-window-open-if': preventWindowOpen,
+    'prevent-window-open': preventWindowOpen,
+    'window.open-defuser': preventWindowOpen,
+    'nowoif': preventWindowOpen,
+    'no-fetch-if': preventFetch,
+    'prevent-fetch': preventFetch,
+    'remove-attr': removeAttr,
+    'ra': removeAttr,
+    'remove-class': removeClass,
+    'rc': removeClass,
+    'noeval': function(){ noEvalIf(''); },
+    'noeval-if': noEvalIf,
+    'prevent-eval-if': noEvalIf,
+    'bab-defuser': detectorStub(['BlockAdBlock', 'blockAdBlock'], 'blockadblock|babasbm'),
+    'nobab': detectorStub(['BlockAdBlock', 'blockAdBlock'], 'blockadblock|babasbm'),
+    'fuckadblock.js-3.2.0': detectorStub(['FuckAdBlock', 'fuckAdBlock', 'BlockAdBlock', 'blockAdBlock']),
+    'nofab': detectorStub(['FuckAdBlock', 'fuckAdBlock', 'BlockAdBlock', 'blockAdBlock']),
+    'popads-dummy': popadsDummy,
+    'popads.net': popadsNet,
+    'nowebrtc': noWebrtc,
+    'set-cookie': setCookie,
+    'set-local-storage-item': setStorageItem('localStorage'),
+    'set-session-storage-item': setStorageItem('sessionStorage'),
+    'cookie-remover': cookieRemover,
+    'remove-cookie': cookieRemover,
+    'trusted-set-cookie': trustedSetCookie,
+    'trusted-set-local-storage-item': trustedSetStorageItem('localStorage'),
+    'trusted-set-session-storage-item': trustedSetStorageItem('sessionStorage'),
     'trusted-click-element': trustedClickElement,
     // 'trusted-json-edit-xhr-request' is implemented above (jsonEditXhrRequest)
     // but deliberately NOT registered, for a measured reason:
@@ -801,6 +1355,7 @@ var zephyrusScriptlets = (function(){
     'rmnt': replaceNodeText,
     'remove-node-text': replaceNodeText,
     'trusted-rpnt': replaceNodeText,
+    'rpnt': replaceNodeText,
     'trusted-replace-node-text': replaceNodeText,
     'noop': function(){},
   };
@@ -876,25 +1431,44 @@ size_t AdblockScriptletEngine::AddRules(std::string_view filter_list_text) {
     std::string_view body =
         raw.substr(body_start, raw.size() - body_start - 1);  // inside (...)
     std::vector<std::string> parts = SplitArgs(body);
-    if (parts.empty() || parts[0].empty()) {
+    // "site#@#+js()" -- an exception naming no scriptlet -- switches every
+    // scriptlet off on that site. Parsing it as an empty name dropped it, and
+    // the scriptlets it exists to stop kept breaking the site.
+    const bool disable_all = exception && (parts.empty() || parts[0].empty());
+    if (!disable_all && (parts.empty() || parts[0].empty())) {
       continue;
     }
     Invocation inv;
-    inv.name = parts[0];
-    inv.args.assign(parts.begin() + 1, parts.end());
-
-    if (domains.empty()) {
-      // Generic scriptlets are uncommon and risky; skip for now.
-      continue;
+    if (!disable_all) {
+      inv.name = parts[0];
+      // uBO accepts the resource file name too: "set-constant.js".
+      if (inv.name.ends_with(".js") && inv.name != "fuckadblock.js-3.2.0") {
+        inv.name.resize(inv.name.size() - 3);
+      }
+      inv.args.assign(parts.begin() + 1, parts.end());
     }
+
+    std::vector<std::string> included;
     for (std::string_view d :
          base::SplitStringPiece(domains, ",", base::TRIM_WHITESPACE,
                                 base::SPLIT_WANT_NONEMPTY)) {
       if (d[0] == '~') {
-        continue;
+        if (d.size() > 1) {
+          inv.excluded.push_back(base::ToLowerASCII(d.substr(1)));
+        }
+      } else {
+        included.push_back(base::ToLowerASCII(d));
       }
-      std::string domain = base::ToLowerASCII(d);
-      if (exception) {
+    }
+    if (included.empty()) {
+      // Generic scriptlets (with or without carve-outs) are uncommon and
+      // risky: one runs on every site on the web. Skipped.
+      continue;
+    }
+    for (const std::string& domain : included) {
+      if (disable_all) {
+        domain_disable_all_.insert(domain);
+      } else if (exception) {
         domain_exceptions_[domain].insert(inv.name);
       } else {
         domain_scriptlets_[domain].push_back(inv);
@@ -913,31 +1487,47 @@ std::string AdblockScriptletEngine::BuildInjectionScriptForUrl(
   }
   const std::string host(url.host());
 
-  // Exceptions (by scriptlet name) that apply to this host.
+  // Exceptions (by scriptlet name) that apply to this host. The keys include
+  // the entity forms ("example.*"), which the lists use for sites spread
+  // across many country domains.
   std::unordered_set<std::string> exceptions;
-  std::vector<Invocation> invocations;
-  for (size_t pos = 0; pos != std::string::npos;) {
-    std::string candidate = host.substr(pos);
-    auto ex = domain_exceptions_.find(candidate);
+  std::vector<const Invocation*> invocations;
+  for (const std::string& key : DomainLookupKeys(host)) {
+    if (domain_disable_all_.contains(key)) {
+      return std::string();
+    }
+    auto ex = domain_exceptions_.find(key);
     if (ex != domain_exceptions_.end()) {
       exceptions.insert(ex->second.begin(), ex->second.end());
     }
-    auto it = domain_scriptlets_.find(candidate);
+    auto it = domain_scriptlets_.find(key);
     if (it != domain_scriptlets_.end()) {
-      invocations.insert(invocations.end(), it->second.begin(),
-                         it->second.end());
+      for (const Invocation& inv : it->second) {
+        invocations.push_back(&inv);
+      }
     }
-    size_t dot = host.find('.', pos);
-    pos = (dot == std::string::npos) ? std::string::npos : dot + 1;
   }
   if (invocations.empty()) {
     return std::string();
   }
 
   std::string calls;
+  std::unordered_set<std::string> emitted_calls;
   size_t emitted = 0;
-  for (const Invocation& inv : invocations) {
+  for (const Invocation* inv_ptr : invocations) {
+    const Invocation& inv = *inv_ptr;
     if (exceptions.contains(inv.name)) {
+      continue;
+    }
+    // "a.com,~shop.a.com##+js(...)": not on the carved-out host.
+    bool carved_out = false;
+    for (const std::string& domain : inv.excluded) {
+      if (HostMatchesFilterDomain(host, domain)) {
+        carved_out = true;
+        break;
+      }
+    }
+    if (carved_out) {
       continue;
     }
     std::string args;
@@ -951,8 +1541,15 @@ std::string AdblockScriptletEngine::BuildInjectionScriptForUrl(
     }
     std::string name_quoted;
     base::EscapeJSONString(inv.name, /*put_in_quotes=*/true, &name_quoted);
-    calls += base::StrCat({"try{var f=zephyrusScriptlets[", name_quoted,
-                           "];if(f)f(", args, ");}catch(e){}\n"});
+    std::string call = base::StrCat({"try{var f=zephyrusScriptlets[",
+                                     name_quoted, "];if(f)f(", args,
+                                     ");}catch(e){}\n"});
+    // The same rule is often filed under a domain AND its entity form, and
+    // most scriptlets are not idempotent: nostif twice wraps setTimeout twice.
+    if (!emitted_calls.insert(call).second) {
+      continue;
+    }
+    calls += call;
     ++emitted;
   }
   if (emitted == 0) {

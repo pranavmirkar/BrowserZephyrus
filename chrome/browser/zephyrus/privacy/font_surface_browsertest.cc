@@ -10,11 +10,12 @@
 // local lookup is skipped, the next family in the list wins. That is the whole
 // design -- a page must not be able to tell it is being filtered.
 //
-// So a single page cannot prove anything. What CAN be proven is disagreement:
-// two origins have different seeds, so they must disagree about which
-// installed families they can see. That is exactly the property the surface
-// exists to provide (a font list that cannot be used to link you across sites)
-// and it is observable without any page ever detecting the filter.
+// So a single page cannot prove anything on its own. What CAN be proven is a
+// difference between the surface on and off: an application font that resolves
+// with the surface off must not resolve with it on, on any origin. Every origin
+// then sees the same stock-Windows list, which is the property the surface
+// exists to provide -- a font list that neither identifies the machine nor
+// links it across sites.
 //
 // The probe below is the fingerprinting technique itself: render a string in
 // "<candidate>, monospace", compare its width against plain monospace. Differs
@@ -55,8 +56,6 @@ namespace {
 // itself, and are therefore NOT in CSSFontSelector's always-visible set. The
 // test uses whichever of these the machine actually has.
 constexpr const char* kTailCandidates[] = {
-    "Bahnschrift",        "Cascadia Code",   "Cascadia Mono",
-    "Ink Free",           "Leelawadee UI",   "Sitka Text",
     "Agency FB",          "Algerian",        "Bauhaus 93",
     "Bell MT",            "Berlin Sans FB",  "Bodoni MT",
     "Book Antiqua",       "Bookman Old Style", "Bradley Hand ITC",
@@ -88,6 +87,9 @@ constexpr const char* kTailCandidates[] = {
 // no entropy, and suppressing them would restyle ordinary pages for nothing.
 constexpr const char* kAlwaysVisibleProbes[] = {
     "Arial", "Times New Roman", "Courier New", "Segoe UI", "Verdana",
+    // Shipped with Windows 10/11 itself. The first version of this surface
+    // treated these as application fonts and randomised them.
+    "Bahnschrift", "Cascadia Code", "Ink Free", "Leelawadee UI", "Sitka Text",
     // Indian-language faces. Hiding these does not break rendering -- see
     // font_fallback_contract_browsertest.cc -- but it would silently restyle
     // Indian-language pages, which this browser will not do.
@@ -103,8 +105,8 @@ class FontSurfaceBrowserTest : public InProcessBrowserTest {
   // fingerprint_randomization_browsertest.cc documents: enable one and every
   // surface stays untouched while the assertions pass vacuously.
   //
-  // kFpSurfaceAll, not kFpSurfaceDefault: the fonts bit deliberately does not
-  // ship on, so the test that exercises it has to ask for it.
+  // kFpSurfaceAll explicitly, so this keeps testing the surface even if the
+  // shipped default changes.
   FontSurfaceBrowserTest() {
     features_.InitWithFeaturesAndParameters(
         {{kZephyrusPrivacyIntelligence, {}},
@@ -179,27 +181,44 @@ class FontSurfaceBrowserTest : public InProcessBrowserTest {
   base::test::ScopedFeatureList features_;
 };
 
-// THE POINT OF THE SURFACE: two origins cannot agree on the font list, so it
-// cannot be used to link a user between them.
-IN_PROC_BROWSER_TEST_F(FontSurfaceBrowserTest, TwoOriginsSeeDifferentFontSets) {
-  NavigateTo("a.com");
-  const std::vector<std::string> a = VisibleSubsetOf(kTailCandidates);
-  NavigateTo("b.com");
-  const std::vector<std::string> b = VisibleSubsetOf(kTailCandidates);
-
-  // With a 25% hide rate, agreement across a healthy candidate pool is
-  // vanishingly unlikely -- but on a machine with almost no tail fonts there is
-  // nothing to disagree about, and passing would mean nothing. Say so instead.
-  if (a.size() + b.size() < 4) {
-    GTEST_SKIP() << "this machine has too few non-standard fonts installed ("
-                 << a.size() << " visible on a.com, " << b.size()
-                 << " on b.com) for cross-origin disagreement to be meaningful";
+// THE POINT OF THE SURFACE: an application font is invisible everywhere, so
+// the font list neither identifies the machine nor differs between sites.
+IN_PROC_BROWSER_TEST_F(FontSurfaceBrowserTest, AppFontsAreHiddenOnEveryOrigin) {
+  for (const char* host : {"a.com", "b.com"}) {
+    NavigateTo(host);
+    const std::vector<std::string> visible = VisibleSubsetOf(kTailCandidates);
+    EXPECT_TRUE(visible.empty())
+        << host << " resolved " << visible.size() << " application font(s), "
+        << "first: " << (visible.empty() ? "" : visible[0])
+        << ". Installed applications are what make a font list unique.";
   }
+}
 
-  EXPECT_NE(a, b)
-      << "both origins saw the same " << a.size()
-      << " fonts. The visible set is not keyed on origin, so a site can still "
-         "use the installed font list to recognise this browser elsewhere.";
+// The negative control for the test above: with the fonts bit clear, the same
+// probe DOES see the machine's application fonts. Without this, "none
+// visible" would pass on a machine that simply has none.
+class FontSurfaceOffBrowserTest : public FontSurfaceBrowserTest {
+ public:
+  FontSurfaceOffBrowserTest() {
+    features_.Reset();
+    features_.InitWithFeaturesAndParameters(
+        {{kZephyrusPrivacyIntelligence, {}},
+         {kZephyrusPrivacyFingerprintRandomization,
+          {{"surfaces",
+            base::NumberToString(kFpSurfaceAll & ~kFpSurfaceFonts)}}}},
+        {});
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(FontSurfaceOffBrowserTest, ProbeSeesAppFontsWhenOff) {
+  NavigateTo("a.com");
+  const std::vector<std::string> visible = VisibleSubsetOf(kTailCandidates);
+  if (visible.empty()) {
+    GTEST_SKIP() << "this machine has none of the application fonts probed, "
+                    "so AppFontsAreHiddenOnEveryOrigin proves nothing here";
+  }
+  SUCCEED() << visible.size() << " application fonts visible with the surface "
+            << "off; the hiding test above is meaningful on this machine";
 }
 
 // Stability within an origin. A set that changed between two loads would reflow

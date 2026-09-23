@@ -2,6 +2,8 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//testing/test.gni")
+
 # Bundles EasyList + EasyPrivacy next to the binary; the service reads it at
 # startup from DIR_ASSETS.
 copy("filter_list") {
@@ -16,14 +18,46 @@ copy("filter_list") {
   outputs = [ "$root_out_dir/{{source_file_part}}" ]
 }
 
-source_set("adblock") {
+# The rule engines alone: parsing and matching, with no browser in sight. Kept
+# apart so their tests link in seconds instead of inside unit_tests, whose
+# official-build link is long enough that nobody runs them.
+source_set("engines") {
   sources = [
     "adblock_cosmetic_engine.cc",
     "adblock_cosmetic_engine.h",
     "adblock_filter_engine.cc",
     "adblock_filter_engine.h",
+    "adblock_list_util.cc",
+    "adblock_list_util.h",
     "adblock_scriptlet_engine.cc",
     "adblock_scriptlet_engine.h",
+  ]
+  deps = [ "//net" ]
+  public_deps = [
+    "//base",
+    "//url",
+  ]
+}
+
+#   autoninja -C out/Release chrome/browser/zephyrus/adblock:zephyrus_adblock_engine_unittests
+test("zephyrus_adblock_engine_unittests") {
+  sources = [
+    "adblock_filter_engine_unittest.cc",
+    "adblock_list_features_unittest.cc",
+    "adblock_matcher_perftest.cc",
+  ]
+  deps = [
+    ":engines",
+    "//base",
+    "//base/test:run_all_unittests",
+    "//base/test:test_support",
+    "//testing/gtest",
+    "//url",
+  ]
+}
+
+source_set("adblock") {
+  sources = [
     "zephyrus_adblock_proxying_url_loader_factory.cc",
     "zephyrus_adblock_proxying_url_loader_factory.h",
     "zephyrus_adblock_scriptlet_host.cc",
@@ -48,8 +82,10 @@ source_set("adblock") {
     "//net/traffic_annotation",
     "//services/network/public/cpp",
     "//services/network/public/mojom",
+    "//third_party/blink/public/common",
   ]
   public_deps = [
+    ":engines",
     "//base",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/zephyrus/adblock/mojom",
@@ -63,7 +99,6 @@ source_set("adblock") {
 source_set("unit_tests") {
   testonly = true
   sources = [
-    "adblock_matcher_perftest.cc",
     "zephyrus_adblock_updater_unittest.cc",
     "zephyrus_cname_harvester_unittest.cc",
   ]

@@ -4,20 +4,23 @@
 
 #include "chrome/renderer/zephyrus_adblock_scriptlet_agent.h"
 
+#include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
-#include "base/json/string_escape.h"
 #include "base/location.h"
-#include "base/strings/strcat.h"
 #include "base/strings/string_split.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
 #include "content/public/renderer/render_frame.h"
+#include "chrome/renderer/zephyrus_fingerprint_seed_agent.h"
+#include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
+#include "third_party/blink/public/web/web_css_origin.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
 #include "third_party/blink/public/platform/web_string.h"
@@ -60,24 +63,45 @@ constexpr base::TimeDelta kResurveyDelays[] = {
 // the same document and is invisible to the page. A MutationObserver sets a
 // dirty flag so a pass over an unchanged document returns immediately instead
 // of walking the DOM again — that is what makes a long tail of passes cheap.
+//
+// Bounded on both axes, because both are the page's to choose. A pass returns
+// at most 2048 new tokens (and stays dirty so the next pass picks up the rest,
+// half the browser's own per-survey cap), and a document reports at most 20000
+// in all --
+// past that the page is generating class names, not naming ad containers, and
+// the `seen` map would otherwise grow for as long as the page lived.
+//
+// The observer is kept on `g.mo` so EndSurveys() can disconnect it. It used to
+// be anonymous and was never disconnected: every DOM mutation for the whole
+// life of the page -- an infinite feed, a single-page app -- paid for a survey
+// that had finished long before.
 constexpr char kSurveyScript[] =
     "(function(){try{"
     "var g=window.__zsSurvey;"
-    "if(!g){g=window.__zsSurvey={seen:Object.create(null),dirty:true};"
-    "new MutationObserver(function(){g.dirty=true;}).observe("
+    "if(!g){g=window.__zsSurvey={seen:Object.create(null),n:0,dirty:true};"
+    "g.mo=new MutationObserver(function(){g.dirty=true;});"
+    "g.mo.observe("
     "document.documentElement,{childList:true,subtree:true,"
     "attributes:true,attributeFilter:['class','id']});}"
-    "if(!g.dirty)return '';"
+    "if(!g.dirty||!g.seen)return '';"
     "g.dirty=false;"
     "var out=[],seen=g.seen;"
     "var els=document.querySelectorAll('[id],[class]');"
-    "for(var i=0;i<els.length;i++){var e=els[i];"
+    "for(var i=0;i<els.length&&out.length<2048&&g.n<20000;i++){var e=els[i];"
     "var id=e.id;"
-    "if(id&&!seen['#'+id]){seen['#'+id]=1;out.push('#'+id);}"
+    "if(id&&!seen['#'+id]){seen['#'+id]=1;g.n++;out.push('#'+id);}"
     "var cl=e.classList;"
     "if(cl){for(var j=0;j<cl.length;j++){var k='.'+cl[j];"
-    "if(!seen[k]){seen[k]=1;out.push(k);}}}}"
+    "if(!seen[k]){seen[k]=1;g.n++;out.push(k);}}}}"
+    "if(out.length>=2048)g.dirty=true;"
     "return out.join('\\n');}catch(e){return '';}})();";
+
+// Run after the last survey: stops observing the document and releases the
+// `seen` map. Later surveys (there are none) would return nothing.
+constexpr char kEndSurveyScript[] =
+    "(function(){try{var g=window.__zsSurvey;if(g){"
+    "if(g.mo)g.mo.disconnect();g.mo=null;g.seen=null;g.dirty=false;}"
+    "}catch(e){}})();";
 
 // Consent platforms lock scrolling while their banner is up, by putting a class
 // on <html>/<body> that sets overflow:hidden (Sourcepoint's `sp-message-open`,
@@ -202,12 +226,47 @@ constexpr char kReleaseScrollLockScript[] =
 }  // namespace
 
 ScriptletAgent::ScriptletAgent(content::RenderFrame* render_frame)
-    : content::RenderFrameObserver(render_frame) {}
+    : content::RenderFrameObserver(render_frame) {
+  // The browser pushes each document's payload here at
+  // ReadyToCommitNavigation. Channel-associated, so it arrives before the
+  // commit it is for. Unretained is safe: the registry belongs to the frame,
+  // and this agent lives exactly as long as the frame does.
+  render_frame->GetAssociatedInterfaceRegistry()
+      ->AddInterface<mojom::DocumentStartAgent>(base::BindRepeating(
+          &ScriptletAgent::BindDocumentStartAgent, base::Unretained(this)));
+}
 
 ScriptletAgent::~ScriptletAgent() = default;
 
-void ScriptletAgent::InjectCss(const std::string& css,
-                               const char* style_element_id) {
+void ScriptletAgent::BindDocumentStartAgent(
+    mojo::PendingAssociatedReceiver<mojom::DocumentStartAgent> receiver) {
+  // The browser opens a fresh pipe per navigation.
+  document_start_receiver_.reset();
+  document_start_receiver_.Bind(std::move(receiver));
+}
+
+void ScriptletAgent::SetDocumentStartPayload(
+    mojom::DocumentStartPayloadPtr payload) {
+  // The seed goes to its own agent now, while the commit has not yet happened,
+  // so it is in place before anything in the new document can read it.
+  if (payload->fingerprint_known) {
+    std::optional<zephyrus_privacy::FingerprintSeed> seed;
+    if (payload->fingerprint_seed.size() ==
+        std::tuple_size_v<zephyrus_privacy::FingerprintSeed>) {
+      zephyrus_privacy::FingerprintSeed bytes;
+      base::span(bytes).copy_from(base::span(payload->fingerprint_seed));
+      seed = bytes;
+    }
+    if (auto* fingerprint =
+            zephyrus_privacy::FingerprintSeedAgent::Get(render_frame())) {
+      fingerprint->SetPushedSeed(payload->url, seed,
+                                 payload->fingerprint_surfaces);
+    }
+  }
+  pending_payload_ = std::move(payload);
+}
+
+void ScriptletAgent::InsertCss(const std::string& css, bool user_origin) {
   content::RenderFrame* rf = render_frame();
   if (!rf || css.empty()) {
     return;
@@ -216,25 +275,21 @@ void ScriptletAgent::InjectCss(const std::string& css,
   if (!frame) {
     return;
   }
-  // Injected in the main world. At document-start the <html> element may not
-  // exist yet, so append when the document element is ready (immediately, or
-  // via a one-shot MutationObserver). Appending to an existing element rather
-  // than replacing it lets later surveys add to the same stylesheet.
-  std::string css_json;
-  base::EscapeJSONString(css, /*put_in_quotes=*/true, &css_json);
-  std::string id_json;
-  base::EscapeJSONString(style_element_id, /*put_in_quotes=*/true, &id_json);
-  const std::string css_js = base::StrCat(
-      {"(function(){var css=", css_json, ";var id=", id_json,
-       ";function add(){try{var s=document.getElementById(id);"
-       "if(s){s.textContent+=css;return;}"
-       "s=document.createElement('style');s.id=id;s.textContent=css;"
-       "(document.head||document.documentElement).appendChild(s);}catch(e){}}"
-       "if(document.documentElement){add();}else{var o=new MutationObserver("
-       "function(){if(document.documentElement){o.disconnect();add();}});"
-       "o.observe(document,{childList:true});}})();"});
-  frame->ExecuteScript(
-      blink::WebScriptSource(blink::WebString::FromUtf8(css_js)));
+  // An injected style sheet, not a <style> element written by a script in the
+  // page's own world. That was three problems at once:
+  //  - Each instalment was APPENDED to one element's text, so the whole growing
+  //    sheet was re-parsed every time a survey answered.
+  //  - It ran in the MAIN world, where a page can shadow document.createElement
+  //    or appendChild and see, block or rewrite what we inject.
+  //  - The element was in the DOM, so an anti-adblock script could find it by
+  //    id and remove it.
+  // Injected sheets are not in the DOM and not reachable from script. Hiding
+  // rules go in at USER origin: every one is !important, and a user !important
+  // declaration outranks an author !important, so a page cannot un-hide an ad
+  // with a more specific rule of its own.
+  frame->GetDocument().InsertStyleSheet(
+      blink::WebString::FromUtf8(css), /*key=*/nullptr,
+      user_origin ? blink::WebCssOrigin::kUser : blink::WebCssOrigin::kAuthor);
 }
 
 void ScriptletAgent::InjectScriptlets() {
@@ -246,35 +301,39 @@ void ScriptletAgent::InjectScriptlets() {
   if (!frame) {
     return;
   }
-  // Only web frames can carry scriptlet rules; the browser also re-checks the
-  // committed URL and returns an empty payload for anything non-matching.
+  // A new document: nothing surveyed for it, and no host pipe yet -- the old
+  // one belonged to the previous document.
+  surveying_ = false;
+  sent_tokens_.clear();
+  host_.reset();
+
+  // Only web frames carry ad-block rules.
   const GURL url = frame->GetDocument().Url();
-  if (url.is_valid() && !url.SchemeIsHTTPOrHTTPS()) {
+  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
     return;
   }
-
-  // A fresh document: nothing sent for it yet, and it gets its own survey
-  // budget.
-  sent_tokens_.clear();
+  surveying_ = true;
   surveys_remaining_ = std::size(kResurveyDelays);
 
-  if (!host_.is_bound()) {
-    rf->GetBrowserInterfaceBroker().GetInterface(
-        host_.BindNewPipeAndPassReceiver());
-  }
-  // Synchronous so the scriptlet patches the page's objects before the page's
-  // own scripts run. The browser resolves the committed URL and returns the
-  // per-site scriptlet JS + cosmetic CSS (either may be empty).
-  std::string script;
-  std::string css;
-  if (!host_->GetPayload(&script, &css)) {
+  // The payload the browser pushed for this commit. Used only if it names this
+  // document: a payload for anything else is left for the document it names,
+  // or replaced by the next push.
+  //
+  // No payload means nothing is injected at document-start, rather than
+  // blocking the page to ask. The browser pushes for every navigation in a tab,
+  // so this is a frame outside one (an extension page's own frames, for
+  // instance), where the old synchronous fetch was the only thing that paid.
+  if (!pending_payload_ ||
+      pending_payload_->url != url.GetWithoutRef().spec()) {
     return;
   }
-  if (!script.empty()) {
+  mojom::DocumentStartPayloadPtr payload = std::move(pending_payload_);
+  if (!payload->script.empty()) {
     frame->ExecuteScript(
-        blink::WebScriptSource(blink::WebString::FromUtf8(script)));
+        blink::WebScriptSource(blink::WebString::FromUtf8(payload->script)));
   }
-  InjectCss(css, "zephyrus-cosmetic");
+  InsertCss(payload->hide_css, /*user_origin=*/true);
+  InsertCss(payload->style_css, /*user_origin=*/false);
 }
 
 std::vector<std::string> ScriptletAgent::CollectNewTokens() {
@@ -318,8 +377,13 @@ std::vector<std::string> ScriptletAgent::CollectNewTokens() {
 }
 
 void ScriptletAgent::SurveyDocument() {
-  if (!host_.is_bound()) {
+  content::RenderFrame* rf = render_frame();
+  if (!surveying_ || !rf) {
     return;
+  }
+  if (!host_.is_bound()) {
+    rf->GetBrowserInterfaceBroker().GetInterface(
+        host_.BindNewPipeAndPassReceiver());
   }
   std::vector<std::string> tokens = CollectNewTokens();
   if (!tokens.empty()) {
@@ -332,7 +396,24 @@ void ScriptletAgent::SurveyDocument() {
     const size_t index = std::size(kResurveyDelays) - surveys_remaining_;
     --surveys_remaining_;
     ScheduleSurvey(base::span(kResurveyDelays)[index]);
+  } else {
+    EndSurveys();
   }
+}
+
+void ScriptletAgent::EndSurveys() {
+  content::RenderFrame* rf = render_frame();
+  if (!rf) {
+    return;
+  }
+  if (blink::WebLocalFrame* frame = rf->GetWebFrame()) {
+    frame->ExecuteScriptInIsolatedWorld(
+        ISOLATED_WORLD_ID_CHROME_INTERNAL,
+        blink::WebScriptSource(blink::WebString::FromUtf8(kEndSurveyScript)),
+        blink::BackForwardCacheAware::kAllow);
+  }
+  // Nothing more will be sent for this document.
+  sent_tokens_.clear();
 }
 
 void ScriptletAgent::ScheduleSurvey(base::TimeDelta delay) {
@@ -348,17 +429,20 @@ void ScriptletAgent::ReleaseScrollLock() {
   if (!rf) {
     return;
   }
+  // In the isolated world, where the page cannot see it or shadow the DOM
+  // methods it relies on. Styles and scroll position are the DOM's, shared by
+  // every world, so undoing the lock from here undoes it for the page.
   if (blink::WebLocalFrame* frame = rf->GetWebFrame()) {
-    frame->ExecuteScript(blink::WebScriptSource(
-        blink::WebString::FromUtf8(kReleaseScrollLockScript)));
+    frame->ExecuteScriptInIsolatedWorld(
+        ISOLATED_WORLD_ID_CHROME_INTERNAL,
+        blink::WebScriptSource(
+            blink::WebString::FromUtf8(kReleaseScrollLockScript)),
+        blink::BackForwardCacheAware::kAllow);
   }
 }
 
 void ScriptletAgent::OnGenericCssReady(const std::string& css) {
-  // A separate stylesheet from the document-start one: this arrives in
-  // instalments, and keeping them apart makes it obvious in devtools which
-  // rules came from the survey.
-  InjectCss(css, "zephyrus-cosmetic-generic");
+  InsertCss(css, /*user_origin=*/true);
   // Checked after every instalment, because the instalment that hides the
   // consent overlay is the one that strands the scroll-lock.
   ReleaseScrollLock();
@@ -373,6 +457,9 @@ void ScriptletAgent::DidClearWindowObject() {
 }
 
 void ScriptletAgent::DidDispatchDOMContentLoadedEvent() {
+  if (!surveying_) {
+    return;
+  }
   // The curated document-start rules can strand a lock too, and their banner
   // is hidden well before the first survey answers.
   ReleaseScrollLock();

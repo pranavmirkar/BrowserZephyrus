@@ -38,7 +38,12 @@ class AdblockCosmeticEngine {
 
   // Selectors to hide on `url`: generic (minus generic exceptions) plus any
   // scoped to the URL's host or a parent domain (minus their exceptions).
-  std::vector<std::string> GetSelectorsForUrl(const GURL& url) const;
+  // `include_generic` / `include_specific` are false when the lists grant the
+  // page $generichide / $specifichide.
+  std::vector<std::string> GetSelectorsForUrl(
+      const GURL& url,
+      bool include_generic = true,
+      bool include_specific = true) const;
 
   // The generic selectors worth injecting into a document that actually
   // contains `tokens` — the ids ("#foo") and classes (".bar") the renderer
@@ -58,12 +63,16 @@ class AdblockCosmeticEngine {
   // apply to `url`. These override page CSS rather than hiding anything, and
   // are how the lists release the scroll-lock a consent overlay leaves on
   // <html>/<body> once the overlay itself is hidden.
-  std::vector<std::string> GetStyleRulesForUrl(const GURL& url) const;
+  std::vector<std::string> GetStyleRulesForUrl(
+      const GURL& url,
+      bool include_generic = true,
+      bool include_specific = true) const;
 
   size_t rule_count() const { return rule_count_; }
   size_t generic_count() const { return generic_selectors_.size(); }
   // Generic selectors reachable through the token index. The remainder are
-  // keyless (no id or class to key on, e.g. `div[data-ad]`) and stay dormant.
+  // keyless (no id or class to key on, e.g. `div[data-ad]`) and go out with
+  // the document-start sheet instead.
   size_t indexed_generic_count() const { return indexed_generic_count_; }
 
  private:
@@ -85,6 +94,9 @@ class AdblockCosmeticEngine {
   // generic_selectors_, keyed by the first "#id" / ".class" each one needs, so
   // a page's DOM tokens can select just the applicable few.
   std::unordered_map<std::string, std::vector<std::string>> generic_by_token_;
+  // The generic selectors with no id or class to key on. They were stored and
+  // never delivered; there are few enough to send every page.
+  std::vector<std::string> keyless_generic_selectors_;
 
   // `:style()` rules, pre-rendered as CSS. Only curated-generic and
   // domain-scoped ones are kept: a generic style override from a mass list

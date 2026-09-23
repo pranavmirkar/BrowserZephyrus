@@ -463,7 +463,15 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
   progress_row->SetPreferredSize(gfx::Size(0, kProgressHeight));
   progress_ = progress_row->AddChildView(std::make_unique<views::ProgressBar>());
   progress_->SetPreferredHeight(kProgressHeight);
-  progress_->SetValue(-1);  // Indeterminate.
+  // Determinate and still until a task runs; SetTaskRunning switches it.
+  //
+  // It used to be made indeterminate here, once, and then only hidden and
+  // shown. An indeterminate views::ProgressBar runs a looping animation, and
+  // hiding the view does not stop it -- so every window, from startup, ticked
+  // a 60 Hz timer for an agent panel nobody had opened, drawing nothing.
+  // MEASURED: ~50 wakeups a second on an idle page, found by logging every
+  // gfx::Animation start and stop and taking the one that never stopped.
+  progress_->SetValue(0);
   progress_->GetViewAccessibility().SetName(u"Agent is working");
   progress_->SetVisible(false);
 
@@ -867,6 +875,8 @@ void ZephyrusAgentPanel::Layout(PassKey) {
 
 void ZephyrusAgentPanel::SetTaskRunning(bool running) {
   task_running_ = running;
+  // -1 is indeterminate and animates; 0 is still. See the constructor.
+  progress_->SetValue(running ? -1 : 0);
   progress_->SetVisible(running);
   // One button that is "send" at rest and "stop" while a task runs, the way M3
   // chat composers do: the thing you would want to press is always under the

@@ -60,6 +60,10 @@ ResourceType MapDestination(network::mojom::RequestDestination destination) {
       return kTypeMedia;
     case RD::kEmpty:
       return kTypeXhr;
+    case RD::kDocument:
+      // A top-level page load. Kept apart from kTypeOther so an untyped path
+      // rule cannot refuse to open an article; see FilterRule::pure_host.
+      return kTypeDocument;
     default:
       return kTypeOther;
   }

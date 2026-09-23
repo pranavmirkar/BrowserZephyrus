@@ -9,6 +9,8 @@
 #include <utility>
 
 #include "base/base_paths.h"
+#include "base/no_destructor.h"
+#include "base/callback_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
@@ -17,6 +19,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_updater.h"
 #include "chrome/common/chrome_paths.h"
 #include "base/strings/string_util.h"
@@ -67,10 +70,15 @@ std::string NormalizeDomain(const std::string& input) {
   return d;
 }
 
-// How often the browser refreshes the filter lists, and the initial delay after
-// startup before the first staleness check (so it doesn't compete with launch).
+// How often the lists are refreshed. Every list once a day; uBO's quick-fixes
+// on the 8-hour expiry its publisher declares, because that is where YouTube
+// fixes land -- on the daily cycle alone they could arrive a day and a half
+// late. The check itself only reads the file's header, so it runs hourly: a
+// 6-hour check period added up to 6 hours to every one of those deadlines.
 constexpr base::TimeDelta kUpdateInterval = base::Hours(24);
-constexpr base::TimeDelta kUpdateCheckPeriod = base::Hours(6);
+constexpr base::TimeDelta kQuickFixesInterval = base::Hours(8);
+constexpr base::TimeDelta kUpdateCheckPeriod = base::Hours(1);
+// Delay before the first check after startup, so it doesn't compete with launch.
 constexpr base::TimeDelta kInitialUpdateDelay = base::Seconds(45);
 
 // Combined auto-updated list location (shared across profiles).
@@ -82,15 +90,47 @@ base::FilePath DownloadedListPath() {
   return dir.AppendASCII("ZephyrusAdBlock").AppendASCII("filters.txt");
 }
 
-// Age of the downloaded list, or a very large value if it doesn't exist. Runs
-// on a background thread (touches the filesystem).
-base::TimeDelta DownloadedListAge() {
-  base::FilePath path = DownloadedListPath();
+// Which refresh, if any, the downloaded list is due. Reads only the file's
+// header and modification time. Runs on a background thread.
+std::optional<UpdateKind> DownloadedListDue() {
+  const base::FilePath path = DownloadedListPath();
   base::File::Info info;
   if (path.empty() || !base::GetFileInfo(path, &info) || info.size == 0) {
-    return base::TimeDelta::Max();
+    return UpdateKind::kFull;  // Never downloaded: fetch everything.
   }
-  return base::Time::Now() - info.last_modified;
+  std::string head;
+  // Fails for any file over the limit, but leaves the first bytes in `head`,
+  // which is all the header needs.
+  base::ReadFileToStringWithMaxSize(path, &head, 1024);
+  const CombinedListHeader header = ParseCombinedListHeader(head);
+  // Written by an older updater (no includes resolved, before this build):
+  // refresh now rather than leave an upgrade waiting up to a day to apply.
+  if (header.format != kCombinedListFormat) {
+    return UpdateKind::kFull;
+  }
+  const base::Time now = base::Time::Now();
+  const base::Time full = base::Time::FromTimeT(header.full_update_seconds);
+  // A time in the future means the clock moved backwards since it was
+  // written. Treated as due, or updates would stall until the clock caught up.
+  const base::TimeDelta since_full = now - full;
+  if (header.full_update_seconds == 0 || since_full.is_negative() ||
+      since_full >= kUpdateInterval) {
+    return UpdateKind::kFull;
+  }
+  const base::TimeDelta since_write = now - info.last_modified;
+  if (since_write.is_negative() || since_write >= kQuickFixesInterval) {
+    return UpdateKind::kQuickFixes;
+  }
+  return std::nullopt;
+}
+
+// Every live service, so a finished update reloads all of them. The download
+// is shared by every profile -- including off-the-record ones, which never
+// fetch -- and an incognito window used to keep the rules it opened with until
+// the browser restarted.
+base::RepeatingClosureList& ListUpdatedCallbacks() {
+  static base::NoDestructor<base::RepeatingClosureList> callbacks;
+  return *callbacks;
 }
 
 // Filter list bundled next to the binary (copied by the build). Contains
@@ -328,6 +368,8 @@ BuildEnginesFromBundledList() {
     }
   }
   if (read) {
+    // Resolve uBO's !#if blocks first; see PreprocessFilterList.
+    contents = PreprocessFilterList(contents);
     network->AddRules(contents);
     cosmetic->AddRules(contents);
     scriptlet->AddRules(contents);
@@ -357,7 +399,13 @@ ZephyrusAdblockService::ZephyrusAdblockService(
         kPrefEnabled,
         base::BindRepeating(
             [](ZephyrusAdblockService* s) {
+              const bool was_enabled = s->enabled_;
               s->enabled_ = s->prefs_->GetBoolean(kPrefEnabled);
+              // Updates pause while the blocker is off; catch up when it is
+              // turned back on rather than at the next hourly check.
+              if (s->enabled_ && !was_enabled) {
+                s->MaybeStartUpdate();
+              }
             },
             base::Unretained(this)));
     pref_change_registrar_.Add(
@@ -419,6 +467,9 @@ ZephyrusAdblockService::ZephyrusAdblockService(
   cosmetic_engine_->AddRules(kStarterCosmeticList,
                              /*inject_generic_selectors=*/true);
   LoadFullFilterListAsync();
+  list_updated_subscription_ = ListUpdatedCallbacks().Add(
+      base::BindRepeating(&ZephyrusAdblockService::LoadFullFilterListAsync,
+                          weak_factory_.GetWeakPtr()));
 
   // Daily filter-list auto-update (only where we have a network factory, i.e.
   // not incognito/guest). First check shortly after startup, then periodically.
@@ -436,9 +487,13 @@ ZephyrusAdblockService::ZephyrusAdblockService(
 ZephyrusAdblockService::~ZephyrusAdblockService() = default;
 
 void ZephyrusAdblockService::SetEnabled(bool enabled) {
+  const bool was_enabled = enabled_;
   enabled_ = enabled;
   if (prefs_) {
     prefs_->SetBoolean(kPrefEnabled, enabled);
+  }
+  if (enabled && !was_enabled) {
+    MaybeStartUpdate();
   }
 }
 
@@ -573,24 +628,26 @@ void ZephyrusAdblockService::RemoveAllowlistDomain(const std::string& domain) {
 }
 
 void ZephyrusAdblockService::MaybeStartUpdate() {
-  if (updating_ || !url_loader_factory_) {
+  // Off means off: the traffic annotation promises that turning the blocker
+  // off stops these downloads, and it did not.
+  if (updating_ || !url_loader_factory_ || !enabled_) {
     return;
   }
-  // Check the on-disk list's age off the UI thread, then decide.
+  // Check the on-disk list off the UI thread, then decide.
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
-      base::BindOnce(&DownloadedListAge),
+      base::BindOnce(&DownloadedListDue),
       base::BindOnce(&ZephyrusAdblockService::OnListAgeChecked,
                      weak_factory_.GetWeakPtr()));
 }
 
-void ZephyrusAdblockService::OnListAgeChecked(base::TimeDelta age) {
-  if (updating_ || !url_loader_factory_ || age < kUpdateInterval) {
+void ZephyrusAdblockService::OnListAgeChecked(std::optional<UpdateKind> due) {
+  if (updating_ || !url_loader_factory_ || !enabled_ || !due) {
     return;
   }
   updating_ = true;
-  updater_ = std::make_unique<ZephyrusAdblockUpdater>(url_loader_factory_,
-                                                      DownloadedListPath());
+  updater_ = std::make_unique<ZephyrusAdblockUpdater>(
+      url_loader_factory_, DownloadedListPath(), *due);
   updater_->Start(base::BindOnce(&ZephyrusAdblockService::OnUpdateFinished,
                                  weak_factory_.GetWeakPtr()));
 }
@@ -599,14 +656,21 @@ void ZephyrusAdblockService::OnUpdateFinished(bool success) {
   updating_ = false;
   updater_.reset();
   if (success) {
-    // Reload the engines from the freshly-downloaded list and hot-swap them in.
-    LoadFullFilterListAsync();
+    // Reload the engines from the freshly-downloaded list and hot-swap them
+    // in -- in every profile, this one included.
+    ListUpdatedCallbacks().Notify();
   }
 }
 
 void ZephyrusAdblockService::LoadFullFilterListAsync() {
+  // USER_VISIBLE, not BEST_EFFORT. Best-effort work is held back until startup
+  // is over, and until this lands only the small starter list is in force --
+  // so every page opened in the first seconds, which is every tab a session
+  // restore reopens, loaded with its ads. MEASURED: a page opened ~2 s after
+  // launch got none of its site-specific hiding rules; the same page opened
+  // after a 12 s wait got all of them. Parsing takes ~60 ms on a pool thread.
   base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(&BuildEnginesFromBundledList),
       base::BindOnce(&ZephyrusAdblockService::OnFullFilterListLoaded,
                      weak_factory_.GetWeakPtr()));
@@ -632,12 +696,22 @@ void ZephyrusAdblockService::OnFullFilterListLoaded(
   }
 }
 
+uint32_t ZephyrusAdblockService::DocumentExceptions(const GURL& url) const {
+  return engine_ ? engine_->GetDocumentExceptions(url) : 0;
+}
+
 std::vector<std::string> ZephyrusAdblockService::GetCosmeticSelectors(
     const GURL& url) const {
   if (!enabled_ || !cosmetic_engine_ || IsAllowlisted(url)) {
     return {};
   }
-  return cosmetic_engine_->GetSelectorsForUrl(url);
+  const uint32_t exceptions = DocumentExceptions(url);
+  if (exceptions & (kExceptDocument | kExceptElemHide)) {
+    return {};
+  }
+  return cosmetic_engine_->GetSelectorsForUrl(
+      url, !(exceptions & kExceptGenericHide),
+      !(exceptions & kExceptSpecificHide));
 }
 
 namespace {
@@ -647,6 +721,57 @@ namespace {
 // every other selector in the same rule. Chunking caps that blast radius while
 // keeping the stylesheet compact.
 constexpr size_t kSelectorsPerRule = 64;
+
+// Splits a filter's selector at its top-level commas: "a, b:is(c, d)" -> "a",
+// "b:is(c, d)". Commas inside (), [] or quotes belong to the selector.
+std::vector<std::string_view> SplitSelectorList(std::string_view selector) {
+  std::vector<std::string_view> parts;
+  int depth = 0;
+  char quote = 0;
+  size_t start = 0;
+  for (size_t i = 0; i < selector.size(); ++i) {
+    const char c = selector[i];
+    if (quote) {
+      if (c == quote) {
+        quote = 0;
+      }
+    } else if (c == '"' || c == '\'') {
+      quote = c;
+    } else if (c == '(' || c == '[') {
+      ++depth;
+    } else if ((c == ')' || c == ']') && depth > 0) {
+      --depth;
+    } else if (c == ',' && depth == 0) {
+      parts.push_back(selector.substr(start, i - start));
+      start = i + 1;
+    }
+  }
+  parts.push_back(selector.substr(start));
+  std::vector<std::string_view> trimmed;
+  for (std::string_view part : parts) {
+    part = base::TrimWhitespaceASCII(part, base::TRIM_ALL);
+    if (!part.empty()) {
+      trimmed.push_back(part);
+    }
+  }
+  return trimmed;
+}
+
+// Whether a selector part starts at the root of the document ("html.x .ad",
+// "body > .ad", ":root .ad"), which the body-scoping guard cannot simply be
+// put in front of.
+bool StartsAtRoot(std::string_view part) {
+  for (std::string_view root : {"html", "body", ":root"}) {
+    if (part.size() >= root.size() &&
+        base::EqualsCaseInsensitiveASCII(part.substr(0, root.size()), root) &&
+        (part.size() == root.size() ||
+         !(base::IsAsciiAlphaNumeric(part[root.size()]) ||
+           part[root.size()] == '-' || part[root.size()] == '_'))) {
+      return true;
+    }
+  }
+  return false;
+}
 
 std::string BuildHideCss(const std::vector<std::string>& selectors) {
   std::string css;
@@ -663,8 +788,32 @@ std::string BuildHideCss(const std::vector<std::string>& selectors) {
     // `sp-message-open` — is indistinguishable from a banner's own class in a
     // filter list, and one such entry took theguardian.com down to a white
     // page. :where() keeps the guard out of the specificity calculation.
-    css += ":where(body) ";
-    css += selectors[i];
+    //
+    // The guard goes in front of EACH comma-separated part. Prefixed to the
+    // whole of "a, body.x" it covered only "a" and left "body.x" free to hide
+    // the page. A part that itself starts at the root ("body > .ad") would
+    // never match with the guard written before it, so it is wrapped in
+    // :is() instead; :is() is forgiving, so a bad part only drops itself.
+    bool first = true;
+    for (std::string_view part : SplitSelectorList(selectors[i])) {
+      if (!first) {
+        css += ',';
+      }
+      first = false;
+      if (StartsAtRoot(part)) {
+        css += ":where(body) :is(";
+        css += part;
+        css += ')';
+      } else {
+        css += ":where(body) ";
+        css += part;
+      }
+    }
+    if (first) {
+      // Nothing but separators: keep the list well-formed with a selector
+      // that matches nothing.
+      css += ":where(body) :not(*)";
+    }
   }
   if (!selectors.empty()) {
     css += "{display:none !important;}";
@@ -675,17 +824,25 @@ std::string BuildHideCss(const std::vector<std::string>& selectors) {
 }  // namespace
 
 std::string ZephyrusAdblockService::GetCosmeticCss(const GURL& url) const {
-  if (!enabled_ || !cosmetic_engine_ || IsAllowlisted(url)) {
-    return std::string();
-  }
-  std::vector<std::string> selectors = cosmetic_engine_->GetSelectorsForUrl(url);
+  std::vector<std::string> selectors = GetCosmeticSelectors(url);
   if (selectors.empty()) {
     return std::string();
   }
-  std::string css = BuildHideCss(selectors);
-  // Style overrides last, so a `:style()` rule releasing an overlay's
-  // scroll-lock is not itself outranked by an earlier rule.
-  for (const std::string& rule : cosmetic_engine_->GetStyleRulesForUrl(url)) {
+  return BuildHideCss(selectors);
+}
+
+std::string ZephyrusAdblockService::GetCosmeticStyleCss(const GURL& url) const {
+  if (!enabled_ || !cosmetic_engine_ || IsAllowlisted(url)) {
+    return std::string();
+  }
+  const uint32_t exceptions = DocumentExceptions(url);
+  if (exceptions & (kExceptDocument | kExceptElemHide)) {
+    return std::string();
+  }
+  std::string css;
+  for (const std::string& rule : cosmetic_engine_->GetStyleRulesForUrl(
+           url, !(exceptions & kExceptGenericHide),
+           !(exceptions & kExceptSpecificHide))) {
     css += rule;
   }
   return css;
@@ -697,13 +854,18 @@ std::string ZephyrusAdblockService::GetGenericCosmeticCss(
   if (!enabled_ || !cosmetic_engine_ || IsAllowlisted(url) || tokens.empty()) {
     return std::string();
   }
+  if (DocumentExceptions(url) &
+      (kExceptDocument | kExceptElemHide | kExceptGenericHide)) {
+    return std::string();
+  }
   return BuildHideCss(
       cosmetic_engine_->GetGenericSelectorsForTokens(url, tokens));
 }
 
 std::string ZephyrusAdblockService::GetScriptletInjection(
     const GURL& url) const {
-  if (!enabled_ || !scriptlet_engine_ || IsAllowlisted(url)) {
+  if (!enabled_ || !scriptlet_engine_ || IsAllowlisted(url) ||
+      (DocumentExceptions(url) & kExceptDocument)) {
     return std::string();
   }
   return scriptlet_engine_->BuildInjectionScriptForUrl(url);

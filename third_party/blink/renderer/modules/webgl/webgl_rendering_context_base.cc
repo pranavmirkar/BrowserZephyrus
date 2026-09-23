@@ -25,6 +25,7 @@
 
 #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
 #include "third_party/blink/renderer/core/frame/zephyrus_fingerprint_seed.h"
+#include "third_party/blink/renderer/platform/graphics/zephyrus_canvas_noise.h"
 #include <optional>
 #include <array>
 
@@ -5505,6 +5506,80 @@ void WebGLRenderingContextBase::ReadPixelsHelper(GLint x,
       return;
     }
     ContextGL()->ReadPixels(x, y, width, height, format, type, data);
+  }
+  if (!buffer) {
+    ZephyrusPerturbReadPixels(x, y, width, height, format, type, framebuffer,
+                              data);
+  }
+}
+
+// Zephyrus 6.5, WebGL surface: pixel readback.
+//
+// A WebGL fingerprint renders a fixed scene and hashes readPixels(); the
+// rasteriser's per-GPU differences make it stable per machine. Only the export
+// path (toDataURL/toBlob, see html_canvas_element.cc) was perturbed, so the
+// same scene read through readPixels came back identical on every site.
+//
+// Uses the CANVAS noise and, for the default framebuffer, canvas coordinates
+// (GL rows are bottom-up, so row r of the read is canvas row H-1-(y+r)): a page
+// that reads the same pixels through readPixels and through toDataURL gets the
+// same values from both, as it would on a real GPU. A read from the page's own
+// framebuffer object has no export path to agree with and is keyed in GL
+// coordinates.
+//
+// Only tightly packed RGBA/UNSIGNED_BYTE -- the format every fingerprinting
+// script uses, and the only one where the noise's byte layout is known. A read
+// that reaches outside the drawing buffer is left alone rather than noised in
+// regions a real GPU would leave untouched.
+void WebGLRenderingContextBase::ZephyrusPerturbReadPixels(
+    GLint x,
+    GLint y,
+    GLsizei width,
+    GLsizei height,
+    GLenum format,
+    GLenum type,
+    WebGLFramebuffer* framebuffer,
+    uint8_t* data) {
+  if (!data || format != GL_RGBA || type != GL_UNSIGNED_BYTE || width <= 0 ||
+      height <= 0 || x < 0 || y < 0 || !ZephyrusPackIsTight() ||
+      // PACK_ALIGNMENT 8 pads odd-width RGBA rows.
+      (static_cast<int64_t>(width) * 4) % pack_alignment_ != 0) {
+    return;
+  }
+  ExecutionContext* context = GetExecutionContext();
+  ZephyrusReportFingerprintSurface(
+      context, zephyrus_privacy::mojom::blink::FingerprintSurface::kCanvasRead);
+  const std::optional<std::array<uint8_t, 32>> seed =
+      ZephyrusSeedForSurface(context, kZephyrusFpWebgl);
+  if (!seed) {
+    return;
+  }
+  base::CheckedNumeric<size_t> row_bytes = width;
+  row_bytes *= 4;
+  base::CheckedNumeric<size_t> total = row_bytes * height;
+  if (!total.IsValid()) {
+    return;
+  }
+  // UNSAFE_BUFFERS: ValidateReadPixelsFuncParameters() already proved the
+  // destination holds width * height tightly packed RGBA pixels.
+  base::span<uint8_t> pixels =
+      UNSAFE_BUFFERS(base::span(data, total.ValueOrDie()));
+  if (framebuffer) {
+    ApplyZephyrusCanvasNoise(base::span(*seed), pixels, width, x, y);
+    return;
+  }
+  if (!GetDrawingBuffer()) {
+    return;
+  }
+  const gfx::Size size = GetDrawingBuffer()->Size();
+  if (x + width > size.width() || y + height > size.height()) {
+    return;
+  }
+  const size_t stride = row_bytes.ValueOrDie();
+  for (GLsizei row = 0; row < height; ++row) {
+    ApplyZephyrusCanvasNoise(
+        base::span(*seed), pixels.subspan(row * stride, stride), width, x,
+        size.height() - 1 - (y + row));
   }
 }
 
