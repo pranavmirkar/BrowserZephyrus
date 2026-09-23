@@ -246,6 +246,7 @@
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_icons.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_setup.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/dialog_button.mojom-shared.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -3711,6 +3712,15 @@ void ToolbarView::AddZephyrusWindowControls() {
 }
 
 void ToolbarView::SetZephyrusOmniboxFocused(bool focused) {
+  // Lent to the sidebar, the omnibox is not this bar's to grow: the panel
+  // lifts it out over the page instead.
+  if (zephyrus_compact_) {
+    if (BrowserView* browser_view =
+            BrowserView::GetBrowserViewForBrowser(browser_)) {
+      browser_view->OnZephyrusCompactOmniboxFocusChanged();
+    }
+    return;
+  }
   if (!zephyrus_omnibox_focus_animation_) {
     zephyrus_omnibox_focus_animation_ =
         std::make_unique<ZephyrusOmniboxFocusAnimation>(base::BindRepeating(
@@ -5129,11 +5139,13 @@ class ZephyrusWorkspaceStrip : public views::View,
   ZephyrusWorkspaceStrip(SwitchCallback on_switch,
                          base::RepeatingClosure on_add,
                          WorkspaceCallback on_pick_icon,
-                         WorkspaceCallback on_delete)
+                         WorkspaceCallback on_delete,
+                         WorkspaceCallback on_edit)
       : on_switch_(std::move(on_switch)),
         on_add_(std::move(on_add)),
         on_pick_icon_(std::move(on_pick_icon)),
-        on_delete_(std::move(on_delete)) {
+        on_delete_(std::move(on_delete)),
+        on_edit_(std::move(on_edit)) {
     auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kHorizontal,
         gfx::Insets::VH(kPillPadV, kPillPadH), kCellGap));
@@ -5241,7 +5253,12 @@ class ZephyrusWorkspaceStrip : public views::View,
                               base::Unretained(this), w.id, can_delete),
           std::move(photo),
           /*animate_entrance=*/switched && active));
-      cell->SetTooltipText(u"Workspace " + base::NumberToString16(i + 1));
+      // The workspace's NAME when it has one -- the comment above promises the
+      // tooltip carries it, and this said "Workspace N" regardless, so a named
+      // workspace showing its icon or number never said which one it was.
+      cell->SetTooltipText(
+          w.name.empty() ? u"Workspace " + base::NumberToString16(i + 1)
+                         : w.name);
     }
 
     // Compact cells are placed by Layout() below, which sizes them to the
@@ -5298,6 +5315,9 @@ class ZephyrusWorkspaceStrip : public views::View,
   void ShowCellMenu(int workspace_id, bool can_delete) {
     menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
     menu_workspace_id_ = workspace_id;
+    // Everything about a workspace -- name, icon, colour, light or dark -- in
+    // the same card that sets them up when it is created.
+    menu_model_->AddItem(kCommandEdit, u"Edit workspace…");
     menu_model_->AddItem(kCommandPickIcon, u"Choose icon…");
     if (can_delete) {
       menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
@@ -5313,7 +5333,9 @@ class ZephyrusWorkspaceStrip : public views::View,
 
   // ui::SimpleMenuModel::Delegate:
   void ExecuteCommand(int command_id, int event_flags) override {
-    if (command_id == kCommandPickIcon) {
+    if (command_id == kCommandEdit) {
+      on_edit_.Run(menu_workspace_id_);
+    } else if (command_id == kCommandPickIcon) {
       on_pick_icon_.Run(menu_workspace_id_);
     } else if (command_id == kCommandDelete) {
       on_delete_.Run(menu_workspace_id_);
@@ -5322,6 +5344,7 @@ class ZephyrusWorkspaceStrip : public views::View,
 
   static constexpr int kCommandPickIcon = 1;
   static constexpr int kCommandDelete = 2;
+  static constexpr int kCommandEdit = 3;
   // A touch more air than before -- 22px discs sitting 2px apart run
   // together into one shape at a glance.
   static constexpr int kCellGap = 3;
@@ -5329,6 +5352,7 @@ class ZephyrusWorkspaceStrip : public views::View,
   base::RepeatingClosure on_add_;
   WorkspaceCallback on_pick_icon_;
   WorkspaceCallback on_delete_;
+  WorkspaceCallback on_edit_;
   int menu_workspace_id_ = 0;
   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
   std::unique_ptr<views::MenuRunner> menu_runner_;
@@ -5648,19 +5672,27 @@ void ToolbarView::AddZephyrusWorkspaceButton() {
       base::Unretained(this)),
       base::BindRepeating(
           [](ToolbarView* toolbar) {
+            // Set up first, then create: see zephyrus_workspace_setup.h.
             if (BrowserView* view =
                     BrowserView::GetBrowserViewForBrowser(toolbar->browser_)) {
-              if (ZephyrusWorkspaceManager* m =
-                      view->zephyrus_workspace_manager()) {
-                m->AddWorkspace();
-              }
+              zephyrus::ShowWorkspaceSetup(
+                  view, toolbar->zephyrus_workspace_strip_, /*workspace_id=*/0);
             }
           },
           base::Unretained(this)),
       base::BindRepeating(&ToolbarView::ShowZephyrusIconPicker,
                           base::Unretained(this)),
       base::BindRepeating(&ToolbarView::ConfirmZephyrusWorkspaceDelete,
-                          base::Unretained(this)));
+                          base::Unretained(this)),
+      base::BindRepeating(
+          [](ToolbarView* toolbar, int workspace_id) {
+            if (BrowserView* view =
+                    BrowserView::GetBrowserViewForBrowser(toolbar->browser_)) {
+              zephyrus::ShowWorkspaceSetup(
+                  view, toolbar->zephyrus_workspace_strip_, workspace_id);
+            }
+          },
+          base::Unretained(this)));
   button->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 6));
   // Place it just to the right of the new-tab (+) button.
   std::optional<size_t> new_tab_index =

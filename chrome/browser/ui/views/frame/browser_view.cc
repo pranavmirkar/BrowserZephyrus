@@ -3532,6 +3532,12 @@ void BrowserView::UpdateZephyrusSidebarBounds() {
   }
 }
 
+void BrowserView::OnZephyrusCompactOmniboxFocusChanged() {
+  if (zephyrus_sidebar_) {
+    zephyrus_sidebar_->OnOmniboxFocusChanged();
+  }
+}
+
 void BrowserView::ToggleZephyrusTitlebarPinned() {
   zephyrus_titlebar_pinned_ = !zephyrus_titlebar_pinned_;
   // The title bar hides and reveals exactly as it always did -- the reveal
@@ -4862,6 +4868,11 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
   if (zephyrus_sidebar_) {
     zephyrus_sidebar_->OnWindowActivationChanged(active);
   }
+  // The active window's workspace owns the live theme; see
+  // ZephyrusWorkspaceStore::MirrorAppearance.
+  if (active && zephyrus_workspace_manager_) {
+    zephyrus_workspace_manager_->OnWindowActivated();
+  }
 
   // Rule 2 audit, off unless --zephyrus-audit-shape is set. Activation is the
   // hook because by then the window has laid out at least once, so every child
@@ -4869,6 +4880,49 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
   // all empty and every comparison would be meaningless.
   if (active) {
     zephyrus::m3::AuditConcentricity(*this);
+  }
+  // Dev only: --zephyrus-test-compact starts the window in compact mode with
+  // the sidebar pinned out, so the panel's chrome can be inspected without
+  // hovering for it. Any value also focuses the address bar after 2s, and
+  // =omnibox-type types into it too.
+  if (active && !zephyrus_test_compact_applied_ && zephyrus_sidebar_ &&
+      base::CommandLine::ForCurrentProcess()->HasSwitch(
+          "zephyrus-test-compact")) {
+    zephyrus_test_compact_applied_ = true;
+    if (zephyrus_titlebar_pinned_) {
+      ToggleZephyrusTitlebarPinned();
+    }
+    if (!zephyrus_sidebar_->is_pinned()) {
+      zephyrus_sidebar_->TogglePinned();
+    }
+    if (base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+            "zephyrus-test-compact") != "") {
+      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](base::WeakPtr<BrowserView> view) {
+                if (view && view->toolbar_ &&
+                    view->toolbar_->location_bar_view()) {
+                  // A window launched from a background process is often
+                  // not active, and focus in an inactive widget is only
+                  // stored, never given.
+                  view->GetWidget()->Activate();
+                  view->toolbar_->location_bar_view()->FocusLocation(
+                      /*is_user_initiated=*/true,
+                      /*clear_focus_if_failed=*/false);
+                  // =omnibox-type also types, to bring up the suggestions.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "omnibox-type") {
+                    view->toolbar_->location_bar_view()
+                        ->omnibox_view()
+                        ->SetUserText(u"example", /*update_popup=*/true);
+                  }
+                }
+              },
+              weak_ptr_factory_.GetWeakPtr()),
+          base::Seconds(2));
+    }
   }
   if (browser_->GetWindow()) {
     if (active) {
@@ -5578,7 +5632,12 @@ void BrowserView::Layout(PassKey) {
   }
 
   // TODO(jamescook): Why was this in the middle of layout code?
-  toolbar_->location_bar()->UpdateFocusBehavior(IsToolbarVisible());
+  // Zephyrus: in compact mode the title bar is hidden but the omnibox is not
+  // -- it is lent to the sidebar. Tying its focusability to the title bar made
+  // it NEVER-focusable there: a click in it did nothing and Ctrl+L went
+  // nowhere, which is why the address bar was unusable in compact mode.
+  toolbar_->location_bar()->UpdateFocusBehavior(
+      IsToolbarVisible() || toolbar_->IsZephyrusCompact());
   GetFrameView()->UpdateMinimumSize();
 
   if (omnibox::IsWebUIOmniboxInBrowserViewEnabled()) {

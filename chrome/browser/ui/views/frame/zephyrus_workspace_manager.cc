@@ -7,6 +7,12 @@
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_image.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_icons.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/webui/cr_components/most_visited/zephyrus_most_visited_filter.h"
+#include "chrome/common/pref_names.h"
 
 #include <algorithm>
 
@@ -16,6 +22,7 @@
 #include "base/containers/span.h"
 #include "base/rand_util.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/json/json_writer.h"
@@ -87,6 +94,71 @@ int ZephyrusWorkspaceManager::DotsForIndex(size_t index) {
 namespace {
 // Key for attaching the store to the Profile. Its address is the identity.
 constexpr char kZephyrusWorkspaceStoreKey[] = "zephyrus_workspace_store";
+
+// The profile prefs that together are how a workspace looks: the theme seed and
+// its variant, grayscale, light/dark, and the New Tab Page wallpaper. Exactly
+// what Customize Chrome edits, minus extension themes (installed, not chosen)
+// and an uploaded photo, whose FILE is one per profile.
+constexpr const char* kAppearancePrefs[] = {
+    prefs::kUserColor,
+    prefs::kBrowserColorVariant,
+    prefs::kGrayscaleThemeEnabled,
+    prefs::kBrowserColorScheme,
+    prefs::kNtpCustomBackgroundDict,
+    prefs::kNtpCustomBackgroundLocalToDevice,
+};
+
+bool IsAppearancePref(std::string_view path) {
+  for (const char* candidate : kAppearancePrefs) {
+    if (path == candidate) {
+      return true;
+    }
+  }
+  return false;
+}
+
+ZephyrusWorkspaceLook LookFromDict(const base::DictValue& look) {
+  ZephyrusWorkspaceLook result;
+  if (std::optional<int> color = look.FindInt(prefs::kUserColor);
+      color && static_cast<SkColor>(*color) != SK_ColorTRANSPARENT) {
+    result.seed = static_cast<SkColor>(*color);
+  }
+  // Unset means Zephyrus's default, which is dark; kSystem (0) is coerced to
+  // dark by ThemeService::GetBrowserColorScheme for the same reason.
+  const std::optional<int> scheme = look.FindInt(prefs::kBrowserColorScheme);
+  result.dark = !(scheme && *scheme == 1);
+  result.grayscale = look.FindBool(prefs::kGrayscaleThemeEnabled).value_or(false);
+  return result;
+}
+
+// The New Tab Page's most-visited tiles come from the profile's history, which
+// every workspace shares -- so a fresh workspace's NTP greeted you with the
+// sites you use in all the others. A history-derived tile is shown only if the
+// site was opened in the tile's own workspace. A workspace on the shared
+// cookie jar (the first one, and any created without separate sign-ins) keeps
+// every tile, as before: it is the shared space by design.
+bool KeepTileInWorkspace(content::WebContents* contents, const GURL& url) {
+  if (!contents) {
+    return true;
+  }
+  Profile* profile = Profile::FromBrowserContext(contents->GetBrowserContext());
+  if (!profile || profile->IsOffTheRecord()) {
+    return true;
+  }
+  // Looked up, never created: a profile with no workspace store has no
+  // workspaces to scope anything to.
+  auto* store = static_cast<ZephyrusWorkspaceStore*>(
+      profile->GetUserData(kZephyrusWorkspaceStoreKey));
+  if (!store) {
+    return true;
+  }
+  const int workspace = store->GetWorkspaceForContents(contents);
+  if (workspace == 0 || store->PartitionNameForWorkspace(workspace).empty()) {
+    return true;
+  }
+  return store->WasVisitedInWorkspace(workspace, url) ||
+         store->WasVisitedInWorkspace(workspace, url.GetWithEmptyPath());
+}
 }  // namespace
 
 // static
@@ -107,6 +179,13 @@ ZephyrusWorkspaceStore* ZephyrusWorkspaceStore::GetForProfile(
 
 ZephyrusWorkspaceStore::ZephyrusWorkspaceStore(Profile* profile)
     : profile_(profile) {
+  // One filter for the process; it finds the right store per tab.
+  static bool tile_filter_registered = false;
+  if (!tile_filter_registered) {
+    tile_filter_registered = true;
+    zephyrus::SetMostVisitedTileFilter(
+        base::BindRepeating(&KeepTileInWorkspace));
+  }
   // A Private Workspace store starts blank, every session. Its profile is
   // off-the-record, whose PrefService is an overlay that reads THROUGH to the
   // regular profile — so calling LoadState() here would pull the regular
@@ -324,6 +403,13 @@ void ZephyrusWorkspaceStore::SetWindowWorkspace(const void* window,
     return;
   }
   window_current_workspace_[window] = workspace_id;
+  // The workspace to reopen on next launch. This was loaded from prefs and
+  // never written again, so every restart landed on the first workspace --
+  // and then EnsureActiveTabInWorkspace pulled the restored active tab away
+  // from wherever the user had actually been.
+  if (Get(workspace_id)) {
+    saved_current_workspace_id_ = workspace_id;
+  }
   RefreshBackgroundTimestamps();
 
   // OFF the switch path.
@@ -487,25 +573,38 @@ std::string ZephyrusWorkspaceStore::VisitKey(const GURL& url) const {
 
 void ZephyrusWorkspaceStore::RecordVisit(int workspace_id, const GURL& url) {
   // Cap per workspace: this rides in a pref, and an unbounded index would grow
-  // the Preferences file without limit.
-  constexpr size_t kMaxVisitsPerWorkspace = 150;
-  // Only ordinary web pages are worth scoping. chrome:// pages, the NTP and
-  // blank entries aren't things the user "visited in a workspace".
-  const std::string spec = VisitKey(url);
-  if (workspace_id == 0 || spec.empty()) {
+  // the Preferences file without limit. Doubled when origins joined the index,
+  // so the page history it held before keeps the same depth.
+  constexpr size_t kMaxVisitsPerWorkspace = 300;
+  if (workspace_id == 0) {
     return;
   }
-  std::set<std::string>& lookup = visit_lookup_[workspace_id];
-  if (!lookup.insert(spec).second) {
-    return;  // Already known; leave its position alone.
+  bool changed = false;
+  // The page itself, for omnibox scoping, and its ORIGIN, for the New Tab
+  // Page: a most-visited tile names a site's front page, which is rarely the
+  // exact page that was read.
+  for (const GURL& visited : {url, url.GetWithEmptyPath()}) {
+    // Only ordinary web pages are worth scoping. chrome:// pages, the NTP and
+    // blank entries aren't things the user "visited in a workspace".
+    std::string spec = VisitKey(visited);
+    if (spec.empty()) {
+      continue;
+    }
+    std::set<std::string>& lookup = visit_lookup_[workspace_id];
+    if (!lookup.insert(spec).second) {
+      continue;  // Already known; leave its position alone.
+    }
+    std::deque<std::string>& order = visit_order_[workspace_id];
+    order.push_back(std::move(spec));
+    while (order.size() > kMaxVisitsPerWorkspace) {
+      lookup.erase(order.front());
+      order.pop_front();
+    }
+    changed = true;
   }
-  std::deque<std::string>& order = visit_order_[workspace_id];
-  order.push_back(spec);
-  while (order.size() > kMaxVisitsPerWorkspace) {
-    lookup.erase(order.front());
-    order.pop_front();
+  if (changed) {
+    SchedulePersist();
   }
-  SchedulePersist();
 }
 
 bool ZephyrusWorkspaceStore::WasVisitedInWorkspace(int workspace_id,
@@ -558,11 +657,169 @@ void ZephyrusWorkspaceStore::HistoryServiceBeingDeleted(
 }
 
 void ZephyrusWorkspaceStore::EraseWorkspaceState(int workspace_id) {
+  appearance_.erase(workspace_id);
+  if (mirrored_workspace_id_ == workspace_id) {
+    // Nothing to save the live theme into any more; the next workspace shown
+    // simply applies its own.
+    mirrored_workspace_id_ = 0;
+  }
   workspace_active_.erase(workspace_id);
   pending_active_ordinal_.erase(workspace_id);
   workspace_backgrounded_at_.erase(workspace_id);
   visit_order_.erase(workspace_id);
   visit_lookup_.erase(workspace_id);
+}
+
+base::DictValue ZephyrusWorkspaceStore::CaptureAppearance() const {
+  base::DictValue look;
+  PrefService* prefs = profile_ ? profile_->GetPrefs() : nullptr;
+  if (!prefs) {
+    return look;
+  }
+  for (const char* path : kAppearancePrefs) {
+    const PrefService::Preference* pref = prefs->FindPreference(path);
+    if (!pref) {
+      continue;
+    }
+    // None records "at its default", so applying it CLEARS the pref rather than
+    // pinning today's default value into the workspace forever.
+    look.Set(path, pref->IsDefaultValue() ? base::Value()
+                                          : pref->GetValue()->Clone());
+  }
+  return look;
+}
+
+void ZephyrusWorkspaceStore::ApplyAppearance(const base::DictValue& look) {
+  PrefService* prefs = profile_ ? profile_->GetPrefs() : nullptr;
+  if (!prefs) {
+    return;
+  }
+  for (const char* path : kAppearancePrefs) {
+    const PrefService::Preference* pref = prefs->FindPreference(path);
+    // A policy owns a managed pref; writing it would do nothing but warn.
+    if (!pref || pref->IsManaged()) {
+      continue;
+    }
+    const base::Value* want = look.Find(path);
+    if (!want || want->is_none()) {
+      if (!pref->IsDefaultValue()) {
+        prefs->ClearPref(path);
+      }
+      continue;
+    }
+    // The record comes from the Preferences file, which the user can edit, and
+    // PrefService treats a value of the wrong type as a fatal error rather than
+    // a bad input. Checked here, before it can reach it.
+    if (want->type() != pref->GetType()) {
+      continue;
+    }
+    if (*pref->GetValue() != *want) {
+      prefs->Set(path, want->Clone());
+    }
+  }
+}
+
+void ZephyrusWorkspaceStore::CaptureMirrored() {
+  if (!profile_ || profile_->IsOffTheRecord() ||
+      !Get(mirrored_workspace_id_)) {
+    return;
+  }
+  appearance_[mirrored_workspace_id_] = CaptureAppearance();
+}
+
+bool ZephyrusWorkspaceStore::MirrorAppearance(int workspace_id) {
+  // Private Workspace has no theme of its own to keep: it is always the
+  // incognito palette, and it must not write the regular profile's prefs.
+  if (!profile_ || profile_->IsOffTheRecord() || !Get(workspace_id) ||
+      workspace_id == mirrored_workspace_id_) {
+    return false;
+  }
+  // Save what the outgoing workspace ended up looking like -- including any
+  // change made in Customize Chrome while it was on screen -- before the prefs
+  // are rewritten for the incoming one.
+  CaptureMirrored();
+  mirrored_workspace_id_ = workspace_id;
+  const auto it = appearance_.find(workspace_id);
+  if (it == appearance_.end()) {
+    // First time on screen since per-workspace appearance existed: it keeps the
+    // look it has always had, and from here on it has its own.
+    appearance_[workspace_id] = CaptureAppearance();
+  } else {
+    ApplyAppearance(it->second);
+  }
+  SchedulePersist();
+  return true;
+}
+
+std::optional<ZephyrusWorkspaceLook> ZephyrusWorkspaceStore::GetLook(
+    int workspace_id) {
+  if (workspace_id == mirrored_workspace_id_) {
+    CaptureMirrored();  // The live prefs are the current truth for this one.
+  }
+  const auto it = appearance_.find(workspace_id);
+  if (it == appearance_.end()) {
+    return std::nullopt;
+  }
+  return LookFromDict(it->second);
+}
+
+ZephyrusWorkspaceLook ZephyrusWorkspaceStore::LookForEditing(
+    int workspace_id) {
+  if (std::optional<ZephyrusWorkspaceLook> look = GetLook(workspace_id)) {
+    return *look;
+  }
+  return LookFromDict(CaptureAppearance());
+}
+
+void ZephyrusWorkspaceStore::SetLook(int workspace_id,
+                                     std::optional<SkColor> seed,
+                                     bool dark,
+                                     bool clear_wallpaper) {
+  if (!profile_ || profile_->IsOffTheRecord() || !Get(workspace_id)) {
+    return;
+  }
+  if (workspace_id == mirrored_workspace_id_) {
+    CaptureMirrored();
+  }
+  const auto it = appearance_.find(workspace_id);
+  base::DictValue look =
+      it != appearance_.end() ? it->second.Clone() : CaptureAppearance();
+  // The same writes Customize Chrome makes: a seed (or none, for the default
+  // palette), the default variant, colour rather than grayscale.
+  look.Set(prefs::kUserColor, seed ? base::Value(static_cast<int>(*seed))
+                                   : base::Value());
+  look.Set(prefs::kBrowserColorVariant, base::Value());
+  look.Set(prefs::kGrayscaleThemeEnabled, base::Value());
+  look.Set(prefs::kBrowserColorScheme,
+           base::Value(dark ? 2 /*kDark*/ : 1 /*kLight*/));
+  if (clear_wallpaper) {
+    look.Set(prefs::kNtpCustomBackgroundDict, base::Value());
+    look.Set(prefs::kNtpCustomBackgroundLocalToDevice, base::Value());
+  }
+  if (workspace_id == mirrored_workspace_id_) {
+    ApplyAppearance(look);
+  }
+  appearance_[workspace_id] = std::move(look);
+  SchedulePersist();
+}
+
+int ZephyrusWorkspaceStore::WorkspaceForNewWindow() {
+  int workspace = 0;
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&](BrowserWindowInterface* browser) {
+        if (!browser || browser->GetProfile() != profile_) {
+          return true;
+        }
+        const auto it = window_current_workspace_.find(
+            browser->GetBrowserForMigrationOnly());
+        if (it == window_current_workspace_.end()) {
+          return true;  // Itself, most likely: not registered yet.
+        }
+        workspace = it->second;
+        return false;  // Most recently activated wins.
+      },
+      BrowserCollection::Order::kActivation);
+  return Get(workspace) ? workspace : default_workspace_id();
 }
 
 bool ZephyrusWorkspaceStore::HasVisitData(int workspace_id) const {
@@ -648,6 +905,9 @@ void ZephyrusWorkspaceStore::Persist() {
   if (!prefs) {
     return;
   }
+  // The live theme belongs to the mirrored workspace; save it with everything
+  // else so a Customize Chrome change survives a crash or a quit.
+  CaptureMirrored();
   prefs->SetString(kZephyrusWorkspacesPref, SerializeState());
 }
 
@@ -740,6 +1000,12 @@ std::string ZephyrusWorkspaceStore::SerializeState() const {
   }
   dict.Set("visits", std::move(visits));
   dict.Set("visit_salt", visit_salt_);
+  base::DictValue looks;
+  for (const auto& [workspace_id, look] : appearance_) {
+    looks.Set(base::NumberToString(workspace_id), look.Clone());
+  }
+  dict.Set("appearance", std::move(looks));
+  dict.Set("mirrored", mirrored_workspace_id_);
   return base::WriteJson(dict).value_or(std::string());
 }
 
@@ -820,6 +1086,31 @@ bool ZephyrusWorkspaceStore::LoadState() {
   }
   next_workspace_id_ =
       std::max(dict.FindInt("next").value_or(max_id + 1), max_id + 1);
+
+  // Per-workspace appearance. Only the known pref paths are kept, and only for
+  // workspaces that exist: this dict is written back into real prefs later,
+  // and the file it came from is user-editable.
+  appearance_.clear();
+  if (const base::DictValue* looks = dict.FindDict("appearance")) {
+    for (const auto [id_key, look_value] : *looks) {
+      int workspace_id = 0;
+      if (!base::StringToInt(id_key, &workspace_id) || !Get(workspace_id) ||
+          !look_value.is_dict()) {
+        continue;
+      }
+      base::DictValue look;
+      for (const auto [path, pref_value] : look_value.GetDict()) {
+        if (IsAppearancePref(path)) {
+          look.Set(path, pref_value.Clone());
+        }
+      }
+      appearance_[workspace_id] = std::move(look);
+    }
+  }
+  mirrored_workspace_id_ = dict.FindInt("mirrored").value_or(0);
+  if (!Get(mirrored_workspace_id_)) {
+    mirrored_workspace_id_ = 0;
+  }
   saved_current_workspace_id_ =
       dict.FindInt("current").value_or(workspaces_.front().id);
 
@@ -896,7 +1187,17 @@ ZephyrusWorkspaceManager::ZephyrusWorkspaceManager(Browser* browser)
   if (!store_) {
     return;
   }
-  current_workspace_id_ = store_->default_workspace_id();
+  // A window being RESTORED gets its saved workspace; any other new window
+  // (Ctrl+N, "Open link in new window", a popup) opens on the workspace of the
+  // window it came from.
+  current_workspace_id_ = SessionRestore::IsRestoring(browser->profile())
+                              ? store_->default_workspace_id()
+                              : store_->WorkspaceForNewWindow();
+  // Registered NOW, before any tab exists. The navigator picks a new tab's
+  // cookie jar by asking which workspace its window shows, and a window the
+  // store has never heard of answers "the default jar" -- so a new window's
+  // first tab used to open in the first workspace's session.
+  store_->SetWindowWorkspace(browser_, current_workspace_id_);
   // Assign any tabs that already exist (none during a normal restore, since
   // restored tabs arrive later via OnTabStripModelChanged).
   for (int i = 0; i < tab_strip_model_->count(); ++i) {
@@ -1010,6 +1311,57 @@ void ZephyrusWorkspaceManager::SwitchToWorkspace(int workspace_id) {
   PersistState();
 }
 
+int ZephyrusWorkspaceManager::AddWorkspace(
+    const ZephyrusWorkspaceOptions& options) {
+  const int id = store_->AllocateWorkspaceId();
+  const size_t position = store_->workspaces().size();
+  // Bounded: it is drawn in a title-bar pill and a tooltip, and persisted.
+  constexpr size_t kMaxNameLength = 40;
+  std::u16string name(
+      base::TrimWhitespace(options.name, base::TRIM_ALL).substr(
+          0, kMaxNameLength));
+  // Only a known icon key is accepted; anything else stays the number.
+  std::u16string glyph = zephyrus::FindWorkspaceIcon(options.glyph)
+                             ? options.glyph
+                             : std::u16string();
+  Workspace workspace{id, std::move(name), DefaultColorForIndex(position),
+                      std::move(glyph)};
+  // "Separate sign-ins" off means the shared jar -- the same one the first
+  // workspace uses. See WorkspacePartitionName().
+  workspace.partition_name = options.separate_sign_ins
+                                 ? zephyrus::WorkspacePartitionName(id)
+                                 : std::string();
+  store_->workspaces().push_back(std::move(workspace));
+  // Its own look, with a plain New Tab Page, so it is recognisable from the
+  // first moment rather than a copy of the workspace it was made from.
+  store_->SetLook(id, options.seed, options.dark, /*clear_wallpaper=*/true);
+  current_workspace_id_ = id;
+  // Theme BEFORE the first tab: the New Tab Page then paints in the new
+  // workspace's colours instead of flashing the old ones.
+  if (IsWindowActive()) {
+    store_->MirrorAppearance(id);
+  }
+  AddTabForWorkspace(id);
+  NotifyChanged();
+  PersistState();
+  return id;
+}
+
+void ZephyrusWorkspaceManager::SetWorkspaceLook(int workspace_id,
+                                                std::optional<SkColor> seed,
+                                                bool dark) {
+  if (!GetWorkspace(workspace_id)) {
+    return;
+  }
+  store_->SetLook(workspace_id, seed, dark, /*clear_wallpaper=*/false);
+  NotifyChanged();
+}
+
+ZephyrusWorkspaceLook ZephyrusWorkspaceManager::GetWorkspaceLook(
+    int workspace_id) {
+  return store_->LookForEditing(workspace_id);
+}
+
 int ZephyrusWorkspaceManager::AddWorkspace() {
   const int id = store_->AllocateWorkspaceId();
   const size_t position = store_->workspaces().size();
@@ -1115,6 +1467,39 @@ void ZephyrusWorkspaceManager::DeleteWorkspace(int workspace_id) {
   if (deleting_current) {
     current_workspace_id_ = fallback_id;
   }
+  // Every OTHER window learns first, while its tabs are still there: one that
+  // was showing this workspace moves off it (MoveOffDeletedWorkspace) before
+  // its tabs close, so the emptied window does not open a tab for a workspace
+  // that no longer exists.
+  store_->NotifyChanged();
+
+  // Then its tabs go from EVERY window, not just this one. Only this window's
+  // used to close: the same workspace's tabs in a second window survived as
+  // orphans, still running in the partition that is about to be wiped below.
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&](BrowserWindowInterface* other) {
+        if (!other || other->GetProfile() != browser_->profile()) {
+          return true;
+        }
+        TabStripModel* model = other->GetTabStripModel();
+        if (!model || model == tab_strip_model_ || model->closing_all()) {
+          return true;
+        }
+        std::vector<content::WebContents*> theirs;
+        for (int i = 0; i < model->count(); ++i) {
+          content::WebContents* contents = model->GetWebContentsAt(i);
+          if (contents && GetWorkspaceForContents(contents) == workspace_id) {
+            theirs.push_back(contents);
+          }
+        }
+        for (content::WebContents* contents : theirs) {
+          const int index = model->GetIndexOfWebContents(contents);
+          if (index != TabStripModel::kNoTab) {
+            model->CloseWebContentsAt(index, CLOSE_USER_GESTURE);
+          }
+        }
+        return true;
+      });
 
   // If the workspace owned every tab in the window, closing them all would take
   // the window down with it. Give the surviving workspace a tab first.
@@ -1266,7 +1651,8 @@ void ZephyrusWorkspaceManager::MoveContentsToWorkspace(
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(&ZephyrusWorkspaceManager::RebuildContentsInWorkspace,
-                       weak_factory_.GetWeakPtr(), contents, workspace_id));
+                       weak_factory_.GetWeakPtr(), contents->GetWeakPtr(),
+                       workspace_id));
     return;
   }
 
@@ -1290,10 +1676,11 @@ void ZephyrusWorkspaceManager::MoveContentsToWorkspace(
 }
 
 void ZephyrusWorkspaceManager::RebuildContentsInWorkspace(
-    content::WebContents* contents,
+    base::WeakPtr<content::WebContents> contents_weak,
     int workspace_id) {
   // Everything below re-validates: this runs a task later, so the tab may have
   // been closed and the workspace deleted in between.
+  content::WebContents* const contents = contents_weak.get();
   if (!contents || !tab_strip_model_ || !GetWorkspace(workspace_id)) {
     return;
   }
@@ -1392,14 +1779,15 @@ void ZephyrusWorkspaceManager::RebuildContentsInWorkspace(
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE,
       base::BindOnce(&ZephyrusWorkspaceManager::CloseReplacedContents,
-                     weak_factory_.GetWeakPtr(), contents));
+                     weak_factory_.GetWeakPtr(), contents_weak));
 
   NotifyChanged();
   PersistState();
 }
 
 void ZephyrusWorkspaceManager::CloseReplacedContents(
-    content::WebContents* contents) {
+    base::WeakPtr<content::WebContents> contents_weak) {
+  content::WebContents* const contents = contents_weak.get();
   if (!contents || !tab_strip_model_ || tab_strip_model_->closing_all()) {
     return;
   }
@@ -1502,7 +1890,7 @@ void ZephyrusWorkspaceManager::AdoptUntrackedTabs() {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(&ZephyrusWorkspaceManager::RebuildContentsInWorkspace,
-                       weak_factory_.GetWeakPtr(), contents,
+                       weak_factory_.GetWeakPtr(), contents->GetWeakPtr(),
                        current_workspace_id_));
   }
 
@@ -1590,8 +1978,26 @@ void ZephyrusWorkspaceManager::OnTabStripModelChanged(
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
   switch (change.type()) {
-    case TabStripModelChange::kInserted:
+    case TabStripModelChange::kInserted: {
+      content::WebContents* follow = nullptr;
       for (const auto& contents_with_index : change.GetInsert()->contents) {
+        // A tab that ALREADY belongs to a workspace arrived from another
+        // window (a drag, or "Move tab to new window"). It keeps that
+        // workspace: its cookie jar was fixed when it was created, and
+        // re-filing it here -- which this handler used to do unconditionally
+        // -- put a tab still signed in to workspace 2 into whatever this
+        // window was showing. The window follows it instead.
+        const int existing =
+            store_->GetWorkspaceForContents(contents_with_index.contents);
+        if (existing != 0 && store_->Get(existing) &&
+            !pending_forced_workspace_id_.has_value()) {
+          if (existing != current_workspace_id_ &&
+              contents_with_index.contents ==
+                  tab_strip_model_->GetActiveWebContents()) {
+            follow = contents_with_index.contents;
+          }
+          continue;
+        }
         // Resolve the opener so the new tab inherits its workspace. Look the
         // index up fresh rather than using `contents_with_index.index`: those
         // are the indices at insertion time and must not be used for queries
@@ -1614,7 +2020,16 @@ void ZephyrusWorkspaceManager::OnTabStripModelChanged(
       AdoptUntrackedTabs();
       SchedulePersistState();
       NotifyChanged();
+      if (follow) {
+        // Posted: switching activates tabs, and this is inside the strip's own
+        // notification.
+        base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE,
+            base::BindOnce(&ZephyrusWorkspaceManager::FollowTabIntoWorkspace,
+                           weak_factory_.GetWeakPtr(), follow->GetWeakPtr()));
+      }
       break;
+    }
     case TabStripModelChange::kRemoved:
       for (const auto& removed_tab : change.GetRemove()->contents) {
         // A tab being dragged into another window is removed here and inserted
@@ -1702,6 +2117,10 @@ void ZephyrusWorkspaceManager::NotifyChanged() {
   // Every path that changes this window's workspace ends here, so this is the
   // single place the store learns what each window is displaying.
   store_->SetWindowWorkspace(browser_, current_workspace_id_);
+  // The window the user is in decides whose theme is live.
+  if (IsWindowActive()) {
+    store_->MirrorAppearance(current_workspace_id_);
+  }
   // Fan out through the store rather than notifying only this window. The
   // workspace list and the tab->workspace map are shared, so a rename, delete
   // or move made here must refresh EVERY window's sidebar and pill — otherwise
@@ -1712,7 +2131,73 @@ void ZephyrusWorkspaceManager::NotifyChanged() {
 }
 
 void ZephyrusWorkspaceManager::NotifyLocalObservers() {
+  if (store_ && !store_->Get(current_workspace_id_)) {
+    MoveOffDeletedWorkspace();
+  }
+  UpdateWindowLook();
   changed_callbacks_.Notify();
+}
+
+bool ZephyrusWorkspaceManager::IsWindowActive() const {
+  return browser_ && browser_->window() && browser_->window()->IsActive();
+}
+
+void ZephyrusWorkspaceManager::OnWindowActivated() {
+  if (store_ && store_->MirrorAppearance(current_workspace_id_)) {
+    // Every window re-decides whether it needs its own colours.
+    store_->NotifyChanged();
+  }
+}
+
+void ZephyrusWorkspaceManager::UpdateWindowLook() {
+  BrowserView* view = BrowserView::GetBrowserViewForBrowser(browser_);
+  if (!view || !view->browser_widget() || !store_) {
+    return;
+  }
+  std::optional<BrowserWidget::ZephyrusLook> look;
+  // Only a window showing a workspace OTHER than the mirrored one needs its own
+  // colours; the mirrored one follows the live theme, which is also what lets a
+  // Customize Chrome edit show up immediately.
+  if (!browser_->profile()->IsOffTheRecord() &&
+      current_workspace_id_ != store_->mirrored_workspace_id()) {
+    if (std::optional<ZephyrusWorkspaceLook> recorded =
+            store_->GetLook(current_workspace_id_)) {
+      look = BrowserWidget::ZephyrusLook{recorded->seed,
+                                         recorded->dark.value_or(true),
+                                         recorded->grayscale};
+    }
+  }
+  view->browser_widget()->SetZephyrusLook(look);
+}
+
+void ZephyrusWorkspaceManager::MoveOffDeletedWorkspace() {
+  const int fallback = store_->default_workspace_id();
+  if (!store_->Get(fallback)) {
+    return;
+  }
+  current_workspace_id_ = fallback;
+  store_->SetWindowWorkspace(browser_, fallback);
+  // Tab work is posted: this runs inside a store notification.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(&ZephyrusWorkspaceManager::EnsureActiveTabInWorkspace,
+                     weak_factory_.GetWeakPtr()));
+}
+
+void ZephyrusWorkspaceManager::FollowTabIntoWorkspace(
+    base::WeakPtr<content::WebContents> contents) {
+  if (!contents || tab_strip_model_->closing_all()) {
+    return;
+  }
+  const int workspace = GetWorkspaceForContents(contents.get());
+  if (!GetWorkspace(workspace) || workspace == current_workspace_id_) {
+    return;
+  }
+  SwitchToWorkspace(workspace);
+  const int index = tab_strip_model_->GetIndexOfWebContents(contents.get());
+  if (index != TabStripModel::kNoTab) {
+    tab_strip_model_->ActivateTabAt(index);
+  }
 }
 
 void ZephyrusWorkspaceManager::AddTabForWorkspace(int workspace_id) {

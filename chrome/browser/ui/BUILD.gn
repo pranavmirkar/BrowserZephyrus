@@ -4096,6 +4096,8 @@ static_library("ui") {
       "views/frame/zephyrus_workspace_partition.h",
       "views/frame/zephyrus_workspace_manager.cc",
       "views/frame/zephyrus_workspace_manager.h",
+      "views/frame/zephyrus_workspace_setup.cc",
+      "views/frame/zephyrus_workspace_setup.h",
       "views/frame/vertical_tab_strip_region_view.cc",
       "views/frame/vertical_tab_strip_region_view.h",
       "views/frame/web_contents_close_handler.cc",

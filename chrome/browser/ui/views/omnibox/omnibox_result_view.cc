@@ -167,16 +167,15 @@ int ZephyrusCardInset() {
 int ZephyrusHeroPillInset() {
   return ZephyrusCardInset();
 }
-// Both track the shared popup radius. They sit inside a 28px card, and a row
-// pill with visibly tighter corners than the surface holding it reads as a
-// different design rather than a smaller one. Clamped to a pill at row height,
-// which is the intent.
-//
-// Concentric with the card (Rule 2): its radius minus the 4dp the highlight
-// sits inside it.
-constexpr float kZephyrusHoverPillRadius = static_cast<float>(
-    zephyrus::m3::ConcentricInner(zephyrus::kRadiusPopup,
-                                  kZephyrusPillInsideCard));
+// Concentric with the card (Rule 2), solved from the inside: every row's
+// pill takes the radius a single-line pill can actually reach, and the card is
+// sized around it (RoundedOmniboxResultsFrame::kZephyrusCardRadius). It used
+// to ask for the popup radius minus the gap -- 24 -- which a 36dp pill cannot
+// have, so it clamped to a capsule of 18 inside a 28 corner. A taller two-line
+// pill at this radius is a rounded rectangle, keeping its corners on the
+// card's centres too.
+constexpr float kZephyrusHoverPillRadius =
+    static_cast<float>(RoundedOmniboxResultsFrame::kZephyrusPillRadius);
 constexpr float kZephyrusHeroPillRadius = kZephyrusHoverPillRadius;
 
 // Zephyrus motion. The pill is a state indicator on a surface the user scans
@@ -617,10 +616,16 @@ void OmniboxResultView::ApplyThemeAndRefreshIcons(bool force_reapply_styles) {
     // Keep the content aligned to the pill even if animations are disabled.
     UpdateZephyrusContentInset();
   }
+  // Which of the two the pill is showing. Remembered rather than re-read at
+  // paint time so a fading-out pill keeps the colour it faded in with.
+  if (zephyrus_active) {
+    zephyrus_pill_selected_ = state == OmniboxPartState::SELECTED;
+  }
 
-  // Reapply the dim color to account for the highlight state. Zephyrus: hover
-  // shares the selected row's highlight, so it also uses the selected dim color.
-  const ui::ColorId dimmed_id = zephyrus_active
+  // Reapply the dim color to account for the highlight state. Only the
+  // SELECTED row takes the selected pair: a hovered row is a state layer on the
+  // list's own surface, so its text keeps the list's colours.
+  const ui::ColorId dimmed_id = state == OmniboxPartState::SELECTED
                                     ? kColorOmniboxResultsTextDimmedSelected
                                     : kColorOmniboxResultsTextDimmed;
   suggestion_view_->separator()->ApplyTextColor(dimmed_id);
@@ -907,10 +912,17 @@ void OmniboxResultView::UpdateFeedbackButtonsVisibility() {
 //  over all the buttons and updates their visibilities.
 void OmniboxResultView::UpdateRemoveSuggestionVisibility() {
   const bool old_visibility = remove_suggestion_button_->GetVisible();
-  // Zephyrus (Figma searchbar_resultdropdown): clean rows never show the "✕"
-  // remove-suggestion affordance. (Deleting a suggestion is still available via
-  // Shift+Delete, which the backend handles.)
-  const bool new_visibility = false;
+  // The "✕" appears on the row under the pointer or keyboard, and only there,
+  // so resting rows stay clean. It was hidden outright, which left Shift+Delete
+  // -- a shortcut nobody discovers -- as the only way to remove a suggestion
+  // from history, and a suggestion someone would rather not have shown again
+  // is exactly the one worth removing.
+  const bool new_visibility =
+      popup_view_->controller()->edit_model()->IsPopupControlPresentOnMatch(
+          OmniboxPopupSelection(
+              model_index_,
+              OmniboxPopupSelection::FOCUSED_BUTTON_REMOVE_SUGGESTION)) &&
+      (GetMatchSelected() || IsMouseHovered());
 
   remove_suggestion_button_->SetVisible(new_visibility);
 
@@ -1014,8 +1026,14 @@ void OmniboxResultView::OnPaintBackground(gfx::Canvas* canvas) {
   }
   rect.Inset(gfx::InsetsF::VH(0.f, kZephyrusPillInsideCard));
 
-  const SkColor color =
-      GetThemedColor(GetOmniboxBackgroundColorId(OmniboxPartState::SELECTED));
+  // Two different things, drawn differently (M3): the SELECTED row -- the one
+  // Enter opens -- is secondary-container; the row under the pointer is only a
+  // state layer. They were one colour, so with the mouse resting on one row and
+  // the arrow keys on another, two rows looked selected and nothing said which
+  // Enter would open.
+  const SkColor color = GetThemedColor(GetOmniboxBackgroundColorId(
+      zephyrus_pill_selected_ ? OmniboxPartState::SELECTED
+                              : OmniboxPartState::HOVERED));
   PaintZephyrusHeroPill(canvas, rect, color, kZephyrusHeroPillRadius,
                         static_cast<float>(progress));
 }

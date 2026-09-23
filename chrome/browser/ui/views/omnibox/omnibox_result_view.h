@@ -220,6 +220,8 @@ class OmniboxResultView : public views::View, public gfx::AnimationDelegate {
   // interpolates the pill's width and its border/shadow strength from it.
   gfx::SlideAnimation zephyrus_hero_animation_{this};
   bool zephyrus_hero_shown_ = false;
+  // Whether the highlight is the selection (true) or hover (false).
+  bool zephyrus_pill_selected_ = false;
 
   base::WeakPtrFactory<OmniboxResultView> weak_factory_{this};
 };

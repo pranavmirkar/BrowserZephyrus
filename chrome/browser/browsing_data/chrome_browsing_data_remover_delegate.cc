@@ -5,6 +5,8 @@
 #include "chrome/browser/zephyrus/privacy/privacy_intelligence_service.h"
 #include "chrome/browser/zephyrus/privacy/privacy_intelligence_service_factory.h"
 #include "chrome/browser/browsing_data/chrome_browsing_data_remover_delegate.h"
+#include "base/strings/string_util.h"
+#include "base/json/json_reader.h"
 
 #include <stdint.h>
 
@@ -312,6 +314,37 @@ bool ChromeBrowsingDataRemoverDelegate::MayRemoveDownloadHistory() {
   return profile_->GetPrefs()->GetBoolean(prefs::kAllowDeletingBrowserHistory);
 }
 
+namespace {
+
+// Zephyrus: the StoragePartition names of the profile's workspaces, read from
+// the workspace pref. Read here rather than from the workspace store, which
+// lives in the views layer this file sits below. Only names of the exact shape
+// the store generates (ws<digits>) are returned: the pref file is
+// user-editable and these name directories on disk.
+std::vector<std::string> ZephyrusWorkspacePartitionNames(Profile* profile) {
+  std::vector<std::string> names;
+  const std::optional<base::DictValue> state = base::JSONReader::ReadDict(
+      profile->GetPrefs()->GetString("zephyrus.workspaces"),
+      base::JSON_PARSE_RFC);
+  const base::ListValue* list = state ? state->FindList("list") : nullptr;
+  if (!list) {
+    return names;
+  }
+  for (const base::Value& entry : *list) {
+    const std::string* name =
+        entry.is_dict() ? entry.GetDict().FindString("partition") : nullptr;
+    if (!name || name->size() < 3 || name->size() > 32 ||
+        !name->starts_with("ws") ||
+        !std::ranges::all_of(name->substr(2), base::IsAsciiDigit<char>)) {
+      continue;
+    }
+    names.push_back(*name);
+  }
+  return names;
+}
+
+}  // namespace
+
 void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
     const base::Time& delete_begin,
     const base::Time& delete_end,
@@ -323,6 +356,34 @@ void ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData(
           ~content::BrowsingDataRemover::DATA_TYPE_AVOID_CLOSING_CONNECTIONS &
           ~constants::FILTERABLE_DATA_TYPES) == 0) ||
         filter_builder->MatchesAllOriginsAndDomains());
+
+  // Zephyrus: clear every WORKSPACE's storage too, not only the default one.
+  //
+  // Workspaces with their own sign-ins keep cookies, site storage and cache in
+  // their own StoragePartition, and content removes data from the DEFAULT
+  // partition unless told otherwise (see BrowsingDataFilterBuilder::
+  // SetStoragePartitionConfig). So "Clear browsing data" -- and "delete this
+  // site's data" -- left every such workspace signed in with its cache intact,
+  // while the dialog said it was done.
+  //
+  // The same request is re-issued once per workspace partition: same time
+  // range, same origin filter, restricted to the partition-scoped data types
+  // (the profile-scoped ones -- history, downloads, passwords -- are cleared by
+  // this call already, once). A request that already names a partition is one
+  // of these, and must not fan out again.
+  const uint64_t partition_mask =
+      remove_mask & content::BrowsingDataRemover::DATA_TYPE_ON_STORAGE_PARTITION;
+  if (partition_mask && !profile_->IsOffTheRecord() &&
+      !filter_builder->GetStoragePartitionConfig().has_value()) {
+    for (const std::string& name : ZephyrusWorkspacePartitionNames(profile_)) {
+      std::unique_ptr<BrowsingDataFilterBuilder> scoped = filter_builder->Copy();
+      scoped->SetStoragePartitionConfig(content::StoragePartitionConfig::Create(
+          profile_, "zephyrus-workspace", name, /*in_memory=*/false));
+      profile_->GetBrowsingDataRemover()->RemoveWithFilter(
+          delete_begin, delete_end, partition_mask, origin_type_mask,
+          std::move(scoped));
+    }
+  }
   TRACE_EVENT0("browsing_data",
                "ChromeBrowsingDataRemoverDelegate::RemoveEmbedderData");
 

@@ -130,6 +130,7 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   const TabMatcher& GetTabMatcher() const override;
   bool IsIncognitoModeAvailable() const override;
   bool IsUrlOutsideCurrentWorkspace(const GURL& url) const override;
+  bool IsCurrentWorkspaceIsolated() const override;
   bool IsSharingHubAvailable() const override;
   bool IsHistoryEmbeddingsEnabled() const override;
   bool IsHistoryEmbeddingsSettingVisible() const override;

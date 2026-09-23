@@ -443,6 +443,14 @@ void BrowserWidget::OnNativeThemeUpdated(ui::NativeTheme* observed_theme) {
   UserChangedTheme(BrowserThemeChangeType::kNativeTheme);
 }
 
+void BrowserWidget::SetZephyrusLook(std::optional<ZephyrusLook> look) {
+  if (zephyrus_look_ == look) {
+    return;  // Called on every workspace notification; re-theming is not free.
+  }
+  zephyrus_look_ = std::move(look);
+  ThemeChanged();
+}
+
 ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
   auto key = Widget::GetColorProviderKey();
 
@@ -451,6 +459,22 @@ ui::ColorProviderKey BrowserWidget::GetColorProviderKey() const {
   CHECK(theme_service);
 
   key = theme_service->GetColorProviderKey(key, profile);
+
+  // Zephyrus: a window on a different workspace from the mirrored one wears its
+  // own workspace's theme. See SetZephyrusLook().
+  if (zephyrus_look_.has_value()) {
+    key.user_color = zephyrus_look_->seed;
+    key.user_color_source =
+        zephyrus_look_->grayscale
+            ? ui::ColorProviderKey::UserColorSource::kGrayscale
+            : (zephyrus_look_->seed
+                   ? ui::ColorProviderKey::UserColorSource::kAccent
+                   : ui::ColorProviderKey::UserColorSource::kBaseline);
+    key.color_mode = zephyrus_look_->dark
+                         ? ui::ColorProviderKey::ColorMode::kDark
+                         : ui::ColorProviderKey::ColorMode::kLight;
+    key.scheme_variant.reset();
+  }
 
   // Re-apply Widget overrides because GetColorProviderKey might have
   // overwritten them.

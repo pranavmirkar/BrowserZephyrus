@@ -817,6 +817,8 @@ class BrowserView : public BrowserWindow,
   // the page ~15 times per slide, which is the one thing this machine (no
   // DirectComposition, AMD iGPU) cannot afford.
   bool IsZephyrusSidebarAttached() const { return zephyrus_sidebar_attached_; }
+  // The omnibox gained or lost focus while lent to the sidebar (compact mode).
+  void OnZephyrusCompactOmniboxFocusChanged();
 
   // How far the sidebar column is open, 0..1. Interpolated, so the page's edge
   // tracks the panel rather than snapping to the final width.
@@ -1406,6 +1408,8 @@ class BrowserView : public BrowserWindow,
   // Zephyrus: floating sidebar overlay listing tabs (and later workspaces),
   // plus a thin left-edge hot-zone that reveals it on hover.
   raw_ptr<ZephyrusSidebarView> zephyrus_sidebar_ = nullptr;
+  // --zephyrus-test-compact has been applied (see OnWidgetActivationChanged).
+  bool zephyrus_test_compact_applied_ = false;
   bool zephyrus_sidebar_attached_ = false;
   // Ctrl+T search card. A view rather than a bubble so its backdrop blur has
   // the web contents to sample; see zephyrus_search_overlay.h.

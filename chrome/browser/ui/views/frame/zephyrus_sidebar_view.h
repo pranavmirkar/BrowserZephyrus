@@ -28,6 +28,7 @@
 
 class BrowserView;
 class TabStripModel;
+class ZephyrusOmniboxOverlay;
 
 namespace content {
 class WebContents;
@@ -162,6 +163,11 @@ class ZephyrusSidebarView : public views::View,
   // Called by BrowserView when the title bar is pinned or unpinned.
   void OnCompactModeChanged();
 
+  // Called as the omnibox gains or loses focus while it is lent to this panel.
+  // Editing lifts it into a floating overlay that grows out over the page; see
+  // ZephyrusOmniboxOverlay.
+  void OnOmniboxFocusChanged();
+
   // Pinned: the sidebar stays out and never auto-tucks. Mirrors the title bar's
   // pin (BrowserView::ToggleZephyrusTitlebarPinned).
   bool is_pinned() const { return pinned_; }
@@ -197,6 +203,7 @@ class ZephyrusSidebarView : public views::View,
   // views::View:
   void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
+  void Layout(PassKey key) override;
 
   // views::MouseWatcherListener:
   void MouseMovedOutOfHost() override;
@@ -271,11 +278,11 @@ class ZephyrusSidebarView : public views::View,
   void OnRevealPoll();
 
   // Row callbacks.
-  void ActivateTab(int model_index);
-  void CloseTab(int model_index);
+  void ActivateTab(base::WeakPtr<content::WebContents> contents);
+  void CloseTab(base::WeakPtr<content::WebContents> contents);
   // Mutes/unmutes a tab straight from its sidebar row, so background audio can
   // be silenced without first hunting down the tab that's making it.
-  void ToggleTabMuted(int model_index);
+  void ToggleTabMuted(base::WeakPtr<content::WebContents> contents);
 
   // Runs a browser command (used by the bottom bar buttons).
   void ExecuteBrowserCommand(int command);
@@ -354,6 +361,21 @@ class ZephyrusSidebarView : public views::View,
   // cannot tuck away: tucking slides the anchor off the screen edge and the
   // popup, which tracks its anchor, follows it out of sight.
   int reveal_holds_ = 0;
+
+  // The compact omnibox's editing overlay. A child of BrowserView, alive only
+  // while the omnibox is being edited or shrinking back; see
+  // OnOmniboxFocusChanged().
+  void UpdateOmniboxExpansion();
+  gfx::Rect GetOmniboxPillRect() const;
+  int GetOmniboxEditingWidth(const gfx::Rect& pill) const;
+  void EndOmniboxEdit();
+  void OnOmniboxOverlayCollapsed();
+  // Returns the address bar to the panel and removes the overlay, at once.
+  void DropOmniboxOverlay();
+  raw_ptr<ZephyrusOmniboxOverlay> omnibox_overlay_ = nullptr;
+  // Whether one of reveal_holds_ is the overlay's.
+  bool omnibox_hold_ = false;
+  bool omnibox_update_pending_ = false;
   // The "Tabs" heading of the current list, which carries the new-tab button
   // in compact mode. A plain View because the heading class lives in the .cc's
   // anonymous namespace; null between rebuilds.

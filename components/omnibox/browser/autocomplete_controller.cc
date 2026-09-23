@@ -1579,15 +1579,43 @@ void AutocompleteController::UpdateResult(UpdateType update_type,
   // had any history, every address it had not seen was "outside" it, the typed
   // URL dropped 400 below search-what-you-typed, and Enter on a freshly typed
   // URL ran a SEARCH for it instead of opening it.
-  for (AutocompleteMatch& match : internal_result_) {
-    const bool history_derived =
-        match.type == AutocompleteMatchType::HISTORY_URL ||
-        match.type == AutocompleteMatchType::HISTORY_TITLE ||
-        match.type == AutocompleteMatchType::HISTORY_BODY ||
-        match.type == AutocompleteMatchType::HISTORY_KEYWORD;
-    if (history_derived && match.destination_url.is_valid() &&
-        provider_client_->IsUrlOutsideCurrentWorkspace(match.destination_url)) {
-      match.relevance = std::max(0, match.relevance - 400);
+  //
+  // In a workspace with its OWN sign-ins another workspace's history is not
+  // demoted but REMOVED, and the net widens to the other history-derived kinds
+  // (searches you ran, most-visited tiles on focus): those are the pages and
+  // queries of a different account, and "lower in the list" still shows them.
+  const bool isolated = provider_client_->IsCurrentWorkspaceIsolated();
+  auto history_derived = [isolated](const AutocompleteMatch& match) {
+    switch (match.type) {
+      case AutocompleteMatchType::HISTORY_URL:
+      case AutocompleteMatchType::HISTORY_TITLE:
+      case AutocompleteMatchType::HISTORY_BODY:
+      case AutocompleteMatchType::HISTORY_KEYWORD:
+        return true;
+      case AutocompleteMatchType::SEARCH_HISTORY:
+      case AutocompleteMatchType::TILE_MOST_VISITED_SITE:
+        return isolated;
+      default:
+        return false;
+    }
+  };
+  auto outside = [&](const AutocompleteMatch& match) {
+    return history_derived(match) && match.destination_url.is_valid() &&
+           provider_client_->IsUrlOutsideCurrentWorkspace(
+               match.destination_url) &&
+           // A tile names a site's front page; keep it if the SITE was used
+           // here, as the New Tab Page does.
+           (match.type != AutocompleteMatchType::TILE_MOST_VISITED_SITE ||
+            provider_client_->IsUrlOutsideCurrentWorkspace(
+                match.destination_url.GetWithEmptyPath()));
+  };
+  if (isolated) {
+    internal_result_.EraseMatchesWhere(outside);
+  } else {
+    for (AutocompleteMatch& match : internal_result_) {
+      if (outside(match)) {
+        match.relevance = std::max(0, match.relevance - 400);
+      }
     }
   }
 

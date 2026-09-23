@@ -18,6 +18,7 @@
 #include "base/scoped_observation.h"
 #include "base/supports_user_data.h"
 #include "base/timer/timer.h"
+#include "base/values.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_service_observer.h"
@@ -59,6 +60,32 @@ struct ZephyrusWorkspace {
   // and site data are separate. Proven by spike -- see
   // zephyrus_workspace_partition.h.
   std::string partition_name;
+};
+
+// How a workspace LOOKS, reduced to what a window's colours are built from.
+//
+// The full record is a set of profile prefs (theme colour, light/dark, the New
+// Tab Page wallpaper); this is the part a window can apply to itself when it
+// shows a workspace other than the one those prefs currently belong to. See
+// ZephyrusWorkspaceStore::MirrorAppearance().
+struct ZephyrusWorkspaceLook {
+  // The theme seed, or nullopt for Zephyrus's own default palette.
+  std::optional<SkColor> seed;
+  // Light or dark, or nullopt to follow the browser's setting.
+  std::optional<bool> dark;
+  bool grayscale = false;
+};
+
+// What the setup card collects before a workspace exists.
+struct ZephyrusWorkspaceOptions {
+  std::u16string name;
+  // A WorkspaceIcon key, or empty for the number.
+  std::u16string glyph;
+  // Theme seed, or nullopt for the default palette.
+  std::optional<SkColor> seed;
+  bool dark = true;
+  // Its own cookies and site data. False shares the first workspace's jar.
+  bool separate_sign_ins = true;
 };
 
 // Zephyrus: the workspace state that belongs to the PROFILE rather than to any
@@ -151,6 +178,43 @@ class ZephyrusWorkspaceStore : public base::SupportsUserData::Data,
   // progress so a later user-opened tab can't inherit a stale saved id.
   void ClearPendingRestore() { pending_restore_ids_.clear(); }
 
+  // ---- Per-workspace appearance ----
+  //
+  // The theme and the New Tab Page wallpaper are PROFILE settings in Chromium:
+  // one ThemeService, one NTP background. Workspaces share a profile, so every
+  // workspace used to look identical and a change made in one repainted all of
+  // them.
+  //
+  // The profile's theme prefs are now treated as the LIVE copy of whichever
+  // workspace the active window shows. Switching the active window's workspace
+  // saves the outgoing workspace's copy and writes the incoming one's back.
+  // Customize Chrome keeps working unmodified: it edits the live copy, and the
+  // edit is saved into that workspace on the next switch (or persist).
+  //
+  // A window showing a DIFFERENT workspace from that one colours itself from
+  // GetLook() instead (see BrowserWidget::SetZephyrusLook).
+  // Returns true when the mirrored workspace changed.
+  bool MirrorAppearance(int workspace_id);
+  int mirrored_workspace_id() const { return mirrored_workspace_id_; }
+  // The look recorded for `workspace_id`, or nullopt if it has never been on
+  // screen since this feature existed (it then inherits the current one).
+  std::optional<ZephyrusWorkspaceLook> GetLook(int workspace_id);
+  // The look to prefill an editor with: the recorded one, or the live theme
+  // when the workspace has none yet.
+  ZephyrusWorkspaceLook LookForEditing(int workspace_id);
+  // Sets a workspace's theme colour and light/dark. `clear_wallpaper` gives it
+  // a plain New Tab Page, which is what a brand-new workspace wants.
+  void SetLook(int workspace_id,
+               std::optional<SkColor> seed,
+               bool dark,
+               bool clear_wallpaper);
+
+  // The workspace a newly opened window should show: the one on screen in the
+  // window the user was just in. A new window used to start on the saved
+  // default -- in practice always the first workspace -- whichever workspace
+  // Ctrl+N or "Open link in new window" came from.
+  int WorkspaceForNewWindow();
+
   // Drops every per-workspace record for a deleted workspace. Without this the
   // visit index keeps serializing the dead workspace's URLs into prefs forever
   // — deleting a workspace must also delete its trail.
@@ -205,6 +269,26 @@ class ZephyrusWorkspaceStore : public base::SupportsUserData::Data,
 
   bool LoadState();
   std::string SerializeState() const;
+
+  // The appearance prefs as they stand, as a dict of pref path -> value
+  // (none = at its default).
+  base::DictValue CaptureAppearance() const;
+  // Writes `look` into the prefs, touching only those that differ: every theme
+  // pref write re-themes every window, so a blind write of all six would cost
+  // six full re-themes per workspace switch.
+  void ApplyAppearance(const base::DictValue& look);
+  // Saves the live prefs into the mirrored workspace's record.
+  void CaptureMirrored();
+
+  // Appearance per workspace id. Kept beside the workspace list rather than in
+  // ZephyrusWorkspace, which is copied by value in several places and would
+  // stop being copyable with a DictValue in it.
+  std::map<int, base::DictValue> appearance_;
+  // Which workspace the profile's theme prefs currently belong to. PERSISTED:
+  // a change made in Customize Chrome just before quitting lives only in those
+  // prefs, and the first switch after the next launch must save it into this
+  // workspace rather than overwrite it.
+  int mirrored_workspace_id_ = 0;
 
   raw_ptr<Profile> profile_;
   std::vector<ZephyrusWorkspace> workspaces_;
@@ -317,6 +401,19 @@ class ZephyrusWorkspaceManager : public TabStripModelObserver {
   // Creates a new workspace (with an empty new tab) and switches to it. Returns
   // its id.
   int AddWorkspace();
+  // Same, set up the way the setup card describes.
+  int AddWorkspace(const ZephyrusWorkspaceOptions& options);
+
+  // Sets a workspace's theme colour and light/dark.
+  void SetWorkspaceLook(int workspace_id,
+                        std::optional<SkColor> seed,
+                        bool dark);
+  // The look to prefill an editor with: the recorded one, or the live theme.
+  ZephyrusWorkspaceLook GetWorkspaceLook(int workspace_id);
+
+  // This window became the active one: its workspace's appearance becomes the
+  // profile's live theme.
+  void OnWindowActivated();
 
   // Renames an existing workspace.
   void RenameWorkspace(int workspace_id, const std::u16string& name);
@@ -364,13 +461,16 @@ class ZephyrusWorkspaceManager : public TabStripModelObserver {
   // so a cross-partition move cannot be a re-tag -- see the comment in
   // MoveContentsToWorkspace. Always posted, never called directly: it closes a
   // tab, and the caller is a context-menu command handler.
-  void RebuildContentsInWorkspace(content::WebContents* contents,
+  // Takes a WEAK pointer: it runs a task later, and a raw pointer compared
+  // against the strip could match a different tab allocated at the address of
+  // one closed in between.
+  void RebuildContentsInWorkspace(base::WeakPtr<content::WebContents> contents,
                                   int workspace_id);
 
   // Closes the tab that RebuildContentsInWorkspace replaced. Its OWN task:
   // closing inside the rebuild re-entered TabStripModel mid-notification and
   // CHECK-crashed. See the comment at the call site.
-  void CloseReplacedContents(content::WebContents* contents);
+  void CloseReplacedContents(base::WeakPtr<content::WebContents> contents);
 
   // The workspace a tab belongs to (0 if untracked).
   int GetWorkspaceForContents(content::WebContents* contents) const;
@@ -433,6 +533,18 @@ class ZephyrusWorkspaceManager : public TabStripModelObserver {
   // Posted when the current workspace loses its last tab: gives it a fresh tab
   // so the user stays put instead of being pulled into another workspace.
   void OpenTabForEmptyCurrentWorkspace();
+
+  // A tab dragged in from another window keeps its workspace (its cookie jar
+  // was fixed when it was created), so the window follows it there.
+  void FollowTabIntoWorkspace(base::WeakPtr<content::WebContents> contents);
+
+  // Another window deleted the workspace this one was showing.
+  void MoveOffDeletedWorkspace();
+
+  // Gives this window the colours of its own workspace when that is not the
+  // workspace whose look the profile's theme currently holds.
+  void UpdateWindowLook();
+  bool IsWindowActive() const;
 
   raw_ptr<Browser> browser_;
   raw_ptr<TabStripModel> tab_strip_model_;

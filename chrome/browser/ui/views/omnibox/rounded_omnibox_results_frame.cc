@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_match_cell_view.h"
 
 #include <memory>
 #include <utility>
@@ -58,7 +59,12 @@ namespace {
 // the floating surfaces, so it rounds like the rest of them; keeping a private
 // 10 here is how two popups end up with different corners and nobody notices
 // until they are open side by side.
-constexpr int kZephyrusCardRadius = zephyrus::kRadiusPopup;
+// The card's radius is RoundedOmniboxResultsFrame::kZephyrusCardRadius --
+// concentric with the row pills rather than equal to the other popups.
+static_assert(RoundedOmniboxResultsFrame::kZephyrusPillRadius * 2 +
+                      2 * RoundedOmniboxResultsFrame::kZephyrusPillRowInset ==
+                  OmniboxMatchCellView::kRowHeight,
+              "the pill radius is derived from the single-line row height");
 // Extra gap between the bar pill and the card, on top of the location-bar
 // alignment inset's 5px bottom — which already matches Figma's 5px gap.
 constexpr int kZephyrusCardGap = 0;

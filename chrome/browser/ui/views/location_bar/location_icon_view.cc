@@ -12,6 +12,7 @@
 #include "chrome/browser/extensions/extension_ui_util.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
+#include "chrome/browser/ui/color/zephyrus_color_mixer.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
 #include "chrome/browser/ui/page_info/page_info_dialog.h"
@@ -107,7 +108,8 @@ SkColor LocationIconView::GetForegroundColor() const {
       display_text == l10n_util::GetStringUTF16(IDS_DANGEROUS_VERBOSE_STATE);
 
   if (is_text_dangerous) {
-    return GetColorProvider()->GetColor(kColorOmniboxSecurityChipText);
+    // Paired with the error-container fill UpdateBackground() gives this chip.
+    return GetColorProvider()->GetColor(kColorZephyrusOnErrorContainer);
   }
 
   SecurityLevel security_level = SecurityLevel::NONE;
@@ -348,7 +350,20 @@ void LocationIconView::UpdateBackground() {
   // be clean, with only the search glyph). This intentionally drops the
   // security-chip background too; warning state is still conveyed by the
   // glyph itself (see LocationBarView::GetLocationIcon).
-  SetBackgroundColor(SK_ColorTRANSPARENT);
+  //
+  // EXCEPT for a dangerous site. The "Dangerous" label is a phishing/malware
+  // warning, and with the chip's fill removed it was plain text in the same
+  // colour as the address beside it -- the one state that must not blend in.
+  // It gets M3's error-container pair, which is what that role is for.
+  const bool is_text_dangerous =
+      GetText() == l10n_util::GetStringUTF16(IDS_DANGEROUS_VERBOSE_STATE);
+  if (is_text_dangerous) {
+    // Text: kColorZephyrusOnErrorContainer, via GetForegroundColor().
+    SetBackgroundColor(
+        GetColorProvider()->GetColor(kColorZephyrusErrorContainer));
+  } else {
+    SetBackgroundColor(SK_ColorTRANSPARENT);
+  }
   views::InkDrop::Get(this)->SetMode(views::InkDropHost::InkDropMode::OFF);
 }
 

@@ -81,6 +81,17 @@ class RoundedOmniboxResultsFrame : public views::View {
   static constexpr int kZephyrusCardPadding =
       kZephyrusPillInsideCard - kZephyrusPillRowInset;
 
+  // Rule 2, solved from the INSIDE. A single-line row is 40dp, so its pill is
+  // 36dp tall and can be no rounder than 18 -- asking it for more (it used to
+  // ask for 24, the popup radius minus the 4dp gap) just clamps it to a
+  // capsule of 18, sitting 4dp inside a 28 corner: two curves with different
+  // centres, which is what the eye catches at the card's top corners. The
+  // pill's radius is the fixed quantity, so the CARD takes pill + gap.
+  // (Checked against OmniboxMatchCellView::kRowHeight in the .cc.)
+  static constexpr int kZephyrusPillRadius = 40 / 2 - kZephyrusPillRowInset;
+  static constexpr int kZephyrusCardRadius =
+      kZephyrusPillRadius + kZephyrusPillInsideCard;
+
   // Zephyrus: the detached card's bounds in this frame's coordinates. Rows
   // anchor their selection pill to this rather than to their own bounds, so the
   // pill's overhang is guaranteed equal on the left and right regardless of any

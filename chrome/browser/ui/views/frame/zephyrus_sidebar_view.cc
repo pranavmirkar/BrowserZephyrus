@@ -18,6 +18,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ref.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -40,12 +41,16 @@
 #include "chrome/browser/ui/views/download/bubble/download_toolbar_ui_controller.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
 #include "chrome/browser/ui/views/frame/zephyrus_settings_popup.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_icons.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_setup.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/prefs/pref_service.h"
+#include "components/url_formatter/url_formatter.h"
+#include "base/strings/escape.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -93,6 +98,14 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/fill_layout.h"
+#include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
+#include "ui/gfx/animation/slide_animation.h"
+#include "ui/gfx/shadow_value.h"
+#include "ui/gfx/skia_paint_util.h"
+#include "ui/views/masked_targeter_delegate.h"
+#include "ui/views/view_targeter.h"
+#include "ui/base/accelerators/accelerator.h"
 #include "ui/views/layout/table_layout.h"
 #include "ui/views/mouse_watcher_view_host.h"
 #include "ui/views/vector_icons.h"
@@ -130,7 +143,12 @@ constexpr int kSegmentInnerRadius = 4;
 // inside the run, and a little height around the glyphs.
 constexpr int kZephyrusCompactSeam = 2;
 constexpr int kZephyrusCompactInnerRadius = 4;
-constexpr int kZephyrusCompactRowPad = 3;
+// The run's height, fixed. It was the tallest control plus 3dp above and below
+// -- 38dp, a toolbar cell and then some, which in a 180dp column made the run
+// the heaviest thing in the panel. The controls fill the cell now; their 16dp
+// glyphs are unchanged, because a toolbar glyph at 14dp lands on fractional
+// device pixels at 125% and blurs.
+constexpr int kZephyrusCompactRowHeight = 32;
 
 // One run of the title bar's controls, stretched across the panel.
 //
@@ -153,22 +171,23 @@ class ZephyrusControlRow : public views::View {
 
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override {
-    int height = 0;
-    for (const views::View* child : children()) {
-      if (child->GetVisible()) {
-        height = std::max(height, child->GetPreferredSize().height());
-      }
-    }
-    if (height == 0) {
+    if (VisibleChildren().empty()) {
       return gfx::Size();
     }
     return gfx::Size(available_size.width().is_bounded()
                          ? available_size.width().value()
                          : 0,
-                     height + 2 * kZephyrusCompactRowPad);
+                     kZephyrusCompactRowHeight);
   }
 
   void Layout(PassKey key) override {
+    // The containers are painted by THIS view, between and around the
+    // controls, so a layout that moves a seam has to repaint the whole run.
+    // It did not: when a control appeared (the split-view button, say) only
+    // the controls' own rects were invalidated, and the strips above them and
+    // the old seams kept the previous run's cells -- a second, offset set of
+    // containers peeking out along the top edge.
+    SchedulePaint();
     const std::vector<views::View*> cells = VisibleChildren();
     if (cells.empty()) {
       return;
@@ -227,6 +246,13 @@ class ZephyrusControlRow : public views::View {
       rrect.setRectRadii(gfx::RectToSkRect(cell), radii);
       canvas->sk_canvas()->drawRRect(rrect, fill);
     }
+  }
+
+  // A control shown or hidden changes every cell's width, not only its own.
+  void ChildVisibilityChanged(views::View* child) override {
+    views::View::ChildVisibilityChanged(child);
+    InvalidateLayout();
+    SchedulePaint();
   }
 
   // The containers track the pointer, so the row repaints on state changes:
@@ -368,6 +394,8 @@ class ZephyrusFootIconButton : public views::ImageButton {
 BEGIN_METADATA(ZephyrusFootIconButton)
 END_METADATA
 constexpr int kSegmentEndRadius = 16;
+// How far a split card's rows sit inside it, on every side.
+constexpr int kSplitInset = 4;
 
 // Fills `bounds` as one segment. `first`/`last` say which end of the run this
 // is; a lone row gets the outer radius on both ends.
@@ -450,7 +478,13 @@ gfx::ImageSkia GetTabFavicon(content::WebContents* contents) {
 std::u16string GetTabTitle(content::WebContents* contents) {
   std::u16string title = contents->GetTitle();
   if (title.empty()) {
-    title = base::UTF8ToUTF16(contents->GetVisibleURL().spec());
+    // Formatted, not the raw spec: that printed "user:password@host" for a URL
+    // carrying credentials, in a list that is on screen for anyone to read.
+    title = url_formatter::FormatUrl(
+        contents->GetVisibleURL(),
+        url_formatter::kFormatUrlOmitUsernamePassword |
+            url_formatter::kFormatUrlOmitHTTPS,
+        base::UnescapeRule::SPACES, nullptr, nullptr, nullptr);
   }
   return title;
 }
@@ -476,7 +510,8 @@ class ZephyrusActionRow : public views::LabelButton {
   ZephyrusActionRow(PressedCallback callback,
                     const std::u16string& text,
                     const gfx::VectorIcon& icon,
-                    SkColor foreground)
+                    SkColor foreground,
+                    const gfx::ImageSkia& favicon = gfx::ImageSkia())
       : views::LabelButton(std::move(callback), text),
         foreground_(foreground),
         icon_(icon) {
@@ -486,8 +521,12 @@ class ZephyrusActionRow : public views::LabelButton {
     SetTextColor(views::Button::STATE_NORMAL, foreground);
     SetTextColor(views::Button::STATE_HOVERED, foreground);
     SetTextColor(views::Button::STATE_PRESSED, foreground);
+    // The site's own favicon when the bookmark has one: six identical globes
+    // told the favourites apart by label alone.
     SetImageModel(views::Button::STATE_NORMAL,
-                  ui::ImageModel::FromVectorIcon(icon, foreground, 16));
+                  favicon.isNull()
+                      ? ui::ImageModel::FromVectorIcon(icon, foreground, 16)
+                      : ui::ImageModel::FromImageSkia(favicon));
     label()->SetSubpixelRenderingEnabled(false);
     GetViewAccessibility().SetName(text.empty() ? u"Action" : text);
   }
@@ -521,9 +560,10 @@ class ZephyrusActionRow : public views::LabelButton {
     PaintSegment(canvas, GetLocalBounds(), fill, first_in_run_, last_in_run_);
   }
 
+  // The tab rows' height: two segmented lists in one column, one metric.
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override {
-    return gfx::Size(0, 32);
+    return gfx::Size(0, kRowHeight);
   }
 
  private:
@@ -702,16 +742,14 @@ class ZephyrusTabCloseButton : public views::ImageButton {
   // The row hands down the ink appropriate to its CURRENT state, since the
   // active row inverts. Hover then overrides it: the glyph sits on the accent,
   // so it takes the accent's own ink rather than the row's.
+  // An M3 ICON BUTTON: the glyph keeps the row's ink in every state, and
+  // hover/press are state layers of that ink. It was the retired language's
+  // one red, read from the process-wide legacy palette -- which neither
+  // follows a window's own workspace theme nor is an M3 role.
   void SetRowInk(SkColor on_row) {
+    ink_ = on_row;
     SetImageModel(views::Button::STATE_NORMAL,
                   ui::ImageModel::FromVectorIcon(views::kCloseIcon, on_row,
-                                                 kGlyph));
-    const SkColor on_accent = zephyrus::Current().accent_ink;
-    SetImageModel(views::Button::STATE_HOVERED,
-                  ui::ImageModel::FromVectorIcon(views::kCloseIcon, on_accent,
-                                                 kGlyph));
-    SetImageModel(views::Button::STATE_PRESSED,
-                  ui::ImageModel::FromVectorIcon(views::kCloseIcon, on_accent,
                                                  kGlyph));
   }
 
@@ -721,12 +759,8 @@ class ZephyrusTabCloseButton : public views::ImageButton {
     if (!hovered && !pressed) {
       return;
     }
-    SkColor fill = zephyrus::Accent();
-    if (pressed) {
-      // Darker on press. The accent is already the most saturated thing in the
-      // panel, so lightening it would read as losing focus.
-      fill = color_utils::AlphaBlend(SK_ColorBLACK, fill, SkAlpha{0x2E});
-    }
+    const SkColor fill = zephyrus::m3::StateLayer(
+        ink_, pressed ? zephyrus::m3::kPressed : zephyrus::m3::kHover);
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
     flags.setStyle(cc::PaintFlags::kFill_Style);
@@ -738,6 +772,7 @@ class ZephyrusTabCloseButton : public views::ImageButton {
 
  private:
   static constexpr int kGlyph = 16;
+  SkColor ink_ = SK_ColorTRANSPARENT;
 };
 
 BEGIN_METADATA(ZephyrusTabCloseButton)
@@ -831,10 +866,14 @@ class ZephyrusTabRow : public views::Button {
     audio_button_->SetTooltipText(audio_name);
     views::InstallCircleHighlightPathGenerator(audio_button_);
 
+    close_callback_ = close_callback;
     close_button_ = AddChildView(std::make_unique<ZephyrusTabCloseButton>(
         base::BindRepeating(
             [](base::RepeatingClosure cb, const ui::Event&) { cb.Run(); },
             std::move(close_callback))));
+    // Out of the tab order: focus moves row to row, and Delete on a focused
+    // row closes it (see OnKeyPressed).
+    close_button_->SetFocusBehavior(views::View::FocusBehavior::NEVER);
     close_button_->SetRowInk(is_active_ ? colors_.active_fg
                                        : colors_.foreground);
     close_button_->SetImageHorizontalAlignment(
@@ -855,10 +894,28 @@ class ZephyrusTabRow : public views::Button {
   // views::Button:
   void StateChanged(views::Button::ButtonState old_state) override {
     views::Button::StateChanged(old_state);
-    const bool hovered = GetState() == views::Button::STATE_HOVERED ||
-                         GetState() == views::Button::STATE_PRESSED;
-    close_button_->SetVisible(hovered);
+    UpdateCloseVisibility();
     UpdateBackground();
+  }
+
+  // Keyboard parity. The close control appeared only under a hovering POINTER,
+  // so a keyboard user could reach a tab but never close it from the list.
+  // A focused row now shows it, and Delete closes the row's tab; the close
+  // button itself stays out of the tab order so focus moves row to row.
+  void OnFocus() override {
+    views::Button::OnFocus();
+    UpdateCloseVisibility();
+  }
+  void OnBlur() override {
+    views::Button::OnBlur();
+    UpdateCloseVisibility();
+  }
+  bool OnKeyPressed(const ui::KeyEvent& event) override {
+    if (event.key_code() == ui::VKEY_DELETE && close_callback_) {
+      close_callback_.Run();
+      return true;
+    }
+    return views::Button::OnKeyPressed(event);
   }
 
   gfx::Size CalculatePreferredSize(
@@ -1130,6 +1187,15 @@ class ZephyrusTabRow : public views::Button {
         ->SetFlexForView(view, flex);
   }
 
+  void UpdateCloseVisibility() {
+    if (!close_button_) {
+      return;
+    }
+    close_button_->SetVisible(GetState() == views::Button::STATE_HOVERED ||
+                              GetState() == views::Button::STATE_PRESSED ||
+                              HasFocus());
+  }
+
   void SetFaviconImage(const gfx::ImageSkia& favicon) {
     showing_fallback_icon_ = favicon.isNull();
     if (!showing_fallback_icon_) {
@@ -1255,6 +1321,7 @@ class ZephyrusTabRow : public views::Button {
   raw_ptr<views::Label> title_label_ = nullptr;
   raw_ptr<views::ImageButton> audio_button_ = nullptr;
   raw_ptr<ZephyrusTabCloseButton> close_button_ = nullptr;
+  base::RepeatingClosure close_callback_;
 };
 
 BEGIN_METADATA(ZephyrusTabRow)
@@ -1273,16 +1340,26 @@ class ZephyrusSplitCard : public views::View {
  public:
   ZephyrusSplitCard(SkColor foreground, base::RepeatingClosure break_callback)
       : foreground_(foreground) {
+    // The SAME inset on every side, so the rows' ends nest in the card's
+    // corners (Rule 2) -- it was 5 vertically and 4 across.
     SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, gfx::Insets::VH(5, 4), 0));
+        views::BoxLayout::Orientation::kVertical, gfx::Insets(kSplitInset),
+        0));
     // A raised surface rather than an outline: the rows inside already carry
     // their own hover and selection fills, and a border around them would be a
-    // third rectangle competing with those two. Lifted from 0x14 to 0x1F --
-    // at the lower value the card was so close to the panel behind it that the
-    // two tabs read as loose rows that happened to be adjacent.
-    SetBackground(views::CreateRoundedRectBackground(
-        SkColorSetA(foreground, 0x1F), 12));
+    // third rectangle competing with those two. Filled in OnThemeChanged.
     break_callback_ = std::move(break_callback);
+  }
+
+  // Rule 2: the rows inside end in kSegmentEndRadius, kSplitInset from this
+  // card's edge, so the card is their radius PLUS that inset. It was 12 --
+  // SMALLER than the 16 of the rows it holds, so their corners bulged past the
+  // card's. And an M3 role rather than an alpha of the ink.
+  void OnThemeChanged() override {
+    views::View::OnThemeChanged();
+    SetBackground(views::CreateRoundedRectBackground(
+        zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHighest),
+        kSegmentEndRadius + kSplitInset));
   }
 
   // Called after both rows have been added, so the control sits between them.
@@ -1342,6 +1419,201 @@ class ZephyrusSplitCard : public views::View {
 
 BEGIN_METADATA(ZephyrusSplitCard)
 END_METADATA
+
+}  // namespace
+
+// The omnibox while it is being edited in compact mode.
+//
+// In compact mode the address bar lives in the sidebar, and a 180-300dp column
+// is no place to read or type an address: the text elides after a dozen
+// characters and the suggestions drop down at the same cramped width. So
+// focusing it lifts the SAME LocationBarView out of the panel into this
+// floating capsule, which grows from the pill's own spot out over the page.
+// The suggestions follow it -- the popup is positioned from the location bar's
+// bounds -- and leaving the omnibox shrinks it back into the panel.
+//
+// A child of BrowserView, like the drag proxy: the sidebar clips its children
+// to its own bounds, and would not route a click outside them either.
+class ZephyrusOmniboxOverlay : public views::View,
+                               public views::MaskedTargeterDelegate,
+                               public gfx::AnimationDelegate {
+  METADATA_HEADER(ZephyrusOmniboxOverlay, views::View)
+
+ public:
+  // Room around the capsule for its shadow. Painted, never hit: see
+  // GetHitTestMask.
+  static constexpr int kShadowMargin = 12;
+
+  ZephyrusOmniboxOverlay(base::RepeatingClosure on_escape,
+                         base::RepeatingClosure on_collapsed)
+      : on_escape_(std::move(on_escape)),
+        on_collapsed_(std::move(on_collapsed)) {
+    // Its own layer, to stack above the sidebar's and the page's. This outer
+    // view paints the shadow and the fill; it cannot clip, or the shadow would
+    // go with it. (views::ViewShadow cannot draw one here at all: ui::Shadow
+    // caps its elevation at (shorter side - 2 * radius) / 4, which is zero for
+    // a capsule.)
+    SetPaintToLayer();
+    layer()->SetFillsBoundsOpaquely(false);
+    SetEventTargeter(std::make_unique<views::ViewTargeter>(this));
+    // The capsule's CLIP is this inner layer. The address bar inside it is
+    // laid out once per direction, at the width it is heading for, and the
+    // growing capsule uncovers it. Animating the address bar's own width
+    // instead re-ran its layout, rebuilt its background and moved the
+    // suggestions popup's native window on every frame -- the expensive part
+    // of the whole motion.
+    clip_ = AddChildView(std::make_unique<views::View>());
+    clip_->SetPaintToLayer();
+    clip_->layer()->SetFillsBoundsOpaquely(false);
+    clip_->layer()->SetMasksToBounds(true);
+    animation_.SetTweenType(
+        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
+    // Escape ends the edit -- but only an Escape the omnibox itself declined.
+    // It sees the key first, and uses it to revert typed text and close the
+    // suggestions; accelerators get it once there is nothing left to undo.
+    AddAccelerator(ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));
+  }
+  ZephyrusOmniboxOverlay(const ZephyrusOmniboxOverlay&) = delete;
+  ZephyrusOmniboxOverlay& operator=(const ZephyrusOmniboxOverlay&) = delete;
+
+  // The address bar is hosted inside the clip, not in this view directly.
+  void SetContent(views::View* content) { clip_->AddChildView(content); }
+  std::vector<views::View*> TakeContent() {
+    std::vector<views::View*> content(clip_->children().begin(),
+                                      clip_->children().end());
+    return content;
+  }
+
+  // `pill` is where the address bar sits in the panel, in the parent's
+  // coordinates; `editing_width` is how wide it grows.
+  void SetGeometry(const gfx::Rect& pill, int editing_width) {
+    if (pill.height() != pill_.height()) {
+      clip_->layer()->SetRoundedCornerRadius(
+          gfx::RoundedCornersF(pill.height() / 2.f));
+    }
+    pill_ = pill;
+    editing_width_ = std::max(editing_width, pill.width());
+    LayoutContent();
+    UpdateBounds();
+  }
+  // Growing is the entrance, so it takes a little longer than shrinking back:
+  // M3 gives exits the shorter duration, since nothing needs to be read on
+  // the way out.
+  void Expand() {
+    animation_.SetSlideDuration(RichDuration(kExpandDuration));
+    animation_.Show();
+    LayoutContent();
+    UpdateBounds();
+  }
+  void Collapse() {
+    animation_.SetSlideDuration(RichDuration(kCollapseDuration));
+    animation_.Hide();
+    LayoutContent();
+    UpdateBounds();
+  }
+  bool IsExpanding() const { return animation_.IsShowing(); }
+
+  // views::View:
+  void Layout(PassKey key) override {
+    clip_->SetBoundsRect(GetCapsule());
+    LayoutContent();
+  }
+  bool AcceleratorPressed(const ui::Accelerator& accelerator) override {
+    on_escape_.Run();
+    return true;
+  }
+  // Only while it is open. Shrinking back, the edit is already over, and an
+  // Escape then is the page's (stop loading), not this view's to swallow.
+  bool CanHandleAccelerators() const override {
+    return animation_.IsShowing() && views::View::CanHandleAccelerators();
+  }
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    // The capsule, raised off the page. Opaque, so the page does not show
+    // through the pill; the address bar paints its own outline over it.
+    const gfx::RectF capsule(GetCapsule());
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(
+        zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh));
+    flags.setLooper(gfx::CreateShadowDrawLooper(
+        gfx::ShadowValue::MakeMdShadowValues(kElevation)));
+    canvas->DrawRoundRect(capsule, capsule.height() / 2.f, flags);
+  }
+
+  // views::MaskedTargeterDelegate: the capsule only. The shadow margin around
+  // it is the page's, and must not swallow a click meant for it.
+  bool GetHitTestMask(SkPath* mask) const override {
+    const gfx::Rect capsule = GetCapsule();
+    const SkScalar radius = capsule.height() / 2.f;
+    *mask = SkPath::RRect(SkRRect::MakeRectXY(gfx::RectToSkRect(capsule),
+                                              radius, radius));
+    return true;
+  }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    UpdateBounds();
+  }
+  void AnimationEnded(const gfx::Animation* animation) override {
+    UpdateBounds();
+    if (!animation_.IsShowing()) {
+      // Posted: the handler hands the address bar back and deletes this view,
+      // which owns the animation that is calling us.
+      base::SequencedTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
+                                                               on_collapsed_);
+    }
+  }
+
+ private:
+  // M3 level 3, the elevation of a search bar that has been opened.
+  static constexpr int kElevation = 6;
+  // M3 short4 in, short3 out. The spatial curve front-loads the motion, so
+  // at the old 350ms the last third was an almost-still tail.
+  static constexpr base::TimeDelta kExpandDuration = base::Milliseconds(200);
+  static constexpr base::TimeDelta kCollapseDuration = base::Milliseconds(150);
+
+  static base::TimeDelta RichDuration(base::TimeDelta duration) {
+    return gfx::Animation::ShouldRenderRichAnimation() ? duration
+                                                       : base::TimeDelta();
+  }
+
+  // The address bar at the width it is heading for: the editing width while
+  // growing (so the text and suggestions are placed once, not per frame), the
+  // pill's while shrinking (so its text re-centres once, in the width it will
+  // have back in the panel, instead of sliding out of the shrinking clip).
+  void LayoutContent() {
+    const int width = animation_.IsShowing() ? editing_width_ : pill_.width();
+    for (views::View* child : clip_->children()) {
+      child->SetBounds(0, 0, width, pill_.height());
+    }
+  }
+
+  gfx::Rect GetCapsule() const {
+    gfx::Rect capsule = GetLocalBounds();
+    capsule.Inset(kShadowMargin);
+    return capsule;
+  }
+
+  void UpdateBounds() {
+    const int width = gfx::Tween::IntValueBetween(
+        animation_.GetCurrentValue(), pill_.width(), editing_width_);
+    gfx::Rect bounds(pill_.x(), pill_.y(), width, pill_.height());
+    bounds.Outset(kShadowMargin);
+    SetBoundsRect(bounds);
+  }
+
+  base::RepeatingClosure on_escape_;
+  base::RepeatingClosure on_collapsed_;
+  raw_ptr<views::View> clip_ = nullptr;
+  gfx::SlideAnimation animation_{this};
+  gfx::Rect pill_;
+  int editing_width_ = 0;
+};
+
+BEGIN_METADATA(ZephyrusOmniboxOverlay)
+END_METADATA
+
+namespace {
 
 // The tab itself, once it has left the panel.
 //
@@ -1647,6 +1919,151 @@ ZephyrusSidebarView::~ZephyrusSidebarView() {
   if (tab_strip_model_) {
     tab_strip_model_->RemoveObserver(this);
   }
+  // Hand the address bar back to the panel before the overlay goes: the
+  // overlay deletes its children, and the address bar is the toolbar's. The
+  // sidebar is BrowserView's earlier child, so the overlay is still alive here.
+  omnibox_hold_ = false;
+  DropOmniboxOverlay();
+}
+
+void ZephyrusSidebarView::Layout(PassKey key) {
+  LayoutSuperclass<views::View>(this);
+  // The pill may have moved (a window resize, the panel resized): keep the
+  // overlay on it.
+  if (omnibox_overlay_) {
+    const gfx::Rect pill = GetOmniboxPillRect();
+    omnibox_overlay_->SetGeometry(pill, GetOmniboxEditingWidth(pill));
+  }
+}
+
+void ZephyrusSidebarView::OnOmniboxFocusChanged() {
+  // Posted: this is called from inside the omnibox's own focus change, and
+  // expanding reparents the omnibox.
+  if (omnibox_update_pending_) {
+    return;
+  }
+  omnibox_update_pending_ = true;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&ZephyrusSidebarView::UpdateOmniboxExpansion,
+                                weak_factory_.GetWeakPtr()));
+}
+
+void ZephyrusSidebarView::UpdateOmniboxExpansion() {
+  omnibox_update_pending_ = false;
+  ToolbarView* toolbar = browser_view_ ? browser_view_->toolbar() : nullptr;
+  LocationBarView* location_bar =
+      toolbar ? toolbar->location_bar_view() : nullptr;
+  if (!location_bar || !compact_address_row_) {
+    return;
+  }
+  // The focus as it is NOW, not as the posted call found it: a blur and a
+  // refocus can both land before this runs.
+  const bool editing = IsCompactMode() && toolbar->IsZephyrusCompact() &&
+                       location_bar->omnibox_view() &&
+                       location_bar->omnibox_view()->HasFocus();
+  VLOG(1) << "compact omnibox: editing=" << editing
+          << " overlay=" << !!omnibox_overlay_;
+  if (!editing) {
+    if (omnibox_overlay_) {
+      const gfx::Rect pill = GetOmniboxPillRect();
+      omnibox_overlay_->SetGeometry(pill, GetOmniboxEditingWidth(pill));
+      omnibox_overlay_->Collapse();
+    }
+    return;
+  }
+  const gfx::Rect pill = GetOmniboxPillRect();
+  if (!omnibox_overlay_) {
+    if (location_bar->parent() != compact_address_row_) {
+      return;
+    }
+    // Hold the row's height, or everything below it jumps up into the space
+    // the address bar leaves.
+    compact_address_row_->SetPreferredSize(compact_address_row_->size());
+    omnibox_overlay_ =
+        browser_view_->AddChildView(std::make_unique<ZephyrusOmniboxOverlay>(
+            base::BindRepeating(&ZephyrusSidebarView::EndOmniboxEdit,
+                                weak_factory_.GetWeakPtr()),
+            base::BindRepeating(&ZephyrusSidebarView::OnOmniboxOverlayCollapsed,
+                                weak_factory_.GetWeakPtr())));
+    omnibox_overlay_->SetContent(location_bar);
+    // Views clears the focus of any view removed from its parent, even one
+    // only moving within the widget (Widget::ViewHierarchyChanged), so it is
+    // handed straight back. The omnibox keeps its text through the blur and
+    // restores its own selection on refocus. The blur and refocus also post
+    // an OnOmniboxFocusChanged, which finds the omnibox focused and leaves
+    // the expansion alone.
+    location_bar->omnibox_view()->RequestFocus();
+    // Keep the panel out while the address is being edited, and bring it out
+    // if the edit began from the keyboard (Ctrl+L) with the panel tucked:
+    // otherwise the pointer moving down to a suggestion leaves the panel and
+    // tucks the omnibox away mid-edit.
+    ++reveal_holds_;
+    omnibox_hold_ = true;
+    Reveal();
+  }
+  omnibox_overlay_->SetGeometry(pill, GetOmniboxEditingWidth(pill));
+  omnibox_overlay_->Expand();
+}
+
+gfx::Rect ZephyrusSidebarView::GetOmniboxPillRect() const {
+  // Summed by hand rather than converted: a conversion applies the panel's
+  // slide transform, so while the panel is still sliding in (an edit begun
+  // from Ctrl+L) the pill would be placed off the window's edge. This is where
+  // it sits once the panel is out.
+  gfx::Rect rect = compact_address_row_->GetLocalBounds();
+  for (const views::View* view = compact_address_row_;
+       view && view != browser_view_; view = view->parent()) {
+    rect.Offset(view->GetMirroredPosition().OffsetFromOrigin());
+  }
+  return rect;
+}
+
+int ZephyrusSidebarView::GetOmniboxEditingWidth(const gfx::Rect& pill) const {
+  // Wide enough to read a whole address and its suggestions, and never past
+  // the window's right edge.
+  constexpr int kEditingWidth = 640;
+  constexpr int kWindowMargin = 16;
+  const int room = browser_view_->width() - pill.x() - kWindowMargin -
+                   ZephyrusOmniboxOverlay::kShadowMargin;
+  return std::max(pill.width(), std::min(kEditingWidth, room));
+}
+
+void ZephyrusSidebarView::EndOmniboxEdit() {
+  // Focus goes back to the page, as it does when you leave the title bar's
+  // omnibox; the blur is what collapses the overlay.
+  if (content::WebContents* contents =
+          tab_strip_model_ ? tab_strip_model_->GetActiveWebContents()
+                           : nullptr) {
+    contents->Focus();
+  }
+}
+
+void ZephyrusSidebarView::OnOmniboxOverlayCollapsed() {
+  // Refocused while this was posted: it is growing again, leave it be.
+  if (!omnibox_overlay_ || omnibox_overlay_->IsExpanding()) {
+    return;
+  }
+  DropOmniboxOverlay();
+}
+
+void ZephyrusSidebarView::DropOmniboxOverlay() {
+  if (!omnibox_overlay_) {
+    return;
+  }
+  ZephyrusOmniboxOverlay* overlay = omnibox_overlay_;
+  omnibox_overlay_ = nullptr;
+  // Moved, never deleted: these are the toolbar's views.
+  for (views::View* child : overlay->TakeContent()) {
+    compact_address_row_->AddChildView(child);
+  }
+  compact_address_row_->SetPreferredSize(std::nullopt);
+  if (browser_view_) {
+    browser_view_->RemoveChildViewT(overlay);
+  }
+  if (omnibox_hold_) {
+    omnibox_hold_ = false;
+    ReleaseRevealHold();
+  }
 }
 
 void ZephyrusSidebarView::OnPaintBackground(gfx::Canvas* canvas) {
@@ -1659,6 +2076,11 @@ void ZephyrusSidebarView::OnPaintBackground(gfx::Canvas* canvas) {
 
 void ZephyrusSidebarView::OnThemeChanged() {
   views::View::OnThemeChanged();
+  // The panel's own fill too: it was set once, in the constructor, before the
+  // view had a colour provider, and never refreshed on a theme change.
+  SetBackground(
+      views::CreateRoundedRectBackground(GetPanelColor(), kPanelCornerRadius));
+  RebuildFavorites();
   RebuildTabList();
 }
 
@@ -1952,7 +2374,9 @@ void ZephyrusSidebarView::RebuildFavorites() {
               Navigate(&params);
             },
             base::Unretained(this), url),
-        node->GetTitle(), vector_icons::kGlobeIcon, fg_ink));
+        node->GetTitle(), vector_icons::kGlobeIcon, fg_ink,
+        // Loads on first request; the next rebuild (each reveal) picks it up.
+        model->GetFavicon(node.get()).AsImageSkia()));
     ++added;
   }
   const auto& fav_rows = favorites_container_->children();
@@ -2037,10 +2461,10 @@ void ZephyrusSidebarView::EnsureAddWorkspaceButton() {
       std::make_unique<ZephyrusFootIconButton>(
           base::BindRepeating(
               [](ZephyrusSidebarView* self, const ui::Event&) {
-                if (ZephyrusWorkspaceManager* manager =
-                        self->browser_view_->zephyrus_workspace_manager()) {
-                  manager->AddWorkspace();
-                }
+                // Set up first, then create: see zephyrus_workspace_setup.h.
+                zephyrus::ShowWorkspaceSetup(self->browser_view_,
+                                             self->add_workspace_button_,
+                                             /*workspace_id=*/0);
               },
               base::Unretained(this)),
           vector_icons::kAdd2Icon, u"New workspace"));
@@ -2091,6 +2515,8 @@ void ZephyrusSidebarView::RebuildCompactChrome() {
     compact_workspaces_->SetVisible(compact);
   }
   if (!compact) {
+    // Back in the panel first, so the reclaim below finds it there.
+    DropOmniboxOverlay();
     if (toolbar->IsZephyrusCompact()) {
       // Reclaim takes each view back by pointer, whatever it is parented to
       // now.
@@ -2117,7 +2543,10 @@ void ZephyrusSidebarView::RebuildCompactChrome() {
   bool controls_visible = false;
   for (views::View* view : toolbar->ZephyrusLentViews()) {
     if (view == location_bar) {
-      compact_address_row_->AddChildView(view);
+      // Mid-edit it is in the overlay, and stays there until the edit ends.
+      if (!omnibox_overlay_) {
+        compact_address_row_->AddChildView(view);
+      }
       address_visible = view->GetVisible();
     } else if (view == workspaces) {
       // The workspace switcher goes to the FOOT of the panel, away from the
@@ -2247,7 +2676,11 @@ void ZephyrusSidebarView::UpdateSplitDropIndicator(bool visible) {
       return;
     }
     split_drop_indicator_ = browser_view_->AddChildView(
-        std::make_unique<ZephyrusSplitDropIndicator>(GetZephyrusBase()));
+        // PRIMARY. It was handed the window's GROUND colour -- the colour of
+        // the very surface it is drawn over -- so "drop here" was a faint
+        // outline in the page's own background tone.
+        std::make_unique<ZephyrusSplitDropIndicator>(
+            zephyrus::m3::Role(*this, kColorZephyrusPrimary)));
   }
 
   if (visible) {
@@ -2671,12 +3104,20 @@ void ZephyrusSidebarView::RebuildTabList() {
             GetTabFavicon(contents), GetTabTitle(contents),
             index == active_index, index, row_colors,
             contents->IsCurrentlyAudible(), contents->IsAudioMuted(),
+            // The TAB, not its index. An index captured here goes stale the
+            // moment anything reorders the strip before the next rebuild --
+            // and rebuilds are posted, and held for the whole of a drag -- so
+            // a row's close button could close whichever tab had slid into
+            // that slot.
             base::BindRepeating(&ZephyrusSidebarView::ToggleTabMuted,
-                                base::Unretained(this), index),
+                                base::Unretained(this),
+                                contents->GetWeakPtr()),
             base::BindRepeating(&ZephyrusSidebarView::ActivateTab,
-                                base::Unretained(this), index),
+                                base::Unretained(this),
+                                contents->GetWeakPtr()),
             base::BindRepeating(&ZephyrusSidebarView::CloseTab,
-                                base::Unretained(this), index)));
+                                base::Unretained(this),
+                                contents->GetWeakPtr())));
     // Right-click a row -> "Pin tab" / "Move to workspace" / "Close tab".
     row->set_context_menu_controller(this);
     row->SetDragCallbacks(
@@ -2880,8 +3321,15 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
          manager->workspaces()) {
       const size_t idx = context_menu_workspace_ids_.size();
       context_menu_workspace_ids_.push_back(ws.id);
+      // Named as the strip names it. An unnamed workspace was an EMPTY menu
+      // item, and `emoji` now usually holds an icon KEY ("work"), which was
+      // printed raw in front of the name. Only a real emoji is shown.
       std::u16string label =
-          ws.emoji.empty() ? ws.name : (ws.emoji + u"  " + ws.name);
+          ws.name.empty() ? u"Workspace " + base::NumberToString16(idx + 1)
+                          : ws.name;
+      if (!ws.emoji.empty() && !zephyrus::FindWorkspaceIcon(ws.emoji)) {
+        label = ws.emoji + u"  " + label;
+      }
       workspace_submenu_model_->AddItem(kMoveToWorkspaceBase +
                                             static_cast<int>(idx),
                                         label);
@@ -2896,11 +3344,13 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
     context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
   }
   if (row) {
-    // Pinned tabs are global: they stay visible in every workspace.
+    // Pinning is PER WORKSPACE (see IsContentsInCurrentWorkspace): a tab is
+    // one WebContents in one cookie jar. The label said "(all workspaces)",
+    // promising a pinned tab would follow the user -- signed in -- into every
+    // other workspace. It never did, and should not.
     const bool tab_pinned = tab_strip_model_->IsTabPinned(row_index);
-    context_menu_model_->AddItem(
-        kPinTabCommand,
-        tab_pinned ? u"Unpin tab" : u"Pin tab (all workspaces)");
+    context_menu_model_->AddItem(kPinTabCommand,
+                                 tab_pinned ? u"Unpin tab" : u"Pin tab");
     context_menu_model_->AddItem(kCloseTabCommand, u"Close tab");
     context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
   }
@@ -2950,7 +3400,7 @@ void ZephyrusSidebarView::ExecuteCommand(int command_id, int event_flags) {
     return;
   }
   if (command_id == kCloseTabCommand) {
-    CloseTab(index);
+    tab_strip_model_->CloseWebContentsAt(index, CLOSE_USER_GESTURE);
     return;
   }
   if (command_id == kPinTabCommand) {
@@ -2972,37 +3422,40 @@ void ZephyrusSidebarView::ExecuteCommand(int command_id, int event_flags) {
   }
 }
 
-void ZephyrusSidebarView::ActivateTab(int model_index) {
-  if (model_index >= 0 && model_index < tab_strip_model_->count()) {
+void ZephyrusSidebarView::ActivateTab(
+    base::WeakPtr<content::WebContents> contents) {
+  const int model_index =
+      contents ? tab_strip_model_->GetIndexOfWebContents(contents.get())
+               : TabStripModel::kNoTab;
+  if (model_index != TabStripModel::kNoTab) {
     tab_strip_model_->ActivateTabAt(model_index);
   }
 }
 
-void ZephyrusSidebarView::ToggleTabMuted(int model_index) {
-  if (model_index < 0 || model_index >= tab_strip_model_->count()) {
-    return;
-  }
-  content::WebContents* contents =
-      tab_strip_model_->GetWebContentsAt(model_index);
-  if (!contents) {
+void ZephyrusSidebarView::ToggleTabMuted(
+    base::WeakPtr<content::WebContents> tab) {
+  content::WebContents* contents = tab.get();
+  const int model_index =
+      contents ? tab_strip_model_->GetIndexOfWebContents(contents)
+               : TabStripModel::kNoTab;
+  if (model_index == TabStripModel::kNoTab) {
     return;
   }
   contents->SetAudioMuted(!contents->IsAudioMuted());
-  // Update the row IN PLACE. Rebuilding here would destroy the very button
-  // whose click callback is still on the stack — a use-after-free the moment
-  // views touches the button again after this returns.
-  for (views::View* child : tab_list_container_->children()) {
-    auto* row = views::AsViewClass<ZephyrusTabRow>(child);
-    if (row && row->model_index() == model_index) {
-      row->SetAudioState(contents->IsCurrentlyAudible(),
-                         contents->IsAudioMuted());
-      break;
-    }
-  }
+  // A POSTED rebuild, never a synchronous one: that would destroy the very
+  // button whose click callback is still on the stack. It used to patch the
+  // row in place, found by matching a remembered model index -- stale after a
+  // reorder, and blind to rows inside a split card, which are not direct
+  // children of the list.
+  ScheduleRebuildTabList();
 }
 
-void ZephyrusSidebarView::CloseTab(int model_index) {
-  if (model_index >= 0 && model_index < tab_strip_model_->count()) {
+void ZephyrusSidebarView::CloseTab(
+    base::WeakPtr<content::WebContents> contents) {
+  const int model_index =
+      contents ? tab_strip_model_->GetIndexOfWebContents(contents.get())
+               : TabStripModel::kNoTab;
+  if (model_index != TabStripModel::kNoTab) {
     tab_strip_model_->CloseWebContentsAt(model_index, CLOSE_USER_GESTURE);
   }
 }
@@ -3021,6 +3474,14 @@ SkColor ZephyrusSidebarView::GetZephyrusBase() const {
 }
 
 SkColor ZephyrusSidebarView::GetForegroundColor() const {
+  // onSurface from THIS window's colour provider. The legacy ink below is
+  // process-wide: a window wearing its own workspace theme (light, say, while
+  // another window's workspace is dark) filled its rows from M3 roles but
+  // wrote their titles in the other palette's ink. The legacy value is only
+  // the fallback for the moment before the view has a provider.
+  if (GetColorProvider()) {
+    return zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
+  }
   // Ink. Every other sidebar color (row hover/active fills, section headings,
   // the quick-actions card, favicon fallbacks) is derived from this by alpha,
   // so they all follow from this one value.
@@ -3039,11 +3500,13 @@ SkColor ZephyrusSidebarView::GetForegroundColor() const {
 }
 
 SkColor ZephyrusSidebarView::GetPanelColor() const {
-  // The panel is the cream SURFACE, not the ground. On the warm theme the two
-  // differ by one warm step, which is enough to separate the tab list from the
-  // page beside it without a border doing the work.
+  // surfaceContainer from this window's provider -- the surface the rows'
+  // surfaceContainerHigh steps up from -- for the same reason as the ink
+  // above: the legacy Surface() is one colour for every window.
   if (!page_color_.has_value()) {
-    return zephyrus::Surface();
+    return GetColorProvider()
+               ? zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainer)
+               : zephyrus::Surface();
   }
   // The theme base, flat. The sidebar reads as the same surface as the title
   // bar above it, exactly as a vertical tab strip does — the thing that

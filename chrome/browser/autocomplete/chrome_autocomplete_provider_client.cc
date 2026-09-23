@@ -645,13 +645,31 @@ bool ChromeAutocompleteProviderClient::IsUrlOutsideCurrentWorkspace(
     return false;
   }
   const int workspace = store->CurrentWorkspaceForOmnibox();
-  // Scope only once this workspace has visits of its own. Without that guard a
-  // brand-new workspace would consider every URL foreign and demote the user's
-  // entire history, which reads as the omnibox being broken.
-  if (workspace == 0 || !store->HasVisitData(workspace)) {
+  if (workspace == 0) {
+    return false;
+  }
+  // A workspace on the SHARED jar scopes only once it has visits of its own:
+  // without that guard it would consider every URL foreign and demote the
+  // user's entire history, which reads as the omnibox being broken.
+  //
+  // A workspace with its OWN sign-ins scopes from its first moment. It used to
+  // take the same guard, so a brand-new isolated workspace -- the moment
+  // separation matters most -- offered every other workspace's history at
+  // full rank until its first page load.
+  const bool isolated = !store->PartitionNameForWorkspace(workspace).empty();
+  if (!isolated && !store->HasVisitData(workspace)) {
     return false;
   }
   return !store->WasVisitedInWorkspace(workspace, url);
+}
+
+bool ChromeAutocompleteProviderClient::IsCurrentWorkspaceIsolated() const {
+  auto* store = ZephyrusWorkspaceStore::GetForProfile(profile_);
+  if (!store) {
+    return false;
+  }
+  const int workspace = store->CurrentWorkspaceForOmnibox();
+  return workspace != 0 && !store->PartitionNameForWorkspace(workspace).empty();
 }
 
 bool ChromeAutocompleteProviderClient::IsIncognitoModeAvailable() const {

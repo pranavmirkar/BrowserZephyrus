@@ -204,6 +204,8 @@ class ZephyrusTabSwitcher;
 class ZephyrusSearchEnginePicker;
 // Zephyrus: workspace icon grid (defined in toolbar_view.cc).
 class ZephyrusIconPicker;
+// Zephyrus: workspace setup card (zephyrus_workspace_setup.cc).
+class ZephyrusWorkspaceSetup;
 
 namespace views {
 
@@ -956,6 +958,7 @@ class VIEWS_EXPORT BubbleDialogDelegateView : public View,
   friend class ::ZephyrusTabSwitcher;
   friend class ::ZephyrusSearchEnginePicker;
   friend class ::ZephyrusIconPicker;
+  friend class ::ZephyrusWorkspaceSetup;
 
   // |shadow| usually doesn't need to be explicitly set, just uses the default
   // argument. Unless on Mac when the bubble needs to use Views base shadow,

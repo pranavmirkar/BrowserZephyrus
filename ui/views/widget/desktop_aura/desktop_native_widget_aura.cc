@@ -550,7 +550,7 @@ void DesktopNativeWidgetAura::UpdateWindowTransparency() {
   // TEMPORARY (Zephyrus): this runs AFTER the backdrop is enabled and can
   // overwrite the transparent clear with kColorFrameActive, which would look
   // exactly like DWM refusing to sample.
-  LOG(ERROR) << "zephyrus-backdrop: UpdateWindowTransparency transparent="
+  DVLOG(1) << "zephyrus-backdrop: UpdateWindowTransparency transparent="
              << transparent;
   window_tree_host->compositor()->SetBackgroundColor(
       transparent

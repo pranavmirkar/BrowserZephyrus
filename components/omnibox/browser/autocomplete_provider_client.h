@@ -232,6 +232,11 @@ class AutocompleteProviderClient : public OmniboxAction::Client {
   // which leaves ranking untouched.
   virtual bool IsUrlOutsideCurrentWorkspace(const GURL& url) const;
 
+  // Zephyrus: true when the workspace on screen keeps its own sign-ins. Its
+  // history is then HIDDEN from other workspaces' omniboxes rather than
+  // demoted -- separate accounts should not surface each other's pages.
+  virtual bool IsCurrentWorkspaceIsolated() const;
+
   // Returns true if the sharing hub command is enabled.
   virtual bool IsSharingHubAvailable() const;
 

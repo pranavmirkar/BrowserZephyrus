@@ -532,7 +532,7 @@ void BrowserDesktopWindowTreeHostWin::UpdateZephyrusBackdrop(SkColor color) {
   // TEMPORARY instrumentation. The open question is whether the presented
   // surface actually carries alpha -- every attribute reports success and the
   // client area is still flat, so guessing at painters again is not the move.
-  LOG(ERROR) << "zephyrus-backdrop: eligible=" << eligible
+  DVLOG(1) << "zephyrus-backdrop: eligible=" << eligible
              << " was_enabled=" << was_enabled << " enabled=" << enabled
              << " transparent=" << transparent
              << " set_attr_hr=0x" << std::hex << result

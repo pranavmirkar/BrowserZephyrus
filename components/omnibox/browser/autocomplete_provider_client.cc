@@ -45,6 +45,10 @@ bool AutocompleteProviderClient::IsUrlOutsideCurrentWorkspace(
   return false;
 }
 
+bool AutocompleteProviderClient::IsCurrentWorkspaceIsolated() const {
+  return false;
+}
+
 bool AutocompleteProviderClient::IsIncognitoModeAvailable() const {
   return true;
 }

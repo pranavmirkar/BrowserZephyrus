@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <utility>
 
 #include "base/command_line.h"
 #include "base/containers/span.h"
@@ -191,7 +192,19 @@ std::optional<gfx::RoundedCornersF> RadiiOf(const views::View& v) {
 int g_rounded_seen = 0;
 int g_violations = 0;
 
+// The radius a rounded view actually DRAWS: a requested radius past half its
+// shorter side is clamped by the painter, so 9999 on a 52dp pill is 26.
+float DrawnRadius(const gfx::RoundedCornersF& r, const gfx::Size& size) {
+  return std::min(r.upper_left(), std::min(size.width(), size.height()) / 2.0f);
+}
+
 void AuditInto(const views::View& v, const views::View* rounded_ancestor) {
+  // A hidden subtree is not on screen, and one never laid out has empty bounds
+  // that read as zero padding everywhere -- the closed agent panel reported two
+  // violations that way.
+  if (!v.GetVisible() || v.bounds().IsEmpty()) {
+    return;
+  }
   const std::optional<gfx::RoundedCornersF> mine = RadiiOf(v);
   if (mine) {
     ++g_rounded_seen;
@@ -202,21 +215,44 @@ void AuditInto(const views::View& v, const views::View* rounded_ancestor) {
     const gfx::Rect outer = rounded_ancestor->GetLocalBounds();
     const gfx::Rect inner = views::View::ConvertRectToTarget(
         v.parent(), rounded_ancestor, v.bounds());
-    const int pad = std::min({inner.x() - outer.x(), inner.y() - outer.y(),
-                              outer.right() - inner.right(),
-                              outer.bottom() - inner.bottom()});
-    if (theirs && pad >= 0 && !IsCapsule(*mine, v.size())) {
-      const float want = ConcentricInner(theirs->upper_left(),
-                                         static_cast<float>(pad));
-      // One pixel of tolerance: the gap is measured from bounds, so uneven
-      // padding and odd sizes produce off-by-ones that are not violations.
-      if (std::abs(mine->upper_left() - want) > 1.f) {
-        ++g_violations;
-        LOG(WARNING) << "[zephyrus] Rule 2: " << v.GetClassName() << " radius "
-                     << mine->upper_left() << " inside "
-                     << rounded_ancestor->GetClassName() << " radius "
-                     << theirs->upper_left() << " with padding " << pad
-                     << " -- concentric would be " << want;
+    if (theirs) {
+      const float outer_r = DrawnRadius(*theirs, outer.size());
+      const float inner_r = DrawnRadius(*mine, v.size());
+      const int left = inner.x() - outer.x();
+      const int top = inner.y() - outer.y();
+      const int right = outer.right() - inner.right();
+      const int bottom = outer.bottom() - inner.bottom();
+      // Only a corner the child actually OCCUPIES can be out of step: one
+      // within the outer radius of both edges that meet there. A child flush
+      // with one side but nowhere near a corner is no concern of this rule.
+      int pad = -1;
+      for (const auto& [h, vtc] : {std::pair{left, top}, std::pair{right, top},
+                                   std::pair{left, bottom},
+                                   std::pair{right, bottom}}) {
+        if (h >= 0 && vtc >= 0 && h < outer_r && vtc < outer_r) {
+          const int corner_pad = std::min(h, vtc);
+          pad = pad < 0 ? corner_pad : std::min(pad, corner_pad);
+        }
+      }
+      if (pad >= 0) {
+        const float want = ConcentricInner(outer_r, static_cast<float>(pad));
+        // A capsule cannot get any rounder than half its height, so for one
+        // the question is only whether the CONTAINER is too round for it. It
+        // used to be exempt outright, which is how a 36dp pill 4dp inside a
+        // 28dp card (concentric would need 22) passed while looking wrong.
+        const bool capsule = IsCapsule(*mine, v.size());
+        // One pixel of tolerance: the gap is measured from bounds, so uneven
+        // padding and odd sizes produce off-by-ones that are not violations.
+        const bool violation = capsule ? inner_r + 1.f < want
+                                       : std::abs(inner_r - want) > 1.f;
+        if (violation) {
+          ++g_violations;
+          LOG(WARNING) << "[zephyrus] Rule 2: " << v.GetClassName()
+                       << " radius " << inner_r << " inside "
+                       << rounded_ancestor->GetClassName() << " radius "
+                       << outer_r << " with padding " << pad
+                       << " -- concentric would be " << want;
+        }
       }
     }
   }
