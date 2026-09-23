@@ -29,6 +29,29 @@ constexpr size_t kMaxHistoryShown = 8;
 // How much of one tool result is quoted back. See OnExecuted.
 constexpr size_t kMaxResultShown = 600;
 
+// The element a call named, or empty. Read from the call's own arguments so
+// the advice that follows a refusal can avoid pointing back at it.
+std::string ElementIdIn(std::string_view arguments_json) {
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(arguments_json, base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_dict()) {
+    return std::string();
+  }
+  const std::string* id = parsed->GetDict().FindString("element_id");
+  return id ? *id : std::string();
+}
+
+// Roles this may suggest typing into.
+//
+// A near-copy of IsTextEntryRole in the Observation, and it has to be: that
+// lives in chrome/browser and this runs in a utility process, which is the
+// whole point of the service boundary. Kept to the roles the Observation
+// actually emits, minus "password" -- the kernel refuses to type into one, so
+// naming it would be advice that cannot be taken.
+bool IsTypeableHere(std::string_view role) {
+  return role == "textbox" || role == "searchbox" || role == "combobox";
+}
+
 // How many identical refused calls before the run is called stuck.
 //
 // Three, because the second is a retry and the third is a pattern. Measured on
@@ -424,7 +447,8 @@ void TaskLoop::OnProposed(const std::string& response) {
     std::string note = base::StrCat(
         {"You already called ", tool,
          " with exactly those arguments and the page did not change. Doing it "
-         "again will do nothing.", SomethingToActOn(tool)});
+         "again will do nothing.",
+         SomethingToActOn(tool, ElementIdIn(arguments))});
 
     // Replaced, not stacked -- the same treatment the prose case already got,
     // and for the same reason. This path does not update `last_call_`, so a
@@ -506,7 +530,8 @@ void TaskLoop::OnExecuted(std::string tool,
        // it responded by rewriting the call -- five different spellings of the
        // same navigation in one traced run, each costing a step. A refusal has
        // to point somewhere, or the only thing left to vary is the syntax.
-       refused ? SomethingToActOn(tool) : std::string()}));
+       refused ? SomethingToActOn(tool, ElementIdIn(arguments_json))
+               : std::string()}));
 
   Step();
 }
@@ -516,7 +541,8 @@ std::string TaskLoop::SystemPrompt() const {
       {kSystemPromptPrefix, std::string(kernel_->prompt_listing())});
 }
 
-std::string TaskLoop::SomethingToActOn(std::string_view instead_of) const {
+std::string TaskLoop::SomethingToActOn(std::string_view instead_of,
+                                       std::string_view failed_id) const {
   // Two clickable things from the Observation the model was just shown, by id
   // and name, so a stuck run has somewhere concrete to go.
   std::optional<base::Value> parsed =
@@ -542,6 +568,20 @@ std::string TaskLoop::SomethingToActOn(std::string_view instead_of) const {
 
   std::vector<std::pair<std::string, std::string>> candidates;  // id, name
   std::vector<std::pair<std::string, std::string>> related;
+  // A field to type in, kept apart from the clickable things.
+  //
+  // This helper only ever named links and buttons, and that is exactly the
+  // page it had nothing to say about: a site whose way forward is its search
+  // box. MEASURED on mt-001 -- the task was to find a guide, the page offered
+  // "Search docs", and qwen2.5:7b invented three addresses in a row rather
+  // than type into it. Naming the Search BUTTON, which is all this could do,
+  // is worse than useless there: pressing it searches for nothing.
+  //
+  // So a field is offered with the tool that works on it. "Use a relevant
+  // untried target" is advice a model cannot act on if the only target named
+  // is one that needs something typed into it first.
+  std::string field_id;
+  std::string field_name;
   for (const base::Value& entry : *elements) {
     if (!entry.is_dict()) {
       continue;
@@ -549,9 +589,33 @@ std::string TaskLoop::SomethingToActOn(std::string_view instead_of) const {
     const std::string* id = entry.GetDict().FindString("id");
     const std::string* name = entry.GetDict().FindString("name");
     const std::string* role = entry.GetDict().FindString("role");
+    if (!id || !name || name->empty() || !role) {
+      continue;
+    }
+    // Never the target that just failed. Advice to retry what the model was
+    // told did not work is the same dead end as naming the tool it is stuck
+    // on, which this function already refuses to do.
+    if (!failed_id.empty() && *id == failed_id) {
+      continue;
+    }
+    // Never a password field. The kernel refuses to type into one, so naming
+    // it here would be advice that cannot be taken.
+    //
+    // And never a field that already HAS something in it. MEASURED right after
+    // this helper learned to name fields at all: the model was told to type
+    // into the search box, did, and was then told to type into the same box
+    // again -- because the box was still the only field on the page. It typed
+    // into it twice more and the run was called stuck. A filled field is
+    // finished; what is left is the button beside it.
+    const std::string* value = entry.GetDict().FindString("value");
+    const bool already_filled = value && !value->empty();
+    if (field_id.empty() && !already_filled && IsTypeableHere(*role)) {
+      field_id = *id;
+      field_name = *name;
+      continue;
+    }
     // Links and buttons: the things a click does something with.
-    if (!id || !name || name->empty() || !role ||
-        (*role != "link" && *role != "button")) {
+    if (*role != "link" && *role != "button") {
       continue;
     }
     base::DictValue click_arguments;
@@ -577,6 +641,15 @@ std::string TaskLoop::SomethingToActOn(std::string_view instead_of) const {
   const auto& pick = related.empty() ? candidates : related;
   std::string named;
   int shown = 0;
+  // The field first when nothing on the page is obviously the answer. A page
+  // offering only its own furniture -- a Search button, a Subscribe button --
+  // is a page you have to ASK, and the field is how.
+  if (!field_id.empty() && related.empty()) {
+    base::StrAppend(&named, {" The page has ", field_id, " \"",
+                             FirstWords(field_name, 60),
+                             "\" to type into (page.type)"});
+    ++shown;
+  }
   for (const auto& [id, name] : pick) {
     if (shown >= 2) {
       break;

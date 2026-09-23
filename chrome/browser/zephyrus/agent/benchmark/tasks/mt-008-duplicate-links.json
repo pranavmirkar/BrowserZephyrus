@@ -1,0 +1,375 @@
+{
+  "id": "mt-008-duplicate-links",
+  "note": "The header and the footer both link to Pricing, as on almost every site. Either is right -- they go to the same page. Measures whether the kernel's ambiguity rule mistakes a repeated link for a choice between two things.",
+  "task": "Open the pricing page",
+  "budget": 6,
+  "start": "home",
+  "states": {
+    "home": {
+      "observation": {
+        "url": "https://acme-analytics.example/",
+        "title": "Acme Analytics",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Acme Analytics",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "nav-product",
+            "role": "link",
+            "name": "Product"
+          },
+          {
+            "id": "nav-pricing",
+            "role": "link",
+            "name": "Pricing"
+          },
+          {
+            "id": "nav-docs",
+            "role": "link",
+            "name": "Docs"
+          },
+          {
+            "id": "nav-signin",
+            "role": "link",
+            "name": "Sign in"
+          },
+          {
+            "id": "trial",
+            "role": "button",
+            "name": "Start free trial"
+          },
+          {
+            "id": "foot-pricing",
+            "role": "link",
+            "name": "Pricing"
+          },
+          {
+            "id": "foot-careers",
+            "role": "link",
+            "name": "Careers"
+          },
+          {
+            "id": "foot-privacy",
+            "role": "link",
+            "name": "Privacy"
+          }
+        ],
+        "text": "Acme Analytics. Dashboards for small teams. Set up in five minutes."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "nav-pricing",
+          "goto": "pricing",
+          "note": "opened Pricing"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "foot-pricing",
+          "goto": "pricing",
+          "note": "opened Pricing"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "nav-product",
+          "goto": "product",
+          "note": "opened Product"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "nav-docs",
+          "goto": "docs",
+          "note": "opened Docs"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "nav-signin",
+          "goto": "signin",
+          "note": "opened Sign in"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "trial",
+          "goto": "trial",
+          "note": "clicked Start free trial"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "foot-careers",
+          "goto": "careers",
+          "note": "opened Careers"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "foot-privacy",
+          "goto": "privacy",
+          "note": "opened Privacy"
+        }
+      ]
+    },
+    "pricing": {
+      "observation": {
+        "url": "https://acme-analytics.example/pricing",
+        "title": "Pricing - Acme Analytics",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Pricing - Acme Analytics",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "home",
+            "role": "link",
+            "name": "Acme Analytics"
+          }
+        ],
+        "text": "Pricing. Starter $12 a month. Team $49 a month."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "home",
+          "goto": "home",
+          "note": "opened Acme Analytics"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "home",
+          "note": "went back"
+        }
+      ]
+    },
+    "product": {
+      "observation": {
+        "url": "https://acme-analytics.example/product",
+        "title": "Product - Acme Analytics",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Product - Acme Analytics",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "home",
+            "role": "link",
+            "name": "Acme Analytics"
+          }
+        ],
+        "text": "Product tour."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "home",
+          "goto": "home",
+          "note": "opened Acme Analytics"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "home",
+          "note": "went back"
+        }
+      ]
+    },
+    "docs": {
+      "observation": {
+        "url": "https://acme-analytics.example/docs",
+        "title": "Docs - Acme Analytics",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Docs - Acme Analytics",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "home",
+            "role": "link",
+            "name": "Acme Analytics"
+          }
+        ],
+        "text": "Documentation."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "home",
+          "goto": "home",
+          "note": "opened Acme Analytics"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "home",
+          "note": "went back"
+        }
+      ]
+    },
+    "signin": {
+      "observation": {
+        "url": "https://acme-analytics.example/signin",
+        "title": "Sign in - Acme Analytics",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Sign in - Acme Analytics",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "home",
+            "role": "link",
+            "name": "Acme Analytics"
+          }
+        ],
+        "text": "Sign in to Acme."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "home",
+          "goto": "home",
+          "note": "opened Acme Analytics"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "home",
+          "note": "went back"
+        }
+      ]
+    },
+    "trial": {
+      "observation": {
+        "url": "https://acme-analytics.example/trial",
+        "title": "Start your trial - Acme Analytics",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Start your trial - Acme Analytics",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "home",
+            "role": "link",
+            "name": "Acme Analytics"
+          }
+        ],
+        "text": "Create an account to start a free trial."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "home",
+          "goto": "home",
+          "note": "opened Acme Analytics"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "home",
+          "note": "went back"
+        }
+      ]
+    },
+    "careers": {
+      "observation": {
+        "url": "https://acme-analytics.example/careers",
+        "title": "Careers - Acme Analytics",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Careers - Acme Analytics",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "home",
+            "role": "link",
+            "name": "Acme Analytics"
+          }
+        ],
+        "text": "Open roles."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "home",
+          "goto": "home",
+          "note": "opened Acme Analytics"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "home",
+          "note": "went back"
+        }
+      ]
+    },
+    "privacy": {
+      "observation": {
+        "url": "https://acme-analytics.example/privacy",
+        "title": "Privacy - Acme Analytics",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Privacy - Acme Analytics",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "home",
+            "role": "link",
+            "name": "Acme Analytics"
+          }
+        ],
+        "text": "Privacy policy."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "home",
+          "goto": "home",
+          "note": "opened Acme Analytics"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "home",
+          "note": "went back"
+        }
+      ]
+    }
+  },
+  "success": {
+    "states": [
+      "pricing"
+    ],
+    "call": "task.complete"
+  },
+  "paths": {
+    "optimal": [
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "nav-pricing"
+        }
+      },
+      {
+        "name": "task.complete",
+        "arguments": {
+          "answer": "opened Pricing"
+        }
+      }
+    ]
+  }
+}

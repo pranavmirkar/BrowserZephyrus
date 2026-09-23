@@ -260,7 +260,9 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
     if request.tool == "page.click" {
         if let Some(id) = request.arguments.get("element_id").and_then(Value::as_str) {
             if let Some(element) = request.elements.iter().find(|e| e.id == id) {
-                if let Some(verb) = consequential_verb(&element.name) {
+                if let Some(verb) =
+                    consequential_verb(&element.name, has_open_composer(request.elements))
+                {
                     // The role is named because the user is being asked to
                     // approve a specific control, and "the button Send" is a
                     // thing they can look for on the page in a second.
@@ -294,14 +296,20 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
     // recovered by looking harder at the page, so the only correct move is to
     // ask, and the only place that can insist is here.
     //
-    // Note where this fires. Not on the click that chooses a candidate -- the
-    // model reached the wrong recipient by TYPING a name into a field, and a
-    // rule watching only clicks would have watched the wrong door. While the
-    // task's target is ambiguous, any acting tool is a question for the user;
-    // the reading tools stay Allow, because looking is how ambiguity would be
-    // resolved if the page could resolve it.
+    // Note where this fires: on a call that COMMITS to one of the candidates.
+    // That is two doors, not one -- clicking a candidate, and typing a name
+    // the candidates share, which is how the model reached the wrong
+    // recipient in the first place. The reading tools stay Allow, because
+    // looking is how ambiguity would be resolved if the page could resolve it.
+    //
+    // It used to fire on ANY acting call while a tie existed, and a perfect
+    // agent paid for that. MEASURED on benchmark mt-011: five invoices each
+    // matching two of "invoice from March 2026" made the click on "Older
+    // invoices" -- which matches none of them, and is the right move -- a
+    // question for the user. A call that commits to nothing in the tie has
+    // nothing to ask about.
     if matches!(request.tool, "page.click" | "page.type" | "page.select") {
-        if let Some((first, second)) = ambiguous_targets(request.task, request.elements) {
+        if let Some((first, second)) = ambiguous_choice(request) {
             return (
                 floor.max(Risk::R2),
                 format!(
@@ -479,49 +487,122 @@ fn invented_address<'a>(request: &'a Request) -> Option<(&'a str, &'a str)> {
     Some((target, better.name.as_str()))
 }
 
-/// Two elements that answer the task equally well, when more than one does.
+/// Whether two tied elements are a choice a user could actually make.
 ///
-/// "Equally" is doing the work. Both candidates must be the top match by the
-/// same count of the task's own words, and they must share a ROLE -- a textbox
-/// and a button named alike are not rivals for the same choice, they are
-/// different halves of one control, and treating them as rivals was what
-/// turned "search this site for X" into a question.
+/// They must share a ROLE -- a textbox and a button named alike are not rivals
+/// for the same choice, they are different halves of one control, and treating
+/// them as rivals was what turned "search this site for X" into a question.
 ///
-/// Returns None the moment anything distinguishes the candidates, because a
-/// rule that asks too often is a rule the user learns to click through, and
-/// then it is not protecting anything.
-fn ambiguous_targets<'a>(task: &str, elements: &'a [Element]) -> Option<(&'a Element, &'a Element)> {
-    let targets = task_targets(task);
+/// And two LINKS with the same name are not a choice at all. MEASURED on
+/// benchmark mt-008: Pricing in the header and Pricing in the footer, as on
+/// nearly every site, asked the user "Pricing or Pricing?" -- a question with
+/// no answer, about two links to one page. Links only, deliberately: two
+/// contacts both shown as "Alex" are two people, and picking between them is
+/// exactly what this rule exists to stop. A wrong link is a navigation, which
+/// is reversible; a wrong recipient is not.
+fn rivals_for_one_choice(first: &Element, second: &Element) -> bool {
+    if first.role != second.role || first.name.trim().is_empty() {
+        return false;
+    }
+    let same_name = first.name.trim().eq_ignore_ascii_case(second.name.trim());
+    !(same_name && first.role == "link")
+}
+
+/// The elements tied as the best match for the task that have a rival among
+/// the others -- the candidates of an unresolved choice.
+///
+/// "Tied" is doing the work: each must match the same, highest, count of the
+/// task's own words. The moment anything distinguishes the candidates there is
+/// nothing here, because a rule that asks too often is a rule the user learns
+/// to click through, and then it is not protecting anything.
+fn tied_candidates<'a>(targets: &[String], elements: &'a [Element]) -> Vec<&'a Element> {
+    let score = |element: &Element| -> usize { target_hits(targets, &element.name) };
+    let top = elements.iter().map(&score).max().unwrap_or(0);
+    if top == 0 {
+        return Vec::new();
+    }
+    let winners: Vec<&Element> = elements.iter().filter(|e| score(e) == top).collect();
+    winners
+        .iter()
+        .copied()
+        .filter(|first| {
+            winners
+                .iter()
+                .any(|second| second.id != first.id && rivals_for_one_choice(first, second))
+        })
+        .collect()
+}
+
+/// Two candidates this call would choose between without knowing which the
+/// user meant. None when the call commits to nothing in the tie.
+fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Element)> {
+    let targets = task_targets(request.task);
     if targets.is_empty() {
         return None;
     }
-
-    let score = |element: &Element| -> usize { target_hits(&targets, &element.name) };
-
-    let top = elements.iter().map(&score).max().unwrap_or(0);
-    if top == 0 {
+    let candidates = tied_candidates(&targets, request.elements);
+    if candidates.is_empty() {
         return None;
     }
-    let winners: Vec<&Element> = elements
-        .iter()
-        .filter(|element| score(element) == top)
-        .collect();
-    if winners.len() < 2 {
-        return None;
-    }
-    // Same role, so the pair really are alternatives to each other.
-    for (index, first) in winners.iter().enumerate() {
-        for second in winners.iter().skip(index + 1) {
-            if first.role == second.role && !first.name.trim().is_empty() {
-                return Some((first, second));
-            }
+
+    // Door one: acting on a candidate.
+    if let Some(chosen) = target_element(request) {
+        if candidates.iter().any(|c| c.id == chosen.id) {
+            let other = *candidates
+                .iter()
+                .find(|c| c.id != chosen.id && rivals_for_one_choice(chosen, c))?;
+            return Some((chosen, other));
         }
     }
-    None
+
+    // Door two: writing one of them into a field -- "Alex" into the To field
+    // beside two Alexes, or "Morgan", or an address copied off the page.
+    //
+    // Judged on the CANDIDATES' words, not only the task's. A first version
+    // checked the task's words alone, so "Morgan" -- which the task never
+    // said -- passed, and so did "a.morgan@example.com": both pick one Alex
+    // just as surely as clicking him.
+    if !matches!(request.tool, "page.type" | "page.select") {
+        return None;
+    }
+    let written = request
+        .arguments
+        .get("text")
+        .or_else(|| request.arguments.get("value"))
+        .and_then(Value::as_str)?
+        .to_ascii_lowercase();
+    let carries = |element: &Element, word: &str| element.name.to_ascii_lowercase().contains(word);
+    // A word of the task that NO candidate carries points past all of them.
+    // Typing "March 2026" into a search box beside five tied 2026 invoices is
+    // looking for March, not choosing among the five.
+    if targets.iter().any(|word| {
+        written.contains(word.as_str()) && !candidates.iter().any(|c| carries(*c, word.as_str()))
+    }) {
+        return None;
+    }
+    let writes_a_candidate = candidates.iter().any(|candidate| {
+        candidate
+            .name
+            .to_ascii_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|word| word.len() >= MIN_TARGET_LEN && !TASK_NOISE.contains(word))
+            .any(|word| written.contains(word))
+    });
+    if !writes_a_candidate {
+        return None;
+    }
+    let first = *candidates.first()?;
+    let second = *candidates
+        .iter()
+        .find(|c| c.id != first.id && rivals_for_one_choice(first, c))?;
+    Some((first, second))
 }
 
 /// The first consequential verb in an element's accessible name, if any.
-fn consequential_verb(name: &str) -> Option<&'static str> {
+///
+/// `composer_open` is whether the page has a text field a Reply could submit;
+/// see `has_open_composer`.
+fn consequential_verb(name: &str, composer_open: bool) -> Option<&'static str> {
     // Only the beginning of the name, because only that part is a LABEL.
     //
     // An accessible name is often computed from everything inside the element,
@@ -539,13 +620,74 @@ fn consequential_verb(name: &str) -> Option<&'static str> {
         None => name,
     };
     let lowered = label.to_ascii_lowercase();
+    // Whole words, so "Sender" and "Sendai" do not match "send". Substring
+    // matching here would escalate most of the web; the words that genuinely
+    // need catching (like "resend") are listed explicitly.
+    //
+    // Matched in the RAW label rather than a list of split words, because
+    // whether a word names a record depends on the "#" after it, and splitting
+    // on punctuation throws the "#" away.
+    let is_word_char = |c: char| c.is_ascii_alphanumeric();
     CONSEQUENTIAL_VERBS.iter().copied().find(|verb| {
-        // Whole words, so "Sender" and "Sendai" do not match "send".
-        // Substring matching here would escalate most of the web; the words
-        // that genuinely need catching (like "resend") are listed explicitly.
-        lowered
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|word| word == *verb)
+        lowered.match_indices(verb).any(|(at, _)| {
+            let before = lowered[..at].chars().next_back();
+            let rest = &lowered[at + verb.len()..];
+            let whole_word = !before.is_some_and(is_word_char)
+                && !rest.chars().next().is_some_and(is_word_char);
+            whole_word
+                && !names_a_record(verb, rest)
+                && !(*verb == "reply" && !composer_open)
+        })
+    })
+}
+
+/// Words on the list that are just as often NOUNS naming a thing that exists.
+///
+/// MEASURED on benchmark mt-010: the link "Order #4417 -- Pixel 11 case" stopped
+/// to ask the user, as though clicking it would place an order. It opens one
+/// that was placed weeks ago. Only these words, deliberately -- "Delete #4417"
+/// is a verb aimed at a record, and still asks.
+const ALSO_A_NOUN: &[&str] = &["order", "post", "reply", "transfer", "book"];
+
+/// Whether `verb` is used as a noun with the marker that says WHICH one:
+/// "Order #4417", "Order no. 4417", "Order number 4417".
+///
+/// The marker is required. A bare number after the word is as often a time
+/// or a quantity as an id -- "Book 18:30", "Order 2 pizzas" -- and those are
+/// the verb doing exactly what the list exists to catch. MEASURED: a first
+/// version accepted a bare number, and "Book 18:30" stopped asking.
+fn names_a_record(verb: &str, rest: &str) -> bool {
+    if !ALSO_A_NOUN.contains(&verb) {
+        return false;
+    }
+    let rest = rest.trim_start();
+    let starts_with_digit = |text: &str| text.trim_start().starts_with(|c: char| c.is_ascii_digit());
+    if let Some(after) = rest.strip_prefix('#') {
+        return starts_with_digit(after);
+    }
+    ["no.", "no ", "number "]
+        .iter()
+        .any(|marker| rest.strip_prefix(marker).is_some_and(starts_with_digit))
+}
+
+/// Whether the page has something a Reply button could be SUBMITTING.
+///
+/// "Reply" means two things. On a forum or a social site the button under a
+/// filled comment box posts it, and that commits. In a mail reader it opens a
+/// draft, and the Send that follows is what commits -- and Send is asked about
+/// in its own right. MEASURED on benchmark mt-012: a perfect agent was stopped
+/// to approve opening a draft, then stopped again to approve sending it. A
+/// Reply with no text field open has nothing to send. Search boxes do not
+/// count: a mail reader always has one, and it holds nothing to submit.
+///
+/// Why this cannot be slipped past: the agent writes only through page.type,
+/// which needs a field the Observation offered. A composer the Observation
+/// does not offer is one the agent never wrote in, so a Reply beside it has
+/// nothing of the agent's to submit. Every text field -- single line,
+/// multi-line, or an editable region marked as one -- arrives as `textbox`.
+fn has_open_composer(elements: &[Element]) -> bool {
+    elements.iter().any(|element| {
+        element.role == "textbox" && !element.name.to_ascii_lowercase().contains("search")
     })
 }
 

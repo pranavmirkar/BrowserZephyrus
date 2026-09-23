@@ -69,9 +69,20 @@ class FakeToolSurface : public ToolSurface {
   }
   bool GoBack() override {
     went_back = true;
+    if (can_go_back && !back_lands_on.empty()) {
+      active_url = back_lands_on;
+    }
     return can_go_back;
   }
-  bool GoForward() override { return false; }
+  bool GoForward() override {
+    if (!can_go_forward) {
+      return false;
+    }
+    if (!forward_lands_on.empty()) {
+      active_url = forward_lands_on;
+    }
+    return true;
+  }
   bool Reload() override { return true; }
   bool OpenTab(const GURL& url) override {
     opened = url;
@@ -170,6 +181,16 @@ class FakeToolSurface : public ToolSurface {
       Node("e3", "textbox", "Search", 13),
       Node("e4", "password", "Password", 14)};
   bool can_go_back = true;
+  bool can_go_forward = true;
+  // Where a history move lands.
+  //
+  // Defaulted to a real page, because a real browser that goes back DOES end
+  // up somewhere -- the fake used to return true while leaving the address
+  // untouched, which is a browser that cannot exist, and the executor's new
+  // check reads it as a move that went nowhere. Empty is that case on purpose,
+  // and a test that wants it says so.
+  std::string back_lands_on = "https://docs.example.com/laptops";
+  std::string forward_lands_on = "https://docs.example.com/laptops/x1/specs";
 
   // The tree an Observation is taken from, and the tree the page is showing
   // now. A test makes them differ to mean "the page moved on".
@@ -825,6 +846,64 @@ TEST_F(ToolExecutorTest, GoingSomewhereElseIsStillFine) {
           R"({"url":"https://www.youtube.com/results?search_query=sidemen"})");
 
   EXPECT_EQ(result.status, Status::kOk) << result.message;
+}
+
+
+// ---------------------------------------------------------------------------
+// History moves report where they arrived, and notice when they did not move
+// ---------------------------------------------------------------------------
+
+TEST_F(ToolExecutorTest, GoingBackSaysWhereItLanded) {
+  surface_.active_url = "https://example.com/two";
+  surface_.back_lands_on = "https://example.com/one";
+
+  ToolExecutor::Result result = Run("browser.back", "{}");
+  EXPECT_EQ(result.status, Status::kOk) << result.message;
+  // A history move is a means to something. Naming the page it reached saves
+  // the model the step it would otherwise spend finding out.
+  EXPECT_NE(result.value_json.find("https://example.com/one"),
+            std::string::npos)
+      << result.value_json;
+}
+
+TEST_F(ToolExecutorTest, GoingBackThatGoesNowhereIsAFailure) {
+  // CanGoBack() was true and the move still went nowhere -- a page that sends
+  // you straight forward again, or an entry that fails to restore. Reported as
+  // success, that enters the history as a journey that never happened, and the
+  // model reasons from it.
+  surface_.active_url = "https://example.com/stuck";
+  surface_.back_lands_on.clear();
+
+  ToolExecutor::Result result = Run("browser.back", "{}");
+  EXPECT_EQ(result.status, Status::kFailed);
+  EXPECT_NE(result.message.find("still on"), std::string::npos)
+      << result.message;
+  // And it must point somewhere, or the only thing left to vary is the syntax.
+  EXPECT_NE(result.message.find("clicking a link"), std::string::npos)
+      << result.message;
+}
+
+TEST_F(ToolExecutorTest, GoingBackWithNoHistoryStillFailsEarly) {
+  surface_.can_go_back = false;
+  ToolExecutor::Result result = Run("browser.back", "{}");
+  EXPECT_EQ(result.status, Status::kFailed);
+  EXPECT_NE(result.message.find("nothing to go back to"), std::string::npos)
+      << result.message;
+}
+
+TEST_F(ToolExecutorTest, ReloadingWaitsBeforeSayingItReloaded) {
+  // A reload lands where it started, so there is nothing to compare -- this
+  // check is here for the WAIT, so that "reloaded" is true when it is said
+  // rather than a claim about a page still on its way.
+  surface_.active_url = "https://example.com/live";
+  const int checks_before = surface_.checks;
+
+  ToolExecutor::Result result = Run("browser.reload", "{}");
+  EXPECT_EQ(result.status, Status::kOk) << result.message;
+  EXPECT_GT(surface_.checks, checks_before);
+  EXPECT_NE(result.value_json.find("https://example.com/live"),
+            std::string::npos)
+      << result.value_json;
 }
 
 }  // namespace

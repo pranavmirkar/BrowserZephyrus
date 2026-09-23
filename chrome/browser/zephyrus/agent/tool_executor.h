@@ -147,6 +147,18 @@ class ToolExecutor {
                  ExecuteCallback callback,
                  Observation fresh);
 
+  // The same check for the history moves and the reload, which had none.
+  //
+  // `from` is the address the move left, so a move that went nowhere can be
+  // reported as the failure it is. Empty for a reload, which lands where it
+  // started -- there the wait itself is the point, so that "reloaded" is true
+  // when it is said.
+  void VerifyMoved(std::string what, std::string from, ExecuteCallback callback);
+  void OnMoved(std::string what,
+               std::string from,
+               ExecuteCallback callback,
+               Observation fresh);
+
   void VerifyEntered(std::string text, ExecuteCallback callback);
   void OnElementReady(std::string tool,
                       base::DictValue arguments,

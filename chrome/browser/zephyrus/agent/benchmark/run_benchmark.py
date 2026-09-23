@@ -151,7 +151,7 @@ def render_observation(observation: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", default="ollama",
-                        choices=["ollama", "openai-compatible", "replay"])
+                        choices=["ollama", "openai-compatible", "replay", "claude"])
     parser.add_argument("--model", required=True,
                         help="Model name, or path to recordings for --provider replay.")
     parser.add_argument("--base-url", default="http://127.0.0.1:11434")
@@ -168,9 +168,10 @@ def main() -> int:
                              "benchmark cannot quietly send page content to a hosted API.")
     args = parser.parse_args()
 
-    if not args.allow_remote and not providers.is_loopback(args.base_url):
-        print(f"refusing non-loopback model host {args.base_url!r}. "
-              f"Pass --allow-remote if that is intended.", file=sys.stderr)
+    if not args.allow_remote and providers.is_remote(args.provider, args.base_url):
+        print(f"refusing to send prompts off this machine ({args.provider}, "
+              f"{args.base_url!r}). Pass --allow-remote if that is intended.",
+              file=sys.stderr)
         return 2
 
     try:

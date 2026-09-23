@@ -268,6 +268,70 @@ fn clicking_a_send_button_asks_even_though_the_tool_is_r1() {
 }
 
 #[test]
+fn an_order_number_is_a_record_not_a_purchase() {
+    // MEASURED false positive, benchmark mt-010: opening a past order asked the
+    // user as though it would place one.
+    let mut open = request("page.click", r#"{"element_id":"x"}"#);
+    open.elements = vec![element("x", "link", "Order #4417 -- Pixel 11 case")];
+    assert_allowed(&open);
+    open.elements = vec![element("x", "link", "Order no. 4417")];
+    assert_allowed(&open);
+
+    // The verb still asks.
+    let mut place = request("page.click", r#"{"element_id":"x"}"#);
+    place.elements = vec![element("x", "button", "Place order")];
+    assert_asks(&place);
+    place.elements = vec![element("x", "button", "Order now")];
+    assert_asks(&place);
+}
+
+#[test]
+fn a_bare_number_after_the_verb_is_not_a_record() {
+    // The regression the first version of the exemption caused, caught by
+    // benchmark mt-007: "Book 18:30" is a time, "Order 2 pizzas" a quantity.
+    // Both are the verb, and both must still ask.
+    for label in ["Book 18:30", "Order 2 pizzas", "Order 4417"] {
+        let mut request = request("page.click", r#"{"element_id":"x"}"#);
+        request.elements = vec![element("x", "button", label)];
+        assert_asks(&request);
+    }
+}
+
+#[test]
+fn a_verb_aimed_at_a_record_still_asks() {
+    // The noun exemption is for words that ARE nouns. "Delete" is not one, and
+    // "Delete #4417" is exactly what the list is for.
+    let mut request = request("page.click", r#"{"element_id":"x"}"#);
+    request.elements = vec![element("x", "button", "Delete #4417")];
+    assert_asks(&request);
+}
+
+#[test]
+fn reply_with_nothing_to_submit_opens_a_draft() {
+    // MEASURED false positive, benchmark mt-012: Reply in a mail reader opens a
+    // draft, and the Send after it is asked about on its own. A search box on
+    // the page is not something Reply could be submitting.
+    let mut request = request("page.click", r#"{"element_id":"r"}"#);
+    request.elements = vec![
+        element("q", "textbox", "Search mail"),
+        element("r", "button", "Reply"),
+        element("f", "button", "Forward"),
+    ];
+    assert_allowed(&request);
+}
+
+#[test]
+fn reply_beside_a_written_comment_still_asks() {
+    // The forum case: the Reply button under a comment box posts it.
+    let mut request = request("page.click", r#"{"element_id":"r"}"#);
+    request.elements = vec![
+        element("c", "textbox", "Add a comment"),
+        element("r", "button", "Reply"),
+    ];
+    assert_asks(&request);
+}
+
+#[test]
 fn consequential_verbs_match_whole_words_only() {
     let mut ask = request("page.click", r#"{"element_id":"x"}"#);
     ask.elements = vec![element("x", "button", "Resend invitation")];
@@ -926,6 +990,18 @@ fn typing_a_name_while_two_match_asks() {
 }
 
 #[test]
+fn typing_a_name_the_task_never_said_still_asks() {
+    // The hole the narrowed rule first opened: "Morgan" and Morgan's address
+    // are not words of the task, and each picks one Alex as surely as clicking
+    // him. Judged on the candidates' words, not the task's.
+    assert_asks(&two_alexes("page.type", r#"{"element_id":"to","text":"Morgan"}"#));
+    assert_asks(&two_alexes(
+        "page.type",
+        r#"{"element_id":"to","text":"a.morgan@example.com"}"#,
+    ));
+}
+
+#[test]
 fn clicking_one_of_two_matches_asks() {
     assert_asks(&two_alexes("page.click", r#"{"element_id":"c1"}"#));
 }
@@ -1000,6 +1076,81 @@ fn two_sizes_of_the_same_thing_ask() {
             element("p2", "link", "Blue widget 4L"),
         ],
     };
+    assert_asks(&request);
+}
+
+/// Page one of benchmark mt-011: five invoices, each matching two of the task's
+/// three words, and the way forward matching none.
+fn invoices_page(tool: &str, arguments_json: &str) -> ffi::PolicyRequest {
+    ffi::PolicyRequest {
+        tool: tool.to_string(),
+        arguments_json: arguments_json.to_string(),
+        task: "Open the invoice from March 2026".to_string(),
+        url: "https://billing.example/invoices".to_string(),
+        elements: vec![
+            element("find", "textbox", "Search invoices"),
+            element("sep", "link", "Invoice - September 2026"),
+            element("aug", "link", "Invoice - August 2026"),
+            element("jul", "link", "Invoice - July 2026"),
+            element("older", "link", "Older invoices"),
+        ],
+    }
+}
+
+#[test]
+fn a_click_outside_the_tie_is_not_ambiguous() {
+    // MEASURED false positive: a perfect agent clicking "Older invoices" was
+    // stopped to ask about September versus August. The click commits to
+    // neither, so there is nothing to ask.
+    assert_allowed(&invoices_page("page.click", r#"{"element_id":"older"}"#));
+}
+
+#[test]
+fn a_click_inside_the_tie_still_asks() {
+    // The narrowing must not open the door it was guarding.
+    assert_asks(&invoices_page("page.click", r#"{"element_id":"aug"}"#));
+}
+
+#[test]
+fn typing_a_word_none_of_the_tie_has_is_not_ambiguous() {
+    // "March" is in the task and in none of the five, so this is looking for
+    // March, not choosing between them.
+    assert_allowed(&invoices_page(
+        "page.type",
+        r#"{"element_id":"find","text":"March 2026"}"#,
+    ));
+}
+
+#[test]
+fn the_same_link_twice_is_not_a_choice() {
+    // MEASURED false positive, benchmark mt-008: Pricing in the header and in
+    // the footer. "Pricing or Pricing?" is a question nobody can answer.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"nav"}"#.to_string(),
+        task: "Open the pricing page".to_string(),
+        url: "https://acme-analytics.example/".to_string(),
+        elements: vec![
+            element("nav", "link", "Pricing"),
+            element("docs", "link", "Docs"),
+            element("foot", "link", "Pricing"),
+        ],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn two_people_with_the_same_name_still_ask() {
+    // The limit of the rule above, and why it is links only. Two contacts
+    // shown identically are still two people, and sending to the wrong one
+    // cannot be undone the way a wrong link can.
+    let mut request = two_alexes("page.click", r#"{"element_id":"c1"}"#);
+    request.elements = vec![
+        element("to", "textbox", "To"),
+        element("c1", "option", "Alex"),
+        element("c2", "option", "Alex"),
+        element("send", "button", "Send"),
+    ];
     assert_asks(&request);
 }
 

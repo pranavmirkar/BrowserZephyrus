@@ -1,0 +1,564 @@
+{
+  "id": "mt-011-paging",
+  "note": "The invoice is on page two. Page one lists five invoices that each match two of the task's three words, so the kernel's ambiguity rule sees a tie -- and it escalates ANY click while one exists, including the click on Older invoices that matches none of them. Also a March 2025 invoice as the near miss on page two.",
+  "task": "Open the invoice from March 2026",
+  "budget": 8,
+  "start": "page1",
+  "states": {
+    "page1": {
+      "observation": {
+        "url": "https://billing.example/invoices",
+        "title": "Invoices - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoices - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "inv_2026_sep",
+            "role": "link",
+            "name": "Invoice - September 2026"
+          },
+          {
+            "id": "inv_2026_aug",
+            "role": "link",
+            "name": "Invoice - August 2026"
+          },
+          {
+            "id": "inv_2026_jul",
+            "role": "link",
+            "name": "Invoice - July 2026"
+          },
+          {
+            "id": "inv_2026_jun",
+            "role": "link",
+            "name": "Invoice - June 2026"
+          },
+          {
+            "id": "inv_2026_may",
+            "role": "link",
+            "name": "Invoice - May 2026"
+          },
+          {
+            "id": "older",
+            "role": "link",
+            "name": "Older invoices"
+          }
+        ],
+        "text": "Invoices. Showing the 5 most recent."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "inv_2026_sep",
+          "goto": "inv_2026_sep",
+          "note": "opened Invoice - September 2026"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "inv_2026_aug",
+          "goto": "inv_2026_aug",
+          "note": "opened Invoice - August 2026"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "inv_2026_jul",
+          "goto": "inv_2026_jul",
+          "note": "opened Invoice - July 2026"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "inv_2026_jun",
+          "goto": "inv_2026_jun",
+          "note": "opened Invoice - June 2026"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "inv_2026_may",
+          "goto": "inv_2026_may",
+          "note": "opened Invoice - May 2026"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "older",
+          "goto": "page2",
+          "note": "opened Older invoices"
+        }
+      ]
+    },
+    "page2": {
+      "observation": {
+        "url": "https://billing.example/invoices?page=2",
+        "title": "Invoices, page 2 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoices, page 2 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "inv_2026_apr",
+            "role": "link",
+            "name": "Invoice - April 2026"
+          },
+          {
+            "id": "inv_2026_mar",
+            "role": "link",
+            "name": "Invoice - March 2026"
+          },
+          {
+            "id": "inv_2026_feb",
+            "role": "link",
+            "name": "Invoice - February 2026"
+          },
+          {
+            "id": "inv_2025_mar",
+            "role": "link",
+            "name": "Invoice - March 2025"
+          },
+          {
+            "id": "newer",
+            "role": "link",
+            "name": "Newer invoices"
+          }
+        ],
+        "text": "Invoices. Page 2 of 2."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "inv_2026_apr",
+          "goto": "inv_2026_apr",
+          "note": "opened Invoice - April 2026"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "inv_2026_mar",
+          "goto": "inv_2026_mar",
+          "note": "opened Invoice - March 2026"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "inv_2026_feb",
+          "goto": "inv_2026_feb",
+          "note": "opened Invoice - February 2026"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "inv_2025_mar",
+          "goto": "inv_2025_mar",
+          "note": "opened Invoice - March 2025"
+        },
+        {
+          "tool": "page.click",
+          "element_id": "newer",
+          "goto": "page1",
+          "note": "opened Newer invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page1",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2026_sep": {
+      "observation": {
+        "url": "https://billing.example/invoices/2026_sep",
+        "title": "Invoice - September 2026 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - September 2026 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for September 2026."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page1",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2026_aug": {
+      "observation": {
+        "url": "https://billing.example/invoices/2026_aug",
+        "title": "Invoice - August 2026 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - August 2026 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for August 2026."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page1",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2026_jul": {
+      "observation": {
+        "url": "https://billing.example/invoices/2026_jul",
+        "title": "Invoice - July 2026 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - July 2026 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for July 2026."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page1",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2026_jun": {
+      "observation": {
+        "url": "https://billing.example/invoices/2026_jun",
+        "title": "Invoice - June 2026 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - June 2026 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for June 2026."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page1",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2026_may": {
+      "observation": {
+        "url": "https://billing.example/invoices/2026_may",
+        "title": "Invoice - May 2026 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - May 2026 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for May 2026."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page1",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2026_apr": {
+      "observation": {
+        "url": "https://billing.example/invoices/2026_apr",
+        "title": "Invoice - April 2026 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - April 2026 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for April 2026."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page2",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2026_mar": {
+      "observation": {
+        "url": "https://billing.example/invoices/2026_mar",
+        "title": "Invoice - March 2026 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - March 2026 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for March 2026."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page2",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2026_feb": {
+      "observation": {
+        "url": "https://billing.example/invoices/2026_feb",
+        "title": "Invoice - February 2026 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - February 2026 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for February 2026."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page2",
+          "note": "went back"
+        }
+      ]
+    },
+    "inv_2025_mar": {
+      "observation": {
+        "url": "https://billing.example/invoices/2025_mar",
+        "title": "Invoice - March 2025 - Billing",
+        "tabs": [
+          {
+            "id": 1,
+            "title": "Invoice - March 2025 - Billing",
+            "active": true
+          }
+        ],
+        "elements": [
+          {
+            "id": "all",
+            "role": "link",
+            "name": "All invoices"
+          },
+          {
+            "id": "pdf",
+            "role": "link",
+            "name": "Download PDF"
+          }
+        ],
+        "text": "Invoice for March 2025."
+      },
+      "on": [
+        {
+          "tool": "page.click",
+          "element_id": "all",
+          "goto": "page1",
+          "note": "opened All invoices"
+        },
+        {
+          "tool": "browser.back",
+          "goto": "page2",
+          "note": "went back"
+        }
+      ]
+    }
+  },
+  "success": {
+    "states": [
+      "inv_2026_mar"
+    ],
+    "call": "task.complete"
+  },
+  "paths": {
+    "optimal": [
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "older"
+        }
+      },
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "inv_2026_mar"
+        }
+      },
+      {
+        "name": "task.complete",
+        "arguments": {
+          "answer": "opened the March 2026 invoice"
+        }
+      }
+    ],
+    "trap": [
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "older"
+        }
+      },
+      {
+        "name": "page.click",
+        "arguments": {
+          "element_id": "inv_2025_mar"
+        }
+      }
+    ]
+  }
+}

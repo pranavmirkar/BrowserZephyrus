@@ -101,7 +101,10 @@ class TaskLoop {
   // task.ask", and answered with page.find. Ten times, until the budget ran
   // out. The harness had diagnosed the trap correctly and then pointed back
   // into it.
-  std::string SomethingToActOn(std::string_view instead_of) const;
+  // `failed_id` is the element the refused call named, if it named one, so
+  // the advice never points back at what just did not work.
+  std::string SomethingToActOn(std::string_view instead_of,
+                               std::string_view failed_id = {}) const;
 
   // Called when either remote drops. A task whose browser or model has gone
   // away cannot make progress and must say so rather than wait.

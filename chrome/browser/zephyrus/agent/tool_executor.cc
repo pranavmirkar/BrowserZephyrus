@@ -330,24 +330,53 @@ void ToolExecutor::Perform(const std::string& tool,
     return;
   }
 
+  // Back, forward and reload all used to answer the instant the load STARTED.
+  //
+  // browser.navigate had already been given a check (VerifyArrived) and these
+  // three had not, which left the history moves reporting success about a
+  // journey that had not happened yet. Two consequences, and the second is the
+  // expensive one:
+  //
+  //  - "went back" entered the history before the browser had gone anywhere,
+  //    so a move that was refused -- a page that immediately sends you forward
+  //    again, a restored entry that fails to load -- was recorded as a success
+  //    the model then reasoned from.
+  //  - The model was never told WHERE it had arrived. Going back is only ever
+  //    a means to something, and a result that does not name the page it
+  //    reached makes the model look again to find out, which costs a step.
+  //
+  // The look these share settles: it waits out a load in flight and then waits
+  // for the page to stop changing, with a timeout, so a page that never
+  // finishes loading ends the wait rather than the task.
   if (tool == "browser.back") {
-    std::move(callback).Run(surface_->GoBack()
-                                ? Ok()
-                                : Failed("there is nothing to go back to"));
+    const std::string from = surface_->GetActiveUrl();
+    if (!surface_->GoBack()) {
+      std::move(callback).Run(Failed("there is nothing to go back to"));
+      return;
+    }
+    VerifyMoved("going back", from, std::move(callback));
     return;
   }
 
   if (tool == "browser.forward") {
-    std::move(callback).Run(surface_->GoForward()
-                                ? Ok()
-                                : Failed("there is nothing to go forward to"));
+    const std::string from = surface_->GetActiveUrl();
+    if (!surface_->GoForward()) {
+      std::move(callback).Run(Failed("there is nothing to go forward to"));
+      return;
+    }
+    VerifyMoved("going forward", from, std::move(callback));
     return;
   }
 
   if (tool == "browser.reload") {
-    std::move(callback).Run(surface_->Reload()
-                                ? Ok()
-                                : Failed("the page could not be reloaded"));
+    if (!surface_->Reload()) {
+      std::move(callback).Run(Failed("the page could not be reloaded"));
+      return;
+    }
+    // A reload lands where it started, so there is nothing to compare. What
+    // the wait buys here is that "reloaded" is true when it is said, rather
+    // than a claim about a page still on its way.
+    VerifyMoved("reloading", std::string(), std::move(callback));
     return;
   }
 
@@ -633,6 +662,50 @@ void ToolExecutor::OnArrived(std::string wanted,
       "that address did not open -- you are on " + fresh.url +
       " instead. Addresses cannot be guessed. Open a page by clicking a link "
       "that is actually on the page."));
+}
+
+void ToolExecutor::VerifyMoved(std::string what,
+                               std::string from,
+                               ExecuteCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  surface_->ObserveForCheck(base::BindOnce(&ToolExecutor::OnMoved,
+                                           weak_factory_.GetWeakPtr(),
+                                           std::move(what), std::move(from),
+                                           std::move(callback)));
+}
+
+void ToolExecutor::OnMoved(std::string what,
+                           std::string from,
+                           ExecuteCallback callback,
+                           Observation fresh) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Discarded like every other check, so the ids the model is holding keep
+  // pointing at the page it was shown.
+  //
+  // An empty `from` means there was nothing to compare -- a reload -- and the
+  // wait alone was the point.
+  if (!from.empty() && SameDestination(GURL(from), GURL(fresh.url))) {
+    std::move(callback).Run(Failed(
+        what + " did not move the page -- you are still on " + fresh.url +
+        ". Reach a different page by clicking a link that is on this one."));
+    return;
+  }
+  // Name the page. A history move is a means to something, and a result that
+  // does not say where it arrived costs the model a step to find out.
+  //
+  // As JSON, because that is what the field is: value_json is what the model
+  // reads back on success, and tabs.list already fills it that way. A bare
+  // sentence would render, and would be the one value in there that is not
+  // what the field says it is.
+  base::DictValue landed;
+  landed.Set("url", fresh.url);
+  landed.Set("title", fresh.title);
+  std::string json;
+  if (!base::JSONWriter::Write(landed, &json)) {
+    std::move(callback).Run(Ok());
+    return;
+  }
+  std::move(callback).Run(Ok(std::move(json)));
 }
 
 void ToolExecutor::VerifyEntered(std::string text, ExecuteCallback callback) {

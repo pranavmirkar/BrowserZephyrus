@@ -401,6 +401,126 @@ TEST_F(TaskLoopTest, ARefusalNamesSomethingRealToActOn) {
   EXPECT_TRUE(named) << "the refusal never named anything the model could click";
 }
 
+TEST_F(TaskLoopTest, ARefusalOffersTheSearchBoxAndSaysToTypeInIt) {
+  // The mt-001 page: a search box, its Search button, and nothing that is the
+  // answer. Naming the BUTTON is worse than saying nothing -- pressing it
+  // searches for nothing -- so the field has to be named, with the tool that
+  // works on it.
+  //
+  // Measured before this: qwen2.5:7b invented three addresses in a row on
+  // exactly this page rather than type into the box in front of it.
+  runner_.observation_json =
+      R"({"url":"https://docs.example/","title":"Docs","elements":[)"
+      R"({"id":"e12","role":"textbox","name":"Search docs"},)"
+      R"({"id":"e13","role":"button","name":"Search"}]})";
+
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://docs.example/thermal"}})"},
+      /*max_steps=*/20);
+  ASSERT_TRUE(outcome);
+
+  bool offered = false;
+  for (const std::string& prompt : model_->user_prompts) {
+    if (prompt.find("e12 \"Search docs\" to type into (page.type)") !=
+        std::string::npos) {
+      offered = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(offered)
+      << "the refusal never offered the one control that goes anywhere";
+}
+
+TEST_F(TaskLoopTest, ARealAnswerStillBeatsTheSearchBox) {
+  // The field must not crowd out something that IS the answer. When an element
+  // matches the task, that is the way forward and the box is not.
+  // The fixture's task is "Find the spec sheet", so this link is what the
+  // user asked for and the box is not.
+  runner_.observation_json =
+      R"({"url":"https://docs.example/","title":"Docs","elements":[)"
+      R"({"id":"e12","role":"textbox","name":"Search docs"},)"
+      R"({"id":"g1","role":"link","name":"Spec sheet for the X1"}]})";
+
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://docs.example/x"}})"},
+      /*max_steps=*/20);
+  ASSERT_TRUE(outcome);
+
+  bool named_the_link = false;
+  for (const std::string& prompt : model_->user_prompts) {
+    if (prompt.find("g1 \"Spec sheet for the X1\"") != std::string::npos) {
+      named_the_link = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(named_the_link) << "the link that answers the task was not named";
+}
+
+TEST_F(TaskLoopTest, APasswordFieldIsNeverOfferedAsTheWayForward) {
+  // The kernel refuses to type into one, so naming it is advice that cannot be
+  // taken -- and it is the one field where a model trying anyway is a problem.
+  runner_.observation_json =
+      R"({"url":"https://a.example/login","title":"Sign in","elements":[)"
+      R"({"id":"p","role":"password","name":"Password"}]})";
+
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://a.example/home"}})"},
+      /*max_steps=*/20);
+  ASSERT_TRUE(outcome);
+
+  for (const std::string& prompt : model_->user_prompts) {
+    EXPECT_EQ(prompt.find("to type into"), std::string::npos)
+        << "it offered a password field as the way forward: " << prompt;
+  }
+}
+
+TEST_F(TaskLoopTest, AFilledFieldIsNotOfferedAgain) {
+  // MEASURED the moment this helper learned to name fields: told to type into
+  // the search box, the model did -- and was then told to type into the same
+  // box again, because it was still the only field on the page. It typed twice
+  // more and the run was called stuck. A filled field is finished; what is
+  // left is the button beside it.
+  runner_.observation_json =
+      R"({"url":"https://docs.example/","title":"Docs","elements":[)"
+      R"({"id":"e12","role":"textbox","name":"Search docs","value":"thermal"},)"
+      R"({"id":"e13","role":"button","name":"Search"}]})";
+
+  mojom::TaskOutcomePtr outcome = Run(
+      {R"({"name":"browser.navigate","arguments":{"url":"https://docs.example/x"}})"},
+      /*max_steps=*/20);
+  ASSERT_TRUE(outcome);
+
+  for (const std::string& prompt : model_->user_prompts) {
+    EXPECT_EQ(prompt.find("e12 \"Search docs\" to type into"), std::string::npos)
+        << "it was told to fill in a field that is already filled: " << prompt;
+  }
+}
+
+TEST_F(TaskLoopTest, TheWayOutIsNeverTheTargetThatJustFailed) {
+  // The same rule the tool advice already follows -- never name the tool the
+  // model is stuck on -- applied to the TARGET. Being told to retry what was
+  // just refused is the identical dead end.
+  runner_.observation_json =
+      R"({"url":"https://a.example/","title":"A","elements":[)"
+      R"({"id":"e1","role":"button","name":"Broken"},)"
+      R"({"id":"e2","role":"link","name":"Somewhere else"}]})";
+
+  mojom::TaskOutcomePtr outcome =
+      Run({R"({"name":"page.click","arguments":{"element_id":"e1"}})"},
+          /*max_steps=*/20);
+  ASSERT_TRUE(outcome);
+
+  for (const std::string& prompt : model_->user_prompts) {
+    const size_t advice = prompt.find("The page has ");
+    if (advice == std::string::npos) {
+      continue;
+    }
+    EXPECT_EQ(prompt.find("e1 \"Broken\"", advice), std::string::npos)
+        << "the advice pointed back at the element that just failed: "
+        << prompt;
+  }
+}
+
 TEST_F(TaskLoopTest, WalkingInACircleIsCaughtToo) {
   // Measured: search page -> click a product -> back to the search page ->
   // click the same product, four times round, eighteen steps spent. Every

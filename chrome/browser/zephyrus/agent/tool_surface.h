@@ -52,14 +52,23 @@ class ToolSurface {
   // agent's to see; a task is bound to one workspace (ADR 0003).
   virtual std::vector<TabInfo> ListTabs() = 0;
 
-  // These report that a load was STARTED, not that it finished. A task can
-  // therefore reach its next step while the page is still on its way, and the
-  // Observation it takes may still be of the old document.
+  // These report that a load was STARTED, not that it finished, and the layer
+  // above is what makes that safe.
   //
-  // Left this way on purpose for now: waiting for a commit means deciding what
-  // to do about a load that never finishes, and a hung tool is worse than a
-  // stale look. Revisit when the loop has real models driving it, since the
-  // right answer depends on how often it actually bites.
+  // The note here used to say the next Observation might therefore be of the
+  // old document, and to revisit once real models drove the loop. Real models
+  // now do, and the answer turned out to be that the waiting belongs in the
+  // LOOKING rather than in the moving: Observe() waits out a load in flight,
+  // then waits for the page to stop changing, then gives up after a timeout --
+  // because a page that never finishes loading must end the wait rather than
+  // the task. An implementation marks these as actions that could navigate, so
+  // the look that follows pays that wait.
+  //
+  // What the moving still owes is a RESULT that is true when it is said, and
+  // that is the executor's job: browser.navigate checks where it arrived, and
+  // the three below check that they moved at all. A history move that quietly
+  // went nowhere used to be recorded as a success the model then reasoned
+  // from.
   virtual bool Navigate(const GURL& url) = 0;
   virtual bool GoBack() = 0;
   virtual bool GoForward() = 0;
