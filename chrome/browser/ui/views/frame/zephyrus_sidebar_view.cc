@@ -2020,8 +2020,9 @@ gfx::Rect ZephyrusSidebarView::GetOmniboxPillRect() const {
 
 int ZephyrusSidebarView::GetOmniboxEditingWidth(const gfx::Rect& pill) const {
   // Wide enough to read a whole address and its suggestions, and never past
-  // the window's right edge.
-  constexpr int kEditingWidth = 640;
+  // the window's right edge. 640 read as a second toolbar laid across the
+  // page; 520 still fits a long address with its suggestions.
+  constexpr int kEditingWidth = 520;
   constexpr int kWindowMargin = 16;
   const int room = browser_view_->width() - pill.x() - kWindowMargin -
                    ZephyrusOmniboxOverlay::kShadowMargin;
