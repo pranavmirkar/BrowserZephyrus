@@ -29,7 +29,21 @@ class AdblockScriptletEngine {
   ~AdblockScriptletEngine();
 
   // Parses filter-list text; returns the number of scriptlet rules kept.
-  size_t AddRules(std::string_view filter_list_text);
+  //
+  // TRUSTED scriptlets (trusted-*) rewrite responses, set cookies and storage
+  // and click elements, so -- as in uBO -- they are honoured only from uBO's
+  // own lists. `filter_list_text` may be a combined list: each
+  // "! ===== <label> =====" marker line sets the trust of the lines after it
+  // (IsTrustedScriptletSectionMarker). Lines before the first marker take
+  // `trust_unsectioned`: true for the browser's built-in rules, false for a
+  // downloaded or bundled combined list, whose unmarked lines are third-party.
+  size_t AddRules(std::string_view filter_list_text,
+                  bool trust_unsectioned = true);
+
+  // trusted-* rules refused because they came from a list not allowed them.
+  size_t untrusted_scriptlets_dropped() const {
+    return untrusted_scriptlets_dropped_;
+  }
 
   // Returns the complete JS to inject on `url` (library + applicable scriptlet
   // invocations), or empty if none apply.
@@ -54,6 +68,7 @@ class AdblockScriptletEngine {
   std::unordered_set<std::string> domain_disable_all_;
 
   size_t rule_count_ = 0;
+  size_t untrusted_scriptlets_dropped_ = 0;
 };
 
 }  // namespace zephyrus_adblock

@@ -61,6 +61,10 @@ int BrowserViewLayoutDelegateImpl::GetZephyrusCustomizePanelWidth() const {
   return browser_view().ZephyrusCustomizePanelWidth();
 }
 
+int BrowserViewLayoutDelegateImpl::GetZephyrusTabStripHeight() const {
+  return browser_view().ZephyrusTabStripHeight();
+}
+
 double BrowserViewLayoutDelegateImpl::GetZephyrusSidebarRevealAmount() const {
   return browser_view().ZephyrusSidebarRevealAmount();
 }

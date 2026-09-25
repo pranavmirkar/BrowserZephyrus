@@ -73,6 +73,7 @@
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/zephyrus_engine_pill.h"
+#include "components/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_engine_picker.h"
 #include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
 #include "chrome/browser/ui/views/location_bar/intent_chip_button.h"
@@ -1071,12 +1072,20 @@ void LocationBarView::Layout(PassKey) {
         vertical_padding, location_height, false, kLeadingDecorationMaxFraction,
         /*intra_item_padding=*/0, icon_left, location_icon_view_);
   } else if (!ShouldChipOverrideLocationIcon()) {
-    // Zephyrus (Figma Search Bar): the pill leads with the pixel magnifier
-    // (see GetLocationIcon override below); security chips with labels still
-    // take precedence via the GetShowText() branch above.
+    // Zephyrus: the pill leads with the magnifier (see GetLocationIcon);
+    // security chips with labels still take precedence via the GetShowText()
+    // branch above.
+    //
+    // CENTRED IN THE CAP. The field is a capsule, so its leading end is a
+    // half-circle of radius height/2, and a round glyph reads as sitting in
+    // that end only when it shares the circle's centre -- the rule the engine
+    // mark at the other end follows too. A fixed 5dp inset put it off-centre,
+    // and further again once the popup's indent kicked in.
     location_icon_view_->SetVisible(true);
+    const int cap_inset = std::max(
+        0, height() / 2 - location_icon_view_->GetPreferredSize().width() / 2);
     leading_decorations.AddDecoration(vertical_padding, location_height, false,
-                                      0, /*intra_item_padding=*/0, icon_left,
+                                      0, /*intra_item_padding=*/0, cap_inset,
                                       location_icon_view_);
   } else {
     location_icon_view_->SetVisible(false);
@@ -1166,8 +1175,13 @@ void LocationBarView::Layout(PassKey) {
   // below a 260dp field and took the leading edge with it.
   if (zephyrus_engine_pill_) {
     zephyrus_engine_pill_->SetVisible(true);
+    // Concentric with the trailing cap (Rule 2): the mark's circle shares the
+    // cap's centre, so its inset from the edge is the cap radius minus its
+    // own. A fixed 6dp left it off-centre in a 26dp field.
+    const int cap_inset = std::max(
+        0, height() / 2 - zephyrus_engine_pill_->GetPreferredSize().width() / 2);
     add_trailing_decoration(zephyrus_engine_pill_, /*intra_item_padding=*/6,
-                            /*edge_padding=*/6);
+                            /*edge_padding=*/cap_inset);
   }
 
   add_trailing_decoration(clear_all_button_, /*intra_item_padding=*/0,
@@ -2147,6 +2161,10 @@ void LocationBarView::OnFocus() {
   omnibox_view_->SetFocus(/*is_user_initiated=*/true);
 }
 
+views::View* LocationBarView::zephyrus_engine_pill() {
+  return zephyrus_engine_pill_;
+}
+
 void LocationBarView::OnPaintBorder(gfx::Canvas* canvas) {
   // Zephyrus: the M3 outlined field's FOCUSED outline -- 2dp of primary,
   // replacing the 1px rest outline that RefreshBackground drops while the caret
@@ -2156,7 +2174,10 @@ void LocationBarView::OnPaintBorder(gfx::Canvas* canvas) {
   // above does: a paint can land before Init() has built the edit model.
   if (is_initialized_ &&
       GetOmniboxController()->edit_model()->is_caret_visible()) {
-    constexpr float kFocusStroke = 2.0f;
+    // 1.5dp, down from M3's 2dp: on the dark backdrop 2dp of primary read
+    // as a heavy frame around the field. Still half again the rest outline's
+    // width, so focus is not carried by colour alone.
+    constexpr float kFocusStroke = 1.5f;
     gfx::RectF ring(GetLocalBounds());
     ring.Inset(kFocusStroke / 2.0f);
     const float radius = std::max(
@@ -2796,8 +2817,11 @@ ui::ImageModel LocationBarView::GetLocationIcon(
     if (IsEditingOrEmpty() ||
         security_level == security_state::SECURE ||
         security_level == security_state::NONE) {
+      // The M3 magnifier, a smooth vector. The pixel-block glyph from the old
+      // Figma spec was drawn on a 2dp grid, which at 16dp and 125-150%
+      // scaling lands on fractional pixels and reads as jagged.
       return ui::ImageModel::FromVectorIcon(
-          kZephyrusSearchIcon, location_icon_view_->GetForegroundColor(),
+          vector_icons::kSearchIcon, location_icon_view_->GetForegroundColor(),
           dip_size);
     }
   }

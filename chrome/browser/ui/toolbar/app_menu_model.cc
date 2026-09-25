@@ -1299,6 +1299,12 @@ void AppMenuModel::ExecuteCommand(int command_id, int event_flags) {
         password_manager::prefs::kPasswordsPrefWithNewLabelUsed, true);
   }
 
+  // The layout row is its thumbnails; a click on the row around them is not a
+  // browser command.
+  if (command_id == IDC_ZEPHYRUS_UI_LAYOUT) {
+    return;
+  }
+
   LogMenuMetrics(command_id);
   chrome::ExecuteCommand(browser_, command_id);
 }
@@ -2020,6 +2026,9 @@ bool AppMenuModel::IsCommandIdEnabled(int command_id) const {
   switch (command_id) {
     case IDC_NEW_INCOGNITO_WINDOW:
       return IncognitoModePrefs::IsIncognitoAllowed(browser_->profile());
+    case IDC_ZEPHYRUS_UI_LAYOUT:
+      // Enabled so its thumbnails are; the row itself does nothing.
+      return true;
     default:
       return chrome::IsCommandEnabled(browser_, command_id);
   }
@@ -2225,6 +2234,12 @@ void AppMenuModel::Build() {
   AddSeparator(ui::NORMAL_SEPARATOR);
   CreateZoomMenu();
   AddSeparator(ui::NORMAL_SEPARATOR);
+  // Zephyrus: where the tabs live. A row of layout thumbnails, drawn by
+  // AppMenu (see ZephyrusLayoutPicker); only normal windows have a choice.
+  if (browser_->is_type_normal()) {
+    AddItem(IDC_ZEPHYRUS_UI_LAYOUT, u"Layout");
+    AddSeparator(ui::NORMAL_SEPARATOR);
+  }
 
   AddItemWithStringIdAndVectorIcon(
       this, IDC_PRINT, IDS_PRINT,

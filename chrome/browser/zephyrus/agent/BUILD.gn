@@ -29,6 +29,7 @@ source_set("agent") {
 
   deps = [
     "//base",
+    "//chrome/browser/zephyrus/buildflags:dev_switches",
     "//content/public/browser",
     "//net/traffic_annotation",
     "//services/network/public/cpp",

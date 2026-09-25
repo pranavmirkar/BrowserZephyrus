@@ -40,6 +40,12 @@
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
 #include "chrome/browser/ui/browser.h"
+#include "cc/paint/paint_flags.h"
+#include "ui/views/layout/box_layout.h"
+#include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/ui/color/zephyrus_color_mixer.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3.h"
+#include "chrome/browser/ui/views/frame/zephyrus_ui_layout.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -571,6 +577,268 @@ class AppMenuView : public views::View {
 };
 
 BEGIN_METADATA(AppMenuView)
+END_METADATA
+
+// Zephyrus: the layout picker (IDC_ZEPHYRUS_UI_LAYOUT).
+//
+// One thumbnail per layout, DRAWN from the same roles as the real chrome so a
+// thumbnail always matches the theme it is shown in, with the current layout
+// outlined in primary. A picture of each layout says what it does in a way
+// the two names alone ("horizontal", "floating") do not.
+class ZephyrusLayoutThumb : public views::Button {
+  METADATA_HEADER(ZephyrusLayoutThumb, views::Button)
+
+ public:
+  // Three across fit the menu's width at 84; the captions are one word
+  // each for that reason (the full name is the accessible name and tooltip).
+  static constexpr int kThumbWidth = 84;
+  static constexpr int kThumbHeight = 46;
+  static constexpr int kLabelHeight = 18;
+  // Rule 2: the drawing inside sits kInset in, so its 6dp corners nest in the
+  // frame's 12.
+  static constexpr int kFrameRadius = 12;
+  static constexpr int kInset = 6;
+
+  ZephyrusLayoutThumb(PressedCallback callback,
+                      zephyrus::UiLayout layout,
+                      bool selected,
+                      const std::u16string& caption,
+                      const std::u16string& name)
+      : views::Button(std::move(callback)),
+        layout_(layout),
+        selected_(selected),
+        name_(caption) {
+    // Every control in a menu must be a focusable button, or keyboard
+    // navigation skips it.
+    SetFocusBehavior(FocusBehavior::ALWAYS);
+    GetViewAccessibility().SetRole(ax::mojom::Role::kMenuItemRadio);
+    GetViewAccessibility().SetName(name);
+    GetViewAccessibility().SetCheckedState(
+        selected ? ax::mojom::CheckedState::kTrue
+                 : ax::mojom::CheckedState::kFalse);
+    SetTooltipText(name);
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(kThumbWidth, kThumbHeight + 4 + kLabelHeight);
+  }
+
+  void StateChanged(ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    SchedulePaint();
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    const gfx::Rect frame(0, 0, kThumbWidth, kThumbHeight);
+    cc::PaintFlags fill;
+    fill.setAntiAlias(true);
+
+    // The frame: the window.
+    SkColor ground =
+        zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHighest);
+    if (GetState() == STATE_HOVERED || GetState() == STATE_PRESSED) {
+      ground = zephyrus::m3::WithStateLayer(
+          ground, zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+          GetState() == STATE_PRESSED ? zephyrus::m3::kPressed
+                                      : zephyrus::m3::kHover);
+    }
+    fill.setColor(ground);
+    canvas->DrawRoundRect(gfx::RectF(frame), kFrameRadius, fill);
+
+    const SkColor chrome =
+        zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant);
+    const SkColor accent = zephyrus::m3::Role(*this, kColorZephyrusPrimary);
+    const SkColor page =
+        zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerLowest);
+    gfx::Rect inner = frame;
+    inner.Inset(kInset);
+    auto draw = [&](const gfx::Rect& rect, float radius, SkColor color) {
+      fill.setColor(color);
+      canvas->DrawRoundRect(gfx::RectF(rect), radius, fill);
+    };
+
+    if (layout_ == zephyrus::UiLayout::kHorizontalTabs) {
+      // Title bar, then a row of tab pills (the first active), then the page.
+      draw(gfx::Rect(inner.x(), inner.y(), inner.width(), 5), 2.5f, chrome);
+      draw(gfx::Rect(inner.x(), inner.y() + 8, 18, 5), 2.5f, accent);
+      draw(gfx::Rect(inner.x() + 21, inner.y() + 8, 14, 5), 2.5f, chrome);
+      draw(gfx::Rect(inner.x() + 38, inner.y() + 8, 14, 5), 2.5f, chrome);
+      draw(gfx::Rect(inner.x(), inner.y() + 16, inner.width(),
+                     inner.height() - 16),
+           4.f, page);
+    } else if (layout_ == zephyrus::UiLayout::kClassicSidebar) {
+      // A flush column down the leading edge, square, running into the page.
+      const int column = 22;
+      fill.setColor(chrome);
+      canvas->DrawRect(gfx::RectF(inner.x(), inner.y(), column, inner.height()),
+                       fill);
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 4, column - 6, 4), 2.f,
+           accent);
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 11, column - 6, 4), 2.f,
+           page);
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 18, column - 6, 4), 2.f,
+           page);
+      draw(gfx::Rect(inner.x() + column, inner.y(),
+                     inner.width() - column, inner.height()),
+           4.f, page);
+    } else {
+      // A card on the leading edge with tab rows (the first active), and the
+      // page beside it.
+      const int card_width = 22;
+      draw(gfx::Rect(inner.x(), inner.y(), card_width, inner.height()), 4.f,
+           chrome);
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 4, card_width - 6, 4), 2.f,
+           accent);
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 11, card_width - 6, 4), 2.f,
+           page);
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 18, card_width - 6, 4), 2.f,
+           page);
+      draw(gfx::Rect(inner.x() + card_width + 3, inner.y(),
+                     inner.width() - card_width - 3, inner.height()),
+           4.f, page);
+    }
+
+    if (selected_) {
+      cc::PaintFlags ring;
+      ring.setAntiAlias(true);
+      ring.setStyle(cc::PaintFlags::kStroke_Style);
+      ring.setStrokeWidth(2.f);
+      ring.setColor(accent);
+      gfx::RectF ring_rect(frame);
+      ring_rect.Inset(1.f);
+      canvas->DrawRoundRect(ring_rect, kFrameRadius - 1.f, ring);
+    }
+
+    canvas->DrawStringRectWithFlags(
+        name_, gfx::FontList().DeriveWithSizeDelta(-1),
+        selected_ ? accent
+                  : zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant),
+        gfx::Rect(0, kThumbHeight + 4, kThumbWidth, kLabelHeight),
+        gfx::Canvas::TEXT_ALIGN_CENTER);
+  }
+
+ private:
+  const zephyrus::UiLayout layout_;
+  const bool selected_;
+  const std::u16string name_;
+};
+
+BEGIN_METADATA(ZephyrusLayoutThumb)
+END_METADATA
+
+class ZephyrusLayoutPicker : public views::View {
+  METADATA_HEADER(ZephyrusLayoutPicker, views::View)
+
+ public:
+  // The row is a menu CONTAINER -- an item with no title and one child --
+  // because only a container grows to its child's height; a titled item keeps
+  // the standard row height and clipped the thumbnails to a sliver. So the
+  // "Layout" label is drawn here, at the menu's own label column.
+  ZephyrusLayoutPicker(Browser* browser, base::WeakPtr<AppMenu> menu) {
+    label_ = AddChildView(std::make_unique<views::Label>(u"Layout"));
+    label_->SetFontList(views::MenuConfig::instance().font_list);
+    label_->SetEnabledColor(ui::kColorMenuItemForeground);
+    label_->SetAutoColorReadabilityEnabled(false);
+    label_->SetSubpixelRenderingEnabled(false);
+    const zephyrus::UiLayout current =
+        zephyrus::GetUiLayout(browser->profile()->GetPrefs());
+    struct Choice {
+      zephyrus::UiLayout layout;
+      const char16_t* caption;
+      const char16_t* name;
+    };
+    // The default first.
+    const Choice choices[] = {
+        {zephyrus::UiLayout::kClassicSidebar, u"Classic", u"Classic sidebar"},
+        {zephyrus::UiLayout::kFloatingSidebar, u"Floating",
+         u"Floating sidebar"},
+        {zephyrus::UiLayout::kHorizontalTabs, u"Horizontal",
+         u"Horizontal tabs"},
+    };
+    for (const Choice& choice : choices) {
+      thumbs_.push_back(AddChildView(std::make_unique<ZephyrusLayoutThumb>(
+          base::BindRepeating(&ZephyrusLayoutPicker::Pick,
+                              browser->AsWeakPtr(), menu, choice.layout),
+          choice.layout, choice.layout == current, choice.caption,
+          choice.name)));
+    }
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    const int thumbs =
+        static_cast<int>(thumbs_.size()) *
+            (ZephyrusLayoutThumb::kThumbWidth + kThumbGap) -
+        kThumbGap;
+    return gfx::Size(
+        LabelStart() + label_->GetPreferredSize({}).width() + 16 + thumbs +
+            kTrailing,
+        ZephyrusLayoutThumb::kThumbHeight + 4 +
+            ZephyrusLayoutThumb::kLabelHeight + 2 * kVertical);
+  }
+
+  void Layout(PassKey key) override {
+    const gfx::Size label = label_->GetPreferredSize({});
+    const gfx::Size thumb = thumbs_.empty()
+                                ? gfx::Size()
+                                : thumbs_.front()->GetPreferredSize({});
+    // Level with the thumbnails' frames, not with the captions under them.
+    label_->SetBounds(
+        LabelStart(),
+        kVertical + (ZephyrusLayoutThumb::kThumbHeight - label.height()) / 2,
+        label.width(), label.height());
+    int x = width() - kTrailing;
+    for (auto it = thumbs_.rbegin(); it != thumbs_.rend(); ++it) {
+      x -= thumb.width();
+      (*it)->SetBounds(x, kVertical, thumb.width(), thumb.height());
+      x -= kThumbGap;
+    }
+  }
+
+ private:
+  static constexpr int kThumbGap = 8;
+  static constexpr int kTrailing = 12;
+  static constexpr int kVertical = 8;
+
+  // Where every other item's title starts, so "Layout" lines up with them.
+  int LabelStart() const {
+    if (parent()) {
+      if (const auto* submenu =
+              views::AsViewClass<views::SubmenuView>(parent()->parent())) {
+        return submenu->label_start();
+      }
+    }
+    return 48;
+  }
+
+  raw_ptr<views::Label> label_ = nullptr;
+  std::vector<raw_ptr<views::View>> thumbs_;
+
+  // The menu closes first and the layout changes after, posted: switching
+  // layout relays out the whole window, which has no business happening under
+  // an open menu whose button is still mid-click.
+  static void Pick(base::WeakPtr<Browser> browser,
+                   base::WeakPtr<AppMenu> menu,
+                   zephyrus::UiLayout layout,
+                   const ui::Event& event) {
+    if (menu) {
+      menu->CloseMenu();
+    }
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<Browser> browser,
+                          zephyrus::UiLayout layout) {
+                         if (browser) {
+                           zephyrus::SetUiLayout(
+                               browser->profile()->GetPrefs(), layout);
+                         }
+                       },
+                       browser, layout));
+  }
+};
+
+BEGIN_METADATA(ZephyrusLayoutPicker)
 END_METADATA
 
 // Subclass of ImageButton whose preferred size includes the size of the border.
@@ -1346,7 +1614,8 @@ bool AppMenu::IsCommandEnabled(int command_id) const {
   // The items representing the cut menu (cut/copy/paste), zoom menu
   // (increment/decrement/reset) and extension toolbar view are always enabled.
   // The child views of these items enabled state updates appropriately.
-  if (command_id == IDC_EDIT_MENU || command_id == IDC_ZOOM_MENU) {
+  if (command_id == IDC_EDIT_MENU || command_id == IDC_ZOOM_MENU ||
+      command_id == IDC_ZEPHYRUS_UI_LAYOUT) {
     return true;
   }
 
@@ -1379,7 +1648,8 @@ void AppMenu::ExecuteCommand(int command_id, int mouse_event_flags) {
     return;
   }
 
-  if (command_id == IDC_EDIT_MENU || command_id == IDC_ZOOM_MENU) {
+  if (command_id == IDC_EDIT_MENU || command_id == IDC_ZOOM_MENU ||
+      command_id == IDC_ZEPHYRUS_UI_LAYOUT) {
     // These items are represented by child views. If ExecuteCommand is invoked
     // it means the user clicked on the area around the buttons and we should
     // not do anyting.
@@ -1427,7 +1697,8 @@ bool AppMenu::GetAccelerator(int command_id,
     return false;
   }
 
-  if (command_id == IDC_EDIT_MENU || command_id == IDC_ZOOM_MENU) {
+  if (command_id == IDC_EDIT_MENU || command_id == IDC_ZOOM_MENU ||
+      command_id == IDC_ZEPHYRUS_UI_LAYOUT) {
     // These have special child views; don't show the accelerator for them.
     return false;
   }
@@ -1712,6 +1983,17 @@ void AppMenu::PopulateMenu(MenuItemView* parent, MenuModel* model) {
         DCHECK_EQ(IDC_FULLSCREEN, submodel->GetCommandIdAt(2));
         item->SetTitle(l10n_util::GetStringUTF16(IDS_ZOOM_MENU2));
         item->AddChildView(std::make_unique<ZoomView>(this, submodel, 0, 1, 2));
+        item->set_children_use_full_width(true);
+        break;
+      }
+
+      case IDC_ZEPHYRUS_UI_LAYOUT: {
+        // No title: see ZephyrusLayoutPicker. Still named for the
+        // accessibility tree, which reads the row, not the painted label.
+        item->SetTitle(std::u16string());
+        item->GetViewAccessibility().SetName(u"Layout");
+        item->AddChildView(
+            std::make_unique<ZephyrusLayoutPicker>(browser_, AsWeakPtr()));
         item->set_children_use_full_width(true);
         break;
       }

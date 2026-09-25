@@ -9,6 +9,8 @@
 #include <vector>
 
 #include "base/functional/bind.h"
+#include "cc/paint/paint_flags.h"
+#include "base/i18n/case_conversion.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/color/zephyrus_color_mixer.h"
 #include "chrome/browser/favicon/favicon_service_factory.h"
@@ -44,25 +46,46 @@
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/widget/widget.h"
+#include "chrome/grit/theme_resources.h"
 
 namespace {
 
-constexpr int kPickerWidth = 240;
-// M3's dense menu item. The standard 48dp made a five-engine list half again
-// as tall for no gain -- and the complaint about these popups was size.
-constexpr int kRowHeight = 40;
+// A compact M3 MENU, not a dialog-sized popup. It was 240dp of 40dp rows in
+// labelLarge with a 28dp popup radius -- a sheet's proportions for a five-item
+// choice -- and read as oversized next to the field it hangs from.
+constexpr int kPickerWidth = 196;
+constexpr int kRowHeight = 32;
 constexpr int kFaviconSize = 16;
-// M3 Expressive menus inset their items from the container and round them, so
-// hover and selection read as a shape inside the menu rather than a stripe
-// across it.
+// M3 menus: the menu radius, with items inset from the container and rounded
+// so hover and selection read as a shape inside it.
+constexpr int kMenuRadius = zephyrus::kRadiusLarge;
 constexpr int kItemInset = 4;
-// Concentric with the menu's own corners (Rule 2: inner = outer - padding):
-// 28 - 4 = 24, which on a 40dp item is a full pill. At 12 the first and last
-// items left a wedge of menu showing inside the menu's rounder corners.
+// Concentric with the menu's corners (Rule 2): 16 - 4 = 12.
 constexpr int kItemRadius =
-    zephyrus::m3::ConcentricInner(zephyrus::kRadiusPopup, kItemInset);
-constexpr int kItemPadding = 12;
-constexpr int kCheckSize = 20;
+    zephyrus::m3::ConcentricInner(kMenuRadius, kItemInset);
+constexpr int kItemPadding = 10;
+constexpr int kCheckSize = 16;
+
+// An engine with no cached favicon gets its initial on a tonal disc rather
+// than a magnifier: five identical magnifiers said nothing about which row
+// was which.
+gfx::ImageSkia Monogram(const std::u16string& name,
+                        SkColor disc,
+                        SkColor ink) {
+  gfx::Canvas canvas(gfx::Size(kFaviconSize, kFaviconSize), 1.0f, false);
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setColor(disc);
+  canvas.DrawCircle(gfx::PointF(kFaviconSize / 2.f, kFaviconSize / 2.f),
+                    kFaviconSize / 2.f, flags);
+  const std::u16string letter =
+      name.empty() ? u"?" : base::i18n::ToUpper(name.substr(0, 1));
+  canvas.DrawStringRectWithFlags(
+      letter, zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall, true), ink,
+      gfx::Rect(0, 0, kFaviconSize, kFaviconSize),
+      gfx::Canvas::TEXT_ALIGN_CENTER);
+  return gfx::ImageSkia::CreateFrom1xBitmap(canvas.GetBitmap());
+}
 
 // One engine in the menu: an M3 menu item.
 //
@@ -79,8 +102,10 @@ class EngineMenuItem : public views::LabelButton {
   EngineMenuItem(PressedCallback callback,
                  const std::u16string& text,
                  bool selected)
-      : views::LabelButton(std::move(callback), text), selected_(selected) {
-    label()->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
+      : views::LabelButton(std::move(callback), text),
+        selected_(selected),
+        name_(text) {
+    label()->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kBodyMedium));
     SetImageLabelSpacing(kItemPadding);
     SetMinSize(gfx::Size(0, kRowHeight));
     // The trailing padding holds the check, whether or not this row has one,
@@ -131,10 +156,10 @@ class EngineMenuItem : public views::LabelButton {
     if (!has_favicon_) {
       SetImageModel(
           views::Button::STATE_NORMAL,
-          ui::ImageModel::FromVectorIcon(
-              vector_icons::kSearchIcon,
-              zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant),
-              kFaviconSize));
+          ui::ImageModel::FromImageSkia(Monogram(
+              name_,
+              zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHighest),
+              zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant))));
     }
   }
 
@@ -157,6 +182,7 @@ class EngineMenuItem : public views::LabelButton {
 
  private:
   const bool selected_;
+  const std::u16string name_;
   bool has_favicon_ = false;
 };
 
@@ -173,6 +199,37 @@ TemplateURLService* GetService(Profile* profile) {
 }  // namespace
 
 namespace zephyrus {
+
+gfx::ImageSkia GetBundledEngineIcon(const TemplateURL* engine) {
+  if (!engine) {
+    return gfx::ImageSkia();
+  }
+  // Prepopulate ids from third_party/search_engines_data's
+  // prepopulated_engines.json. Stable: they key every user's saved default.
+  int resource = 0;
+  switch (engine->prepopulate_id()) {
+    case 1:
+      resource = IDR_ZEPHYRUS_ENGINE_GOOGLE;
+      break;
+    case 2:  // Yahoo and its regional variants (Yahoo! India) share the id.
+      resource = IDR_ZEPHYRUS_ENGINE_YAHOO;
+      break;
+    case 3:
+      resource = IDR_ZEPHYRUS_ENGINE_BING;
+      break;
+    case 92:
+      resource = IDR_ZEPHYRUS_ENGINE_DUCKDUCKGO;
+      break;
+    case 109:
+      resource = IDR_ZEPHYRUS_ENGINE_BRAVE;
+      break;
+    default:
+      return gfx::ImageSkia();
+  }
+  const gfx::ImageSkia* icon =
+      ui::ResourceBundle::GetSharedInstance().GetImageSkiaNamed(resource);
+  return icon ? *icon : gfx::ImageSkia();
+}
 
 std::u16string GetDefaultSearchEngineName(Profile* profile) {
   TemplateURLService* service = GetService(profile);
@@ -193,9 +250,12 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
       profile_(profile),
       on_finished_(std::move(on_finished)) {
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
-  // M3 menu: 8dp above and below the list, the items inset from the sides.
-  set_margins(gfx::Insets::VH(8, kItemInset));
+  // M3 menu: the items inset from every side by the same 4dp, so the first
+  // and last items' corners nest in the menu's (Rule 2).
+  set_margins(gfx::Insets(kItemInset));
   zephyrus::ConfigureBubble(this);
+  // A menu's radius, not a floating sheet's.
+  set_corner_radius(kMenuRadius);
   // Opaque, on an M3 menu's surfaceContainer. Read from the ANCHOR, which is in
   // the browser window and has a ColorProvider; this bubble has none until it
   // is shown. (A child-widget experiment that would have let a backdrop blur
@@ -218,9 +278,9 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
       zephyrus::m3::Role(*anchor, kColorZephyrusOnSurfaceVariant));
   heading->SetAutoColorReadabilityEnabled(false);
   heading->SetSubpixelRenderingEnabled(false);
-  heading->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelMedium));
+  heading->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelSmall));
   heading->SetBorder(views::CreateEmptyBorder(
-      gfx::Insets::TLBR(4, kItemPadding, 8, kItemPadding)));
+      gfx::Insets::TLBR(6, kItemPadding, 4, kItemPadding)));
 
   TemplateURLService* service = GetService(profile_);
   if (!service) {
@@ -246,9 +306,16 @@ ZephyrusSearchEnginePicker::ZephyrusSearchEnginePicker(
     row->SetPreferredSize(gfx::Size(kPickerWidth, kRowHeight));
     views::LabelButton* row_ptr = AddChildView(std::move(row));
 
-    // Real favicon, if we have one cached. This reads the local favicon
-    // database only — it never hits the network, so an engine the user has
-    // never visited simply keeps the generic glyph.
+    // The bundled mark for a preset engine; nothing further to look up.
+    if (const gfx::ImageSkia bundled = zephyrus::GetBundledEngineIcon(turl);
+        !bundled.isNull()) {
+      static_cast<EngineMenuItem*>(row_ptr)->SetFavicon(bundled);
+      continue;
+    }
+
+    // Otherwise the real favicon, if one is cached. This reads the local
+    // favicon database only -- it never hits the network, so an engine the
+    // user has never visited keeps its letter.
     if (favicon::FaviconService* favicons =
             FaviconServiceFactory::GetForProfile(
                 profile_, ServiceAccessType::EXPLICIT_ACCESS);

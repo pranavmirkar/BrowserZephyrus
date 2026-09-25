@@ -490,7 +490,13 @@ bool ContentsContainerView::ZephyrusTopIsAttached() const {
   // title bar is hidden there is nothing up there for the page to curve into,
   // so curving anyway leaves two notches of window background floating against
   // the top of the content with no explanation.
-  return browser_view_ && browser_view_->IsZephyrusTitlebarShowing();
+  //
+  // The horizontal-tabs strip also counts, title bar or not: it always sits
+  // directly above the page and already leaves 4dp under its tabs. Adding the
+  // page's own margin on top of that doubled the gap below the tabs (8dp)
+  // against the 4dp above them.
+  return browser_view_ && (browser_view_->IsZephyrusTitlebarShowing() ||
+                           browser_view_->ZephyrusTabStripHeight() > 0);
 }
 
 void ContentsContainerView::Layout(PassKey pass_key) {

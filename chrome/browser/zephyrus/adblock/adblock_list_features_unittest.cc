@@ -10,6 +10,8 @@
 #include <string>
 #include <vector>
 
+#include "base/strings/strcat.h"
+
 #include "chrome/browser/zephyrus/adblock/adblock_cosmetic_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
@@ -301,6 +303,60 @@ TEST(AdblockListFeaturesTest, DuplicateInvocationsAreEmittedOnce) {
   ASSERT_NE(call, std::string::npos);
   EXPECT_EQ(script.find("zephyrusScriptlets[\"nostif\"]", call + 1),
             std::string::npos);
+}
+
+// Z-04. A third-party list (here EasyList) must not be able to rewrite
+// responses on a site it names; uBO's own list may.
+TEST(AdblockListFeaturesTest, TrustedScriptletsOnlyFromUboLists) {
+  const std::string rule =
+      "bank.example##+js(trusted-replace-xhr-response, real, attacker)\n";
+  const std::string combined = base::StrCat(
+      {"! Zephyrus combined filter list\n",
+       ListSectionMarker("https://easylist.to/easylist/easylist.txt"), "\n",
+       rule,
+       ListSectionMarker("https://raw.githubusercontent.com/uBlockOrigin/"
+                         "uAssets/master/filters/quick-fixes.txt"),
+       "\n", "shop.example##+js(trusted-set-cookie, consent, yes)\n"});
+  AdblockScriptletEngine engine;
+  engine.AddRules(combined, /*trust_unsectioned=*/false);
+  EXPECT_EQ(engine.untrusted_scriptlets_dropped(), 1u);
+  EXPECT_TRUE(
+      engine.BuildInjectionScriptForUrl(GURL("https://bank.example/")).empty());
+  EXPECT_NE(engine.BuildInjectionScriptForUrl(GURL("https://shop.example/"))
+                .find("trusted-set-cookie"),
+            std::string::npos);
+}
+
+// Unmarked text in a combined list is third-party, and a ".js" suffix or a
+// look-alike repository does not launder a trusted scriptlet.
+TEST(AdblockListFeaturesTest, TrustedScriptletGateHasNoBypasses) {
+  AdblockScriptletEngine engine;
+  engine.AddRules(
+      base::StrCat(
+          {"a.example##+js(trusted-set-cookie.js, k, v)\n",
+           ListSectionMarker("https://raw.githubusercontent.com/uBlockOrigin/"
+                             "uAssets-mirror/filters.txt"),
+           "\n", "b.example##+js(trusted-click-element, #buy)\n",
+           // Ordinary scriptlets from a third-party list are unaffected.
+           "c.example##+js(set-constant, adsOk, true)\n"}),
+      /*trust_unsectioned=*/false);
+  EXPECT_EQ(engine.untrusted_scriptlets_dropped(), 2u);
+  EXPECT_TRUE(
+      engine.BuildInjectionScriptForUrl(GURL("https://a.example/")).empty());
+  EXPECT_TRUE(
+      engine.BuildInjectionScriptForUrl(GURL("https://b.example/")).empty());
+  EXPECT_FALSE(
+      engine.BuildInjectionScriptForUrl(GURL("https://c.example/")).empty());
+}
+
+// The browser's own built-in rules stay trusted (the YouTube rules need it).
+TEST(AdblockListFeaturesTest, BuiltInRulesKeepTrustedScriptlets) {
+  AdblockScriptletEngine engine;
+  engine.AddRules("www.youtube.com##+js(trusted-prevent-dom-bypass, x, y)\n");
+  EXPECT_EQ(engine.untrusted_scriptlets_dropped(), 0u);
+  EXPECT_FALSE(
+      engine.BuildInjectionScriptForUrl(GURL("https://www.youtube.com/"))
+          .empty());
 }
 
 TEST(AdblockListFeaturesTest, JsSuffixedNamesResolve) {

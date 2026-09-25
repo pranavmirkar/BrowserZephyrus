@@ -29,6 +29,12 @@ constexpr size_t kMaxHistoryShown = 8;
 // How much of one tool result is quoted back. See OnExecuted.
 constexpr size_t kMaxResultShown = 600;
 
+// Bounds on the history a resumed task is handed back. The browser passes it
+// through untouched, but it crosses a process boundary twice, so it is held to
+// what this loop could itself have produced rather than trusted to be.
+constexpr size_t kMaxCarriedHistory = 32;
+constexpr size_t kMaxCarriedLine = 2048;
+
 // The element a call named, or empty. Read from the call's own arguments so
 // the advice that follows a refusal can avoid pointing back at it.
 std::string ElementIdIn(std::string_view arguments_json) {
@@ -166,6 +172,21 @@ TaskLoop::TaskLoop(const Kernel& kernel,
       model_(std::move(model)),
       done_(std::move(done)),
       approved_(std::move(approved)) {
+  // A resumed task continues where it stopped. See PendingApproval::history.
+  if (approved_) {
+    const std::vector<std::string>& carried = approved_->history;
+    const size_t start = carried.size() > kMaxCarriedHistory
+                             ? carried.size() - kMaxCarriedHistory
+                             : 0;
+    for (size_t i = start; i < carried.size(); ++i) {
+      history_.push_back(FirstWords(carried[i], kMaxCarriedLine));
+    }
+    last_seen_url_ = FirstWords(approved_->last_url, kMaxCarriedLine);
+    // Said, because it is the one thing that changed while the loop was
+    // stopped: the model proposed this, and a person agreed to it.
+    history_.push_back(
+        base::StrCat({"The user approved your ", approved_->tool, " call."}));
+  }
   // A task whose browser or model has gone away cannot make progress. Saying so
   // beats waiting for a reply that is never coming.
   runner_.set_disconnect_handler(
@@ -741,6 +762,11 @@ void TaskLoop::Finish(mojom::TaskStatus status,
   }
   weak_factory_.InvalidateWeakPtrs();
   auto outcome = MakeOutcome(status, std::move(message), steps_);
+  if (pending) {
+    // What the resumed loop needs to be the same task. See PendingApproval.
+    pending->history = history_;
+    pending->last_url = last_seen_url_;
+  }
   outcome->pending = std::move(pending);
   std::move(done_).Run(std::move(outcome));
 

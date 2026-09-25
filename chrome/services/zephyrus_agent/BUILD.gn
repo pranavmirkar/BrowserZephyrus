@@ -49,3 +49,21 @@ test("zephyrus_agent_service_unittests") {
     "//testing/gtest",
   ]
 }
+
+# The benchmark's window onto the shipped agent LOOP: runs the real TaskLoop,
+# with the benchmark answering as the browser and as the model. See the file
+# comment for why the benchmark no longer keeps a copy of the loop.
+#
+#   autoninja -C out/Release zephyrus_loop_probe
+executable("zephyrus_loop_probe") {
+  sources = [ "loop_probe.cc" ]
+  deps = [
+    ":lib",
+    "//base",
+    "//chrome/services/zephyrus_agent/kernel",
+    "//chrome/services/zephyrus_agent/public/mojom",
+    "//mojo/core/embedder",
+    "//mojo/public/cpp/bindings",
+    "//third_party/rust/cxx/v1:lib",
+  ]
+}

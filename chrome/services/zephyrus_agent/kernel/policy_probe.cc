@@ -27,8 +27,25 @@
 // and writes
 //
 //   {"disposition":"Allow|Ask|Deny","risk":"R1","reason":"..."}
+//
+// It also reads model replies, because a benchmark that parses them itself is
+// grading a different browser. The Python port of the extractor drifted from
+// this one more than once, and every drift invented model failures (or hid
+// real ones) that nobody could see. So a request of
+//
+//   {"op":"extract","response":"<the model's raw reply>"}
+//
+// runs exactly what TaskLoop::OnProposed runs -- extract_call, then
+// normalize_arguments -- and writes
+//
+//   {"found":true,"tool":"page.click","arguments":{...}}   or   {"found":false}
+//
+// `arguments` is whatever the kernel would hand to policy: usually an object,
+// but a reply the kernel could not shape into one is passed back as it is so
+// the benchmark can grade it as the schema failure it is.
 
 #include <iostream>
+#include <optional>
 #include <string>
 
 #include "base/json/json_reader.h"
@@ -66,6 +83,32 @@ std::string Refuse(const std::string& why) {
   return base::WriteJson(out).value_or("{}");
 }
 
+// What TaskLoop::OnProposed does with a reply before policy sees it.
+std::string Extract(const zephyrus::agent::Kernel& kernel,
+                    const std::string& response) {
+  const zephyrus::agent::ExtractedCall call =
+      kernel.extract_call(::rust::Str(response));
+  base::DictValue out;
+  out.Set("found", call.found);
+  if (!call.found) {
+    return base::WriteJson(out).value_or("{}");
+  }
+  const std::string tool(call.tool);
+  const std::string arguments(
+      kernel.normalize_arguments(::rust::Str(tool), call.arguments_json));
+  out.Set("tool", tool);
+  // The kernel always hands back JSON; a parse failure here would mean it did
+  // not, and saying so beats guessing at what it meant.
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(arguments, base::JSON_PARSE_RFC);
+  if (parsed) {
+    out.Set("arguments", std::move(*parsed));
+  } else {
+    out.Set("arguments_unparsed", arguments);
+  }
+  return base::WriteJson(out).value_or("{}");
+}
+
 }  // namespace
 
 int main() {
@@ -88,6 +131,17 @@ int main() {
       continue;
     }
     const base::DictValue& request_json = *parsed;
+
+    const std::string op = TextOr(request_json, "op");
+    if (op == "extract") {
+      std::cout << Extract(*kernel, TextOr(request_json, "response"))
+                << std::endl;
+      continue;
+    }
+    if (!op.empty() && op != "decide") {
+      std::cout << Refuse("unknown op: " + op) << std::endl;
+      continue;
+    }
 
     zephyrus::agent::PolicyRequest request;
     request.tool = rust::String(TextOr(request_json, "tool"));

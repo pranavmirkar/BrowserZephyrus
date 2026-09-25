@@ -1,0 +1,17 @@
+# Copyright 2026 The Zephyrus Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+declare_args() {
+  # Compiles in the developer-only command-line switches: the agent's model,
+  # vision, record, replay and trace switches, --zephyrus-test-compact and
+  # --zephyrus-audit-shape. They change user state, write files to paths given
+  # on the command line, and send page content to a (loopback) model -- none of
+  # which a shipped browser should do because of how it was launched (audit
+  # finding Z-10).
+  #
+  # Off in official builds by default. A developer's out/Release sets it true
+  # to run the agent harness; the installer packager refuses a build that has
+  # it on (chrome/installer/zephyrus_setup/tools/package_installer.py).
+  zephyrus_dev_switches = !is_official_build
+}

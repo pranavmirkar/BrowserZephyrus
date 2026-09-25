@@ -33,7 +33,12 @@ rust_static_library("kernel") {
   # The frozen tool contract is compiled in with include_str!. Listing it here
   # is what makes a change to the contract rebuild the kernel -- without it the
   # kernel would keep enforcing whatever the contract said when it last built.
-  inputs = [ "//chrome/browser/zephyrus/agent/schemas/tools.v1.json" ]
+  inputs = [
+    "//chrome/browser/zephyrus/agent/schemas/tools.v1.json",
+
+    # Read by tests.rs with include_str!, for the same reason.
+    "testdata/extraction_corpus.json",
+  ]
 
   deps = [ "//third_party/rust/serde_json/v1:lib" ]
 
@@ -55,14 +60,14 @@ test("zephyrus_agent_kernel_unittests") {
   ]
 }
 
-# The benchmark's window onto the shipped policy.
+# The benchmark's window onto the shipped kernel: it reads every model reply
+# (extraction) and, with --policy, judges every call.
 #
 #   autoninja -C out/Release zephyrus_policy_probe
-#   benchmark/run_tasks.py --policy out/Release/zephyrus_policy_probe.exe
+#   benchmark/run_tasks.py --policy
 #
-# Exists so the multi-step benchmark can score a task with the kernel in the
-# loop instead of guessing what the kernel would have said. See the file
-# comment for why this is a subprocess and not a second copy of the policy.
+# Every benchmark run and test needs it. See the file comment for why this is a
+# subprocess and not a second copy of the extractor or the policy.
 executable("zephyrus_policy_probe") {
   sources = [ "policy_probe.cc" ]
   deps = [

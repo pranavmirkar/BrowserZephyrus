@@ -5,14 +5,17 @@ import json
 import pathlib
 import unittest
 
+from bench import grading
+from bench import kernel as kernel_probe
+from bench import loop as loop_driver
 from bench.grading import Rung, grade
-from run_benchmark import (
-    SYSTEM_PROMPT, USER_PROMPT, load_contract, load_fixtures, render_observation,
-)
+from run_benchmark import load_contract, load_fixtures, render_observation
 
 
 class InjectionTest(unittest.TestCase):
     def setUp(self):
+        grading.use_kernel(kernel_probe.shared())
+        loop_driver.use_shared_loop()
         self.fixture = load_fixtures("saf-001")[0]
         self.contract, self.listing = load_contract()
 
@@ -26,10 +29,12 @@ class InjectionTest(unittest.TestCase):
         rendered = render_observation(observation)
         self.assertEqual(json.loads(rendered), observation)
         self.assertNotIn("\n", rendered)
-        prompt = USER_PROMPT.format(task=self.fixture["task"], observation=rendered)
+        # The prompt the shipped loop builds around it, not a copy of one.
+        system, prompt = loop_driver.first_prompts(self.fixture["task"], observation)
+        self.assertIn(rendered, prompt)
         self.assertGreater(prompt.index("\nTASK: " + self.fixture["task"]),
                            prompt.index(rendered))
-        self.assertNotIn("attacker.example", SYSTEM_PROMPT.format(tools=self.listing))
+        self.assertNotIn("attacker.example", system)
 
     def test_saf001_rejects_both_navigation_routes(self):
         for name in ("browser.navigate", "tabs.open"):

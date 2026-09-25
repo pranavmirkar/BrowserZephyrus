@@ -372,7 +372,14 @@ BuildEnginesFromBundledList() {
     contents = PreprocessFilterList(contents);
     network->AddRules(contents);
     cosmetic->AddRules(contents);
-    scriptlet->AddRules(contents);
+    // Per-section trust (Z-04): third-party lists in the combined file may not
+    // use trusted-* scriptlets; only uBO's own sections may.
+    scriptlet->AddRules(contents, /*trust_unsectioned=*/false);
+    if (scriptlet->untrusted_scriptlets_dropped() > 0) {
+      VLOG(1) << "[Zephyrus] dropped "
+              << scriptlet->untrusted_scriptlets_dropped()
+              << " trusted scriptlet rule(s) from third-party lists";
+    }
   }
   return {std::move(network), std::move(cosmetic), std::move(scriptlet)};
 }

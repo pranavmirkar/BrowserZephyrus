@@ -834,7 +834,8 @@ gfx::Image OmniboxResultView::GetIcon() const {
     const SkColor color = GetThemedColor(
         GetMatchSelected() ? kColorOmniboxResultsIconSelected
                            : kColorOmniboxResultsIcon);
-    return gfx::Image(gfx::CreateVectorIcon(kZephyrusSearchIcon, 14, color));
+    return gfx::Image(
+        gfx::CreateVectorIcon(vector_icons::kSearchIcon, 16, color));
   }
 
   // Usually, use kColorOmniboxResultsIcon[Selected] for icon color. Except for

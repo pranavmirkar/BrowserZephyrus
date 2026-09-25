@@ -34,10 +34,11 @@
 
 namespace {
 
-// A 24dp target holding a 16dp mark -- M3 icon-button proportions, and the same
-// mark size the omnibox leading icon uses, so the two ends of the field weigh
-// the same.
-constexpr int kButtonSize = 24;
+// A 20dp circle holding a 16dp mark: the same mark size the leading icon uses,
+// so the two ends of the field weigh the same. 20, not 24: the field is 26dp
+// in the title bar, and a 24dp circle in a 13dp-radius cap has 1dp to spare,
+// so it could not sit concentric with the cap -- it touched the outline.
+constexpr int kButtonSize = 20;
 constexpr int kFaviconSize = 16;
 
 }  // namespace
@@ -137,7 +138,13 @@ void ZephyrusEnginePill::Refresh() {
       profile_ ? TemplateURLServiceFactory::GetForProfile(profile_) : nullptr;
   const TemplateURL* def =
       service ? service->GetDefaultSearchProvider() : nullptr;
-  if (favicon::FaviconService* favicons =
+  // A preset engine's bundled mark, so the field shows it from first launch
+  // -- the mark is what tells a new user there is an engine to pick.
+  if (const gfx::ImageSkia bundled = zephyrus::GetBundledEngineIcon(def);
+      !bundled.isNull()) {
+    SetImageModel(views::Button::STATE_NORMAL,
+                  ui::ImageModel::FromImageSkia(bundled));
+  } else if (favicon::FaviconService* favicons =
           profile_ ? FaviconServiceFactory::GetForProfile(
                          profile_, ServiceAccessType::EXPLICIT_ACCESS)
                    : nullptr;

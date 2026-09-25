@@ -81,7 +81,30 @@ def main():
                         help='build output directory, e.g. out/Release')
     parser.add_argument('--output', required=True,
                         help='path of the setup .exe to produce')
+    parser.add_argument('--allow-dev-switches', action='store_true',
+                        help='package a build with developer switches '
+                             'compiled in (internal tester builds only)')
     args = parser.parse_args()
+
+    # Audit finding Z-10: the developer switches (agent model/record/replay/
+    # trace, --zephyrus-test-compact, --zephyrus-audit-shape) must not ship.
+    # Read the flag from the generated header rather than args.gn: the header
+    # is what the binary was actually compiled against.
+    flags = os.path.join(args.out_dir, 'gen', 'chrome', 'browser', 'zephyrus',
+                         'buildflags', 'buildflags.h')
+    if not os.path.exists(flags):
+        raise SystemExit('missing %s -- build chrome first' % flags)
+    with open(flags, encoding='utf-8') as f:
+        dev_switches = 'ZEPHYRUS_DEV_SWITCHES() (1)' in f.read()
+    if dev_switches and not args.allow_dev_switches:
+        raise SystemExit(
+            'refusing to package: this build has developer switches compiled '
+            'in.\nSet zephyrus_dev_switches = false in %s/args.gn and rebuild, '
+            'or pass --allow-dev-switches for an internal tester build.'
+            % args.out_dir)
+    if dev_switches:
+        print('WARNING: packaging with developer switches compiled in '
+              '(--allow-dev-switches).')
 
     ui = os.path.join(args.out_dir, 'zephyrus_setup.exe')
     payload = os.path.join(args.out_dir, 'mini_installer.exe')

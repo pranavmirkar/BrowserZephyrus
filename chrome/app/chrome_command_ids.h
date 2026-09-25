@@ -645,6 +645,9 @@
 #define IDC_ZEPHYRUS_WORKSPACE_6                              54115
 #define IDC_ZEPHYRUS_WORKSPACE_7                              54116
 #define IDC_ZEPHYRUS_WORKSPACE_8                              54117
+// The three-dots menu row holding the layout picker (see ZephyrusLayoutPicker
+// in app_menu.cc). The row itself does nothing; its thumbnails do.
+#define IDC_ZEPHYRUS_UI_LAYOUT                                54120
 
 // NOTE: The last valid command value is 57343 (0xDFFF)
 // See http://msdn.microsoft.com/en-us/library/t2zechd4(VS.71).aspx

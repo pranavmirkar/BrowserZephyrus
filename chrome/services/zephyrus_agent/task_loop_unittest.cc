@@ -852,6 +852,95 @@ TEST_F(TaskLoopTest, ResumingRunsTheApprovedCallBeforeAskingTheModel) {
       << "the model got a look in before the approved call ran";
 }
 
+TEST_F(TaskLoopTest, ResumingContinuesTheSameTask) {
+  // MEASURED in the benchmark once it ran this loop for real: the user approved
+  // Send, the resumed loop started with no history, and the model -- looking
+  // at the sent-mail page with no idea it had just sent anything -- began
+  // writing the email again. A resumed task has to remember what it did.
+  runner_.on_execute = base::BindLambdaForTesting([&] {
+    if (runner_.executed.size() == 2) {
+      runner_.next_status = mojom::ToolStatus::kNeedsApproval;
+      runner_.next_message = "this would send the reply";
+    }
+  });
+  mojom::TaskOutcomePtr stopped = Run({
+      R"({"name":"browser.navigate","arguments":{"url":"https://mail.example/inbox/7"}})",
+      R"({"name":"page.click","arguments":{"element_id":"send"}})",
+  });
+  ASSERT_TRUE(stopped);
+  ASSERT_EQ(stopped->status, mojom::TaskStatus::kNeedsApproval);
+  ASSERT_TRUE(stopped->pending);
+  ASSERT_FALSE(stopped->pending->history.empty());
+  EXPECT_EQ(stopped->pending->last_url, "https://docs.example.com/x");
+
+  // The browser hands the pending call back unchanged, to a new loop.
+  FakeToolRunner resumed_runner;
+  ScriptedModel resumed_model(
+      {R"({"name":"task.complete","arguments":{"answer":"sent"}})"});
+  mojom::TaskOutcomePtr outcome;
+  base::RunLoop run_loop;
+  TaskLoop::Start(*kernel_, "Find the spec sheet", resumed_runner.Bind(),
+                  resumed_model.Bind(), /*max_steps=*/4,
+                  std::move(stopped->pending),
+                  base::BindLambdaForTesting([&](mojom::TaskOutcomePtr got) {
+                    outcome = std::move(got);
+                    run_loop.Quit();
+                  }));
+  run_loop.Run();
+
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted);
+  ASSERT_FALSE(resumed_model.user_prompts.empty());
+  const std::string& prompt = resumed_model.user_prompts[0];
+  // What it did before it stopped...
+  EXPECT_NE(prompt.find("You called browser.navigate"), std::string::npos)
+      << prompt;
+  // ...that a person agreed to the call it stopped on...
+  EXPECT_NE(prompt.find("The user approved your page.click call."),
+            std::string::npos)
+      << prompt;
+  // ...and how that call went.
+  EXPECT_NE(prompt.find("You called page.click. Result: ok."),
+            std::string::npos)
+      << prompt;
+}
+
+TEST_F(TaskLoopTest, CarriedHistoryIsBounded) {
+  // It crosses the process boundary twice, so it is held to what the loop
+  // could have produced itself rather than trusted to be.
+  auto approved = mojom::PendingApproval::New();
+  approved->tool = "browser.navigate";
+  approved->arguments_json = R"({"url":"https://example.org/report"})";
+  approved->last_url = std::string(10000, 'u');
+  for (int i = 0; i < 100; ++i) {
+    approved->history.push_back(std::string(5000, 'x'));
+  }
+  // The approved call needs approval again, so the loop stops at once and
+  // hands back what it was carrying.
+  runner_.next_status = mojom::ToolStatus::kNeedsApproval;
+  model_ = std::make_unique<ScriptedModel>(std::vector<std::string>{
+      R"({"name":"task.complete","arguments":{}})"});
+
+  mojom::TaskOutcomePtr outcome;
+  base::RunLoop run_loop;
+  TaskLoop::Start(*kernel_, "Send the report", runner_.Bind(), model_->Bind(),
+                  /*max_steps=*/4, std::move(approved),
+                  base::BindLambdaForTesting([&](mojom::TaskOutcomePtr got) {
+                    outcome = std::move(got);
+                    run_loop.Quit();
+                  }));
+  run_loop.Run();
+
+  ASSERT_TRUE(outcome);
+  ASSERT_TRUE(outcome->pending);
+  // 32 carried, plus the approval line and the call's own result.
+  EXPECT_LE(outcome->pending->history.size(), 34u);
+  for (const std::string& line : outcome->pending->history) {
+    EXPECT_LE(line.size(), 2100u);
+  }
+  EXPECT_LE(outcome->pending->last_url.size(), 2100u);
+}
+
 TEST_F(TaskLoopTest, AnApprovalIsSingleUse) {
   // The loop does not remember it. A second call that needs approval stops the
   // task again rather than riding on the first yes.

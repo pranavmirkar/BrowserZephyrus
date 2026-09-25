@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/zephyrus_agent_tool_surface.h"
 
+#include "chrome/browser/zephyrus/buildflags/dev_switches.h"
+#include "build/buildflag.h"
 #include <tuple>
 
 #include "base/memory/raw_ptr.h"
@@ -804,7 +806,8 @@ void BrowserToolSurface::CaptureScreenshot(Observation observation,
                                            ObserveCallback callback) {
   // Off unless asked for. When it is off this costs one flag read, and the
   // Observation goes out exactly as it did before vision existed.
-  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
+  if (!zephyrus::DevSwitchesEnabled() ||
+      !base::CommandLine::ForCurrentProcess()->HasSwitch(
           kAgentVisionSwitch)) {
     Answer(std::move(observation), std::move(callback));
     return;

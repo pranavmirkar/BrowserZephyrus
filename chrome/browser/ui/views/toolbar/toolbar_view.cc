@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 
+#include "chrome/browser/zephyrus/buildflags/dev_switches.h"
+#include "build/buildflag.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -1066,7 +1068,7 @@ void ToolbarView::Init() {
   // Only present when a model is actually configured. An icon that opens a
   // panel which can only say "no model configured" is worse than no icon, and
   // in a normal build there is nothing behind it yet.
-  if (browser_->is_type_normal() &&
+  if (zephyrus::DevSwitchesEnabled() && browser_->is_type_normal() &&
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           zephyrus::agent::kAgentModelEndpointSwitch) &&
       base::CommandLine::ForCurrentProcess()->HasSwitch(
@@ -2118,12 +2120,21 @@ void ToolbarView::Layout(PassKey) {
     const int editing_width = std::min(680, width() * 46 / 100);
     const int max_width =
         gfx::Tween::IntValueBetween(focus, steady_width, editing_width);
+    // The same height as every other control in the bar, centred on the same
+    // line. It took the location bar's own 30dp while the containers beside
+    // it draw at kZephyrusContainer (26), so the pill stood 2dp proud of the
+    // row at top and bottom -- measured 45px against 40px at 150%.
+    const int pill_height = std::min(slot.height(), kZephyrusContainer);
+    const int pill_y = (height() - pill_height) / 2;
     if (slot.width() > max_width && max_width > 0) {
       // Prefer true window-centering (like Safari); fall back to centering
       // inside the slot when neighbors crowd the middle.
       int x = (width() - max_width) / 2;
       x = std::clamp(x, slot.x(), slot.right() - max_width);
-      location_bar_view_->SetBounds(x, slot.y(), max_width, slot.height());
+      location_bar_view_->SetBounds(x, pill_y, max_width, pill_height);
+    } else {
+      location_bar_view_->SetBounds(slot.x(), pill_y, slot.width(),
+                                    pill_height);
     }
   }
 }

@@ -1,0 +1,19 @@
+# Copyright 2026 The Zephyrus Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/buildflag_header.gni")
+import("//chrome/browser/zephyrus/buildflags/zephyrus.gni")
+
+buildflag_header("buildflags") {
+  header = "buildflags.h"
+  flags = [ "ZEPHYRUS_DEV_SWITCHES=$zephyrus_dev_switches" ]
+}
+
+source_set("dev_switches") {
+  sources = [
+    "dev_switches.cc",
+    "dev_switches.h",
+  ]
+  deps = [ ":buildflags" ]
+}

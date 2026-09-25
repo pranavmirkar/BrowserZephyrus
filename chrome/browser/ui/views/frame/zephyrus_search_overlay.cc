@@ -681,7 +681,7 @@ void ZephyrusSearchOverlay::OnThemeChanged() {
   }
   if (search_glyph_) {
     search_glyph_->SetImage(ui::ImageModel::FromVectorIcon(
-        kZephyrusSearchIcon,
+        vector_icons::kSearchIcon,
         zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant),
         kSearchGlyphSize));
   }

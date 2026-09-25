@@ -25,6 +25,7 @@
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/mouse_watcher.h"
 #include "ui/views/view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_ui_layout.h"
 
 class BrowserView;
 class TabStripModel;
@@ -39,6 +40,7 @@ struct VectorIcon;
 }  // namespace gfx
 
 namespace views {
+class ViewShadow;
 class BoxLayout;
 class ImageButton;
 class MenuRunner;
@@ -162,6 +164,11 @@ class ZephyrusSidebarView : public views::View,
 
   // Called by BrowserView when the title bar is pinned or unpinned.
   void OnCompactModeChanged();
+
+  // Called by BrowserView when the UI layout changes. The horizontal-tabs
+  // layout takes this panel off screen entirely; the two sidebar layouts show
+  // it as a floating card or as the classic flush column.
+  void OnUiLayoutChanged(zephyrus::UiLayout layout);
 
   // Called as the omnibox gains or loses focus while it is lent to this panel.
   // Editing lifts it into a floating overlay that grows out over the page; see
@@ -361,6 +368,20 @@ class ZephyrusSidebarView : public views::View,
   // cannot tuck away: tucking slides the anchor off the screen edge and the
   // popup, which tracks its anchor, follows it out of sight.
   int reveal_holds_ = 0;
+
+  // The horizontal-tabs layout is active: this panel is hidden and inert.
+  bool hidden_by_layout_ = false;
+  // The floating-card layout, rather than the classic column. Starts false:
+  // classic is the default, and what the constructor builds.
+  bool floating_ = false;
+  // Radius and padding of the panel for the current sidebar layout, applied
+  // to the layer, the fill and the layout together.
+  int PanelRadius() const;
+  void ApplyPanelShape();
+  // The raised shadow of a card floating over the page (hover reveal, not
+  // pinned). See UpdateFloatShadow().
+  void UpdateFloatShadow();
+  std::unique_ptr<views::ViewShadow> float_shadow_;
 
   // The compact omnibox's editing overlay. A child of BrowserView, alive only
   // while the omnibox is being edited or shrinking back; see

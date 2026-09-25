@@ -1404,11 +1404,19 @@ std::vector<std::string> SplitArgs(std::string_view text) {
 AdblockScriptletEngine::AdblockScriptletEngine() = default;
 AdblockScriptletEngine::~AdblockScriptletEngine() = default;
 
-size_t AdblockScriptletEngine::AddRules(std::string_view filter_list_text) {
+size_t AdblockScriptletEngine::AddRules(std::string_view filter_list_text,
+                                        bool trust_unsectioned) {
   size_t added = 0;
+  // Trust of the current section: see the header. Starts as the caller says
+  // for text before any marker.
+  bool section_trusted = trust_unsectioned;
   for (std::string_view raw :
        base::SplitStringPiece(filter_list_text, "\n", base::TRIM_WHITESPACE,
                               base::SPLIT_WANT_NONEMPTY)) {
+    if (raw.starts_with("! ===== ")) {
+      section_trusted = IsTrustedScriptletSectionMarker(raw);
+      continue;
+    }
     if (raw[0] == '!' || raw[0] == '[') {
       continue;
     }
@@ -1444,6 +1452,13 @@ size_t AdblockScriptletEngine::AddRules(std::string_view filter_list_text) {
       // uBO accepts the resource file name too: "set-constant.js".
       if (inv.name.ends_with(".js") && inv.name != "fuckadblock.js-3.2.0") {
         inv.name.resize(inv.name.size() - 3);
+      }
+      // A trusted scriptlet from a list not allowed one. Checked after the
+      // ".js" strip so "trusted-set-cookie.js" cannot slip past. Exceptions
+      // are not gated: they only switch scriptlets OFF.
+      if (!exception && !section_trusted && inv.name.starts_with("trusted-")) {
+        ++untrusted_scriptlets_dropped_;
+        continue;
       }
       inv.args.assign(parts.begin() + 1, parts.end());
     }

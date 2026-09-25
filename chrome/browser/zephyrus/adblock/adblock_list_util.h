@@ -75,6 +75,14 @@ std::string CombinedListHeaderText(int64_t full_update_seconds);
 // The marker line that opens `url`'s section, without its trailing newline.
 std::string ListSectionMarker(std::string_view url);
 
+// Whether a combined-list section marker line ("! ===== <label> =====")
+// introduces a list allowed to use uBO's TRUSTED scriptlets (trusted-*): the
+// ones that can rewrite fetch/XHR responses, set cookies and storage, and click
+// elements on the page. Only uBlock Origin's own lists (uAssets) are, as in uBO
+// itself; EasyList, Fanboy, IndianList and every other third-party list are
+// not. Returns false for any line that is not a section marker.
+bool IsTrustedScriptletSectionMarker(std::string_view line);
+
 // `url`'s section of a combined file, or nullopt when it has none. Lets an
 // update carry forward a list whose download failed instead of dropping it.
 std::optional<std::string_view> FindListSection(std::string_view combined,

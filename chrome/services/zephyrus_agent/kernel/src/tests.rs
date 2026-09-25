@@ -1293,3 +1293,43 @@ fn a_textbox_named_after_the_task_is_not_a_destination() {
     };
     assert_allowed(&request);
 }
+
+/// Every case in `testdata/extraction_corpus.json`, through `extract_call` and
+/// then `normalize_arguments` -- the two calls `TaskLoop::OnProposed` makes.
+///
+/// The benchmark checks the same file through `zephyrus_policy_probe`. It used
+/// to keep its own Python extractor, which drifted until 7 of these 30 shapes
+/// read differently there than here. One file checked on both sides is what
+/// makes the kernel the only reader of model replies.
+#[test]
+fn extraction_corpus() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../testdata/extraction_corpus.json"))
+            .expect("the corpus must parse");
+    let cases = corpus["cases"].as_array().expect("the corpus has cases");
+    assert!(cases.len() >= 20, "the corpus lost cases: {}", cases.len());
+
+    let kernel = crate::load_kernel();
+    let mut failures = Vec::new();
+    for case in cases {
+        let reply = case["reply"].as_str().expect("every case has a reply");
+        let call = kernel.extract_call(reply);
+        let got = if call.found {
+            let arguments = kernel.normalize_arguments(&call.tool, &call.arguments_json);
+            serde_json::json!({
+                "tool": call.tool,
+                "arguments": serde_json::from_str::<serde_json::Value>(&arguments)
+                    .expect("the kernel always hands back JSON"),
+            })
+        } else {
+            serde_json::Value::Null
+        };
+        if got != case["expect"] {
+            failures.push(format!(
+                "{reply:?}\n  expected {}\n  got      {got}",
+                case["expect"]
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}

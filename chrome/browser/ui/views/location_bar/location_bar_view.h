@@ -197,6 +197,8 @@ class LocationBarView
   }
 
   OmniboxViewViews* omnibox_view() { return omnibox_view_; }
+  // Zephyrus: the search-engine mark at the field's trailing end.
+  views::View* zephyrus_engine_pill();
 
   const OmniboxController* GetOmniboxController() const;
 

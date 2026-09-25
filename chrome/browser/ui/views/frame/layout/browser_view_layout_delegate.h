@@ -51,6 +51,9 @@ class BrowserViewLayoutDelegate {
   virtual int GetZephyrusAgentPanelWidth() const = 0;
   virtual int GetZephyrusCustomizePanelWidth() const = 0;
   virtual double GetZephyrusSidebarRevealAmount() const = 0;
+  // The horizontal-tabs layout's strip, taken off the TOP of the content area
+  // (zephyrus::UiLayout::kHorizontalTabs); 0 in the sidebar layout.
+  virtual int GetZephyrusTabStripHeight() const = 0;
 
   virtual bool ShouldDrawTabStrip() const = 0;
   virtual bool ShouldDrawVerticalTabStrip() const = 0;

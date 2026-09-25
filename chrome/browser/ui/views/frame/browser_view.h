@@ -103,6 +103,7 @@ class TopContainerView;
 class ZephyrusSidebarHotZone;
 class ZephyrusSidebarResizeHandle;
 class ZephyrusSidebarView;
+class ZephyrusTabStrip;
 class ZephyrusSearchOverlay;
 namespace zephyrus::agent {
 class ZephyrusAgentPanel;
@@ -856,7 +857,23 @@ class BrowserView : public BrowserWindow,
 
   // No gap. The sidebar runs flush into the window edge and flush into the
   // page beside it, so the column it reserves is exactly the panel width.
+  // (Still what the agent panel uses.)
   static constexpr int kZephyrusSidebarGap = 0;
+  // The floating sidebar's margin off the window edge, top and bottom: the
+  // page card's own margin, so the two cards sit in one frame of window
+  // ground. The page's leading margin supplies the gap between them.
+  static constexpr int kZephyrusSidebarFloatMargin = 4;
+
+  // Zephyrus UI layouts (zephyrus::UiLayout), picked in the three-dots menu.
+  bool IsZephyrusHorizontalLayout() const;
+  // The sidebar as a floating card, rather than the classic flush column.
+  bool IsZephyrusFloatingSidebar() const;
+  // The sidebar's margin off the window: the card's in the floating layout,
+  // none for the classic column.
+  int ZephyrusSidebarMargin() const;
+  // Height the horizontal strip takes off the top of the content area; 0 in
+  // the sidebar layout.
+  int ZephyrusTabStripHeight() const;
 
   // Zephyrus: swaps the content area between the normal theme fill and the
   // blurred-wallpaper empty state as the window gains or loses its last tab.
@@ -1408,6 +1425,11 @@ class BrowserView : public BrowserWindow,
   // Zephyrus: floating sidebar overlay listing tabs (and later workspaces),
   // plus a thin left-edge hot-zone that reveals it on hover.
   raw_ptr<ZephyrusSidebarView> zephyrus_sidebar_ = nullptr;
+  // The horizontal-tabs layout's strip. Always created for normal windows,
+  // shown only in that layout.
+  raw_ptr<ZephyrusTabStrip> zephyrus_tab_strip_ = nullptr;
+  void OnZephyrusUiLayoutChanged();
+  void UpdateZephyrusTabStripBounds();
   // --zephyrus-test-compact has been applied (see OnWidgetActivationChanged).
   bool zephyrus_test_compact_applied_ = false;
   bool zephyrus_sidebar_attached_ = false;

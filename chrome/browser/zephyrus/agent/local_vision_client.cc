@@ -4,6 +4,8 @@
 
 #include "chrome/browser/zephyrus/agent/local_vision_client.h"
 
+#include "chrome/browser/zephyrus/buildflags/dev_switches.h"
+#include "build/buildflag.h"
 #include <utility>
 
 #include "base/base64.h"
@@ -84,7 +86,8 @@ std::unique_ptr<LocalVisionClient> LocalVisionClient::CreateIfConfigured(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
-  if (!command_line.HasSwitch(kAgentVisionSwitch) ||
+  if (!zephyrus::DevSwitchesEnabled() ||
+      !command_line.HasSwitch(kAgentVisionSwitch) ||
       !command_line.HasSwitch(kAgentModelEndpointSwitch) ||
       !command_line.HasSwitch(kAgentVisionModelSwitch)) {
     return nullptr;

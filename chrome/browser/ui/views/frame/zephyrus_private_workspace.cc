@@ -144,15 +144,6 @@ void ZephyrusPrivateWorkspace::Enter(Browser* from) {
                                  weak_factory_.GetWeakPtr()));
 }
 
-void ZephyrusPrivateWorkspace::OpenPrivateTabIn(Browser* browser) {
-  if (!browser) {
-    return;
-  }
-  RunWhenUnlocked(
-      browser, base::BindOnce(&ZephyrusPrivateWorkspace::OpenPrivateTabUnlocked,
-                              weak_factory_.GetWeakPtr()));
-}
-
 void ZephyrusPrivateWorkspace::RunWhenUnlocked(
     Browser* from,
     base::OnceCallback<void(Browser*)> action) {
@@ -195,32 +186,6 @@ void ZephyrusPrivateWorkspace::OnAuthComplete(
   }
   locked_ = false;
   std::move(action).Run(from.get());
-}
-
-void ZephyrusPrivateWorkspace::OpenPrivateTabUnlocked(Browser* browser) {
-  if (!browser || !profile_) {
-    return;
-  }
-  TabStripModel* model = browser->tab_strip_model();
-  if (!model) {
-    return;
-  }
-  Profile* otr = profile_->GetPrimaryOTRProfile(/*create_if_needed=*/true);
-  if (!otr) {
-    return;
-  }
-  ApplyPrivateDefaults(otr);
-
-  // The WebContents belongs to the OTR profile even though the window does not.
-  // TabStripModel itself is profile-agnostic (one profile() reference, no
-  // assertion on insert), and BrowserTabStripModelDelegate::WillAddWebContents
-  // attaches the tab helpers for us.
-  content::WebContents::CreateParams params(otr);
-  std::unique_ptr<content::WebContents> contents =
-      content::WebContents::Create(params);
-  model->AddWebContents(std::move(contents), -1,
-                        ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                        AddTabTypes::ADD_ACTIVE);
 }
 
 void ZephyrusPrivateWorkspace::EnterUnlocked(Browser* from) {

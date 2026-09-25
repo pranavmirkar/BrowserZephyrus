@@ -8,6 +8,7 @@
 #include <string>
 
 #include "base/functional/callback.h"
+#include "ui/gfx/image/image_skia.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/cancelable_task_tracker.h"
@@ -32,6 +33,13 @@ namespace zephyrus {
 // empty string if there is none. Both search surfaces label themselves with
 // this, so they always name the engine that will actually run the query.
 std::u16string GetDefaultSearchEngineName(Profile* profile);
+
+// The bundled mark for a preset engine (Google, Bing, Yahoo, DuckDuckGo,
+// Brave), matched by prepopulate id; an empty image for anything else. Shipped
+// with the browser so the picker and the omnibox show real marks from first
+// launch, before the favicon database has ever seen these sites -- and with
+// no network request to get them.
+gfx::ImageSkia GetBundledEngineIcon(const TemplateURL* engine);
 
 }  // namespace zephyrus
 

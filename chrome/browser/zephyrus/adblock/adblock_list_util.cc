@@ -275,6 +275,27 @@ std::string ListSectionMarker(std::string_view url) {
   return base::StrCat({"! ===== ", url, " ====="});
 }
 
+bool IsTrustedScriptletSectionMarker(std::string_view line) {
+  constexpr std::string_view kOpen = "! ===== ";
+  constexpr std::string_view kClose = " =====";
+  line = base::TrimWhitespaceASCII(line, base::TRIM_ALL);
+  if (!line.starts_with(kOpen) || !line.ends_with(kClose) ||
+      line.size() < kOpen.size() + kClose.size()) {
+    return false;
+  }
+  const std::string_view label = line.substr(
+      kOpen.size(), line.size() - kOpen.size() - kClose.size());
+  // uBO's own repository, exactly: a prefix match on the full path, so a
+  // look-alike account or repository ("uBlockOrigin/uAssets-mirror") does not
+  // qualify.
+  constexpr std::string_view kUbOrigin =
+      "https://raw.githubusercontent.com/uBlockOrigin/uAssets/";
+  // The bundled snapshot predates per-URL markers and labels its uBO part
+  // this way; everything before it in that file is EasyList + EasyPrivacy.
+  constexpr std::string_view kSnapshotUbo = "ZEPHYRUS-UBO-APPEND:";
+  return label.starts_with(kUbOrigin) || label.starts_with(kSnapshotUbo);
+}
+
 std::optional<std::string_view> FindListSection(std::string_view combined,
                                                 std::string_view url) {
   const std::string marker = base::StrCat({"\n", ListSectionMarker(url), "\n"});

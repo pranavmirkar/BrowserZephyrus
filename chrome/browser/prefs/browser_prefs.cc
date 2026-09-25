@@ -1746,6 +1746,10 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   // mirrored by ZephyrusSidebarView::kWidthPrefName / kDefaultSidebarWidth,
   // and the view clamps on read so a bad value here cannot strand the panel.
   registry->RegisterIntegerPref("zephyrus.sidebar.width", 240);
+  // Where the tabs live: 0 floating sidebar, 1 horizontal strip, 2 classic
+  // sidebar (the default -- zephyrus::kDefaultUiLayout). Mirrored by
+  // zephyrus::kUiLayoutPref / zephyrus::UiLayout; read clamped.
+  registry->RegisterIntegerPref("zephyrus.ui_layout", 2);
   // Whether entering Private Workspace requires an OS unlock. Registered on the
   // REGULAR profile deliberately: the private profile is destroyed every
   // session, so a setting stored there would silently forget itself — and a

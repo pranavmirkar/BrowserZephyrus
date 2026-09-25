@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/browser_view.h"
 
+#include "chrome/browser/zephyrus/buildflags/dev_switches.h"
+#include "build/buildflag.h"
 #include <stdint.h>
 
 #include <algorithm>
@@ -176,7 +178,10 @@
 // #include "chrome/browser/ui/views/frame/zephyrus_profile_switcher.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
+#include "chrome/browser/ui/views/frame/zephyrus_search_engine_picker.h"
 #include "chrome/browser/ui/views/frame/zephyrus_sidebar_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_tab_strip.h"
+#include "chrome/browser/ui/views/frame/zephyrus_ui_layout.h"
 #include "chrome/browser/ui/views/frame/zephyrus_tab_switcher.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "chrome/browser/ui/views/frame/top_controls_slide_controller.h"
@@ -996,6 +1001,12 @@ BrowserView::BrowserView(Browser* browser)
                 base::Unretained(this))));
     zephyrus_sidebar_ =
         AddChildView(std::make_unique<ZephyrusSidebarView>(this));
+    // The horizontal-tabs layout's strip. Made for every normal window and
+    // shown only in that layout (OnZephyrusUiLayoutChanged), so switching
+    // layout is a visibility change rather than a rebuild of the window.
+    zephyrus_tab_strip_ =
+        AddChildView(std::make_unique<ZephyrusTabStrip>(this));
+    zephyrus_tab_strip_->SetVisible(false);
 
     // The agent's panel mirrors the sidebar on the other edge. Added here
     // so it shares the sidebar's lifetime and the same normal-window test:
@@ -1170,6 +1181,13 @@ BrowserView::BrowserView(Browser* browser)
       base::BindRepeating(&BrowserView::UpdateFullscreenAllowedFromPolicy,
                           base::Unretained(this), CanFullscreen()));
   UpdateFullscreenAllowedFromPolicy(CanFullscreen());
+  if (zephyrus_tab_strip_) {
+    // Every window follows the layout live, the same moment it is picked.
+    registrar_.Add(zephyrus::kUiLayoutPref,
+                   base::BindRepeating(&BrowserView::OnZephyrusUiLayoutChanged,
+                                       base::Unretained(this)));
+    OnZephyrusUiLayoutChanged();
+  }
 
   WebUIContentsPreloadManager::GetInstance()->WarmupForBrowser(browser_.get());
 
@@ -3303,7 +3321,7 @@ double BrowserView::ZephyrusSidebarRevealAmount() const {
 int BrowserView::ZephyrusSidebarColumnWidth() const {
   // Falls back to the default only before the sidebar exists (early layout
   // during construction); once it does, its width is authoritative.
-  return kZephyrusSidebarGap +
+  return ZephyrusSidebarMargin() +
          (zephyrus_sidebar_ ? zephyrus_sidebar_->GetSidebarWidth()
                             : ZephyrusSidebarView::kDefaultSidebarWidth);
 }
@@ -3332,7 +3350,17 @@ void BrowserView::ApplyZephyrusSidebarReveal() {
   // rounding (ClampFloor), so the panel's right edge and the page's left edge
   // are the same integer at every ratio. Computing this independently with
   // ClampRound disagreed by a pixel at some ratios and opened a hairline seam.
-  const int shift = ZephyrusSidebarColumnWidth() - ZephyrusSidebarOpenWidth();
+  //
+  // Only an ATTACHED (pinned) panel shares that seam with the page. A hover
+  // reveal floats over the page and reserves nothing, so there the panel's
+  // position comes from the reveal amount alone -- with the same rounding, so
+  // the motion is identical either way.
+  const int column = ZephyrusSidebarColumnWidth();
+  const int shown =
+      zephyrus_sidebar_attached_
+          ? ZephyrusSidebarOpenWidth()
+          : base::ClampFloor(column * ZephyrusSidebarRevealAmount());
+  const int shift = column - shown;
   gfx::Transform transform;
   transform.Translate(-shift, 0);
   zephyrus_sidebar_->layer()->SetTransform(transform);
@@ -3487,10 +3515,14 @@ void BrowserView::UpdateZephyrusSidebarBounds() {
 
   // The sidebar always occupies its revealed position; the slide in/out is done
   // via a layer transform on the view itself.
+  //
+  // A floating CARD: the page card's margin off the window edge, top and
+  // bottom, so the two cards sit in one frame of window ground.
+  const int margin = ZephyrusSidebarMargin();
   zephyrus_sidebar_->SetBounds(
-      client_left + kZephyrusSidebarGap, content_bounds.y() + kZephyrusSidebarGap,
+      client_left + margin, content_bounds.y() + margin,
       zephyrus_sidebar_->GetSidebarWidth(),
-      std::max(0, content_bounds.height() - 2 * kZephyrusSidebarGap));
+      std::max(0, content_bounds.height() - 2 * margin));
   if (zephyrus_sidebar_hotzone_) {
     zephyrus_sidebar_hotzone_->SetBounds(client_left, content_bounds.y(),
                                          kHotZoneWidth, content_bounds.height());
@@ -3517,10 +3549,13 @@ void BrowserView::UpdateZephyrusSidebarBounds() {
     // real web content, and a grab strip over it would swallow clicks on links
     // near the left edge. 6 covers the margin plus the card's own border, and
     // no more.
-    constexpr int kSeamGrabInside = 9;
+    // One pixel short of the panel's padding, which differs by layout:
+    // 8 for the floating card (concentric with its 24dp corner), 10 for the
+    // classic column.
+    const int kSeamGrabInside = IsZephyrusFloatingSidebar() ? 7 : 9;
     constexpr int kSeamGrabOutside = 6;
-    const int panel_right = client_left + kZephyrusSidebarGap +
-                            zephyrus_sidebar_->GetSidebarWidth();
+    const int panel_right =
+        client_left + margin + zephyrus_sidebar_->GetSidebarWidth();
     zephyrus_sidebar_resize_handle_->SetBounds(
         panel_right - kSeamGrabInside, content_bounds.y(),
         kSeamGrabInside + kSeamGrabOutside, content_bounds.height());
@@ -3530,6 +3565,72 @@ void BrowserView::UpdateZephyrusSidebarBounds() {
     zephyrus_sidebar_resize_handle_->SetVisible(
         zephyrus_sidebar_attached_ && ZephyrusSidebarRevealAmount() >= 1.0);
   }
+}
+
+bool BrowserView::IsZephyrusHorizontalLayout() const {
+  return zephyrus_tab_strip_ &&
+         zephyrus::GetUiLayout(browser_->profile()->GetPrefs()) ==
+             zephyrus::UiLayout::kHorizontalTabs;
+}
+
+bool BrowserView::IsZephyrusFloatingSidebar() const {
+  return zephyrus_tab_strip_ &&
+         zephyrus::GetUiLayout(browser_->profile()->GetPrefs()) ==
+             zephyrus::UiLayout::kFloatingSidebar;
+}
+
+int BrowserView::ZephyrusSidebarMargin() const {
+  return IsZephyrusFloatingSidebar() ? kZephyrusSidebarFloatMargin : 0;
+}
+
+int BrowserView::ZephyrusTabStripHeight() const {
+  if (!zephyrus_tab_strip_ || !zephyrus_tab_strip_->GetVisible()) {
+    return 0;
+  }
+  // Under the title bar the bar's own bottom padding is the gap above the
+  // tabs; adding the strip's as well made it twice the gap below them.
+  return ZephyrusTabStrip::kBandHeight +
+         (IsZephyrusTitlebarShowing() ? 0 : ZephyrusTabStrip::kTopInsetAlone);
+}
+
+void BrowserView::OnZephyrusUiLayoutChanged() {
+  const bool horizontal = IsZephyrusHorizontalLayout();
+  // The strip ends in its own "+", right where new tabs appear; a second one
+  // in the title bar would be the same control twice. Set before the sidebar
+  // runs below, since its compact chrome only adopts a VISIBLE button.
+  if (toolbar_ && toolbar_->zephyrus_new_tab_button()) {
+    toolbar_->zephyrus_new_tab_button()->SetVisible(!horizontal);
+  }
+  // The sidebar first: it hands the title bar's lent controls back, and they
+  // must be home before the strip's layout pass runs.
+  if (zephyrus_sidebar_) {
+    zephyrus_sidebar_->OnUiLayoutChanged(
+        zephyrus::GetUiLayout(browser_->profile()->GetPrefs()));
+  }
+  if (zephyrus_sidebar_hotzone_) {
+    zephyrus_sidebar_hotzone_->SetVisible(!horizontal);
+  }
+  if (zephyrus_sidebar_resize_handle_ && horizontal) {
+    zephyrus_sidebar_resize_handle_->SetVisible(false);
+  }
+  if (zephyrus_tab_strip_) {
+    zephyrus_tab_strip_->SetVisible(horizontal);
+  }
+  InvalidateLayout();
+}
+
+void BrowserView::UpdateZephyrusTabStripBounds() {
+  if (!zephyrus_tab_strip_ || !zephyrus_tab_strip_->GetVisible() ||
+      !contents_container_) {
+    return;
+  }
+  // The band the layout left above the page (GetZephyrusTabStripHeight), at
+  // the page's own width -- the strip's tabs start at the page's edge.
+  const gfx::Rect content = contents_container_->bounds();
+  const int height = ZephyrusTabStripHeight();
+  zephyrus_tab_strip_->SetTopInset(height - ZephyrusTabStrip::kBandHeight);
+  zephyrus_tab_strip_->SetBounds(content.x(), content.y() - height,
+                                 content.width(), height);
 }
 
 void BrowserView::OnZephyrusCompactOmniboxFocusChanged() {
@@ -4883,9 +4984,10 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
   }
   // Dev only: --zephyrus-test-compact starts the window in compact mode with
   // the sidebar pinned out, so the panel's chrome can be inspected without
-  // hovering for it. Any value also focuses the address bar after 2s, and
-  // =omnibox-type types into it too.
-  if (active && !zephyrus_test_compact_applied_ && zephyrus_sidebar_ &&
+  // hovering for it. Any value also focuses the address bar after 2s,
+  // =omnibox-type types into it too, and =menu opens the three-dots menu.
+  if (zephyrus::DevSwitchesEnabled() && active &&
+      !zephyrus_test_compact_applied_ && zephyrus_sidebar_ &&
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           "zephyrus-test-compact")) {
     zephyrus_test_compact_applied_ = true;
@@ -4910,6 +5012,36 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
                   view->toolbar_->location_bar_view()->FocusLocation(
                       /*is_user_initiated=*/true,
                       /*clear_focus_if_failed=*/false);
+                  // =flip switches the UI layout, to exercise a live switch.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "flip") {
+                    PrefService* prefs = view->browser()->profile()->GetPrefs();
+                    zephyrus::SetUiLayout(
+                        prefs, zephyrus::GetUiLayout(prefs) ==
+                                       zephyrus::UiLayout::kHorizontalTabs
+                                   ? zephyrus::UiLayout::kFloatingSidebar
+                                   : zephyrus::UiLayout::kHorizontalTabs);
+                    return;
+                  }
+                  // =engine opens the search-engine picker, to inspect it.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "engine") {
+                    if (views::View* pill = view->toolbar_->location_bar_view()
+                                                ->zephyrus_engine_pill()) {
+                      ZephyrusSearchEnginePicker::Show(
+                          view->browser()->profile(), pill, base::DoNothing());
+                    }
+                    return;
+                  }
+                  // =menu opens the three-dots menu instead, to inspect it.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "menu") {
+                    chrome::ExecuteCommand(view->browser(), IDC_SHOW_APP_MENU);
+                    return;
+                  }
                   // =omnibox-type also types, to bring up the suggestions.
                   if (base::CommandLine::ForCurrentProcess()
                           ->GetSwitchValueASCII("zephyrus-test-compact") ==
@@ -5610,6 +5742,7 @@ void BrowserView::Layout(PassKey) {
   // reads the contents container's static, fully-open position, which the
   // reveal below then shifts.
   UpdateZephyrusSidebarBounds();
+  UpdateZephyrusTabStripBounds();
   UpdateZephyrusAgentPanelBounds();
   UpdateZephyrusCustomizePanelBounds();
   ApplyZephyrusSidebarReveal();
@@ -5763,6 +5896,12 @@ void BrowserView::AddedToWidget() {
 #endif
 
   toolbar_->Init();
+  // Again, now the toolbar's controls exist: the first application ran in the
+  // constructor, before the title bar's "+" had been built, so the horizontal
+  // layout's hide of it found nothing to hide.
+  if (zephyrus_tab_strip_) {
+    OnZephyrusUiLayoutChanged();
+  }
 
   if (omnibox::IsWebUIOmniboxInBrowserViewEnabled()) {
     // When the WebUI Omnibox is embedded directly in the `BrowserView` (instead

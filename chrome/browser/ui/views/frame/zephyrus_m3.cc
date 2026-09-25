@@ -4,6 +4,8 @@
 
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 
+#include "chrome/browser/zephyrus/buildflags/dev_switches.h"
+#include "build/buildflag.h"
 #include <string>
 #include <vector>
 
@@ -269,6 +271,7 @@ void AuditConcentricity(const views::View& root) {
   // command line each time would be a cost paid by everyone to serve a
   // debugging switch almost nobody sets.
   static const bool kEnabled =
+      zephyrus::DevSwitchesEnabled() &&
       base::CommandLine::ForCurrentProcess()->HasSwitch(kAuditShapeSwitch);
   if (!kEnabled) {
     return;

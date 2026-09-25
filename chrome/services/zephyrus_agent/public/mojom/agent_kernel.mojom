@@ -109,6 +109,17 @@ struct PendingApproval {
   // The kernel's words, written to be read by a person deciding in one second.
   string reason;
   string risk;
+
+  // Where the task had got to, so that resuming continues THIS task instead of
+  // starting a new one that happens to begin with the approved call. Without
+  // it the resumed loop had no memory: after the user approved Send, the model
+  // saw the sent-mail page, did not know it had sent anything, and began
+  // writing the email again. Filled by the loop that stopped and handed back
+  // unchanged by the browser. It is the loop's own history lines -- page
+  // derived, so untrusted exactly as they were before -- and bounded on the
+  // way back in (see TaskLoop).
+  array<string> history;
+  string last_url;
 };
 
 // How a task ended. Every one of these is a stopping point -- the loop never

@@ -1150,11 +1150,16 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
     content_right =
         std::min(content_right, browser_params.visual_client_area.right());
   }
-  auto& contents_layout =
-      layout.AddChild(views().contents_container,
-                      gfx::Rect(content_left, params.visual_client_area.y(),
-                                content_right - content_left,
-                                params.visual_client_area.height()));
+  // Zephyrus: the horizontal-tabs strip sits between the title bar and the
+  // page, so the page starts that much lower. BrowserView places the strip in
+  // the band this leaves (UpdateZephyrusTabStripBounds).
+  const int zephyrus_strip = std::min(delegate().GetZephyrusTabStripHeight(),
+                                      params.visual_client_area.height());
+  auto& contents_layout = layout.AddChild(
+      views().contents_container,
+      gfx::Rect(content_left, params.visual_client_area.y() + zephyrus_strip,
+                content_right - content_left,
+                params.visual_client_area.height() - zephyrus_strip));
 
   // Maybe expand and clip the web contents to avoid issues during animation.
   if (features::UseSidePanelFlyoverAnimation()) {

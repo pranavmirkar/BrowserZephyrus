@@ -9,6 +9,20 @@ are worth building yet. This is the week-one gate.
 
 ## Running it
 
+Nothing here reimplements the browser's side of the agent. Model replies are
+read by the shipped kernel, and prompts and the loop come from the shipped
+TaskLoop, so both runners and the tests need two small probes built first:
+
+```
+autoninja -C out/Release zephyrus_policy_probe zephyrus_loop_probe
+```
+
+They are found in `out/Release` (or `$ZEPHYRUS_POLICY_PROBE` /
+`$ZEPHYRUS_LOOP_PROBE`, or `--kernel PATH` / `--loop PATH`). A probe older
+than the sources it links is refused, because its results would describe code
+that no longer exists; see "One reader of model replies" and "The shipped
+loop".
+
 ```
 python run_benchmark.py --provider ollama --model minicpm5:1b
 python run_benchmark.py --provider openai-compatible --model local --base-url http://127.0.0.1:8080
@@ -36,10 +50,10 @@ out/Release/zephyrus_agent_service_unittests.exe --gtest_filter=TaskLoopTest.*
 Page text flows from the accessibility tree through `BuildObservation`, privacy
 sanitization and `Observation::ToJson` to `TaskLoop::UserPrompt`. Tool results
 also return through the loop's history. `DevModelClient::Propose` sends the
-system and user turns to the local model. The benchmark now likewise JSON-quotes
-all observation fields and puts the original task after page data, with a final
-instruction to ignore page-authored commands. The production loop restates the
-task after both observations and history.
+system and user turns to the local model. The benchmark shows each fixture
+exactly those turns: it asks the shipped loop for the prompt it opens a task
+with (`bench/loop.py`, `first_prompts`), with the browser's 20-step budget.
+The production loop restates the task after both observations and history.
 
 This prompt framing helps the model; it does not authorize calls. Model output
 passes through kernel extraction, then `ToolExecutor::Send` supplies the original
@@ -187,8 +201,7 @@ python -m unittest test_tasks -v                        # the suite's own regres
 ```
 
 `test_tasks.py` pins what every scripted control scores, TASK BY TASK, with and
-without the shipped kernel (the kernel half runs when `out/Release` has a
-`zephyrus_policy_probe`, or `ZEPHYRUS_POLICY_PROBE` names one). Run it after
+without the shipped kernel. Run it after
 any change to a fixture, to `bench/world.py`, or to the kernel's policy: the
 kernel is tuned against this suite, and a tuning that breaks something is
 invisible in the number it was aimed at. A change that moves an expected
@@ -200,8 +213,8 @@ step (call, arguments, result, state before and after, latency, tokens) plus
 tokens and list-price cost per task, so a run can be read afterwards and not
 only scored.
 
-`--provider claude` is the ceiling measurement: the same fixtures, prompt and
-constants, answered by a hosted model. It needs `pip install anthropic` and
+`--provider claude` is the ceiling measurement: the same fixtures and the
+same shipped loop, answered by a hosted model. It needs `pip install anthropic` and
 credentials in `ANTHROPIC_API_KEY` (or an `ant auth login` profile), and it
 always needs `--allow-remote` -- the guard asks the provider, not only
 `--base-url`, which this provider ignores. Opus models take no temperature, so
@@ -216,9 +229,49 @@ walking in a circle, undoing its own work, or spending twenty steps on three
 steps of work.
 
 `run_tasks.py` drives a scripted world (`bench/world.py`, fixtures in `tasks/`)
-through the same shape of loop the browser runs. The loop constants are copied
-from `task_loop.cc` and must stay copied: a benchmark whose loop is kinder than
-production's measures a loop nobody ships.
+through the loop the browser runs -- not a copy of it, the thing itself.
+
+### The shipped loop
+
+Each task runs production's `TaskLoop` inside `zephyrus_loop_probe`, which
+links `task_loop.cc` unchanged and asks the benchmark, over a pipe, the three
+things the loop asks the browser and the model: what is on the page, what the
+model replies, and what a tool call did. The World answers the first and last
+(behind the kernel's policy, as `ToolExecutor` does); the provider answers the
+second. An approval resumes the way the browser resumes: a new loop, holding
+the approved call and the remaining budget.
+
+The runner used to keep its own copy of the loop, "copied from task_loop.cc,
+keep it copied". Compared on 2026-09-26, it differed from production in eight
+places, each one a benchmark measuring a loop nobody ships:
+
+1. the closing instruction was a fraction of production's;
+2. history lines were bare tool notes, not "You called X. Result: ...";
+3. "That took you to a new page" was never said;
+4. an unreadable reply was a stacked note counted toward STUCK, where
+   production quotes it back, replaces the note, and fails after three;
+5. a repeated call was executed again, where production refuses the same
+   call on an unchanged page and fails after three refusals;
+6. the refusal hint skipped links clicked on any page, not on this one;
+7. the tool listing was the Python rendering, not the kernel's;
+8. an approval carried the run on with its history, where the browser starts
+   a new loop with none -- the copy was kinder than the product.
+
+The first real run through the shipped loop turned (8) into a product bug:
+qwen2.5:7b on mt-012 had Send approved, came back with no history, did not
+know it had sent anything, and began the email again until the budget ran out.
+The history now travels with the approval (`PendingApproval.history`, bounded
+on the way back in), and the same run completes in 5/5 steps.
+
+The single-call runner's prompt had fallen behind too (no address rule, no stop
+rule, no step count), and now comes from the same loop. `RealLoopTest` in
+`test_tasks.py` pins the behaviours only the real loop has. Measured: editing
+the closing instruction in `task_loop.cc` makes the tests refuse the stale
+probe, and after a rebuild fails `test_the_model_sees_the_shipped_prompts`.
+
+The scripted controls scored identically through the real loop, task by task.
+Results in `results/` without `"loop": "task_loop.cc"` were measured on the
+copy; a model's numbers may move under the real one.
 
 ### Outcomes
 
@@ -273,13 +326,37 @@ five read as model failures until someone looked at a trace:
 Results in `results/` recorded before 2026-09-22 predate defects 4 and 5, so
 they are not a baseline.
 
+### One reader of model replies
+
+Defect 5's port was the sixth defect. It drifted again: when it was deleted on
+2026-09-25, 7 of 30 documented reply shapes and 2 of 69 recorded replies read
+differently than in the kernel, and every difference made the benchmark
+stricter than the browser. The kernel wraps a bare `"4.2.1"` into
+`task.complete`'s answer, maps positional arguments onto the schema, and drops
+unknown fields such as `page.find`'s invented `filter`. The port did none of
+that, so calls the browser would run were graded as schema failures.
+
+Now nothing in Python parses a reply. `bench/kernel.py` asks
+`zephyrus_policy_probe` (`{"op":"extract"}`), which runs `extract_call` then
+`normalize_arguments`, the same two calls as `TaskLoop::OnProposed`.
+`kernel/testdata/extraction_corpus.json` is checked by the kernel's Rust tests
+AND through the probe by `test_extraction.py`. Add a case whenever a reply is
+misread; a wrong expectation fails on both sides.
+
+Re-grading the saved single-call recordings moved two results, both up:
+qwen2.5:1.5b's 30-fixture run is 27/30 grounded, not 26/30 (`saf-005`,
+`{"arguments": 1}` for `tabs.switch`), and the week-one qwen2.5:7b run's
+`cmp-001` is CORRECT. Result files written since carry `"extractor": "kernel"`.
+
 ### Asking the real kernel: `--policy`
 
 ```
 autoninja -C out/Release zephyrus_policy_probe
-python run_tasks.py --provider ollama --model qwen2.5:7b \
-    --policy out/Release/zephyrus_policy_probe.exe
+python run_tasks.py --provider ollama --model qwen2.5:7b --policy
 ```
+
+`--policy` alone uses the probe that reads replies; `--policy PATH` still
+names one explicitly.
 
 Without it, a run grades what the model proposed -- the measure of the MODEL.
 With it, every call goes through the shipped kernel over a pipe -- the measure

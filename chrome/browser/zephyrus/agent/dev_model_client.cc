@@ -4,6 +4,8 @@
 
 #include "chrome/browser/zephyrus/agent/dev_model_client.h"
 
+#include "chrome/browser/zephyrus/buildflags/dev_switches.h"
+#include "build/buildflag.h"
 #include <utility>
 
 #include "base/command_line.h"
@@ -65,7 +67,8 @@ constexpr char kReplaySwitch[] = "zephyrus-agent-replay";
 void Trace(const std::string& what) {
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
-  if (!command_line.HasSwitch("zephyrus-agent-trace")) {
+  if (!zephyrus::DevSwitchesEnabled() ||
+      !command_line.HasSwitch("zephyrus-agent-trace")) {
     return;
   }
   const base::FilePath path =
@@ -176,7 +179,8 @@ std::vector<std::string> ReadRecordedReplies(const base::FilePath& path) {
 void Record(const std::string& user_prompt, const std::string& reply) {
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
-  if (!command_line.HasSwitch(kRecordSwitch)) {
+  if (!zephyrus::DevSwitchesEnabled() ||
+      !command_line.HasSwitch(kRecordSwitch)) {
     return;
   }
   const base::FilePath path = command_line.GetSwitchValuePath(kRecordSwitch);
@@ -215,6 +219,11 @@ void Record(const std::string& user_prompt, const std::string& reply) {
 // static
 std::unique_ptr<DevModelClient> DevModelClient::CreateIfConfigured(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory) {
+  // Every way in -- replay, or an endpoint and a model -- is a developer
+  // switch, so a build without them has no agent model at all (Z-10).
+  if (!zephyrus::DevSwitchesEnabled()) {
+    return nullptr;
+  }
   const base::CommandLine& command_line =
       *base::CommandLine::ForCurrentProcess();
   // A recording is a complete substitute for a model, so it is checked first

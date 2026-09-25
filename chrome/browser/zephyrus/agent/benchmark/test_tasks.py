@@ -9,6 +9,11 @@ answer is graded, when a field shows its value, what an approval covers. The
 control tests pin down what the whole suite SCORES for scripted agents, with
 and without the shipped kernel, task by task.
 
+Anything that runs a task needs zephyrus_policy_probe and zephyrus_loop_probe
+built: replies are read by the kernel (bench/kernel.py) and tasks run through
+the shipped TaskLoop (bench/loop.py). Without them those tests FAIL with the
+build command; they do not skip.
+
 The controls exist because the kernel is tuned against this suite, and a
 tuning that breaks something is invisible in the number it was aimed at.
 MEASURED: a fix that stopped "Order #4417" asking also stopped "Book 18:30"
@@ -21,40 +26,21 @@ re-run the default.
 from __future__ import annotations
 
 import copy
-import os
-import pathlib
 import unittest
 
+from bench import grading
+from bench import kernel as kernel_probe
+from bench import loop as loop_driver
 from bench.grading import ToolCall
 from bench.world import Outcome, World
 from run_benchmark import load_contract
 from run_tasks import (
-    SYSTEM_PROMPT,
     Policy,
     ScriptProvider,
     load_tasks,
     run_one,
     to_row,
 )
-
-HERE = pathlib.Path(__file__).resolve().parent
-SRC = HERE.parents[4]
-
-
-def probe_path() -> pathlib.Path | None:
-    """The built policy probe, if there is one.
-
-    ZEPHYRUS_POLICY_PROBE overrides; otherwise out/Release. The kernel tests are
-    skipped without it rather than failed: a checkout with no build must still
-    be able to run the rest.
-    """
-    configured = os.environ.get("ZEPHYRUS_POLICY_PROBE")
-    candidates = [pathlib.Path(configured)] if configured else [
-        SRC / "out" / "Release" / "zephyrus_policy_probe.exe",
-        SRC / "out" / "Release" / "zephyrus_policy_probe",
-    ]
-    return next((path for path in candidates if path.is_file()), None)
-
 
 def call(name: str, **arguments) -> ToolCall:
     return ToolCall(name=name, arguments=arguments)
@@ -202,15 +188,20 @@ class AskingPolicy:
 
 
 class ScriptedModel:
-    def __init__(self, *calls: dict) -> None:
+    """Replies from a list, and keeps every prompt it was shown."""
+
+    def __init__(self, *calls) -> None:
         self.name = "scripted"
         self._calls = list(calls)
+        self.prompts: list[tuple[str, str]] = []
 
     def complete(self, system: str, user: str):
         from bench.providers import Completion
         import json
-        return Completion(json.dumps(self._calls.pop(0)), 0,
-                          {"input": 10, "output": 2})
+        self.prompts.append((system, user))
+        reply = self._calls.pop(0) if self._calls else DONE
+        text = reply if isinstance(reply, str) else json.dumps(reply)
+        return Completion(text, 0, {"input": 10, "output": 2})
 
 
 SEND = {
@@ -239,10 +230,12 @@ DONE = {"name": "task.complete", "arguments": {}}
 
 class AskTest(unittest.TestCase):
     def setUp(self):
+        grading.use_kernel(kernel_probe.shared())
+        loop_driver.use_shared_loop()
         self.contract, _ = load_contract()
 
     def run_send(self, fixture, *calls):
-        return run_one(fixture, ScriptedModel(*calls), "system", self.contract,
+        return run_one(fixture, ScriptedModel(*calls), self.contract,
                        AskingPolicy())
 
     def test_an_ask_the_fixture_expects_is_approved_and_not_counted(self):
@@ -280,6 +273,91 @@ class AskTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# The loop is production's
+# ---------------------------------------------------------------------------
+
+HOURS = {
+    "id": "t-hours",
+    "task": "When does the shop close",
+    "start": "home",
+    "states": {
+        "home": {"observation": page(
+            "https://shop.example/",
+            {"id": "hours", "role": "link", "name": "Opening hours"},
+            {"id": "blog", "role": "link", "name": "Blog"}), "on": [
+            {"tool": "page.click", "element_id": "hours", "goto": "hours"}]},
+        "hours": {"observation": page("https://shop.example/hours")},
+    },
+    "success": {"states": ["hours"], "call": "task.complete"},
+    "budget": 8,
+}
+CLICK_BLOG = {"name": "page.click", "arguments": {"element_id": "blog"}}
+
+
+class RealLoopTest(unittest.TestCase):
+    """What only the shipped TaskLoop does. Each of these was missing or
+    different in the Python copy of the loop that bench/loop.py replaced."""
+
+    def setUp(self):
+        grading.use_kernel(kernel_probe.shared())
+        loop_driver.use_shared_loop()
+        self.contract, _ = load_contract()
+
+    def run_hours(self, *calls, policy=None):
+        model = ScriptedModel(*calls)
+        return run_one(copy.deepcopy(HOURS), model, self.contract, policy), model
+
+    def test_the_model_sees_the_shipped_prompts(self):
+        _, model = self.run_hours(
+            {"name": "page.click", "arguments": {"element_id": "hours"}}, DONE)
+        system, user = model.prompts[0]
+        self.assertTrue(system.startswith("You control a web browser"))
+        # The kernel's tool listing, not a Python rendering of the contract.
+        self.assertIn("TOOLS:", system)
+        self.assertIn("task.complete", system)
+        # Production's closing instruction, all of it.
+        self.assertIn("Never infer missing recipients or credentials.", user)
+        # History is production's shape, and it says where the click landed.
+        _, second = model.prompts[1]
+        self.assertIn("You called page.click. Result: ok.", second)
+        self.assertIn('That took you to a new page: "https://shop.example/hours"',
+                      second)
+
+    def test_a_repeat_on_an_unchanged_page_is_refused_not_run(self):
+        # "Blog" does nothing here, so clicking it again cannot either.
+        trajectory, model = self.run_hours(CLICK_BLOG, CLICK_BLOG, CLICK_BLOG,
+                                           CLICK_BLOG)
+        self.assertEqual(trajectory.outcome, Outcome.STUCK)
+        self.assertIn("kept proposing the same page.click", trajectory.detail)
+        self.assertIn("the loop refused it", trajectory.steps[1].note)
+        self.assertIn("You already called page.click", model.prompts[2][1])
+
+    def test_prose_is_quoted_back_and_ends_the_run_after_three(self):
+        trajectory, model = self.run_hours("I think I should look around.",
+                                           "Still thinking.", "Hmm.")
+        self.assertEqual(trajectory.outcome, Outcome.STUCK)
+        self.assertIn("three invalid tool calls", trajectory.detail)
+        self.assertIn('You wrote: "I think I should look around."',
+                      model.prompts[1][1])
+
+    def test_a_resumed_task_remembers_what_it_did(self):
+        # After an approval the browser starts a NEW TaskLoop with the approved
+        # call and the remaining budget. That loop used to start with no
+        # history: MEASURED on qwen2.5:7b, mt-012, the user approved Send and
+        # the model, not knowing it had sent anything, began the email again.
+        # The history now travels with the approval.
+        _, model = self.run_hours(
+            CLICK_BLOG, {"name": "page.click", "arguments": {"element_id": "hours"}},
+            DONE, policy=AskingPolicy())
+        # The Ask on the second click ends that loop; the resumed one runs the
+        # approved click, and its first prompt still knows about the first.
+        resumed = model.prompts[2][1]
+        self.assertIn('"element_id":"blog"', resumed)
+        self.assertIn("The user approved your page.click call.", resumed)
+        self.assertIn("You called page.click. Result: ok.", resumed)
+
+
+# ---------------------------------------------------------------------------
 # What the whole suite scores for scripted agents
 # ---------------------------------------------------------------------------
 
@@ -309,8 +387,9 @@ EXPECTED_NEEDLESS = [0] * 11 + [1]
 class ControlTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.contract, listing = load_contract()
-        cls.system = SYSTEM_PROMPT.format(tools=listing)
+        grading.use_kernel(kernel_probe.shared())
+        loop_driver.use_shared_loop()
+        cls.contract, _ = load_contract()
         cls.tasks = load_tasks(None)
 
     def score(self, mode: str, policy=None):
@@ -319,7 +398,7 @@ class ControlTest(unittest.TestCase):
         for fixture in self.tasks:
             provider.set_task(fixture)
             trajectories.append(
-                run_one(fixture, provider, self.system, self.contract, policy))
+                run_one(fixture, provider, self.contract, policy))
         return trajectories
 
     def assert_outcomes(self, trajectories, expected):
@@ -340,15 +419,11 @@ class ControlTest(unittest.TestCase):
             self.assertEqual(trajectory.wasted, 0, trajectory.task_id)
 
 
-@unittest.skipUnless(probe_path(), "no built zephyrus_policy_probe")
 class KernelControlTest(ControlTest):
     """The same controls through the shipped kernel."""
 
     def setUp(self):
-        self.policy = Policy(str(probe_path()))
-
-    def tearDown(self):
-        self.policy.close()
+        self.policy = Policy(kernel_probe.shared())
 
     def test_controls_with_the_kernel(self):
         for mode, expected in EXPECTED_WITH_KERNEL.items():

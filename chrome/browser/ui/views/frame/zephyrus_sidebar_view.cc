@@ -104,6 +104,7 @@
 #include "ui/gfx/shadow_value.h"
 #include "ui/gfx/skia_paint_util.h"
 #include "ui/views/masked_targeter_delegate.h"
+#include "ui/views/view_shadow.h"
 #include "ui/views/view_targeter.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/views/layout/table_layout.h"
@@ -123,11 +124,22 @@ constexpr int kRowHeight = 36;
 // only have applied to one row in a column of rounded rectangles. What says
 // "this one" is still the container -- its colour, not its shape.
 
-// Square. The sidebar is not a card any more — it is a flush column of window
-// chrome running from the toolbar to the bottom edge, so there is no free side
-// for a corner to round against. Was 18 when it floated over the page, then 8
-// briefly when it was still being treated as a panel.
-constexpr int kPanelCornerRadius = 0;
+// Two shapes, one per sidebar layout (zephyrus::UiLayout):
+//
+// FLOATING: a card in the page card's margin with a gap all round. Concentric
+// with what it holds (Rule 2): the rows' 16dp ends sit kFloatPadding in, so
+// the card is 16 + 8 = 24 -- the popup radius, and a whole number of device
+// pixels at 125% and 150%.
+//
+// CLASSIC (the default): square, 10dp padding. A flush column of window chrome
+// running from the toolbar to the bottom edge, with no free side for a corner
+// to round against.
+constexpr int kFloatPadding = 8;
+constexpr int kFloatCornerRadius = 24;
+constexpr int kClassicPadding = 10;
+// Floating over the page (a hover reveal, not pinned), the card is raised:
+// M3 level 3.
+constexpr int kFloatElevation = 6;
 constexpr int kFaviconSize = 16;
 // M3 Expressive SEGMENTED list. A row is a filled segment, not a label
 // floating on the panel: 2dp between segments, small inner corners, and the
@@ -1743,12 +1755,13 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   // themed fill below as a fallback when the native effect is unavailable.
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
-  layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kPanelCornerRadius));
-  SetBackground(
-      views::CreateRoundedRectBackground(GetPanelColor(), kPanelCornerRadius));
+  // Classic shape to start with; ApplyPanelShape() switches it when the
+  // floating layout is chosen.
+  SetBackground(views::CreateRoundedRectBackground(GetPanelColor(), 0));
 
   auto* box_layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kVertical, gfx::Insets(10), kRowSpacing));
+      views::BoxLayout::Orientation::kVertical, gfx::Insets(kClassicPadding),
+      kRowSpacing));
 
   // Quick-actions card REMOVED.
   //
@@ -2070,9 +2083,31 @@ void ZephyrusSidebarView::DropOmniboxOverlay() {
 void ZephyrusSidebarView::OnPaintBackground(gfx::Canvas* canvas) {
   // The desktop blur belongs to DWM, outside Chromium's compositor. A Views
   // backdrop filter here can only sample the window's own layers.
-  if (!zephyrus::HasWindowBackdrop(GetWidget())) {
+  //
+  // Floating (not attached) the card is over the PAGE, not over window ground
+  // the desktop shows through, so it must be opaque there: transparent, the
+  // page's text would run straight through the tab list.
+  if (!zephyrus::HasWindowBackdrop(GetWidget()) ||
+      !browser_view_->IsZephyrusSidebarAttached()) {
     views::View::OnPaintBackground(canvas);
   }
+  if (!floating_) {
+    return;  // The classic column is window chrome, not a card.
+  }
+  // The card's edge: an M3 outlined card. Its fill is the window's own
+  // surface (measured: panel and ground both 31,32,32), so without an edge a
+  // pinned card was indistinguishable from the frame around it and the
+  // "floating" layout looked like no change at all. A hairline marks the card
+  // in every state without recolouring the rows it holds, which are toned
+  // against that fill.
+  cc::PaintFlags edge;
+  edge.setAntiAlias(true);
+  edge.setStyle(cc::PaintFlags::kStroke_Style);
+  edge.setStrokeWidth(1.f);
+  edge.setColor(zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant));
+  gfx::RectF rect(GetLocalBounds());
+  rect.Inset(0.5f);
+  canvas->DrawRoundRect(rect, PanelRadius() - 0.5f, edge);
 }
 
 void ZephyrusSidebarView::OnThemeChanged() {
@@ -2080,7 +2115,7 @@ void ZephyrusSidebarView::OnThemeChanged() {
   // The panel's own fill too: it was set once, in the constructor, before the
   // view had a colour provider, and never refreshed on a theme change.
   SetBackground(
-      views::CreateRoundedRectBackground(GetPanelColor(), kPanelCornerRadius));
+      views::CreateRoundedRectBackground(GetPanelColor(), PanelRadius()));
   RebuildFavorites();
   RebuildTabList();
 }
@@ -2093,12 +2128,16 @@ void ZephyrusSidebarView::MouseMovedOutOfHost() {
 }
 
 void ZephyrusSidebarView::Reveal() {
-  if (revealed_) {
+  if (revealed_ || hidden_by_layout_) {
     return;
   }
   revealed_ = true;
   reveal_poll_timer_.Stop();
-  browser_view_->SetZephyrusSidebarAttached(true);
+  // FLOATING sidebar: a hover reveal slides the card OVER the page and the
+  // page keeps its width; only a pinned panel takes the column beside it.
+  // Resizing the page on every hover was also the most expensive thing a
+  // hover could do.
+  browser_view_->SetZephyrusSidebarAttached(pinned_ || !floating_);
   // Zero duration under reduced motion, matching the layer slide below, which
   // has always honoured it. Without this the panel would snap into place while
   // the page's edge kept easing open behind it — reduced motion half-applied
@@ -2123,7 +2162,15 @@ void ZephyrusSidebarView::Reveal() {
 }
 
 void ZephyrusSidebarView::TogglePinned() {
+  if (hidden_by_layout_) {
+    return;
+  }
   pinned_ = !pinned_;
+  // Pinned, the card docks beside the page; unpinned it floats over it.
+  if (revealed_) {
+    browser_view_->SetZephyrusSidebarAttached(pinned_ || !floating_);
+    UpdateFloatShadow();
+  }
   if (pinned_) {
     reveal_poll_timer_.Stop();
     // Pinning while tucked must take effect immediately, not on next hover.
@@ -2168,6 +2215,7 @@ void ZephyrusSidebarView::TuckAway() {
   }
   revealed_ = false;
   SetCanProcessEventsWithinSubtree(false);
+  float_shadow_.reset();
 
   reveal_poll_timer_.Start(FROM_HERE, base::Milliseconds(100), this,
                            &ZephyrusSidebarView::OnRevealPoll);
@@ -2193,6 +2241,7 @@ void ZephyrusSidebarView::AnimationEnded(const gfx::Animation* animation) {
   if (!revealed_) {
     browser_view_->SetZephyrusSidebarAttached(false);
   }
+  UpdateFloatShadow();
   // Clearing the pin here is the one real resize of the interaction, spent with
   // the panel stationary.
   browser_view_->UpdateZephyrusSidebarPin();
@@ -2202,7 +2251,7 @@ void ZephyrusSidebarView::AnimationEnded(const gfx::Animation* animation) {
 void ZephyrusSidebarView::OnWindowActivationChanged(bool active) {
   // The poll runs only while tucked and unpinned; Reveal() and pinning stop it
   // themselves, and TuckAway() starts it.
-  if (pinned_ || revealed_) {
+  if (pinned_ || revealed_ || hidden_by_layout_) {
     return;
   }
   if (!active) {
@@ -2216,6 +2265,10 @@ void ZephyrusSidebarView::OnWindowActivationChanged(bool active) {
 }
 
 void ZephyrusSidebarView::OnRevealPoll() {
+  if (hidden_by_layout_) {
+    reveal_poll_timer_.Stop();
+    return;
+  }
   if (pinned_) {
     reveal_poll_timer_.Stop();  // Nothing to poll for; it is already out.
     return;
@@ -2472,7 +2525,85 @@ void ZephyrusSidebarView::EnsureAddWorkspaceButton() {
 }
 
 bool ZephyrusSidebarView::IsCompactMode() const {
-  return browser_view_ && !browser_view_->IsZephyrusTitlebarPinned();
+  // Compact mode belongs to the sidebar layout. In the horizontal layout the
+  // title-bar pin only hides the title bar; nothing is lent to this panel,
+  // which is not even on screen.
+  return browser_view_ && !browser_view_->IsZephyrusTitlebarPinned() &&
+         !hidden_by_layout_;
+}
+
+int ZephyrusSidebarView::PanelRadius() const {
+  return floating_ ? kFloatCornerRadius : 0;
+}
+
+void ZephyrusSidebarView::ApplyPanelShape() {
+  layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(PanelRadius()));
+  SetBackground(
+      views::CreateRoundedRectBackground(GetPanelColor(), PanelRadius()));
+  static_cast<views::BoxLayout*>(GetLayoutManager())
+      ->set_inside_border_insets(
+          gfx::Insets(floating_ ? kFloatPadding : kClassicPadding));
+  InvalidateLayout();
+  SchedulePaint();
+}
+
+void ZephyrusSidebarView::OnUiLayoutChanged(zephyrus::UiLayout layout) {
+  const bool floating = layout == zephyrus::UiLayout::kFloatingSidebar;
+  if (floating != floating_) {
+    floating_ = floating;
+    ApplyPanelShape();
+    float_shadow_.reset();
+    // A revealed panel changes its relationship to the page on the spot:
+    // the classic column always takes the page's column, a floating card
+    // only when pinned.
+    if (revealed_) {
+      browser_view_->SetZephyrusSidebarAttached(pinned_ || !floating_);
+      UpdateFloatShadow();
+    }
+  }
+  const bool horizontal = layout == zephyrus::UiLayout::kHorizontalTabs;
+  if (horizontal == hidden_by_layout_) {
+    return;
+  }
+  hidden_by_layout_ = horizontal;
+  if (horizontal) {
+    // Out of the way completely: not pinned, not revealed, not polling the
+    // cursor, and not holding the page's column.
+    DropOmniboxOverlay();
+    reveal_holds_ = 0;
+    pinned_ = false;
+    revealed_ = false;
+    reveal_poll_timer_.Stop();
+    mouse_watcher_->Stop();
+    reveal_animation_.Reset(0.0);
+    float_shadow_.reset();
+    SetCanProcessEventsWithinSubtree(false);
+    browser_view_->SetZephyrusSidebarAttached(false);
+    SetVisible(false);
+  } else {
+    SetVisible(true);
+    reveal_poll_timer_.Start(FROM_HERE, base::Milliseconds(50), this,
+                             &ZephyrusSidebarView::OnRevealPoll);
+  }
+  // Lends the title bar's controls, or hands them back.
+  OnCompactModeChanged();
+}
+
+void ZephyrusSidebarView::UpdateFloatShadow() {
+  // Only while resting OUT and floating. During the slide the shadow would
+  // not move with the panel -- it follows the layer's bounds, and the slide
+  // is a transform -- so it would sit in place ahead of the card.
+  const bool want = revealed_ && floating_ && !hidden_by_layout_ &&
+                    !browser_view_->IsZephyrusSidebarAttached() &&
+                    !reveal_animation_.is_animating();
+  if (!want) {
+    float_shadow_.reset();
+    return;
+  }
+  if (!float_shadow_) {
+    float_shadow_ = std::make_unique<views::ViewShadow>(this, kFloatElevation);
+    float_shadow_->SetRoundedCornerRadius(kFloatCornerRadius);
+  }
 }
 
 void ZephyrusSidebarView::OnCompactModeChanged() {
@@ -3527,7 +3658,7 @@ void ZephyrusSidebarView::SetZephyrusColor(std::optional<SkColor> page_color) {
   }
   page_color_ = page_color;
   SetBackground(
-      views::CreateRoundedRectBackground(GetPanelColor(), kPanelCornerRadius));
+      views::CreateRoundedRectBackground(GetPanelColor(), PanelRadius()));
   // Row recolor only matters when visible; Reveal() rebuilds with the latest
   // colors anyway.
   if (revealed_) {

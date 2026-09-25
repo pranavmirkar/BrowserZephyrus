@@ -73,17 +73,11 @@ class ZephyrusPrivateWorkspace : public base::SupportsUserData::Data,
   // window keeps its tabs — this is a switch, not a close.
   void Leave();
 
-  // PW-6: opens an off-the-record tab inside `browser`'s own tab strip, rather
-  // than in a separate private window. This is the real in-window mechanism —
-  // one window holding tabs from two profiles.
-  //
-  // Goes through the same unlock gate as Enter(): both are doors into private
-  // data, and a lock that only guards one of two doors is decorative.
-  //
-  // Safe to call only once the per-tab guards are in place: the session service
-  // skips OTR tabs (session_service_base.cc) and the omnibox resolves its
-  // profile from the active tab (ChromeAutocompleteProviderClient).
-  void OpenPrivateTabIn(Browser* browser);
+  // (Z-09) There is deliberately NO in-window private tab. An off-the-record
+  // tab inside a regular window was built once (PW-6) and removed unwired: a
+  // window's session state is recorded per window, so a private tab sharing
+  // one with regular tabs is one missed guard away from writing private URLs
+  // to the session file. Private browsing is always its own window (Enter()).
 
   // True while the private window exists (whether or not it is on screen).
   bool IsOpen() const { return private_browser_ != nullptr; }
@@ -96,13 +90,11 @@ class ZephyrusPrivateWorkspace : public base::SupportsUserData::Data,
 
   // The single unlock gate. Runs `action` immediately when no unlock is
   // required, otherwise prompts and runs it only on success. Every door into
-  // private data goes through here — Enter() and OpenPrivateTabIn() both.
+  // private data goes through here.
   void RunWhenUnlocked(Browser* from,
                        base::OnceCallback<void(Browser*)> action);
   // The actual swap, once any required unlock has succeeded.
   void EnterUnlocked(Browser* from);
-  // In-window private tab, once any required unlock has succeeded.
-  void OpenPrivateTabUnlocked(Browser* browser);
   // `from` is weak: the prompt is modal and async, and the window behind it can
   // be closed while it is up.
   void OnAuthComplete(base::WeakPtr<Browser> from,
