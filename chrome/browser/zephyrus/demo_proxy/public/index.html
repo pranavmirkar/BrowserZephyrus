@@ -41,8 +41,9 @@
   <div class="kicker">AssemblyAI · Voice Agent Hackathon</div>
   <h1>Zephyrus</h1>
   <p class="tag">The browser you talk to.</p>
-  <p>A Chromium browser with a built-in agent. Say <b>“Hey Zep”</b> and what you want; AssemblyAI turns your voice into text and the agent does it on the real page in front of you, with a mascot as its cursor. It asks you only before spending money and at sign-in.</p>
-  <a class="cta" href="#video">Watch the demo</a><a class="cta ghost" href="#how">How it works</a>
+  <p>A Chromium browser with a built-in agent. Say <b>“Hey Zep”</b> (or hold Ctrl+Shift+Space) and what you want; AssemblyAI turns your voice into text and the agent does it on the real page in front of you, with a mascot as its cursor. It asks you only before spending money and at sign-in.</p>
+  <a class="cta" id="download" href="https://drive.google.com/file/d/1Wc9J9f_DCmVf3Ha93z5dk5j1As-NNoPz/view?usp=sharing">Download for Windows</a><a class="cta ghost" href="#video">Watch the demo</a><a class="cta ghost" href="#how">How it works</a>
+  <p class="note">Windows 10/11, 64-bit, about 119 MB. It is not code-signed, so SmartScreen will warn: choose “More info”, then “Run anyway”. Nothing needs configuring.</p>
 </header>
 
 <section id="video">
@@ -57,13 +58,13 @@
     <div class="card"><b>Say it</b>Wake phrase and Voice Lock run on your computer. Nothing is sent to AssemblyAI until “Hey Zep” matches a voice you enrolled; then only the command is transcribed.<br><br><img class="shot" src="img/voice_answer.png" alt="A spoken task's answer appears above the mascot"></div>
     <div class="card"><b>Watch it</b>The mascot is the pointer. It clicks and types on the real page through the browser's input pipeline, and what it is doing appears in a bubble above it.<br><br><img class="shot" src="img/agent_typing.png" alt="The mascot filling in a form"></div>
     <div class="card"><b>Approve what matters</b>It filled the whole order form, then stopped at “Submit order”: purchase-shaped buttons need a click. Passwords and card numbers are never typed by the agent.<br><br><img class="shot" src="img/approval.png" alt="Approval prompt above the mascot"></div>
-    <div class="card"><b>Voice Lock</b>Record “Hey Zep” five times per person. It keeps features of the phrase, never audio, encrypted by Windows. A convenience lock, not biometric security: money and sign-in never depend on it.<br><br><img class="shot" src="img/voice_dialog.png" alt="The Hey Zep and voices dialog"></div>
+    <div class="card"><b>Voice Lock</b>Record “Hey Zep” three times per person, on the microphone you pick. It keeps features of the phrase, never audio, encrypted by Windows. A convenience lock, not biometric security: money and sign-in never depend on it.<br><br><img class="shot" src="img/voice_dialog.png" alt="The Hey Zep and voices dialog"></div>
   </div>
 </section>
 
 <section>
   <h2>Measured, not claimed</h2>
-  <p>Twelve real tasks through the shipped browser with a live model (Claude Opus 5.5), each checked against what the page actually received: 12 of 12 passed, 14 seconds per task on average, including a Hinglish command and a page hiding a prompt injection.</p>
+  <p>Twelve real tasks through the shipped browser with a live model (Claude Opus 5.5), each checked against what the page actually received: 12 of 12 passed, 14 seconds per task on average. The demo build defaults to Claude Sonnet 5.5, which passed 10 of 12 (the misses are model quality), including a Hinglish command and a page hiding a prompt injection.</p>
   <table>
     <tr><th>Task</th><th>Result</th><th>Time</th></tr>
     <tr><td>Open a link on a page</td><td class="ok">PASS</td><td>12 s</td></tr>
@@ -85,6 +86,13 @@
 <section>
   <h2>Try it</h2>
   <p>Zephyrus is a desktop browser (Windows). Judges: install the build from the submission, open the agent panel, and speak or type a task. Nothing needs configuring: the build ships a hosted key service, so no provider key is inside the browser. Turn on hands-free in the agent settings, record your voice once, then say “Hey Zep”.</p>
+</section>
+
+<section id="download-section">
+  <h2>Try it</h2>
+  <p>Download the installer, run it, open the agent panel and type a task, hold <b>Ctrl+Shift+Space</b> and speak it, or set up “Hey Zep” with the microphone icon beside the gear.</p>
+  <a class="cta" href="https://drive.google.com/file/d/1Wc9J9f_DCmVf3Ha93z5dk5j1As-NNoPz/view?usp=sharing">Download for Windows</a><a class="cta ghost" href="https://github.com/pranavmirkar/BrowserZephyrus/releases/download/v0.1.0-hackathon/Zephyrus-Setup-hackathon.exe">Or from GitHub</a>
+  <p class="note">SHA-256 <code>DE19732C691BDFCB4102B38B4786F80EADA31A403FC3AEEBD8FF02B6E8C3DEB2</code></p>
 </section>
 
 <footer>Built by Lazarus, India first. Chromium 151 fork · Rust agent kernel · C++ browser · AssemblyAI speech · Claude reasoning · Vercel key-holding proxy.</footer>
