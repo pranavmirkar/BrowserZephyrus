@@ -24,6 +24,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/values.h"
+#include "chrome/browser/zephyrus/agent/audio_devices.h"
 #include "net/base/load_flags.h"
 #include "net/base/url_util.h"
 #include "net/http/http_response_headers.h"
@@ -131,8 +132,21 @@ bool VoiceInput::OpenDevice() {
   format.wBitsPerSample = 16;
   format.nBlockAlign = 2;
   format.nAvgBytesPerSec = kSampleRate * 2;
-  if (waveInOpen(&device->handle, WAVE_MAPPER, &format, 0, 0,
-                 CALLBACK_NULL) != MMSYSERR_NOERROR) {
+  // The chosen microphone, converted to 16 kHz mono by the mapper (WAVE_MAPPED):
+  // a named device usually cannot be opened in that format directly. If it will
+  // not open at all -- unplugged since it was chosen -- the Windows default does,
+  // so a stale choice never leaves the person without a microphone.
+  const UINT wanted = ResolveAudioInput(device_name_);
+  MMRESULT opened = MMSYSERR_ERROR;
+  if (wanted != WAVE_MAPPER) {
+    opened = waveInOpen(&device->handle, wanted, &format, 0, 0,
+                        CALLBACK_NULL | WAVE_MAPPED);
+  }
+  if (opened != MMSYSERR_NOERROR) {
+    opened = waveInOpen(&device->handle, WAVE_MAPPER, &format, 0, 0,
+                        CALLBACK_NULL);
+  }
+  if (opened != MMSYSERR_NOERROR) {
     return false;
   }
   for (size_t i = 0; i < kBuffers; ++i) {

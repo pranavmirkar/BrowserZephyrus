@@ -14,6 +14,7 @@
 #include "base/callback_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/timer/timer.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
@@ -24,6 +25,7 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "ui/events/event_handler.h"
 #include "ui/views/view.h"
 
 class BrowserView;
@@ -42,6 +44,10 @@ class ProgressBar;
 class ScrollView;
 class Textfield;
 }  // namespace views
+
+namespace aura {
+class Window;
+}
 
 namespace zephyrus::agent {
 
@@ -90,6 +96,8 @@ class ZephyrusAgentPanel : public views::View,
   // Where the model settings bubble anchors. Test-facing as well: the capture
   // harness opens the bubble against it.
   views::View* settings_button();
+  // The microphone-and-gear button beside it: the "Hey Zep" popup opens here.
+  views::View* voice_button();
 
   // Runs `task` as if typed into the panel. Dev hook only
   // (--zephyrus-test-agent-task); see BrowserView.
@@ -161,7 +169,7 @@ class ZephyrusAgentPanel : public views::View,
   void RemovedFromWidget() override;
 
   // ui::AcceleratorTarget:
-  //   Ctrl+Shift+Space: talk (press again to send), the panel's mic button.
+  //   Ctrl+Shift+Space: HOLD to talk, let go to send (see KeyWatcher).
   //   Ctrl+Shift+Comma: mute or unmute "Hey Zep" for this window.
   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
   bool CanHandleAccelerators() const override;
@@ -180,6 +188,9 @@ class ZephyrusAgentPanel : public views::View,
 
  private:
   void StartTask(const std::string& task);
+  // A request to move the mascot, typed or spoken. True when `text` was one
+  // and has been dealt with; false leaves it to be a task.
+  bool HandleMascotCommand(const std::string& text);
   void OnTaskFinished(mojom::TaskOutcomePtr outcome);
 
   void AddLine(const std::string& text, LineKind kind);
@@ -220,8 +231,36 @@ class ZephyrusAgentPanel : public views::View,
   base::TimeDelta typical_tab_action_ = base::Milliseconds(350);
   base::TimeTicks acting_since_;
 
-  // Voice commands: press to talk, press again to send what was said.
+  // Voice commands. The mic button: press to talk, press again to send. The
+  // keys: HOLD Ctrl+Shift+Space while speaking, let go to send -- no "Hey Zep"
+  // needed.
   void OnMic();
+  // Hold to talk. Key presses cannot say when they were let go of through an
+  // accelerator, so the window's key events are watched before the page sees
+  // them (the same way the mascot watches the mouse).
+  class KeyWatcher : public ui::EventHandler {
+   public:
+    explicit KeyWatcher(ZephyrusAgentPanel* panel) : panel_(panel) {}
+    void OnKeyEvent(ui::KeyEvent* event) override;
+
+   private:
+    const raw_ptr<ZephyrusAgentPanel> panel_;
+  };
+  void HandleKey(ui::KeyEvent* event);
+  void BeginHoldToTalk(base::TimeTicks at);
+  void EndHoldToTalk(base::TimeTicks at);
+  void OnHoldTimeout();
+  // Stop and send (or, for a tap too short to have said anything, throw away).
+  void FinishHold(bool tap);
+  void CancelVoice();
+  KeyWatcher key_watcher_{this};
+  raw_ptr<aura::Window> watched_window_ = nullptr;
+  bool hold_active_ = false;
+  // Let go before the microphone had finished opening.
+  bool release_pending_ = false;
+  bool release_was_tap_ = false;
+  base::TimeTicks hold_started_;
+  base::OneShotTimer hold_timeout_;
   void OnVoiceKey(scoped_refptr<os_crypt_async::Encryptor> encryptor);
   void OnTranscript(bool ok, const std::string& text);
 
@@ -241,6 +280,7 @@ class ZephyrusAgentPanel : public views::View,
   raw_ptr<views::ImageView> header_icon_ = nullptr;
   raw_ptr<views::Label> title_ = nullptr;
   raw_ptr<views::ImageButton> settings_button_ = nullptr;
+  raw_ptr<views::ImageButton> voice_button_ = nullptr;
   raw_ptr<views::ImageButton> new_chat_button_ = nullptr;
   raw_ptr<views::ImageButton> close_button_ = nullptr;
   raw_ptr<views::ProgressBar> progress_ = nullptr;

@@ -131,6 +131,7 @@ void ZephyrusHandsFree::Start() {
   prefs_.Add(kHandsFreePref, on_pref);
   prefs_.Add(kVoiceLockPref, on_pref);
   prefs_.Add(kVoiceSensitivityPref, on_pref);
+  prefs_.Add(kMicDevicePref, on_pref);
   Refresh();
 }
 
@@ -194,6 +195,15 @@ void ZephyrusHandsFree::OnPrefChanged() {
   // A change in the settings is another try, after a microphone that would not
   // open.
   failed_ = false;
+  // A different microphone was chosen: close the open one so Refresh() opens the
+  // new one.
+  if (listening_ && browser_view_ && browser_view_->browser() &&
+      browser_view_->browser()->profile()->GetPrefs()->GetString(
+          kMicDevicePref) != mic_name_) {
+    mic_->StopStreaming();
+    engine_->Reset();
+    SetListening(false);
+  }
   Refresh();
 }
 
@@ -227,6 +237,8 @@ void ZephyrusHandsFree::Refresh() {
     if (failed_) {
       return;
     }
+    mic_name_ = prefs->GetString(kMicDevicePref);
+    mic_->SetDeviceName(mic_name_);
     if (!mic_->StartStreaming(base::BindRepeating(
             &ZephyrusHandsFree::OnAudio, base::Unretained(this)))) {
       failed_ = true;

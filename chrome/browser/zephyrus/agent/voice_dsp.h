@@ -59,9 +59,64 @@ Frames ExtractFrames(base::span<const float> samples);
 
 // [first, last) of the frames that are speech: within `margin_db` of the
 // loudest frame and above `floor_db`. Empty (0, 0) when there are no frames.
+//
+// The line is also kept above the room: a few dB over the quiet fifth of the
+// recording. Against a quiet room that changes nothing; against a loud one it is
+// the difference between finding the speech and calling everything speech.
+//
+// `phrase_only` returns just the stretch around the loudest frame, for a
+// recording of one short phrase; without it, from the first frame over the line
+// to the last, which is what "the start of an utterance" needs when a command
+// follows the phrase.
 std::pair<size_t, size_t> SpeechSpan(base::span<const float> energy_db,
                                      float margin_db = 25.0f,
-                                     float floor_db = -60.0f);
+                                     float floor_db = -60.0f,
+                                     bool phrase_only = false);
+
+// Is this hop speech? One noise-floor follower shared by the enrolment recorder
+// and the always-listening engine, so they cannot disagree about what a person
+// sounds like against their room.
+//
+// It smooths over four hops and needs a smaller margin over the floor when the
+// floor is high. MEASURED on a laptop's built-in array microphone: the room and
+// the microphone's own gain put the noise at -25 dB, speech peaked at -12 dB,
+// and the noise jittered by +-4 dB from one 10 ms hop to the next. A fixed 10 dB
+// margin on raw hops saw almost none of the speech, and the recorder never found
+// the end of a phrase because the "quiet" between words kept crossing the line.
+class HopVad {
+ public:
+  HopVad();
+  ~HopVad();
+  HopVad(const HopVad&);
+  HopVad& operator=(const HopVad&);
+
+  // `energy_db` is the raw 10*log10(mean square) of one hop. `freeze_floor`
+  // stops the floor rising, for a caller that already knows speech is going on.
+  bool Update(float energy_db, bool freeze_floor);
+  void Reset();
+  float floor_db() const { return floor_db_; }
+  // Smoothed level of the latest hop, for a meter.
+  float level_db() const { return smooth_db_; }
+  // How many times the floor has been moved to the room after being found far
+  // below it. Audio heard around one of those is not to be trusted.
+  int reanchors() const { return reanchors_; }
+
+ private:
+  std::array<float, 4> power_ = {};
+  int filled_ = 0;
+  int next_ = 0;
+  float floor_db_ = -70.0f;
+  float smooth_db_ = -100.0f;
+  int warmup_ = 30;
+  // The last five seconds of smoothed levels: a floor learned from the
+  // digital silence a device gives before it starts (or from a room that got
+  // louder) is far below the room, and a follower that only creeps up 15 dB
+  // never reaches it.
+  std::vector<float> window_;
+  int since_check_ = 0;
+  int reanchors_ = 0;
+  int loud_hops_ = 0;
+};
 
 // The features a template or a query is compared on: the frames normalised for
 // the mean and spread of THEIR OWN span (so the level of the microphone and of

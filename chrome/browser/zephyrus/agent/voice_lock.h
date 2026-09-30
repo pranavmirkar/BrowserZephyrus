@@ -29,7 +29,7 @@ enum class Sensitivity { kStrict, kBalanced, kRelaxed };
 float ThresholdScale(Sensitivity sensitivity);
 
 inline constexpr size_t kMaxProfiles = 6;
-inline constexpr size_t kEnrollmentSamples = 5;
+inline constexpr size_t kEnrollmentSamples = 3;
 inline constexpr size_t kMaxTemplates = 12;
 inline constexpr size_t kMaxNameLength = 32;
 

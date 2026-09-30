@@ -7,7 +7,7 @@ India-first browser fork of Chromium, by **Lazarus** ([thelazarus.in](https://th
 
 **The browser you talk to.** An India-first Chromium 151 fork by **Lazarus** with a built-in voice-driven agent. Built for the AssemblyAI Voice Agent Hackathon.
 
-Say "Hey Zep" and a task. AssemblyAI transcribes it, and an agent does it on the real page in front of you, with a mascot as its cursor. It asks you only before spending money and at sign-in.
+Say "Hey Zep" and a task. AssemblyAI transcribes it, and an agent does it on the real page in front of you, with a mascot as its cursor (Zep). Zep can be picked up and moved out of the way with the mouse, or by voice ("move to the left"). It asks you only before spending money and at sign-in.
 
 ## What is in this repo
 
@@ -23,19 +23,19 @@ An **overlay**: only the files changed or added on top of upstream Chromium, not
 - `agent/hands_free.*`, `voice_dsp.*`, `voice_lock.*`, `phrase_recorder.*` – "Hey Zep": on-device wake detection (MFCC + DTW against the user's own recordings) and **Voice Lock**. Nothing is sent to AssemblyAI until the phrase matches an enrolled voice; then only the command that follows is transcribed (`voice_input.*`).
 - `agent/voice_library.*`, `voice_profile_store.*` – named voices, stored as features (never audio), encrypted with the OS keystore, on this computer only.
 - `ui/views/frame/zephyrus_hands_free.*`, `zephyrus_voice_setup.*` – the listener for a window and the "Hey Zep and voices" dialog.
-- Ctrl+Shift+Space talks without the phrase; Ctrl+Shift+Comma mutes.
+- **Hold Ctrl+Shift+Space** and speak, let go to send: no phrase needed. Ctrl+Shift+Comma mutes "Hey Zep". Adding a voice takes three recordings, with a microphone picker (works on noisy laptop microphones: the speech detector follows the room's noise floor).
 
 ### The rest of the browser
 Workspaces with real storage isolation, a Private Workspace, built-in ad and tracker blocking, a Material 3 Expressive UI, and a Privacy Intelligence panel.
 
 ## Measured
 
-Twelve real tasks through the shipped browser with a live model, checked against what the page actually received (a form by the POST the server got, a prompt injection by whether an address was ever requested): **12 of 12 passed, 14 s per task on average**, including a Hinglish command. The harness is in `chrome/browser/zephyrus/agent/benchmark/`. Running it found and fixed three real bugs, each with a regression test.
+Twelve real tasks through the shipped browser with a live model, checked against what the page actually received (a form by the POST the server got, a prompt injection by whether an address was ever requested), including a Hinglish command. **Claude Opus 5.5: 12 of 12, 14 s per task on average. Claude Sonnet 5.5 (the default in the demo build): 10 of 12**; its two misses are model quality, not harness faults. A Notion-style editor task (title and body are separate fields, focus moves after Enter) was added after a real failure and passes on Sonnet. The harness is in `chrome/browser/zephyrus/agent/benchmark/`. Running it found and fixed real bugs, each with a regression test.
 
-Unit tests: `zephyrus_agent_unittests` (230), `zephyrus_agent_service_unittests` (72), Rust `kernel_unittests` (140).
+Unit tests: `zephyrus_agent_unittests` (247), `zephyrus_agent_service_unittests` (74), Rust `kernel_unittests` (141).
 
 ## Honest limits
-- Voice Lock is a lightweight matcher, not biometric security. A replay or a close impersonator can pass it, which is why payments and sign-in never depend on it. It was tuned on synthetic voices and needs more real-voice testing.
+- Voice Lock is a lightweight matcher, not biometric security. A replay or a close impersonator can pass it, which is why payments and sign-in never depend on it. It was first tuned on synthetic voices, then checked on real recordings from three microphones (built-in array, Bluetooth earbuds, a noise-cancelling virtual input); it needs more speakers and rooms.
 - Not code-signed, no updater yet, and the Chromium base is out of its support window. Fine for a hackathon, not for production.
 - The hosted demo key service (`chrome/browser/zephyrus/demo_proxy/`) exists so judges need no setup: no provider key is inside the browser, only a proxy address and an expiring token.
 

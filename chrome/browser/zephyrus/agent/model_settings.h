@@ -82,6 +82,9 @@ inline constexpr char kHandsFreePref[] = "zephyrus.voice.hands_free";
 inline constexpr char kVoiceLockPref[] = "zephyrus.voice.lock";
 // 0 strict, 1 balanced, 2 relaxed.
 inline constexpr char kVoiceSensitivityPref[] = "zephyrus.voice.sensitivity";
+// The microphone the person chose, by the name Windows shows for it. Empty means
+// the Windows default; a name that is no longer plugged in falls back to it.
+inline constexpr char kMicDevicePref[] = "zephyrus.voice.mic";
 // The first-run invitation to set up "Hey Zep" has been shown.
 inline constexpr char kVoiceOnboardingPref[] = "zephyrus.voice.onboarding_shown";
 

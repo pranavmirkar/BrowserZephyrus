@@ -44,6 +44,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterBooleanPref(kHandsFreePref, false);
   registry->RegisterBooleanPref(kVoiceLockPref, true);
   registry->RegisterIntegerPref(kVoiceSensitivityPref, 1);
+  registry->RegisterStringPref(kMicDevicePref, std::string());
   registry->RegisterBooleanPref(kVoiceOnboardingPref, false);
 }
 

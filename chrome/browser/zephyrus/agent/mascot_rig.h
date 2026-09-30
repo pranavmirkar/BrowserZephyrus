@@ -33,6 +33,8 @@ enum class MascotMood {
   kConfused,
   kAlert,
   kWorking,
+  kHeld,       // picked up by the person's cursor, hanging on for dear life
+  kRelieved,   // put down again: a long breath out; settles into kIdle
 };
 
 // A one-off jolt on top of whatever the mood is doing.
@@ -87,6 +89,10 @@ class MascotRig {
   void SetScrollDirection(int direction) { scroll_direction_ = direction; }
 
   void Kick(MascotKick kick);
+
+  // While held: how hard the body is being swung sideways, in [-1, 1]. The
+  // overlay derives it from how fast the cursor is moving.
+  void SetSway(float sway) { sway_ = sway; }
 
   void Update(base::TimeDelta dt);
 
@@ -171,6 +177,7 @@ class MascotRig {
   float travel_ = 0;
   double gait_ = 0;
   int scroll_direction_ = 1;
+  float sway_ = 0;
 
   // Small things it does when left alone: a stretch, a hop, a look round.
   // Only while idle, on a slow schedule, so waiting reads as being alive and

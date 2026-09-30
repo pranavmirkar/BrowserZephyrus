@@ -21,7 +21,9 @@
 #include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/events/event.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/canvas.h"
@@ -30,6 +32,7 @@
 #include "ui/gfx/scoped_canvas.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/view_class_properties.h"
+#include "ui/aura/window.h"
 #include "ui/views/widget/widget.h"
 
 namespace zephyrus::agent {
@@ -65,8 +68,9 @@ bool IsOutcome(MascotMood mood) {
 
 ZephyrusAgentMascotOverlay::ZephyrusAgentMascotOverlay(BrowserView* browser_view)
     : browser_view_(browser_view) {
-  // It must never catch a click or take focus: it is a drawing over the page,
-  // and the page is what the person is using.
+  // It catches a mouse press ONLY on the character itself (see MouseWatcher), so
+  // it can be picked up; everywhere else it is a drawing over the page and the
+  // page is what the person is using.
   SetCanProcessEventsWithinSubtree(false);
   SetProperty(views::kViewIgnoredByLayoutKey, true);
   SetPaintToLayer();
@@ -94,7 +98,11 @@ void ZephyrusAgentMascotOverlay::RefreshPresence() {
   SetPresent(enabled);
 }
 
-ZephyrusAgentMascotOverlay::~ZephyrusAgentMascotOverlay() = default;
+ZephyrusAgentMascotOverlay::~ZephyrusAgentMascotOverlay() {
+  if (watched_window_) {
+    watched_window_->RemovePreTargetHandler(&mouse_watcher_);
+  }
+}
 
 void ZephyrusAgentMascotOverlay::FitToParent() {
   if (!parent()) {
@@ -104,15 +112,17 @@ void ZephyrusAgentMascotOverlay::FitToParent() {
   // On top of everything the window has, including views added after this one,
   // with the bubble above it: the order is [... overlay, bubble]. Reordered only
   // when it is wrong -- a reorder that ran on every layout would be a layout.
+  std::vector<views::View*> want = {this};
+  if (bubble_) {
+    want.push_back(bubble_);
+  }
   const auto& kids = parent()->children();
-  views::View* top = bubble_ ? static_cast<views::View*>(bubble_) : this;
   const bool in_order =
-      kids.back() == top &&
-      (!bubble_ || (kids.size() >= 2 && kids[kids.size() - 2] == this));
+      kids.size() >= want.size() &&
+      std::equal(want.begin(), want.end(), kids.end() - want.size());
   if (!in_order) {
-    parent()->ReorderChildView(this, -1);
-    if (bubble_) {
-      parent()->ReorderChildView(bubble_, -1);
+    for (views::View* view : want) {
+      parent()->ReorderChildView(view, -1);
     }
   }
   PlaceBubble();
@@ -183,12 +193,17 @@ void ZephyrusAgentMascotOverlay::SetPresent(bool present) {
   } else {
     has_position_ = false;
     driven_ = false;
+    held_ = false;
     timer_.Stop();
   }
   UpdateTimer();
 }
 
 void ZephyrusAgentMascotOverlay::SetMood(MascotMood mood) {
+  // Nothing changes its mind while it is being held.
+  if (held_) {
+    return;
+  }
   rig_.SetMood(mood);
   mood_since_ = base::TimeTicks::Now();
   UpdateTimer();
@@ -203,7 +218,7 @@ void ZephyrusAgentMascotOverlay::Wake() {
 }
 
 bool ZephyrusAgentMascotOverlay::GoTo(Place place, base::TimeDelta budget) {
-  if (!present_ || place == Place::kStay) {
+  if (!present_ || place == Place::kStay || held_) {
     return false;
   }
   driven_ = false;
@@ -240,6 +255,10 @@ bool ZephyrusAgentMascotOverlay::HomeIsKnown() const {
 }
 
 gfx::PointF ZephyrusAgentMascotOverlay::HomeFeet() const {
+  // Where the person put it, if they did.
+  if (parked_ && width() > 0 && height() > 0) {
+    return gfx::PointF(parked_->x() * width(), parked_->y() * height());
+  }
   // Standing on the lower edge of the page card, near its right end. The card
   // shrinks when the agent panel opens, and home moves with it.
   views::View* card = browser_view_ ? browser_view_->contents_container() : nullptr;
@@ -298,6 +317,11 @@ std::optional<gfx::Point> ZephyrusAgentMascotOverlay::PointerHome() {
 // ---- The agent's pointer ----------------------------------------------------
 
 void ZephyrusAgentMascotOverlay::OnPointer(const PointerEvent& event) {
+  // The person has it: the agent's pointer waits, and its actions on the page
+  // carry on without the drawing.
+  if (held_) {
+    return;
+  }
   if (!present_) {
     // A task running with the panel closed still wants its mascot.
     SetPresent(true);
@@ -365,7 +389,7 @@ void ZephyrusAgentMascotOverlay::UpdateTimer() {
     timer_.Stop();
     return;
   }
-  const bool moving = driven_ || velocity_.Length() > 1.0f ||
+  const bool moving = driven_ || held_ || velocity_.Length() > 1.0f ||
                       (walk_target_ - feet_).Length() > 1.0f;
   // Always present now, so the resting cost matters: a character that is only
   // breathing does not need thirty frames a second, and a window that is
@@ -422,7 +446,13 @@ void ZephyrusAgentMascotOverlay::Tick() {
                     SameFrame(frame, last_frame_);
   if (!same) {
     const gfx::Rect dirty = DirtyRect();
-    SchedulePaintInRect(gfx::UnionRects(dirty, last_dirty_));
+    // Also wherever it was ACTUALLY painted last, not only where the previous
+    // tick meant to. The first drawing happens before the character has been
+    // placed at home, and the move to home is a jump, not a step: repainting
+    // only the new place left the first drawing standing as a second mascot in
+    // the top-left corner of every new window.
+    SchedulePaintInRect(
+        gfx::UnionRects(gfx::UnionRects(dirty, last_dirty_), painted_));
     last_dirty_ = dirty;
     last_frame_ = std::move(frame);
     last_feet_ = feet_;
@@ -470,12 +500,30 @@ void ZephyrusAgentMascotOverlay::Advance(base::TimeDelta dt) {
   // The first moment home is a real place, stand there. Not walk there.
   if (!placed_ && HomeIsKnown()) {
     placed_ = true;
+    // A jump, not a walk: the drawing made before this stays on the layer
+    // unless the whole thing is redrawn once.
+    SchedulePaint();
     feet_ = HomeFeet();
     walk_target_ = feet_;
     velocity_ = gfx::Vector2dF();
   }
 
-  if (driven_) {
+  if (held_) {
+    // Hanging from the cursor. The body follows a hair behind it, which is what
+    // makes it swing when the hand moves, and the sway is how hard it is being
+    // dragged sideways.
+    const gfx::PointF want = FeetForTip(pointer_);
+    gfx::Vector2dF step = want - feet_;
+    step.Scale(std::min(1.0f, 22.0f * s));
+    gfx::Vector2dF instant = step;
+    instant.Scale(1.0f / std::max(s, 0.001f));
+    gfx::Vector2dF change = instant - velocity_;
+    change.Scale(std::min(1.0f, 10.0f * s));
+    velocity_ += change;
+    feet_ = feet_ + step;
+    rig_.SetSway(std::clamp(-velocity_.x() / 500.0f, -1.0f, 1.0f));
+    rig_.StopLooking();
+  } else if (driven_) {
     // The fist is the pointer. Which way it faces is chosen so the body is
     // never off the edge of the window: reaching for something near the left
     // edge, it turns around and reaches with its other arm.
@@ -563,6 +611,267 @@ void ZephyrusAgentMascotOverlay::LookAtCursor() {
   rig_.LookAt(rig_.facing_left() ? -dx : dx, dy);
 }
 
+// ---- Being picked up --------------------------------------------------------
+
+bool ZephyrusAgentMascotOverlay::CanGrab() const {
+  // Not while the agent has its fist on the page: its hand is the pointer.
+  return present_ && has_position_ && !driven_ && GetWidget();
+}
+
+gfx::Rect ZephyrusAgentMascotOverlay::GrabArea() const {
+  gfx::Rect area = BodyBounds();
+  area.Outset(4);
+  return area;
+}
+
+bool ZephyrusAgentMascotOverlay::GrabPressed(gfx::Point at) {
+  if (!CanGrab() || !GrabArea().Contains(at)) {
+    return false;
+  }
+  BeginHold(gfx::PointF(at));
+  return true;
+}
+
+void ZephyrusAgentMascotOverlay::GrabDragged(gfx::Point at) {
+  if (!held_) {
+    return;
+  }
+  // Kept inside the window: a mascot dragged off the edge would be lost.
+  pointer_ = gfx::PointF(
+      std::clamp(static_cast<float>(at.x()), 20.0f,
+                 std::max(20.0f, static_cast<float>(width()) - 20.0f)),
+      std::clamp(static_cast<float>(at.y()), 8.0f,
+                 std::max(8.0f, static_cast<float>(height()) - 8.0f)));
+  if (!gfx::Animation::ShouldRenderRichAnimation()) {
+    feet_ = FeetForTip(pointer_);
+    SchedulePaint();
+  }
+  UpdateTimer();
+}
+
+void ZephyrusAgentMascotOverlay::GrabReleased() {
+  if (held_) {
+    EndHold();
+  }
+}
+
+void ZephyrusAgentMascotOverlay::MouseWatcher::OnMouseEvent(
+    ui::MouseEvent* event) {
+  overlay_->HandleMouse(event);
+}
+
+void ZephyrusAgentMascotOverlay::HandleMouse(ui::MouseEvent* event) {
+  if (event->handled()) {
+    return;
+  }
+  display::Screen* screen = display::Screen::Get();
+  if (!screen) {
+    return;
+  }
+  gfx::Point at = screen->GetCursorScreenPoint();
+  views::View::ConvertPointFromScreen(this, &at);
+  switch (event->type()) {
+    case ui::EventType::kMousePressed:
+      if (event->IsOnlyLeftMouseButton() && GrabPressed(at)) {
+        event->SetHandled();
+        event->StopPropagation();
+      }
+      break;
+    case ui::EventType::kMouseDragged:
+    case ui::EventType::kMouseMoved:
+      if (held_) {
+        GrabDragged(at);
+        event->SetHandled();
+        event->StopPropagation();
+      }
+      break;
+    case ui::EventType::kMouseReleased:
+      if (held_) {
+        GrabReleased();
+        event->SetHandled();
+        event->StopPropagation();
+      }
+      break;
+    case ui::EventType::kMouseCaptureChanged:
+      // Alt-tab, a dialog, the window closing: let go wherever it is.
+      if (held_) {
+        GrabReleased();
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+void ZephyrusAgentMascotOverlay::BeginHold(gfx::PointF at) {
+  held_ = true;
+  driven_ = false;
+  at_home_ = false;
+  pointer_ = at;
+  velocity_ = gfx::Vector2dF();
+  rig_.SetSway(0);
+  rig_.SetMood(MascotMood::kHeld);
+  mood_since_ = base::TimeTicks::Now();
+  scale_target_ = kHomeScale;
+  last_tick_ = base::TimeTicks::Now();
+  UpdateTimer();
+  SchedulePaint();
+}
+
+void ZephyrusAgentMascotOverlay::EndHold() {
+  held_ = false;
+  // Put down inside the window, on its feet: the head has to fit above.
+  const float head = 135.0f * scale_target_;
+  const float max_x = std::max(30.0f, static_cast<float>(width()) - 30.0f);
+  const float max_y =
+      std::max(head + 4.0f, static_cast<float>(height()) - 2.0f);
+  feet_ = gfx::PointF(std::clamp(feet_.x(), 30.0f, max_x),
+                      std::clamp(feet_.y(), head + 4.0f, max_y));
+  // Here is home now, in every window size.
+  if (width() > 0 && height() > 0) {
+    parked_ = gfx::PointF(feet_.x() / width(), feet_.y() / height());
+  }
+  at_home_ = true;
+  driven_ = false;
+  walk_target_ = feet_;
+  velocity_ = gfx::Vector2dF();
+  rig_.SetSway(0);
+  rig_.SetMood(MascotMood::kRelieved);
+  mood_since_ = base::TimeTicks::Now();
+  UpdateTimer();
+  SchedulePaint();
+  PlaceBubble();
+}
+
+void ZephyrusAgentMascotOverlay::StartDragDemoForTesting() {
+  demo_start_ = base::TimeTicks::Now();
+  demo_phase_ = 0;
+  demo_timer_.Start(
+      FROM_HERE, base::Milliseconds(16),
+      base::BindRepeating(
+          [](ZephyrusAgentMascotOverlay* self) {
+            views::Widget* widget = self->GetWidget();
+            if (!widget || !self->present_) {
+              self->demo_timer_.Stop();
+              return;
+            }
+            const double t = (base::TimeTicks::Now() - self->demo_start_).InSecondsF();
+            if (self->demo_phase_ == 0 && t > 6.0) {
+              self->demo_phase_ = 1;
+              self->GrabPressed(self->BodyBounds().CenterPoint());
+            } else if (self->demo_phase_ == 1) {
+              const double u = t - 6.0;
+              if (u < 3.0) {
+                // A wide sweep left and right, then up.
+                gfx::Point p(
+                    static_cast<int>(self->width() * (0.55 + 0.25 * std::sin(u * 3.2))),
+                    static_cast<int>(self->height() * (0.6 - 0.09 * u)));
+                // Straight to the overlay: the widget only routes a drag
+                // while the OS holds the mouse, which a synthetic press
+                // does not get.
+                self->GrabDragged(p);
+              } else {
+                self->demo_phase_ = 2;
+                self->GrabReleased();
+                self->demo_timer_.Stop();
+              }
+            }
+          },
+          base::Unretained(this)));
+}
+
+bool ZephyrusAgentMascotOverlay::MoveTo(MascotSpot spot) {
+  if (!present_ || held_ || width() <= 0 || height() <= 0) {
+    return false;
+  }
+  // The page is where it gets in the way, so the page is the room it moves in.
+  gfx::Rect area = GetLocalBounds();
+  if (views::View* card =
+          browser_view_ ? browser_view_->contents_container() : nullptr) {
+    if (card->IsDrawn() && card->width() > 120) {
+      gfx::Rect page = card->GetLocalBounds();
+      gfx::Point origin = page.origin();
+      views::View::ConvertPointToTarget(card, this, &origin);
+      page.set_origin(origin);
+      area = page;
+    }
+  }
+  const float side = 52.0f;
+  const float head = 135.0f * kHomeScale + 12.0f;
+  const float left = area.x() + side;
+  const float right = area.right() - side;
+  const float top = area.y() + head;
+  const float bottom = area.bottom() - 6.0f;
+  const float mid_x = static_cast<float>(area.CenterPoint().x());
+  const float mid_y = static_cast<float>(area.CenterPoint().y()) + 30.0f;
+
+  gfx::PointF target = feet_;
+  switch (spot) {
+    case MascotSpot::kHome:
+      parked_.reset();
+      target = HomeFeet();
+      break;
+    case MascotSpot::kLeft:
+      target = gfx::PointF(left, mid_y);
+      break;
+    case MascotSpot::kRight:
+      target = gfx::PointF(right, mid_y);
+      break;
+    case MascotSpot::kTop:
+      target = gfx::PointF(mid_x, top);
+      break;
+    case MascotSpot::kBottom:
+      target = gfx::PointF(mid_x, bottom);
+      break;
+    case MascotSpot::kTopLeft:
+      target = gfx::PointF(left, top);
+      break;
+    case MascotSpot::kTopRight:
+      target = gfx::PointF(right, top);
+      break;
+    case MascotSpot::kBottomLeft:
+      target = gfx::PointF(left, bottom);
+      break;
+    case MascotSpot::kBottomRight:
+      target = gfx::PointF(right, bottom);
+      break;
+    case MascotSpot::kCenter:
+      target = gfx::PointF(mid_x, mid_y);
+      break;
+    case MascotSpot::kAway: {
+      // The corner farthest from where it stands now: wherever it stands is
+      // what it is covering.
+      const gfx::PointF corners[] = {gfx::PointF(left, top),
+                                     gfx::PointF(right, top),
+                                     gfx::PointF(left, bottom),
+                                     gfx::PointF(right, bottom)};
+      float best = -1.0f;
+      for (const gfx::PointF& corner : corners) {
+        const float d = (corner - feet_).Length();
+        if (d > best) {
+          best = d;
+          target = corner;
+        }
+      }
+      break;
+    }
+  }
+  if (spot != MascotSpot::kHome) {
+    parked_ = gfx::PointF(target.x() / width(), target.y() / height());
+  }
+  driven_ = false;
+  at_home_ = true;
+  scale_target_ = kHomeScale;
+  walk_target_ = HomeFeet();
+  if (!gfx::Animation::ShouldRenderRichAnimation()) {
+    feet_ = walk_target_;
+    scale_ = scale_target_;
+    SchedulePaint();
+  }
+  UpdateTimer();
+  return true;
+}
+
 // ---- Drawing ----------------------------------------------------------------
 
 void ZephyrusAgentMascotOverlay::PaintListeningDot(gfx::Canvas* canvas,
@@ -624,17 +933,28 @@ void ZephyrusAgentMascotOverlay::OnPaint(gfx::Canvas* canvas) {
   if (listening_) {
     PaintListeningDot(canvas, dsf);
   }
+  painted_ = DirtyRect();
 }
 
 void ZephyrusAgentMascotOverlay::AddedToWidget() {
+  if (!watched_window_ && GetWidget() && GetWidget()->GetNativeWindow()) {
+    watched_window_ = GetWidget()->GetNativeWindow();
+    watched_window_->AddPreTargetHandler(&mouse_watcher_);
+  }
   UpdateTimer();
 }
 
 void ZephyrusAgentMascotOverlay::RemovedFromWidget() {
+  if (watched_window_) {
+    watched_window_->RemovePreTargetHandler(&mouse_watcher_);
+    watched_window_ = nullptr;
+  }
+  held_ = false;
   timer_.Stop();
 }
 
 BEGIN_METADATA(ZephyrusAgentMascotOverlay)
 END_METADATA
+
 
 }  // namespace zephyrus::agent

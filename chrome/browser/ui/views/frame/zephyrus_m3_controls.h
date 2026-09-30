@@ -90,6 +90,9 @@ class SwitchRow : public views::Button {
   ~SwitchRow() override;
 
   bool is_on() const;
+  // Sets the switch from code. The change callback is NOT run: whoever sets it
+  // already knows.
+  void SetOn(bool on);
   void set_on_change(base::RepeatingClosure on_change);
 
   void OnThemeChanged() override;

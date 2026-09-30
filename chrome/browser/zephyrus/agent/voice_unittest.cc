@@ -4,11 +4,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/logging.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
@@ -112,6 +115,33 @@ TEST(VoiceDsp, FramesAndSpeechSpanFollowTheSpeech) {
   // Measured with the reference implementation: (16, 72).
   EXPECT_NEAR(static_cast<int>(first), 16, 3);
   EXPECT_NEAR(static_cast<int>(last), 72, 3);
+}
+
+TEST(VoiceDsp, SpeechSpanFindsSpeechOverALoudRoom) {
+  // The laptop microphone: hiss at -25 dB (+-3), 30 frames of speech at -13.
+  // "Within 25 dB of the peak" is below the hiss, so the old rule called every
+  // frame speech.
+  std::vector<float> energy;
+  uint32_t state = 3;
+  auto hiss = [&]() {
+    state = state * 1664525u + 1013904223u;
+    return -25.0f + (static_cast<float>(state >> 24) / 255.0f - 0.5f) * 6.0f;
+  };
+  for (int i = 0; i < 100; ++i) {
+    energy.push_back(hiss());
+  }
+  for (int i = 0; i < 30; ++i) {
+    energy.push_back(-13.0f);
+  }
+  for (int i = 0; i < 100; ++i) {
+    energy.push_back(hiss());
+  }
+  const auto [first, last] = SpeechSpan(energy);
+  EXPECT_NEAR(static_cast<int>(first), 100, 4);
+  EXPECT_NEAR(static_cast<int>(last), 130, 4);
+  const auto phrase = SpeechSpan(energy, 25.0f, -60.0f, /*phrase_only=*/true);
+  EXPECT_NEAR(static_cast<int>(phrase.first), 100, 4);
+  EXPECT_NEAR(static_cast<int>(phrase.second), 130, 4);
 }
 
 TEST(VoiceDsp, DtwMatchesTheReferenceImplementation) {
@@ -452,6 +482,69 @@ TEST(PhraseRecorder, CatchesEachPhraseWholeAndOnlyThat) {
   }
 }
 
+// A laptop's own microphone: a constant hiss at about -25 dB, the speech only
+// ~12 dB above it, and a stretch of digital silence before the device starts.
+// MEASURED on a real machine, where this made the recorder never find the end of
+// a phrase and enrolment call every recording "too long" or "too quiet".
+std::vector<int16_t> LoudMicrophone(const std::vector<int16_t>& speech,
+                                    double lead_seconds,
+                                    double tail_seconds,
+                                    bool device_gap = false) {
+  // The device gives digital silence before it starts, once.
+  std::vector<int16_t> pcm(
+      static_cast<size_t>((device_gap ? 0.4 : 0.0) * kSampleRate), 0);
+  uint32_t state = 7;
+  auto hiss = [&](size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+      state = state * 1664525u + 1013904223u;
+      // Uniform +-0.09 is about -25 dBFS RMS.
+      const double x = (static_cast<double>(state >> 8) / 16777216.0 - 0.5) * 0.18;
+      pcm.push_back(static_cast<int16_t>(x * 32768.0));
+    }
+  };
+  hiss(static_cast<size_t>(lead_seconds * kSampleRate));
+  // Speech scaled so its loudest 100 ms is at about -14 dB, as it was on the
+  // real machine (the hiss at -25).
+  double loudest = 1e-9;
+  for (size_t at = 0; at + 1600 <= speech.size(); at += 400) {
+    double sum = 0;
+    for (size_t i = at; i < at + 1600; ++i) {
+      const double v = speech[i] / 32768.0;
+      sum += v * v;
+    }
+    loudest = std::max(loudest, std::sqrt(sum / 1600.0));
+  }
+  const double gain = 0.2 / loudest;
+  for (int16_t v : speech) {
+    state = state * 1664525u + 1013904223u;
+    const double x = (static_cast<double>(state >> 8) / 16777216.0 - 0.5) * 0.18;
+    pcm.push_back(static_cast<int16_t>(
+        std::clamp(v * gain + x * 32768.0, -32768.0, 32767.0)));
+  }
+  hiss(static_cast<size_t>(tail_seconds * kSampleRate));
+  return pcm;
+}
+
+TEST(PhraseRecorder, FindsAPhraseOverALoudMicrophoneHiss) {
+  PhraseRecorder recorder;
+  const auto found = Utterances(
+      recorder,
+      Join({LoudMicrophone(LoadWav("zira_wake_0.wav"), 3.0, 2.0, true),
+            LoudMicrophone(LoadWav("zira_wake_1.wav"), 0.0, 2.0),
+            LoudMicrophone(LoadWav("zira_wake_2.wav"), 0.0, 2.0)}));
+  // The hiss must not be taken for speech: three phrases, each a phrase long.
+  ASSERT_GE(found.size(), 2u);
+  int accepted = 0;
+  for (const auto& utterance : found) {
+    EXPECT_LT(Seconds(utterance), 3.0);
+    accepted += AnalyseEnrollmentSample(utterance, {}).problem ==
+                        SampleProblem::kNone
+                    ? 1
+                    : 0;
+  }
+  EXPECT_GE(accepted, 2);
+}
+
 TEST(PhraseRecorder, IgnoresAQuietRoomAndAClick) {
   PhraseRecorder recorder;
   std::vector<int16_t> click(1600, 0);
@@ -672,6 +765,158 @@ TEST(VoiceLock, AGarbledVoiceFileIsRefusedNeverTrusted) {
         EXPECT_LE(p.templates.size(), kMaxTemplates);
         EXPECT_LE(p.name.size(), kMaxNameLength * 4);
       }
+    }
+  }
+}
+
+// Diagnostic, not a test: runs the real enrolment and wake code over recordings
+// made on a real microphone. Skipped unless ZEPH_REAL_DIR names a folder of
+// 16 kHz mono WAVs of a person saying "Hey Zep" several times.
+TEST(VoiceReal, DescribeRecordings) {
+  const char* dir_env = std::getenv("ZEPH_REAL_DIR");
+  if (!dir_env) {
+    GTEST_SKIP() << "ZEPH_REAL_DIR not set";
+  }
+  const base::FilePath dir = base::FilePath::FromUTF8Unsafe(dir_env);
+  base::FileEnumerator files(dir, false, base::FileEnumerator::FILES,
+                             FILE_PATH_LITERAL("*.wav"));
+  for (base::FilePath path = files.Next(); !path.empty(); path = files.Next()) {
+    std::string bytes;
+    ASSERT_TRUE(base::ReadFileToString(path, &bytes));
+    size_t pos = 12;
+    std::vector<int16_t> pcm;
+    while (pos + 8 <= bytes.size()) {
+      const std::string id = bytes.substr(pos, 4);
+      const uint32_t size = static_cast<uint8_t>(bytes[pos + 4]) |
+                            (static_cast<uint8_t>(bytes[pos + 5]) << 8) |
+                            (static_cast<uint8_t>(bytes[pos + 6]) << 16) |
+                            (static_cast<uint32_t>(static_cast<uint8_t>(bytes[pos + 7])) << 24);
+      if (id == "data") {
+        pcm.resize(std::min<size_t>(size, bytes.size() - pos - 8) / 2);
+        for (size_t k = 0; k < pcm.size(); ++k) {
+          pcm[k] = static_cast<int16_t>(static_cast<uint8_t>(bytes[pos + 8 + 2 * k]) |
+                                        (static_cast<uint8_t>(bytes[pos + 9 + 2 * k]) << 8));
+        }
+        break;
+      }
+      pos += 8 + size;
+    }
+    LOG(INFO) << "REAL ===== " << path.BaseName().AsUTF8Unsafe() << " "
+              << Seconds(pcm) << " s";
+
+    // 1. What the enrolment screen's recorder makes of it.
+    PhraseRecorder recorder;
+    std::vector<std::vector<int16_t>> utterances;
+    for (size_t at = 0; at < pcm.size(); at += 1600) {
+      const size_t n = std::min<size_t>(1600, pcm.size() - at);
+      if (auto u = recorder.Feed(base::span(pcm).subspan(at, n))) {
+        utterances.push_back(std::move(*u));
+      }
+    }
+    LOG(INFO) << "REAL recorder found " << utterances.size() << " utterances";
+
+    // 2. Each, as enrolment would judge it, against the takes accepted so far.
+    // ZEPH_REAL_SKIP drops the first takes (a beep that cued the person).
+    const char* skip_env = std::getenv("ZEPH_REAL_SKIP");
+    const size_t skip = skip_env ? static_cast<size_t>(std::atoi(skip_env)) : 0;
+    const size_t skip_samples = skip ? 16000 * 3 : 0;
+    std::vector<WakeTemplate> accepted;
+    for (size_t u = skip; u < utterances.size(); ++u) {
+      SampleCheck check = AnalyseEnrollmentSample(utterances[u], accepted);
+      LOG(INFO) << "REAL take " << u << ": " << Seconds(utterances[u])
+                << " s -> problem " << static_cast<int>(check.problem) << " ("
+                << DescribeProblem(check.problem) << ")"
+                << (accepted.empty() ? "" : " vs earlier");
+      if (check.problem == SampleProblem::kNone && accepted.size() < kEnrollmentSamples) {
+        accepted.push_back(std::move(check.sample));
+      }
+    }
+    {
+      // The whole matrix, judged with no gate: is it the takes or the gate?
+      std::vector<WakeTemplate> solo;
+      for (size_t u = skip; u < utterances.size(); ++u) {
+        SampleCheck c = AnalyseEnrollmentSample(utterances[u], {});
+        LOG(INFO) << "REAL solo " << u << " problem "
+                  << static_cast<int>(c.problem) << " frames "
+                  << c.sample.frames.size();
+        if (c.problem == SampleProblem::kNone) {
+          solo.push_back(std::move(c.sample));
+        }
+      }
+      for (size_t x = 0; x < solo.size(); ++x) {
+        std::string row;
+        for (size_t y = 0; y < solo.size(); ++y) {
+          row += x == y ? "  --  "
+                        : " " + base::NumberToString(
+                                    OpenEndDtw(NormalisedFeatures(solo[x].frames),
+                                               NormalisedFeatures(solo[y].frames))
+                                        .distance)
+                                    .substr(0, 5);
+        }
+        LOG(INFO) << "REAL solo row " << x << ":" << row;
+      }
+    }
+    LOG(INFO) << "REAL accepted " << accepted.size() << " of "
+              << utterances.size();
+    // 3. How far apart the accepted takes are from one another.
+    for (size_t a = 0; a < accepted.size(); ++a) {
+      std::string row;
+      for (size_t b = 0; b < accepted.size(); ++b) {
+        if (a == b) {
+          row += "  --  ";
+          continue;
+        }
+        const float d = OpenEndDtw(NormalisedFeatures(accepted[a].frames),
+                                   NormalisedFeatures(accepted[b].frames)).distance;
+        row += " " + base::NumberToString(d).substr(0, 5);
+      }
+      LOG(INFO) << "REAL dtw row " << a << ":" << row;
+    }
+    if (accepted.size() >= 3) {
+      VoiceProfile profile;
+      profile.id = "real";
+      profile.name = "Real";
+      profile.templates = accepted;
+      profile.Prepare();
+      LOG(INFO) << "REAL thresholds wake " << profile.wake_threshold
+                << " speaker " << profile.speaker_threshold;
+      // 4. Would it wake on the takes themselves, and on the whole recording?
+      int woke = 0;
+      for (const auto& utt : utterances) {
+        const MatchResult r = TestPhrase(std::vector<VoiceProfile>{profile}, utt,
+                                         true, Sensitivity::kBalanced);
+        woke += (r.wake && r.voice_ok) ? 1 : 0;
+        LOG(INFO) << "REAL  utterance wake=" << r.wake << " ok=" << r.voice_ok
+                  << " dist=" << r.wake_distance << " spk=" << r.speaker_distance;
+      }
+      LOG(INFO) << "REAL woke on " << woke << " of " << utterances.size();
+
+      // 5. The streaming engine over the WHOLE recording, as the browser runs
+      // it: how many of the phrases in it does it wake on, and on what else.
+      struct Counter : HandsFreeEngine::Delegate {
+        int wakes = 0;
+        int commands = 0;
+        int ignored = 0;
+        void OnWake(const HandsFreeEngine::WakeInfo&) override { ++wakes; }
+        void OnCommand(std::vector<int16_t>,
+                       const HandsFreeEngine::WakeInfo&) override {
+          ++commands;
+        }
+        void OnTimedOut() override {}
+        void OnIgnored(HandsFreeEngine::Ignored,
+                       const MatchResult&) override {
+          ++ignored;
+        }
+      } counter;
+      HandsFreeEngine engine(&counter, {});
+      engine.SetProfiles({profile});
+      for (size_t at = skip_samples; at < pcm.size(); at += 1600) {
+        engine.Feed(base::span(pcm).subspan(
+            at, std::min<size_t>(1600, pcm.size() - at)));
+      }
+      LOG(INFO) << "REAL engine wakes " << counter.wakes << " commands "
+                << counter.commands << " ignored "
+                << counter.ignored << " floor " << engine.noise_floor_db();
     }
   }
 }

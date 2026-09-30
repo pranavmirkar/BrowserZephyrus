@@ -48,6 +48,7 @@
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "ui/events/types/scroll_types.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -1942,6 +1943,43 @@ void BrowserToolSurface::ScrollGlide(gfx::PointF at,
           weak_factory_.GetWeakPtr(), std::move(done)));
 }
 
+void BrowserToolSurface::TypeLine(
+    std::shared_ptr<std::vector<std::string>> lines,
+    size_t index,
+    base::WeakPtr<content::Page> page,
+    base::OnceClosure done) {
+  content::WebContents* contents = ActiveContents();
+  content::RenderWidgetHost* widget =
+      contents && contents->GetPrimaryMainFrame()
+          ? contents->GetPrimaryMainFrame()->GetRenderWidgetHost()
+          : nullptr;
+  // A page that navigated in the meantime must not get the rest.
+  if (!widget || !IsCurrentPage(page) || index >= lines->size()) {
+    Notify(PointerEvent::Kind::kTypeEnd, pointer_position_);
+    std::move(done).Run();
+    return;
+  }
+  last_action_at_ = base::TimeTicks::Now();
+  if (!(*lines)[index].empty()) {
+    TypeText(widget, (*lines)[index]);
+  }
+  if (index + 1 >= lines->size()) {
+    Notify(PointerEvent::Kind::kTypeEnd, pointer_position_);
+    std::move(done).Run();
+    return;
+  }
+  TypeText(widget, "\n");
+  const base::TimeDelta pause =
+      index == 0 ? base::Milliseconds(350)
+                 : base::Milliseconds(lines->size() > 200 ? 15
+                                          : lines->size() > 40 ? 60 : 130);
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&BrowserToolSurface::TypeLine, weak_factory_.GetWeakPtr(),
+                     lines, index + 1, std::move(page), std::move(done)),
+      pause);
+}
+
 void BrowserToolSurface::TypeStep(bool select_all,
                                   std::string text,
                                   base::WeakPtr<content::Page> page,
@@ -1960,6 +1998,31 @@ void BrowserToolSurface::TypeStep(bool select_all,
   if (select_all) {
     SendKey(widget, ui::VKEY_A, ui::DomCode::US_A,
             ui::DomKey::FromCharacter('a'), ui::EF_CONTROL_DOWN);
+  }
+
+  // Several lines: one line at a time, and a pause after each Enter.
+  //
+  // MEASURED on Notion: an essay typed in one burst put its middle into the
+  // TITLE. Enter in a title moves focus to the body from a script that runs a
+  // moment later, and the keystrokes already queued behind that Enter went to
+  // the field it was leaving. Rich editors do this everywhere (Docs, Medium,
+  // mail compose), so the pause is not a Notion special case: the first Enter
+  // gets longest because it is the one that crosses fields.
+  if (text.find('\n') != std::string::npos) {
+    auto lines = std::make_shared<std::vector<std::string>>();
+    size_t from = 0;
+    while (true) {
+      const size_t at = text.find('\n', from);
+      lines->push_back(text.substr(from, at == std::string::npos
+                                             ? std::string::npos
+                                             : at - from));
+      if (at == std::string::npos) {
+        break;
+      }
+      from = at + 1;
+    }
+    TypeLine(std::move(lines), 0, std::move(page), std::move(done));
+    return;
   }
 
   const std::u16string wide = base::UTF8ToUTF16(text);

@@ -16,6 +16,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_mascot_overlay.h"
+#include "chrome/browser/zephyrus/agent/mascot_commands.h"
 #include "chrome/browser/ui/views/frame/zephyrus_hands_free.h"
 #include "chrome/browser/ui/views/frame/zephyrus_voice_setup.h"
 #include "chrome/browser/ui/views/frame/zephyrus_mascot_bubble.h"
@@ -43,7 +44,10 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/accelerators/accelerator_manager.h"
+#include "ui/gfx/image/canvas_image_source.h"
+#include "ui/gfx/scoped_canvas.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/aura/window.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
@@ -233,6 +237,10 @@ std::u16string DescribeMood(MascotMood mood) {
       return u"Stopped by a safety rule";
     case MascotMood::kWorking:
       return u"Working";
+    case MascotMood::kHeld:
+      return u"Hanging on";
+    case MascotMood::kRelieved:
+      return u"Phew";
   }
   return u"";
 }
@@ -365,6 +373,33 @@ class M3Button : public views::LabelButton {
 
 BEGIN_METADATA(M3Button)
 END_METADATA
+
+// A microphone with a small gear at its top-right: "voice, settings". Drawn from
+// the two stock icons so it takes the theme's colour like every other glyph.
+class MicWithGearSource : public gfx::CanvasImageSource {
+ public:
+  explicit MicWithGearSource(SkColor color)
+      : gfx::CanvasImageSource(gfx::Size(24, 24)), color_(color) {}
+
+  void Draw(gfx::Canvas* canvas) override {
+    {
+      gfx::ScopedCanvas scoped(canvas);
+      canvas->Translate(gfx::Vector2d(1, 5));
+      gfx::PaintVectorIcon(canvas, vector_icons::kMicIcon, 18, color_);
+    }
+    gfx::ScopedCanvas scoped(canvas);
+    canvas->Translate(gfx::Vector2d(13, 0));
+    gfx::PaintVectorIcon(canvas, vector_icons::kSettingsIcon, 11, color_);
+  }
+
+ private:
+  const SkColor color_;
+};
+
+ui::ImageModel MicWithGearIcon(SkColor color) {
+  return ui::ImageModel::FromImageSkia(
+      gfx::CanvasImageSource::MakeImageSkia<MicWithGearSource>(color));
+}
 
 std::unique_ptr<views::LabelButton> MakeM3Button(
     views::Button::PressedCallback callback,
@@ -564,6 +599,21 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
   new_chat_button_->SetTooltipText(u"New chat");
   views::InstallCircleHighlightPathGenerator(new_chat_button_);
   InstallStateLayer(new_chat_button_);
+  // Hands-free voice: a microphone with a small gear over it. Beside the model
+  // settings, because it is the other thing a person configures here.
+  voice_button_ = header->AddChildView(std::make_unique<views::ImageButton>(
+      base::BindRepeating(
+          [](ZephyrusAgentPanel* panel) {
+            zephyrus::ShowVoiceSetup(panel->browser_view_, panel->voice_button_);
+          },
+          base::Unretained(this))));
+  voice_button_->SetPreferredSize(gfx::Size(kIconButtonSize, kIconButtonSize));
+  voice_button_->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
+  voice_button_->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
+  voice_button_->GetViewAccessibility().SetName(u"Hey Zep voice settings");
+  voice_button_->SetTooltipText(u"Hey Zep: voice settings");
+  views::InstallCircleHighlightPathGenerator(voice_button_);
+  InstallStateLayer(voice_button_);
   settings_button_ = header->AddChildView(std::make_unique<views::ImageButton>(
       base::BindRepeating(
           [](ZephyrusAgentPanel* panel) {
@@ -654,8 +704,11 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
   // Hands-free is opt-in and has to be set up (a voice recorded) before it does
   // anything, so the way in is here, where a first-time user is looking.
   chips_.push_back(chips->AddChildView(MakeM3Button(
-      base::BindRepeating(&zephyrus::ShowVoiceSetup,
-                          base::Unretained(browser_view_.get())),
+      base::BindRepeating(
+          [](ZephyrusAgentPanel* panel) {
+            zephyrus::ShowVoiceSetup(panel->browser_view_, panel->voice_button_);
+          },
+          base::Unretained(this)),
       u"Set up \"Hey Zep\" (hands-free)", 16)));
   layout->SetFlexForView(empty_state_, 1);
 
@@ -789,7 +842,7 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
   mic_button_->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
   mic_button_->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
   mic_button_->GetViewAccessibility().SetName(u"Speak a task");
-  mic_button_->SetTooltipText(u"Speak a task");
+  mic_button_->SetTooltipText(u"Speak a task (or hold Ctrl+Shift+Space)");
   views::InstallCircleHighlightPathGenerator(mic_button_);
   InstallStateLayer(mic_button_);
 
@@ -883,11 +936,41 @@ bool ZephyrusAgentPanel::HandleKeyEvent(views::Textfield* sender,
 
 void ZephyrusAgentPanel::Submit() {
   const std::string task = base::UTF16ToUTF8(input_->GetText());
-  if (task.empty() || task_running_) {
+  if (task.empty()) {
+    return;
+  }
+  // "Move to the left" is a request to the mascot, and works mid-task too.
+  if (HandleMascotCommand(task)) {
+    input_->SetText(std::u16string());
+    return;
+  }
+  if (task_running_) {
     return;
   }
   input_->SetText(std::u16string());
   StartTask(task);
+}
+
+bool ZephyrusAgentPanel::HandleMascotCommand(const std::string& text) {
+  const std::optional<zephyrus::agent::MascotSpot> spot =
+      zephyrus::agent::ParseMascotMove(text);
+  if (!spot) {
+    return false;
+  }
+  AddLine(text, LineKind::kTask);
+  ZephyrusAgentMascotOverlay* overlay = Overlay();
+  if (overlay && overlay->MoveTo(*spot)) {
+    AddLine(*spot == zephyrus::agent::MascotSpot::kHome
+                ? "Back home."
+                : "Moved. Drag me anywhere, or say \"come back\" to send me "
+                  "home.",
+            LineKind::kAnswer);
+  } else {
+    AddLine("The mascot is switched off. Turn it on in Model settings (the "
+            "gear above) and I can move.",
+            LineKind::kAnswer);
+  }
+  return true;
 }
 
 void ZephyrusAgentPanel::OnSendOrStop() {
@@ -901,6 +984,10 @@ void ZephyrusAgentPanel::OnSendOrStop() {
   if (controller_) {
     controller_->Cancel();
   }
+}
+
+views::View* ZephyrusAgentPanel::voice_button() {
+  return voice_button_;
 }
 
 views::View* ZephyrusAgentPanel::settings_button() {
@@ -1459,6 +1546,9 @@ void ZephyrusAgentPanel::ApplyRoles() {
       views::Button::STATE_NORMAL,
       ui::ImageModel::FromVectorIcon(vector_icons::kSettingsIcon, on_variant,
                                      20));
+  voice_button_->SetImageModel(views::Button::STATE_NORMAL,
+                               MicWithGearIcon(on_variant));
+  views::InkDrop::Get(voice_button_)->SetBaseColor(on_variant);
   views::InkDrop::Get(settings_button_)->SetBaseColor(on_variant);
   new_chat_button_->SetImageModel(
       views::Button::STATE_NORMAL,
@@ -1541,7 +1631,7 @@ void ZephyrusAgentPanel::OnMic() {
   if (listening_) {
     listening_ = false;
     transcribing_ = true;
-    mic_button_->SetTooltipText(u"Speak a task");
+    mic_button_->SetTooltipText(u"Speak a task (or hold Ctrl+Shift+Space)");
     AddLine("Listening stopped. Working out what you said...", LineKind::kStep);
     ShowMascot(MascotMood::kThinking);
     ApplyRoles();
@@ -1568,6 +1658,9 @@ void ZephyrusAgentPanel::OnMic() {
 
 void ZephyrusAgentPanel::OnVoiceKey(
     scoped_refptr<os_crypt_async::Encryptor> encryptor) {
+  // Let go of while the microphone was opening: carried out once it is open.
+  const bool release_pending = std::exchange(release_pending_, false);
+  const bool release_was_tap = release_was_tap_;
   Profile* profile = browser_view_ && browser_view_->browser()
                          ? browser_view_->browser()->profile()
                          : nullptr;
@@ -1576,6 +1669,7 @@ void ZephyrusAgentPanel::OnVoiceKey(
           ? LoadApiKey(*profile->GetPrefs(), *encryptor, kVoiceKeyKind)
           : std::nullopt;
   if (!key) {
+    hold_active_ = false;
     AddLine("Add an AssemblyAI key in Model settings (the gear above) to "
             "speak tasks.",
             LineKind::kStep);
@@ -1591,10 +1685,12 @@ void ZephyrusAgentPanel::OnVoiceKey(
   if (hands_free_) {
     hands_free_->Pause();
   }
+  voice_->SetDeviceName(profile->GetPrefs()->GetString(kMicDevicePref));
   if (!voice_->Start()) {
     if (hands_free_) {
       hands_free_->Resume();
     }
+    hold_active_ = false;
     AddLine("The microphone could not be opened. Check that one is connected "
             "and that Windows lets desktop apps use it (Settings > Privacy > "
             "Microphone).",
@@ -1610,12 +1706,18 @@ void ZephyrusAgentPanel::OnVoiceKey(
           : std::string();
   listening_ = true;
   mic_button_->SetTooltipText(u"Stop and send");
-  AddLine("Listening... press the red button when you are done.",
+  AddLine(hold_active_ || release_pending
+              ? "Listening... let go of Ctrl+Shift+Space when you are done."
+              : "Listening... press the red button when you are done.",
           LineKind::kStep);
   ShowMascot(MascotMood::kListening);
-  SayStatus("Listening... press Ctrl+Shift+Space or the red button when you "
-            "are done.");
+  SayStatus(hold_active_ || release_pending
+                ? "Listening... let go of Ctrl+Shift+Space when you are done."
+                : "Listening... press the red button when you are done.");
   ApplyRoles();
+  if (release_pending) {
+    FinishHold(release_was_tap);
+  }
 }
 
 void ZephyrusAgentPanel::OnTranscript(bool ok, const std::string& text) {
@@ -1628,6 +1730,12 @@ void ZephyrusAgentPanel::OnTranscript(bool ok, const std::string& text) {
   }
   // What was heard becomes the task, exactly as if it had been typed -- same
   // input, same send, same kernel. Voice adds a way in, not a way around.
+  if (task_running_ && !zephyrus::agent::ParseMascotMove(text).has_value()) {
+    AddLine("I am still on the last task. Say it again once it is done, or "
+            "stop it first.",
+            LineKind::kStep);
+    return;
+  }
   input_->SetText(base::UTF8ToUTF16(text));
   Submit();
 }
@@ -1639,18 +1747,135 @@ void ZephyrusAgentPanel::AddedToWidget() {
   hands_free_->Start();
   if (views::FocusManager* focus_manager = GetFocusManager()) {
     focus_manager->RegisterAccelerator(
-        ui::Accelerator(ui::VKEY_SPACE, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN),
-        ui::AcceleratorManager::kNormalPriority, this);
-    focus_manager->RegisterAccelerator(
         ui::Accelerator(ui::VKEY_OEM_COMMA,
                         ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN),
         ui::AcceleratorManager::kNormalPriority, this);
   }
+  if (!watched_window_ && GetWidget() && GetWidget()->GetNativeWindow()) {
+    watched_window_ = GetWidget()->GetNativeWindow();
+    watched_window_->AddPreTargetHandler(&key_watcher_);
+  }
 }
 
 void ZephyrusAgentPanel::RemovedFromWidget() {
+  if (watched_window_) {
+    watched_window_->RemovePreTargetHandler(&key_watcher_);
+    watched_window_ = nullptr;
+  }
+  hold_active_ = false;
+  hold_timeout_.Stop();
   if (views::FocusManager* focus_manager = GetFocusManager()) {
     focus_manager->UnregisterAccelerators(this);
+  }
+}
+
+void ZephyrusAgentPanel::KeyWatcher::OnKeyEvent(ui::KeyEvent* event) {
+  panel_->HandleKey(event);
+}
+
+void ZephyrusAgentPanel::HandleKey(ui::KeyEvent* event) {
+  if (event->handled()) {
+    return;
+  }
+  const ui::KeyboardCode code = event->key_code();
+  if (event->type() == ui::EventType::kKeyPressed) {
+    if (code == ui::VKEY_SPACE && event->IsControlDown() &&
+        event->IsShiftDown() && !event->IsAltDown() &&
+        !event->IsCommandDown()) {
+      // Taken: the page never sees the keys, and holding them down (which
+      // repeats) starts nothing new.
+      if (!event->is_repeat()) {
+        BeginHoldToTalk(event->time_stamp());
+      }
+      event->SetHandled();
+      event->StopPropagation();
+    }
+    return;
+  }
+  if (event->type() == ui::EventType::kKeyReleased && hold_active_) {
+    const bool space = code == ui::VKEY_SPACE;
+    const bool modifier = code == ui::VKEY_CONTROL ||
+                          code == ui::VKEY_LCONTROL ||
+                          code == ui::VKEY_RCONTROL ||
+                          code == ui::VKEY_SHIFT || code == ui::VKEY_LSHIFT ||
+                          code == ui::VKEY_RSHIFT;
+    if (space || modifier) {
+      EndHoldToTalk(event->time_stamp());
+      if (space) {
+        event->SetHandled();
+        event->StopPropagation();
+      }
+    }
+  }
+}
+
+void ZephyrusAgentPanel::BeginHoldToTalk(base::TimeTicks at) {
+  if (hold_active_ || transcribing_) {
+    return;
+  }
+  hold_active_ = true;
+  release_pending_ = false;
+  hold_started_ = at;
+  // A key that never reports being let go of (the window lost focus while it
+  // was down) must not leave the microphone open: the recording is capped, and
+  // so is the hold.
+  hold_timeout_.Start(FROM_HERE, base::Seconds(VoiceInput::kMaxSeconds),
+                      base::BindOnce(&ZephyrusAgentPanel::OnHoldTimeout,
+                                     base::Unretained(this)));
+  if (!listening_) {
+    OnMic();  // opens the microphone; OnVoiceKey carries on from there
+  }
+}
+
+void ZephyrusAgentPanel::OnHoldTimeout() {
+  EndHoldToTalk(base::TimeTicks::Now());
+}
+
+void ZephyrusAgentPanel::EndHoldToTalk(base::TimeTicks at) {
+  if (!hold_active_) {
+    return;
+  }
+  hold_active_ = false;
+  hold_timeout_.Stop();
+  // A tap is not a sentence: it is someone finding the keys. Timed by when the
+  // keys went down and up, NOT by when this code ran: opening the microphone
+  // takes the UI thread a few hundred milliseconds, and a quick tap would
+  // otherwise be counted as a hold.
+  const bool tap = at - hold_started_ < base::Milliseconds(350);
+  if (!listening_) {
+    // Let go before the microphone had opened (or it failed to open, in which
+    // case OnVoiceKey has already said so and this is dropped).
+    release_pending_ = true;
+    release_was_tap_ = tap;
+    return;
+  }
+  FinishHold(tap);
+}
+
+void ZephyrusAgentPanel::FinishHold(bool tap) {
+  if (tap) {
+    CancelVoice();
+    SayStatus("Hold Ctrl+Shift+Space while you speak, then let go.");
+    return;
+  }
+  OnMic();  // stops, transcribes, and sends
+}
+
+void ZephyrusAgentPanel::CancelVoice() {
+  if (!listening_) {
+    return;
+  }
+  listening_ = false;
+  if (voice_) {
+    voice_->Cancel();
+  }
+  voice_key_.clear();
+  voice_endpoint_.clear();
+  mic_button_->SetTooltipText(u"Speak a task (or hold Ctrl+Shift+Space)");
+  ShowMascot(MascotMood::kIdle);
+  ApplyRoles();
+  if (hands_free_) {
+    hands_free_->Resume();
   }
 }
 
@@ -1710,6 +1935,10 @@ void ZephyrusAgentPanel::OnVoiceHeard(const std::string& text) {
     } else {
       OnVoiceIdle();
     }
+    return;
+  }
+  if (HandleMascotCommand(text)) {
+    SayStatus("Moved.");
     return;
   }
   if (task_running_) {

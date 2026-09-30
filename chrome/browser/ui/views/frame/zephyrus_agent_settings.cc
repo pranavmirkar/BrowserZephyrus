@@ -31,7 +31,6 @@
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3_controls.h"
-#include "chrome/browser/ui/views/frame/zephyrus_voice_setup.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "chrome/browser/zephyrus/agent/bundled_keys.h"
 #include "chrome/browser/zephyrus/agent/model_settings.h"
@@ -236,16 +235,6 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
     forget_memory_->SetProperty(views::kCrossAxisAlignmentKey,
                                 views::LayoutAlignment::kStart);
     RefreshMemoryCount();
-    // Hands-free voice ("Hey Zep") and who it answers to have a dialog of their
-    // own: recording a voice needs the microphone and room to explain itself.
-    voices_button_ = body->AddChildView(std::make_unique<views::MdTextButton>(
-        base::BindRepeating(&ZephyrusAgentSettings::OpenVoiceSetup,
-                            base::Unretained(this)),
-        u"Hey Zep and voices..."));
-    voices_button_->SetProperty(views::kMarginsKey,
-                                gfx::Insets::TLBR(4, 0, 0, 0));
-    voices_button_->SetProperty(views::kCrossAxisAlignmentKey,
-                                views::LayoutAlignment::kStart);
     privacy_ = body->AddChildView(MakeText(std::u16string(), m3::Type::kBodySmall));
 
     forget_ = body->AddChildView(std::make_unique<views::MdTextButton>(
@@ -395,12 +384,6 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
     forget_memory_->SetEnabled(count > 0);
   }
 
-  void OpenVoiceSetup() {
-    // This bubble closes itself when the dialog takes focus; nothing here
-    // touches it afterwards.
-    zephyrus::ShowVoiceSetup(browser_view_);
-  }
-
   void ForgetMemory() {
     if (zephyrus::agent::LongTermMemory* memory = Memory()) {
       memory->Clear(workspace_id_);
@@ -522,7 +505,6 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
   raw_ptr<m3::SwitchRow> mascot_ = nullptr;
   raw_ptr<m3::SwitchRow> memory_ = nullptr;
   raw_ptr<views::MdTextButton> forget_memory_ = nullptr;
-  raw_ptr<views::MdTextButton> voices_button_ = nullptr;
   raw_ptr<views::Label> privacy_ = nullptr;
   raw_ptr<views::MdTextButton> forget_ = nullptr;
   raw_ptr<views::Label> error_ = nullptr;

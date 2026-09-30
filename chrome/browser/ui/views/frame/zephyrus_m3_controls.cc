@@ -146,6 +146,10 @@ bool SwitchRow::is_on() const {
   return switch_->GetIsOn();
 }
 
+void SwitchRow::SetOn(bool on) {
+  switch_->SetIsOn(on);
+}
+
 void SwitchRow::set_on_change(base::RepeatingClosure on_change) {
   on_change_ = std::move(on_change);
 }

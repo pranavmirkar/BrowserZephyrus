@@ -11,14 +11,21 @@
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "chrome/browser/zephyrus/agent/mascot_commands.h"
 #include "chrome/browser/zephyrus/agent/mascot_rig.h"
 #include "chrome/browser/zephyrus/agent/pointer_events.h"
+#include "ui/base/cursor/cursor.h"
+#include "ui/events/event_handler.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/views/view.h"
 
 class BrowserView;
+
+namespace aura {
+class Window;
+}
 
 namespace zephyrus::agent {
 
@@ -98,6 +105,26 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
   // is not shown, so a question still has somewhere to be asked from.
   gfx::Rect BodyBounds() const;
 
+  // Moves it to a place the person asked for ("move to the left", "get out of
+  // the way"). It walks there and stays: that becomes its home until it is sent
+  // back (MascotSpot::kHome). Returns false when it is not in the window.
+  bool MoveTo(MascotSpot spot);
+
+  // The person has it by the cursor.
+  bool held() const { return held_; }
+
+  // The mouse, as the grab handle (below) hands it over. Positions are in this
+  // view's coordinates.
+  bool GrabPressed(gfx::Point at);
+  void GrabDragged(gfx::Point at);
+  void GrabReleased();
+
+
+  // Developer hook (--zephyrus-test-compact=mascot-drag): picks it up through
+  // the window's real mouse path, drags it round for a few seconds and puts it
+  // down, so the hold and the relief can be looked at.
+  void StartDragDemoForTesting();
+
   // Covers the whole parent and stays on top of it. Called from the parent's
   // layout, so it keeps up with resizes and with views added after it.
   void FitToParent();
@@ -127,6 +154,8 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
   gfx::Rect DirtyRect() const;
   // Where it was last painted, so that a move also erases the old place.
   gfx::Rect last_dirty_;
+  // Where the last paint really drew, whoever asked for it.
+  gfx::Rect painted_;
   // The frame last painted, so an identical one is not painted again.
   std::vector<zephyrus_setup::Rect> last_frame_;
   gfx::PointF last_feet_;
@@ -147,6 +176,36 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
   gfx::PointF Tip() const;
   // Where the feet must be for the fist to be at `tip`.
   gfx::PointF FeetForTip(gfx::PointF tip) const;
+
+  // Picking it up: the fists lock onto the cursor and the body hangs from them;
+  // letting go is a sigh of relief, and where it was put becomes home.
+  bool CanGrab() const;
+  gfx::Rect GrabArea() const;
+  // Watches the window's mouse events BEFORE the page sees them, so the
+  // character can be picked up even where it stands over the web contents --
+  // which is a native window of its own and never gets its events from a view.
+  // A press on the character is taken; every other event is left alone.
+  class MouseWatcher : public ui::EventHandler {
+   public:
+    explicit MouseWatcher(ZephyrusAgentMascotOverlay* overlay)
+        : overlay_(overlay) {}
+    void OnMouseEvent(ui::MouseEvent* event) override;
+
+   private:
+    const raw_ptr<ZephyrusAgentMascotOverlay> overlay_;
+  };
+  void HandleMouse(ui::MouseEvent* event);
+  MouseWatcher mouse_watcher_{this};
+  raw_ptr<aura::Window> watched_window_ = nullptr;
+  void BeginHold(gfx::PointF at);
+  void EndHold();
+  // Where the person last put it, as a fraction of the window, so that it stays
+  // in the same place when the window is resized. Empty: the default home.
+  std::optional<gfx::PointF> parked_;
+  bool held_ = false;
+  base::RepeatingTimer demo_timer_;
+  base::TimeTicks demo_start_;
+  int demo_phase_ = 0;
 
   const raw_ptr<BrowserView> browser_view_;
   raw_ptr<ZephyrusMascotBubble> bubble_ = nullptr;

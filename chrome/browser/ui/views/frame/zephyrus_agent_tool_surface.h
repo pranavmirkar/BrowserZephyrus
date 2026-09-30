@@ -191,6 +191,12 @@ class BrowserToolSurface : public ToolSurface {
   void ClickStep(gfx::Point at,
                  base::WeakPtr<content::Page> page,
                  base::OnceClosure done);
+  // Types `lines[index]`, presses Enter, waits for the page to move its focus,
+  // then the next. See TypeStep.
+  void TypeLine(std::shared_ptr<std::vector<std::string>> lines,
+                size_t index,
+                base::WeakPtr<content::Page> page,
+                base::OnceClosure done);
   void TypeStep(bool select_all,
                 std::string text,
                 base::WeakPtr<content::Page> page,

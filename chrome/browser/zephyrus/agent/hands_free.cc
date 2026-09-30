@@ -19,10 +19,6 @@ namespace {
 constexpr std::array<int, 3> kChecks = {85, 120, 160};
 
 constexpr size_t kHopSamples = kFrameHop;
-// Speech is louder than the noise floor by this much, and never quieter than
-// this in absolute terms.
-constexpr float kOnsetMarginDb = 10.0f;
-constexpr float kAbsoluteMinDb = -55.0f;
 
 }  // namespace
 
@@ -83,21 +79,7 @@ void HandsFreeEngine::ProcessHop(base::span<const int16_t> hop) {
   const float energy_db =
       10.0f * std::log10(sum / static_cast<float>(kHopSamples) + 1e-10f);
 
-  // The noise floor: learned over the first 300 ms, then followed. It falls
-  // quickly to a quieter room and rises slowly, and not at all for a burst of
-  // speech, which is well above it.
-  if (warmup_ > 0) {
-    const float k = static_cast<float>(30 - warmup_);
-    floor_db_ = (floor_db_ * k + energy_db) / (k + 1.0f);
-    --warmup_;
-  } else if (energy_db < floor_db_) {
-    floor_db_ += 0.2f * (energy_db - floor_db_);
-  } else if (energy_db < floor_db_ + 15.0f) {
-    floor_db_ += 0.004f * (energy_db - floor_db_);
-  }
-  const bool loud =
-      warmup_ == 0 && energy_db > std::max(floor_db_ + kOnsetMarginDb,
-                                           kAbsoluteMinDb);
+  const bool loud = vad_.Update(energy_db, /*freeze_floor=*/false);
 
   switch (state_) {
     case State::kIdle:

@@ -318,5 +318,32 @@ TEST(MascotRigTest, ASleepingCharacterKeepsItsEyesShut) {
   }
 }
 
+TEST(MascotRigTest, HeldHangsFromTheCursorAndReliefSettlesToIdle) {
+  MascotRig rig;
+  const gfx::PointF resting = rig.PointerTip();
+  rig.SetMood(MascotMood::kHeld);
+  Advance(rig, 1.0);
+  // The body hangs from a point above its head, not out at its side.
+  const gfx::PointF held = rig.PointerTip();
+  EXPECT_LT(held.y(), 10.0f);
+  EXPECT_NE(held.y(), resting.y());
+  // Swung sideways it leans; the fists are up (drawn above the head).
+  rig.SetSway(1.0f);
+  Advance(rig, 1.0);
+  float top = 1000;
+  for (const Rect& r : rig.Draw()) {
+    top = std::min(top, r.y);
+  }
+  EXPECT_LT(top, 8.0f);
+
+  // Put down: relieved, then back to idle by itself.
+  rig.SetSway(0);
+  rig.SetMood(MascotMood::kRelieved);
+  Advance(rig, 1.0);
+  EXPECT_EQ(rig.mood(), MascotMood::kRelieved);
+  Advance(rig, 3.0);
+  EXPECT_EQ(rig.mood(), MascotMood::kIdle);
+}
+
 }  // namespace
 }  // namespace zephyrus::agent

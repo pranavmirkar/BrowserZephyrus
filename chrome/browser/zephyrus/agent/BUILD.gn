@@ -40,6 +40,8 @@ source_set("agent") {
     "hands_free.h",
     "local_vision_client.cc",
     "local_vision_client.h",
+    "mascot_commands.cc",
+    "mascot_commands.h",
     "mascot_rig.cc",
     "mascot_rig.h",
     "model_settings.cc",
@@ -76,10 +78,15 @@ source_set("agent") {
   # browser's audio stack has no plain "give me the microphone" call.
   if (is_win) {
     sources += [
+      "audio_devices.cc",
+      "audio_devices.h",
       "voice_input.cc",
       "voice_input.h",
     ]
-    libs = [ "winmm.lib" ]
+    libs = [
+      "ole32.lib",
+      "winmm.lib",
+    ]
   }
 
   deps = [
@@ -110,6 +117,7 @@ test("zephyrus_agent_unittests") {
     "agent_memory_unittest.cc",
     "dev_model_client_unittest.cc",
     "local_vision_client_unittest.cc",
+    "mascot_commands_unittest.cc",
     "mascot_rig_unittest.cc",
     "model_settings_unittest.cc",
     "model_transport_unittest.cc",

@@ -14,7 +14,13 @@ namespace zephyrus::agent::voice {
 namespace {
 
 constexpr float kMinWakeThreshold = 0.22f;
-constexpr float kMaxWakeThreshold = 0.32f;
+// Real microphones (noise-cancelling, gated, boosted) make one person's
+// recordings of a phrase sit 0.33-0.40 apart, where studio-clean speech sits
+// 0.12-0.17. The ceiling has to let such a voice in; the speaker gate and the
+// per-voice calibration below keep a clean voice's threshold low.
+constexpr float kMaxWakeThreshold = 0.42f;
+// How far a new take may sit from the earlier ones before it is another phrase.
+constexpr float kSamePhraseDistance = 0.44f;
 constexpr float kMinSpeakerThreshold = 3.0f;
 constexpr float kMaxSpeakerThreshold = 5.0f;
 // How far a command's pitch may sit from the voice's, in octaves.
@@ -258,9 +264,9 @@ std::string DescribeProblem(SampleProblem problem) {
     case SampleProblem::kTooShort:
       return "That was too short. Say \"Hey Zep\" clearly.";
     case SampleProblem::kTooLong:
-      return "That was too long. Just say \"Hey Zep\".";
+      return "That ran long, or the room is noisy. Say just \"Hey Zep\", or pick another microphone.";
     case SampleProblem::kTooQuiet:
-      return "I could barely hear that. Move closer to the microphone.";
+      return "I could barely hear that. Move closer, or pick another microphone.";
     case SampleProblem::kNotThePhrase:
       return "That did not sound like the earlier ones. Say \"Hey Zep\" the "
              "same way.";
@@ -282,11 +288,12 @@ SampleCheck AnalyseEnrollmentSample(base::span<const int16_t> pcm,
   std::sort(sorted.begin(), sorted.end());
   const float floor_db = sorted[sorted.size() / 10];
   const float peak_db = sorted.back();
-  if (peak_db < -45.0f || peak_db - floor_db < 15.0f) {
+  if (peak_db < -45.0f || peak_db - floor_db < 9.0f) {
     check.problem = SampleProblem::kTooQuiet;
     return check;
   }
-  const auto [first, last] = SpeechSpan(frames.energy_db);
+  const auto [first, last] = SpeechSpan(
+      frames.energy_db, 25.0f, -60.0f, /*phrase_only=*/true);
   const size_t length = last > first ? last - first : 0;
   if (length < kMinPhraseFrames) {
     check.problem = SampleProblem::kTooShort;
@@ -301,6 +308,23 @@ SampleCheck AnalyseEnrollmentSample(base::span<const int16_t> pcm,
   check.sample.speaker = ComputeSpeakerVector(samples, frames, first, last);
 
   if (!accepted.empty()) {
+    // A word is not a phrase: "Zep" on its own is a good deal shorter than "Hey
+    // Zep", and how long the phrase takes is the one thing a person repeats
+    // steadily even when a noisy microphone changes how it sounds.
+    std::vector<size_t> lengths;
+    for (const WakeTemplate& earlier : accepted) {
+      lengths.push_back(earlier.frames.size());
+    }
+    std::sort(lengths.begin(), lengths.end());
+    const float typical = static_cast<float>(lengths[lengths.size() / 2]);
+    const float mine_length = static_cast<float>(length);
+    if (mine_length < 0.70f * typical || mine_length > 1.6f * typical) {
+      check.problem = SampleProblem::kNotThePhrase;
+      return check;
+    }
+  }
+
+  if (!accepted.empty()) {
     const std::vector<FeatureFrame> mine =
         NormalisedFeatures(check.sample.frames);
     std::vector<float> distances;
@@ -309,7 +333,7 @@ SampleCheck AnalyseEnrollmentSample(base::span<const int16_t> pcm,
           OpenEndDtw(NormalisedFeatures(earlier.frames), mine).distance);
     }
     std::sort(distances.begin(), distances.end());
-    if (distances[distances.size() / 2] > 0.32f) {
+    if (distances[distances.size() / 2] > kSamePhraseDistance) {
       check.problem = SampleProblem::kNotThePhrase;
     }
   }

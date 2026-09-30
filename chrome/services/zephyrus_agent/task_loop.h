@@ -237,6 +237,8 @@ class TaskLoop {
   // How hard a cloud model is asked to think per step; empty for the provider's
   // default. Dropped for the rest of the task if the provider refuses it.
   std::string effort_;
+  // A call has been refused, or the task is long: think harder from here on.
+  bool struggling_ = false;
   // The text of the agent's most recent page.read, and only that one -- an
   // older read is replaced, so the prompt is bounded however long the reading.
   std::string last_read_;

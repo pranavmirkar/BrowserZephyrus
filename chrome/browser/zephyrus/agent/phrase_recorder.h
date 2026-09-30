@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "chrome/browser/zephyrus/agent/voice_dsp.h"
 
 namespace zephyrus::agent::voice {
 
@@ -43,9 +44,9 @@ class PhraseRecorder {
   std::deque<int16_t> preroll_;
   std::vector<int16_t> utterance_;
   std::optional<std::vector<int16_t>> ready_;
-  float floor_db_ = -70.0f;
+  HopVad vad_;
+  int reanchors_at_start_ = 0;
   float level_ = 0.0f;
-  int warmup_ = 30;
   int loud_run_ = 0;
   int quiet_run_ = 0;
   int hops_ = 0;

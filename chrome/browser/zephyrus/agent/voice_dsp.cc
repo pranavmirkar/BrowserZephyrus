@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 #include <complex>
 #include <limits>
 
@@ -190,24 +191,138 @@ Frames ExtractFrames(base::span<const float> samples) {
 
 std::pair<size_t, size_t> SpeechSpan(base::span<const float> energy_db,
                                      float margin_db,
-                                     float floor_db) {
+                                     float floor_db,
+                                     bool phrase_only) {
   if (energy_db.empty()) {
     return {0, 0};
   }
-  const float peak = *std::max_element(energy_db.begin(), energy_db.end());
-  const float threshold = std::max(peak - margin_db, floor_db);
-  size_t first = energy_db.size();
-  size_t last = 0;
-  for (size_t i = 0; i < energy_db.size(); ++i) {
-    if (energy_db[i] > threshold) {
-      first = std::min(first, i);
-      last = i + 1;
+  const size_t n = energy_db.size();
+  const size_t peak_at = static_cast<size_t>(
+      std::max_element(energy_db.begin(), energy_db.end()) - energy_db.begin());
+  const float peak = energy_db[peak_at];
+
+  // The room, as the quiet fifth of the recording smoothed over five frames.
+  // Against a quiet room this is far below the threshold and changes nothing;
+  // against a loud one (a laptop's own microphone: noise at -25 dB, speech at
+  // -12) the old "within 25 dB of the peak" line sat BELOW the noise, so the
+  // whole recording counted as speech.
+  std::vector<float> smooth(n);
+  for (size_t i = 0; i < n; ++i) {
+    float sum = 0.0f;
+    int count = 0;
+    for (size_t j = i > 2 ? i - 2 : 0; j <= std::min(n - 1, i + 2); ++j) {
+      sum += std::pow(10.0f, energy_db[j] / 10.0f);
+      ++count;
+    }
+    smooth[i] = 10.0f * std::log10(sum / static_cast<float>(count) + 1e-10f);
+  }
+  std::vector<float> sorted = smooth;
+  std::sort(sorted.begin(), sorted.end());
+  const float room = sorted[n / 5];
+  const float threshold =
+      std::max({peak - margin_db, floor_db, room + 4.0f});
+
+  if (!phrase_only) {
+    size_t first = n;
+    size_t last = 0;
+    for (size_t i = 0; i < n; ++i) {
+      if (smooth[i] > threshold) {
+        first = std::min(first, i);
+        last = i + 1;
+      }
+    }
+    if (first >= last) {
+      return {0, 0};
+    }
+    return {first, last};
+  }
+
+  // The stretch of speech around the loudest frame, not the first and last
+  // frame anywhere above the line: a click or a noise burst far from the
+  // phrase would otherwise stretch it across the silence between.
+  constexpr size_t kBridge = 8;  // a gap this short is inside the phrase
+  size_t first = peak_at;
+  size_t last = peak_at;
+  size_t gap = 0;
+  for (size_t i = peak_at; i-- > 0;) {
+    if (smooth[i] > threshold) {
+      first = i;
+      gap = 0;
+    } else if (++gap > kBridge) {
+      break;
     }
   }
-  if (first >= last) {
-    return {0, 0};
+  gap = 0;
+  for (size_t i = peak_at + 1; i < n; ++i) {
+    if (smooth[i] > threshold) {
+      last = i;
+      gap = 0;
+    } else if (++gap > kBridge) {
+      break;
+    }
   }
-  return {first, last};
+  return {first, last + 1};
+}
+
+HopVad::HopVad() = default;
+HopVad::~HopVad() = default;
+HopVad::HopVad(const HopVad&) = default;
+HopVad& HopVad::operator=(const HopVad&) = default;
+
+bool HopVad::Update(float energy_db, bool freeze_floor) {
+  power_[next_] = std::pow(10.0f, energy_db / 10.0f);
+  next_ = (next_ + 1) % static_cast<int>(power_.size());
+  filled_ = std::min<int>(filled_ + 1, static_cast<int>(power_.size()));
+  float mean = 0.0f;
+  for (int i = 0; i < filled_; ++i) {
+    mean += power_[i];
+  }
+  smooth_db_ = 10.0f * std::log10(mean / static_cast<float>(filled_) + 1e-10f);
+
+  // The floor: learned over the first 300 ms, then followed. It falls quickly
+  // to a quieter room and rises slowly, and not at all for a burst of speech,
+  // which is well above it.
+  if (warmup_ > 0) {
+    const float k = static_cast<float>(30 - warmup_);
+    floor_db_ = (floor_db_ * k + smooth_db_) / (k + 1.0f);
+    --warmup_;
+  } else if (smooth_db_ < floor_db_) {
+    floor_db_ += 0.2f * (smooth_db_ - floor_db_);
+  } else if (!freeze_floor && smooth_db_ < floor_db_ + 15.0f) {
+    floor_db_ += 0.004f * (smooth_db_ - floor_db_);
+  }
+  // Re-anchor on the room when the floor is far below the last few seconds'
+  // quiet fifth: once every half second, and only with two seconds of history.
+  window_.push_back(smooth_db_);
+  if (window_.size() > 500) {
+    window_.erase(window_.begin());
+  }
+  if (++since_check_ >= 25 && window_.size() >= 100 && warmup_ == 0) {
+    since_check_ = 0;
+    std::vector<float> sorted = window_;
+    std::sort(sorted.begin(), sorted.end());
+    const float room = sorted[sorted.size() / 5];
+    const float busy = sorted[sorted.size() * 4 / 5];
+    // Only after 1.5 s of unbroken "speech" -- no phrase lasts that long, a
+    // floor that is wrong makes the room look like one -- and only when the
+    // window is STEADY: a room, however loud, holds its level to
+    // within a few dB, and speech does not. Without this a phrase inside the
+    // window would be taken for the room and the floor lifted to its level.
+    if (loud_hops_ >= 150 && room > floor_db_ + 10.0f && busy - room < 8.0f) {
+      floor_db_ = room;
+      ++reanchors_;
+    }
+  }
+  // A high floor is a noisy microphone, where speech is only ~10 dB above it.
+  const float margin = floor_db_ > -45.0f ? 6.0f : 10.0f;
+  const bool loud =
+      warmup_ == 0 && smooth_db_ > std::max(floor_db_ + margin, -55.0f);
+  loud_hops_ = loud ? loud_hops_ + 1 : 0;
+  return loud;
+}
+
+void HopVad::Reset() {
+  *this = HopVad();
 }
 
 std::vector<FeatureFrame> NormalisedFeatures(

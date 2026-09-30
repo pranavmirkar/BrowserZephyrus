@@ -80,7 +80,7 @@ class HandsFreeEngine {
   void Reset();
 
   State state() const { return state_; }
-  float noise_floor_db() const { return floor_db_; }
+  float noise_floor_db() const { return vad_.floor_db(); }
   bool has_profiles() const { return !profiles_.empty(); }
 
   // Audio time each step waits or allows, in 10 ms hops.
@@ -108,8 +108,7 @@ class HandsFreeEngine {
   std::vector<int16_t> carry_;
   std::deque<int16_t> preroll_;
   std::vector<int16_t> utterance_;
-  float floor_db_ = -70.0f;
-  int warmup_ = 30;
+  HopVad vad_;
   int loud_run_ = 0;
   int quiet_run_ = 0;
   int hops_in_utterance_ = 0;

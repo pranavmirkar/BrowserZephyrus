@@ -7,19 +7,27 @@
 
 class BrowserView;
 
+namespace views {
+class View;
+}  // namespace views
+
 namespace zephyrus {
 
-// "Hey Zep" and Voice Lock, in one dialog: turn hands-free on, choose how picky
-// the lock is, record, rename, delete and test voices.
+// The "Hey Zep" popup, hanging off the microphone-and-gear button in the agent
+// panel's header. One step at a time:
 //
-// Recording a voice is five takes of the phrase "Hey Zep". What is kept is what
-// the phrase sounds like -- never the audio -- encrypted with the system keystore
-// and stored on this computer only. See voice_lock.h for what this can and
-// cannot promise: it is a lock for the hands-free path, not a security boundary.
+//   nothing recorded yet -> "Record my voice" -> three takes of "Hey Zep" ->
+//   ready (hands-free is switched on for you).
 //
-// Browser-modal, so nothing on the page changes while the microphone is open for
-// recording. The wake listener steps aside for as long as the dialog is up.
-void ShowVoiceSetup(BrowserView* browser_view);
+// Once a voice exists the popup is a small control panel: the hands-free switch,
+// who Zep answers to, a test, and (folded away) Voice Lock and its strictness.
+//
+// What is kept is what the phrase SOUNDS like, never the audio: encrypted with
+// the system keystore and stored on this computer only. See voice_lock.h for what
+// Voice Lock can and cannot promise: a convenience lock, not a security boundary.
+//
+// The wake listener steps aside for as long as the popup is recording.
+void ShowVoiceSetup(BrowserView* browser_view, views::View* anchor);
 
 }  // namespace zephyrus
 

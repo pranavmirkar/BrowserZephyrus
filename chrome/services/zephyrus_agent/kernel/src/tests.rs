@@ -246,6 +246,16 @@ fn an_unknown_tool_is_denied_at_the_highest_risk() {
 }
 
 #[test]
+fn an_invented_tool_is_told_which_tools_exist() {
+    // A live run invented "browser_click_placeholder" and was only told it was
+    // wrong, so it guessed again. The refusal names the real ones.
+    let decision = assert_denied(&request("browser_click_placeholder", "{}"));
+    assert!(decision.reason.contains("page.click"), "{}", decision.reason);
+    assert!(decision.reason.contains("task.complete"), "{}", decision.reason);
+    assert!(!decision.reason.contains("page.observe"), "{}", decision.reason);
+}
+
+#[test]
 fn the_parenthesis_bug_from_the_benchmark_is_denied() {
     // qwen2.5:1.5b emitted {"name": "browser.back()"} by copying punctuation out
     // of the prompt's tool listing. The prompt was fixed; the kernel must still

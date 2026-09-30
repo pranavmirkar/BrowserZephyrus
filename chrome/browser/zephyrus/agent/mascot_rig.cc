@@ -176,6 +176,14 @@ void MascotRig::SetMood(MascotMood mood) {
     case MascotMood::kHappy:
       springs_[kBodyDy].v += 30;  // crouches, then the hop takes over
       break;
+    case MascotMood::kHeld:
+      // Snatched off its feet.
+      Kick(MascotKick::kStartle);
+      break;
+    case MascotMood::kRelieved:
+      // Lets go and drops the last bit onto its feet.
+      Kick(MascotKick::kLand);
+      break;
     default:
       break;
   }
@@ -259,6 +267,8 @@ void MascotRig::Update(base::TimeDelta dt) {
   if (mood_ == MascotMood::kYawning && mood_time_ > 2.4) {
     SetMood(MascotMood::kSleeping);
   } else if (mood_ == MascotMood::kWaving && mood_time_ > 1.8) {
+    SetMood(MascotMood::kIdle);
+  } else if (mood_ == MascotMood::kRelieved && mood_time_ > 3.0) {
     SetMood(MascotMood::kIdle);
   }
 
@@ -563,6 +573,66 @@ void MascotRig::ApplyMood() {
       Set(kPropBadge, 1);
       break;
 
+    case MascotMood::kHeld: {
+      // Both fists locked over its head on the cursor, the body a pendulum
+      // beneath them, legs running on air, eyes wide, mouth a round O, a bead of
+      // sweat. The grip trembles; the swing follows how hard it is being flung.
+      const float tt = static_cast<float>(t);
+      const float tremble = 1.2f * std::sin(tt * 47);
+      Set(kHandLOn, 1.3f);
+      Set(kHandROn, 1.3f);
+      Set(kHandLX, 62);
+      Set(kHandRX, 98);
+      Set(kHandLY, -2 + tremble);
+      Set(kHandRY, -2 - tremble);
+      const float kick = 15.0f;
+      Set(kLeg0, -7 * std::max(0.0f, std::sin(tt * kick)));
+      Set(kLeg1, -7 * std::max(0.0f, std::sin(tt * kick + 1.6f)));
+      Set(kLeg2, -7 * std::max(0.0f, std::sin(tt * kick + 3.1f)));
+      Set(kLeg3, -7 * std::max(0.0f, std::sin(tt * kick + 4.7f)));
+      Set(kLegSwing, 5 * std::sin(tt * 11));
+      Set(kSquash, 1.09f);  // stretched by its own weight
+      Set(kLean, std::clamp(sway_, -1.0f, 1.0f) * 9.0f + 2.5f * std::sin(tt * 6.5f));
+      Set(kBodyDx, std::clamp(sway_, -1.0f, 1.0f) * 6.0f);
+      Set(kPupilSize, 12);
+      Set(kPupilX, 0);
+      Set(kPupilY, -4);  // eyes on the hands holding it up
+      Set(kBrow, -0.9f);
+      Set(kBrowRaise, 1.0f);
+      Set(kMouth, 0.9f);
+      Set(kPropSweat, 1);
+      break;
+    }
+
+    case MascotMood::kRelieved: {
+      // Phew. Slumps, eyes shut, mouth open on a long breath out; wipes its
+      // brow; then the smile comes back and the blush with it.
+      const float mm = static_cast<float>(m);
+      const float slump = mm < 0.9f ? 1.0f : std::max(0.0f, 1.0f - (mm - 0.9f) / 0.6f);
+      Set(kSquash, 1.0f - 0.07f * slump);
+      Set(kBodyDy, 2.0f * slump);
+      Set(kLid, mm < 1.9f ? 1.0f : (blink_left_ > 0 ? 1.0f : 0.0f));
+      Set(kBrow, mm < 1.4f ? -0.6f : 0.0f);
+      Set(kBrowRaise, mm < 1.4f ? 0.6f : 0.0f);
+      Set(kMouth, mm < 0.9f ? 0.7f * (1.0f - mm / 0.9f) + 0.15f : 0.0f);
+      Set(kPropSweat, mm < 1.0f ? 1.0f : 0.0f);
+      if (mm > 0.8f && mm < 2.0f) {
+        // The wipe: the right fist across the forehead.
+        Set(kHandROn, 1);
+        // Beside the head, where it shows against the page: a fist wiping the
+        // sweat off the side of its face.
+        Set(kHandRX, 152);
+        Set(kHandRY, 48 + 9 * std::sin((mm - 0.8f) * 11.0f));
+      }
+      if (mm > 1.5f) {
+        Set(kSmile, 1);
+        Set(kBlush, 1);
+        Set(kPupilX, 0);
+      }
+      Set(kLean, mm < 1.4f ? -2.0f : 0.0f);
+      break;
+    }
+
     case MascotMood::kWorking: {
       const float swing = PingPong(t, 0.8);
       Set(kHandLOn, 1);
@@ -748,6 +818,11 @@ std::vector<Rect> MascotRig::Draw() const {
     } else if (side == 0 && x < 12) {
       out.push_back(body.Apply({x, y - 4 * on, 20 - x, 8 * on, kBlue}));
     }
+    if (mood_ == MascotMood::kHeld) {
+      // An arm up from the head to each fist.
+      const float top = y + 5 * on;
+      out.push_back(body.Apply({x - 3.0f, top, 6, std::max(0.0f, 17.0f - top), kBlue}));
+    }
     out.push_back(body.Apply({x - 5 * on, y - 5 * on, 10 * on, 10 * on, kBlue}));
   }
 
@@ -854,6 +929,10 @@ std::vector<Rect> MascotRig::Draw() const {
 }
 
 gfx::PointF MascotRig::PointerTip() const {
+  if (mood_ == MascotMood::kHeld) {
+    // Between the two fists, above the head: the body hangs from this point.
+    return gfx::PointF(80.0f, -2.0f);
+  }
   // The fist's far edge when it is out, as the clicking pose puts it.
   const float x = 165.0f;
   return gfx::PointF(facing_left_ ? kFrameWidth - x : x, 79.5f);

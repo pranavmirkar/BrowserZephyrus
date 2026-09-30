@@ -468,12 +468,19 @@ void TaskLoop::AskModel() {
     return;
   }
 
+  // Fast while it is going well; harder thinking once a call has been refused
+  // or the task has run past a handful of steps. `low` is right for "click the
+  // next link" and is what left a long, tangled task -- writing into an editor,
+  // recovering from a wrong field -- to be given up half done.
+  const std::string effort =
+      !effort_.empty() && (struggling_ || steps_ > 8) ? std::string("medium")
+                                                       : effort_;
   // Built here, in the kernel: the browser never shapes what the model is told.
   const ProviderRequest request = kernel_->build_provider_request(
       ::rust::Str(cloud_->kind), ::rust::Str(cloud_->model),
       ::rust::Str(SystemPrompt()), ::rust::Str(UserPrompt()),
       ::rust::Str(screenshot_base64_), cloud_->max_tokens_per_step,
-      cloud_->force_tool, ::rust::Str(effort_));
+      cloud_->force_tool, ::rust::Str(effort));
   if (!request.error.empty()) {
     Finish(mojom::TaskStatus::kFailed,
            base::StrCat({"cannot ask the model: ", std::string(request.error)}));
@@ -810,6 +817,9 @@ void TaskLoop::OnExecuted(std::string tool,
   // those lines is a prompt several times the size of the observation they are
   // meant to be a footnote to. The full result is one refresh away.
   const bool refused = outcome->status != mojom::ToolStatus::kOk;
+  if (refused) {
+    struggling_ = true;
+  }
   // Was that a click on a link? Judged on the Observation the model chose from,
   // which is still the current one.
   link_click_pending_ = false;
@@ -1008,6 +1018,26 @@ std::string TaskLoop::SystemPrompt() const {
        "never a password, code or the number of a card or ID. If they ask you "
        "to forget something, call memory.forget. Answer \"what do you "
        "remember\" from WHAT YOU REMEMBER.\n"
+       "WRITING IN EDITORS (Notion, Google Docs, WordPress, mail compose): "
+       "a page often has a TITLE field and a separate BODY. page.type with an "
+       "element_id clicks that element and REPLACES its text, so never aim it "
+       "at a large editable container: it can wipe the title or put the body "
+       "inside it. To write a document: type the title into the title field, "
+       "press Enter (the cursor moves down into the body), then call page.type "
+       "WITHOUT element_id and the whole body as the text -- a newline in the "
+       "text is Enter, so paragraphs separate themselves. To add to text that "
+       "is already there, click where it should go and type without "
+       "element_id. Afterwards LOOK at the page: the title must hold only the "
+       "title. If text landed in the wrong place, repair it yourself "
+       "(Control+a then Backspace inside that field, or Control+z) and type "
+       "it again; do not report a mess as done.\n"
+       "PERSISTENCE: a task is done when the result is on the page, not when "
+       "you have tried. When something goes wrong, repair it and carry on. "
+       "Call task.complete only with a finished result, or task.handoff / "
+       "task.ask when only the user can unblock you. If a tool call is refused "
+       "or an id is not there, read the message and pick a real tool or id -- "
+       "never invent a tool name. Steps are plentiful; giving up early is the "
+       "worse mistake.\n"
        "RESEARCH:the OBSERVATION shows only the top of a page. To read one, "
        "use page.read and keep reading with its next_offset. The page you "
        "read is forgotten when you leave it, so write each fact and its "

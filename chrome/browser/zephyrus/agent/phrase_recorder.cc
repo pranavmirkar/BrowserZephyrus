@@ -19,8 +19,6 @@ constexpr int kOnsetRun = 3;
 constexpr int kEndQuietHops = 50;   // half a second
 constexpr int kMaxHops = 400;       // 4 s: this is one short phrase
 constexpr int kMinHops = 25;        // under a quarter second is a click
-constexpr float kOnsetMarginDb = 10.0f;
-constexpr float kAbsoluteMinDb = -55.0f;
 
 }  // namespace
 
@@ -37,6 +35,7 @@ void PhraseRecorder::Reset() {
   hops_ = 0;
   in_speech_ = false;
   level_ = 0.0f;
+  vad_.Reset();
 }
 
 std::optional<std::vector<int16_t>> PhraseRecorder::Feed(
@@ -63,18 +62,7 @@ void PhraseRecorder::ProcessHop(base::span<const int16_t> hop) {
       10.0f * std::log10(sum / static_cast<float>(kHop) + 1e-10f);
   level_ = std::clamp((energy_db + 60.0f) / 50.0f, 0.0f, 1.0f);
 
-  if (warmup_ > 0) {
-    const float k = static_cast<float>(30 - warmup_);
-    floor_db_ = (floor_db_ * k + energy_db) / (k + 1.0f);
-    --warmup_;
-  } else if (energy_db < floor_db_) {
-    floor_db_ += 0.2f * (energy_db - floor_db_);
-  } else if (!in_speech_ && energy_db < floor_db_ + 15.0f) {
-    floor_db_ += 0.004f * (energy_db - floor_db_);
-  }
-  const bool loud =
-      warmup_ == 0 &&
-      energy_db > std::max(floor_db_ + kOnsetMarginDb, kAbsoluteMinDb);
+  const bool loud = vad_.Update(energy_db, in_speech_);
 
   if (!in_speech_) {
     preroll_.insert(preroll_.end(), hop.begin(), hop.end());
@@ -84,6 +72,7 @@ void PhraseRecorder::ProcessHop(base::span<const int16_t> hop) {
     loud_run_ = loud ? loud_run_ + 1 : 0;
     if (loud_run_ >= kOnsetRun) {
       in_speech_ = true;
+      reanchors_at_start_ = vad_.reanchors();
       utterance_.assign(preroll_.begin(), preroll_.end());
       preroll_.clear();
       hops_ = 0;
@@ -96,7 +85,9 @@ void PhraseRecorder::ProcessHop(base::span<const int16_t> hop) {
   ++hops_;
   quiet_run_ = loud ? 0 : quiet_run_ + 1;
   if (quiet_run_ >= kEndQuietHops || hops_ > kMaxHops) {
-    const bool long_enough = hops_ - quiet_run_ >= kMinHops;
+    // Heard while the floor was being corrected: it was the room, not a person.
+    const bool long_enough = hops_ - quiet_run_ >= kMinHops &&
+                             vad_.reanchors() == reanchors_at_start_;
     in_speech_ = false;
     loud_run_ = 0;
     quiet_run_ = 0;

@@ -5067,7 +5067,46 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
                   if (base::CommandLine::ForCurrentProcess()
                           ->GetSwitchValueASCII("zephyrus-test-compact") ==
                       "voice-setup") {
-                    zephyrus::ShowVoiceSetup(view.get());
+                    if (auto* panel = view->zephyrus_agent_panel()) {
+                      panel->Open();
+                      base::SequencedTaskRunner::GetCurrentDefault()
+                          ->PostDelayedTask(
+                              FROM_HERE,
+                              base::BindOnce(
+                                  [](base::WeakPtr<BrowserView> later) {
+                                    if (later && later->zephyrus_agent_panel()) {
+                                      zephyrus::ShowVoiceSetup(
+                                          later.get(),
+                                          later->zephyrus_agent_panel()
+                                              ->voice_button());
+                                    }
+                                  },
+                                  view),
+                              base::Milliseconds(800));
+                    }
+                    return;
+                  }
+                  // =panel just opens the agent panel.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "panel") {
+                    if (auto* panel = view->zephyrus_agent_panel()) {
+                      panel->Open();
+                    }
+                    return;
+                  }
+                  // =mascot-drag picks the mascot up, swings it round and puts
+                  // it down (see StartDragDemoForTesting).
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "mascot-drag") {
+                    if (auto* panel = view->zephyrus_agent_panel()) {
+                      panel->Open();
+                    }
+                    if (auto* overlay = view->zephyrus_agent_mascot()) {
+                      overlay->SetPresent(true);
+                      overlay->StartDragDemoForTesting();
+                    }
                     return;
                   }
                   // =voice-light turns the microphone light on, to check it

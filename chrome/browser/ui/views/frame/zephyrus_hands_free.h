@@ -132,6 +132,8 @@ class ZephyrusHandsFree : public voice::HandsFreeEngine::Delegate,
   // The audio is fed at the speed it was spoken, so what is on screen and what
   // would be heard line up.
   bool test_scenario_ = false;
+  // The microphone the open stream was started with.
+  std::string mic_name_;
   std::vector<int16_t> test_audio_;
   size_t test_position_ = 0;
   base::RepeatingTimer test_timer_;

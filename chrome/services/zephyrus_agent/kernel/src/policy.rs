@@ -141,9 +141,22 @@ pub fn decide(contract: &Contract, request: &Request) -> Decision {
     // 1. Is this a tool at all? An unknown name is not a low-risk call, it is a
     //    call the kernel has no rule for.
     let Some(tool) = contract.tool(request.tool) else {
+        // Named the real ones: a model that invented a tool ("browser_click_
+        // placeholder", seen in a live run) was told only that it was wrong,
+        // and had to guess again with a step gone each time.
+        let mut names: Vec<String> = contract
+            .tool_names()
+            .into_iter()
+            .filter(|n| n != "page.observe")
+            .collect();
+        names.sort();
         return deny(
             Risk::R3,
-            format!("`{}` is not a tool in this browser", request.tool),
+            format!(
+                "`{}` is not a tool in this browser. The tools are: {}",
+                request.tool,
+                names.join(", ")
+            ),
         );
     };
 

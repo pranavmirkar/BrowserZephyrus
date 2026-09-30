@@ -69,6 +69,11 @@ class VoiceInput {
   bool Start();
   bool recording() const { return recording_; }
 
+  // Which microphone to open, by the name Windows shows for it; empty for the
+  // Windows default. Takes effect the next time the microphone is opened.
+  void SetDeviceName(std::string name) { device_name_ = std::move(name); }
+  const std::string& device_name() const { return device_name_; }
+
   // Stops recording and sends what was heard. `done` runs exactly once.
   // `endpoint` is empty for AssemblyAI itself. A demo build passes its proxy's
   // address instead, with the demo token as `api_key`.
@@ -103,6 +108,7 @@ class VoiceInput {
   std::unique_ptr<Device> device_;
   bool recording_ = false;
   AudioCallback on_audio_;
+  std::string device_name_;
   std::string pcm_;
   base::RepeatingTimer poll_timer_;
   base::WeakPtrFactory<VoiceInput> weak_factory_{this};
