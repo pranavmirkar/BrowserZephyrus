@@ -423,7 +423,7 @@ IN_PROC_BROWSER_TEST_F(ZephyrusAgentKernelBrowserTest, RunsATaskEndToEnd) {
   base::RunLoop finished;
   kernel->RunTask("What is the thermal design power?",
                   runner.BindNewPipeAndPassRemote(), model.Bind(),
-                  /*max_steps=*/6, /*approved=*/nullptr,
+                  /*max_steps=*/6, /*approved=*/nullptr, /*cloud=*/nullptr,
                   base::BindLambdaForTesting([&](mojom::TaskOutcomePtr got) {
                     outcome = std::move(got);
                     finished.Quit();
@@ -471,6 +471,7 @@ IN_PROC_BROWSER_TEST_F(ZephyrusAgentKernelBrowserTest, StopsATaskForApproval) {
   base::RunLoop finished;
   kernel->RunTask("Summarise this article", runner.BindNewPipeAndPassRemote(),
                   model.Bind(), /*max_steps=*/4, /*approved=*/nullptr,
+                  /*cloud=*/nullptr,
                   base::BindLambdaForTesting([&](mojom::TaskOutcomePtr got) {
                     outcome = std::move(got);
                     finished.Quit();

@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <span>
 #include <vector>
 
 namespace zephyrus_setup {
@@ -62,6 +63,14 @@ enum class State {
 // Rectangles to draw for `state` at animation time `t` (seconds since the state
 // began). Returned in painter's order.
 std::vector<Rect> BuildMascot(State state, double t);
+
+// The character's fixed art, for another renderer of the same character. The
+// browser draws the mascot from a skeleton of these parts, springing each
+// between poses, and taking them from here is what keeps it the same character
+// as the installer's rather than a copy that drifts.
+std::span<const Rect> TorsoArt();
+std::span<const Rect> LegArt();
+std::span<const Rect> EyesHappyArt();
 
 }  // namespace zephyrus_setup
 

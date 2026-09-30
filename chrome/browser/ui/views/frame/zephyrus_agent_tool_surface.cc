@@ -12,10 +12,14 @@
 #include "base/command_line.h"
 #include "chrome/browser/zephyrus/agent/dev_model_client.h"
 #include "chrome/browser/zephyrus/agent/sanitizer.h"
+#include "skia/ext/font_utils.h"
 #include "third_party/skia/include/core/SkCanvas.h"
+#include "third_party/skia/include/core/SkFont.h"
 #include "third_party/skia/include/core/SkPaint.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "base/functional/bind.h"
+#include "base/task/thread_pool.h"
+#include "base/files/file_util.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -30,6 +34,7 @@
 #include "components/input/native_web_keyboard_event.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/media_session.h"
 #include "content/public/browser/browser_accessibility_state.h"
@@ -39,6 +44,9 @@
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/scoped_accessibility_mode.h"
 #include "base/timer/timer.h"
+#include "chrome/browser/zephyrus/agent/pointer_path.h"
+#include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
+#include "ui/events/types/scroll_types.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "content/public/browser/web_contents.h"
@@ -116,6 +124,45 @@ std::optional<NamedKey> KeyByName(const std::string& name) {
     return NamedKey{ui::VKEY_BACK, ui::DomCode::BACKSPACE,
                     ui::DomKey::BACKSPACE};
   }
+  if (base::EqualsCaseInsensitiveASCII(name, "Delete")) {
+    return NamedKey{ui::VKEY_DELETE, ui::DomCode::DEL, ui::DomKey::DEL};
+  }
+  if (base::EqualsCaseInsensitiveASCII(name, "ArrowLeft")) {
+    return NamedKey{ui::VKEY_LEFT, ui::DomCode::ARROW_LEFT,
+                    ui::DomKey::ARROW_LEFT};
+  }
+  if (base::EqualsCaseInsensitiveASCII(name, "ArrowRight")) {
+    return NamedKey{ui::VKEY_RIGHT, ui::DomCode::ARROW_RIGHT,
+                    ui::DomKey::ARROW_RIGHT};
+  }
+  if (base::EqualsCaseInsensitiveASCII(name, "Home")) {
+    return NamedKey{ui::VKEY_HOME, ui::DomCode::HOME, ui::DomKey::HOME};
+  }
+  if (base::EqualsCaseInsensitiveASCII(name, "End")) {
+    return NamedKey{ui::VKEY_END, ui::DomCode::END, ui::DomKey::END};
+  }
+  if (base::EqualsCaseInsensitiveASCII(name, "PageUp")) {
+    return NamedKey{ui::VKEY_PRIOR, ui::DomCode::PAGE_UP, ui::DomKey::PAGE_UP};
+  }
+  if (base::EqualsCaseInsensitiveASCII(name, "PageDown")) {
+    return NamedKey{ui::VKEY_NEXT, ui::DomCode::PAGE_DOWN,
+                    ui::DomKey::PAGE_DOWN};
+  }
+  if (base::EqualsCaseInsensitiveASCII(name, "Space")) {
+    return NamedKey{ui::VKEY_SPACE, ui::DomCode::SPACE,
+                    ui::DomKey::FromCharacter(' ')};
+  }
+  // A single letter or digit, for combinations like Control+a.
+  if (name.size() == 1 && base::IsAsciiAlphaNumeric(name[0])) {
+    const char16_t character = base::ToLowerASCII(name[0]);
+    const ui::DomKey dom_key = ui::DomKey::FromCharacter(character);
+    const ui::DomCode dom_code = ui::UsLayoutDomKeyToDomCode(dom_key);
+    ui::DomKey unused = dom_key;
+    ui::KeyboardCode key_code = ui::VKEY_UNKNOWN;
+    std::ignore =
+        ui::DomCodeToUsLayoutDomKey(dom_code, ui::EF_NONE, &unused, &key_code);
+    return NamedKey{key_code, dom_code, dom_key};
+  }
   return std::nullopt;
 }
 
@@ -124,7 +171,15 @@ std::optional<NamedKey> KeyByName(const std::string& name) {
 // A page that never stops loading is common -- a live stream, an ad that polls,
 // a site with a long-running request. Waiting forever would hang the task, so
 // the timeout is what keeps "wait for the page" from becoming "wait".
-constexpr base::TimeDelta kLoadSettleTimeout = base::Seconds(4);
+constexpr base::TimeDelta kLoadSettleTimeout = base::Seconds(2.5);
+
+// The most a look may spend waiting for a page to settle, however many rounds
+// that is. MEASURED on Gmail, which never stops fetching: each look ran the
+// whole round budget plus a slow snapshot every round -- 4.7 seconds a look,
+// and the loop re-looked three times, fifteen seconds for nothing. A page
+// that has not settled in a second and a half is not going to, and the
+// Observation says so honestly (`loading`), which the model can act on.
+constexpr base::TimeDelta kSettleDeadline = base::Milliseconds(1500);
 
 // How the browser decides a page has finished reacting.
 //
@@ -156,8 +211,8 @@ constexpr base::TimeDelta kLoadSettleTimeout = base::Seconds(4);
 // it was still changing when the browser stopped waiting, so the model can look
 // again -- which is the recoverable version of the failure, and much better
 // than a confident photograph of the wrong moment.
-constexpr base::TimeDelta kSettleFloor = base::Milliseconds(400);
-constexpr base::TimeDelta kSettleInterval = base::Milliseconds(150);
+constexpr base::TimeDelta kSettleFloor = base::Milliseconds(250);
+constexpr base::TimeDelta kSettleInterval = base::Milliseconds(100);
 constexpr base::TimeDelta kActionIsRecent = base::Seconds(3);
 
 // A page that never stops moving -- a carousel, a clock, a live view -- would
@@ -198,7 +253,14 @@ constexpr int kMaxSettleRoundsAfterAction = 24;
 // Only clicks and key presses pay this, and only until the URL actually moves,
 // so the common case -- a click that navigates -- settles as soon as it lands
 // and costs nothing extra. A click that opens a menu pays the full grace once.
-constexpr base::TimeDelta kGraceAfterNavigatingAction = base::Seconds(2.5);
+//
+// It was two and a half seconds, and MEASURED at that setting every click that
+// did not navigate -- most of them -- paid all of it, plus a second look: four
+// seconds of a five-action task were spent waiting for a navigation that was
+// never coming. The wait is now short, and a page that IS about to navigate
+// still holds it open by other means: an outstanding request keeps the look
+// going (FetchWatcher), and so does a navigation the browser has started.
+constexpr base::TimeDelta kGraceAfterNavigatingAction = base::Milliseconds(700);
 
 // How long a page counts as still ARRIVING after its address changes.
 //
@@ -531,7 +593,20 @@ void BrowserToolSurface::ObserveForCheck(ObserveCallback callback) {
   Observe(std::move(callback));
 }
 
+void BrowserToolSurface::ObserveQuick(ObserveCallback callback) {
+  quick_look_ = true;
+  remember_this_look_ = false;
+  Observe(std::move(callback));
+}
+
 void BrowserToolSurface::Observe(ObserveCallback callback) {
+  // Never look at a page that input is still on its way to. See EnqueueInput.
+  if (input_running_ || !input_queue_.empty()) {
+    WhenInputIdle(base::BindOnce(&BrowserToolSurface::Observe,
+                                 weak_factory_.GetWeakPtr(),
+                                 std::move(callback)));
+    return;
+  }
   EnsureAccessibility();
   content::WebContents* contents = ActiveContents();
   if (!contents) {
@@ -541,10 +616,17 @@ void BrowserToolSurface::Observe(ObserveCallback callback) {
     return;
   }
 
+  // A quick look does not wait for anything: not a load, not a settle floor.
+  if (quick_look_) {
+    TakeSnapshot(std::move(callback));
+    return;
+  }
+
   // Let a page in flight settle first. Observing mid-navigation hands the
   // model element ids from a document that is about to be replaced, and by the
   // time it has decided what to do with them they refer to nothing.
   settle_rounds_ = 0;
+  settle_started_ = base::TimeTicks::Now();
   settle_signature_.clear();
   // Starts listening now, which is enough: the fetches that matter are the ones
   // the agent's own action just caused.
@@ -561,13 +643,17 @@ void BrowserToolSurface::Observe(ObserveCallback callback) {
   // If the agent has just acted, give the page a moment before the first look.
   // Sampling immediately catches it before it has started, and a page that has
   // not started is indistinguishable from one that has finished.
+  // Only a click or a key press can make a page go somewhere, and only they
+  // need the full floor; typing and scrolling need a frame or two to render.
+  const base::TimeDelta floor =
+      last_action_could_navigate_ ? kSettleFloor : base::Milliseconds(80);
   const base::TimeDelta since = base::TimeTicks::Now() - last_action_at_;
-  if (since < kSettleFloor && since < kActionIsRecent) {
+  if (since < floor && since < kActionIsRecent) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
         FROM_HERE,
         base::BindOnce(&BrowserToolSurface::TakeSnapshot,
                        weak_factory_.GetWeakPtr(), std::move(callback)),
-        kSettleFloor - since);
+        floor - since);
     return;
   }
 
@@ -616,8 +702,8 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
     find_query_.clear();
   }
   Observation observation = BuildObservation(
-      update, url, title, find_query_.empty() ? kMaxObservedElements : 5000,
-      kMaxObservedTextLength);
+      update, url, title, find_query_.empty() ? max_elements_ : 5000,
+      max_text_length_);
   if (!find_query_.empty()) {
     const auto matches = observation.Matching(find_query_);
     if (matches.empty()) {
@@ -636,14 +722,14 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
       // The budget was raised to 5000 for the search. Put it back, keeping the
       // content-first order BuildObservation already placed them in, and say
       // that it was cut.
-      if (observation.elements.size() > kMaxObservedElements) {
-        observation.elements.resize(kMaxObservedElements);
+      if (observation.elements.size() > max_elements_) {
+        observation.elements.resize(max_elements_);
         observation.truncated = true;
       }
     } else {
       std::vector<ObservedNode> selected;
       for (const ObservedNode* match : matches) {
-        if (selected.size() == kMaxObservedElements) {
+        if (selected.size() == max_elements_) {
           break;
         }
         selected.push_back(*match);
@@ -677,6 +763,12 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
     }
     observation.loading = contents->IsLoading();
     observation.document_url = last_document_url_;
+  }
+
+  if (quick_look_) {
+    quick_look_ = false;
+    Answer(std::move(observation), std::move(callback));
+    return;
   }
 
   // Look again unless this look matched the last one. The first look never
@@ -756,7 +848,8 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
   const bool still_moving =
       !stable || still_fetching || navigating || awaiting_navigation;
 
-  if (still_moving && settle_rounds_ < rounds_allowed) {
+  if (still_moving && settle_rounds_ < rounds_allowed &&
+      base::TimeTicks::Now() - settle_started_ < kSettleDeadline) {
     ++settle_rounds_;
     base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
         FROM_HERE,
@@ -806,9 +899,13 @@ void BrowserToolSurface::CaptureScreenshot(Observation observation,
                                            ObserveCallback callback) {
   // Off unless asked for. When it is off this costs one flag read, and the
   // Observation goes out exactly as it did before vision existed.
-  if (!zephyrus::DevSwitchesEnabled() ||
-      !base::CommandLine::ForCurrentProcess()->HasSwitch(
-          kAgentVisionSwitch)) {
+  const bool local_vision =
+      zephyrus::DevSwitchesEnabled() &&
+      base::CommandLine::ForCurrentProcess()->HasSwitch(kAgentVisionSwitch);
+  // And never for a look nobody will read: the executor's bookkeeping looks
+  // (remember_this_look_ is false) used to photograph the page, mask it and
+  // encode it, for a result that only wanted an address.
+  if (!local_vision && (!model_screenshots_ || !remember_this_look_)) {
     Answer(std::move(observation), std::move(callback));
     return;
   }
@@ -827,6 +924,7 @@ void BrowserToolSurface::CaptureScreenshot(Observation observation,
   const gfx::Size full = view->GetVisibleViewportSize();
   // Kept so the masks can be scaled to the downscaled picture later.
   observation.viewport = full;
+  observation.device_scale = view->GetDeviceScaleFactor();
   gfx::Size wanted = full;
   if (full.width() > kMaxScreenshotWidth && full.width() > 0) {
     wanted = gfx::Size(
@@ -861,18 +959,24 @@ void BrowserToolSurface::OnScreenshot(
   // The regions come from the same classification that redacts the text, so the
   // two channels cannot disagree about what is private. A picture that still
   // showed an address the JSON had masked would be worse than sending neither.
+  // Element bounds are in DEVICE pixels; the viewport is in DIPs, and the
+  // capture was scaled down to bound its cost. All three have to be accounted
+  // for. Dividing by the viewport alone -- as this once did -- put every mask
+  // 1.5x too far right and down on a 150% display, which on a form covers a
+  // label and leaves the value beside it in plain sight.
+  const gfx::Size full = observation.viewport;
+  const double device = observation.device_scale > 0 ? observation.device_scale
+                                                     : 1.0;
+  const double scale_x =
+      full.width() > 0
+          ? static_cast<double>(bitmap.width()) / (full.width() * device)
+          : 1.0;
+  const double scale_y =
+      full.height() > 0
+          ? static_cast<double>(bitmap.height()) / (full.height() * device)
+          : 1.0;
   const std::vector<Redaction> redactions = FindRedactions(observation);
   if (!redactions.empty()) {
-    // Element bounds are in the page's own pixels; the capture was scaled down
-    // to bound its cost. Without this the masks would land in the wrong place,
-    // which on a form means covering a label while leaving the value beside it.
-    const gfx::Size full = observation.viewport;
-    const double scale_x =
-        full.width() > 0 ? static_cast<double>(bitmap.width()) / full.width()
-                         : 1.0;
-    const double scale_y =
-        full.height() > 0 ? static_cast<double>(bitmap.height()) / full.height()
-                          : 1.0;
 
     SkCanvas canvas(bitmap);
     SkPaint paint;
@@ -891,12 +995,72 @@ void BrowserToolSurface::OnScreenshot(
     }
   }
 
+  // Set-of-marks: every element the model can name, outlined and labelled
+  // with the id it answers with. The model reads the page as a person does
+  // and still acts by id, so the kernel's grounding and policy checks see
+  // exactly the call they always did.
+  if (model_screenshots_) {
+    SkCanvas canvas(bitmap);
+    SkPaint box;
+    box.setAntiAlias(true);
+    box.setStyle(SkPaint::kStroke_Style);
+    box.setStrokeWidth(2);
+    box.setColor(SkColorSetRGB(0xE9, 0x1E, 0x63));
+    SkPaint tag;
+    tag.setColor(SkColorSetRGB(0xE9, 0x1E, 0x63));
+    SkPaint ink;
+    ink.setAntiAlias(true);
+    ink.setColor(SK_ColorWHITE);
+    SkFont font(skia::DefaultTypeface(), 12);
+    for (const ObservedNode& element : observation.elements) {
+      if (element.offscreen || element.bounds.IsEmpty()) {
+        continue;
+      }
+      const SkRect at = SkRect::MakeXYWH(
+          static_cast<float>(element.bounds.x() * scale_x),
+          static_cast<float>(element.bounds.y() * scale_y),
+          static_cast<float>(element.bounds.width() * scale_x),
+          static_cast<float>(element.bounds.height() * scale_y));
+      canvas.drawRect(at, box);
+      const float width =
+          font.measureText(element.id.data(), element.id.size(),
+                           SkTextEncoding::kUTF8) + 6;
+      // Inside the box, at its top-left corner. Above it, in a tight list, the
+      // label sat over the PREVIOUS element and read as naming it.
+      const SkRect label = SkRect::MakeXYWH(at.left(), at.top(), width, 15);
+      canvas.drawRect(label, tag);
+      canvas.drawSimpleText(element.id.data(), element.id.size(),
+                            SkTextEncoding::kUTF8, label.left() + 3,
+                            label.bottom() - 3, font, ink);
+    }
+    observation.send_screenshot = true;
+  }
+
   SkPixmap pixmap;
   if (bitmap.peekPixels(&pixmap)) {
     std::optional<std::vector<uint8_t>> encoded =
         gfx::JPEGCodec::Encode(pixmap, kScreenshotQuality);
     if (encoded) {
       observation.screenshot_jpeg = std::move(*encoded);
+      observation.screenshot_size = gfx::Size(bitmap.width(), bitmap.height());
+      // With the development trace on, the picture the model is about to see
+      // is kept beside it (overwritten each step), so a run can be checked
+      // against what was actually shown.
+      const base::CommandLine& command_line =
+          *base::CommandLine::ForCurrentProcess();
+      if (observation.send_screenshot && zephyrus::DevSwitchesEnabled() &&
+          command_line.HasSwitch("zephyrus-agent-trace")) {
+        base::FilePath path =
+            command_line.GetSwitchValuePath("zephyrus-agent-trace")
+                .AddExtensionASCII("screenshot.jpg");
+        base::ThreadPool::PostTask(
+            FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+            base::BindOnce(
+                [](base::FilePath path, std::vector<uint8_t> bytes) {
+                  base::WriteFile(path, bytes);
+                },
+                std::move(path), observation.screenshot_jpeg));
+      }
     }
   }
 
@@ -970,7 +1134,13 @@ void BrowserToolSurface::Answer(Observation observation,
   // clears it, but that is only one of the ways out -- vision switched on with
   // no model configured reaches here with the bytes still attached. Cleared at
   // the door instead, so the guarantee does not depend on the route.
-  observation.screenshot_jpeg.clear();
+  //
+  // The one exception is a picture the user chose to send: a cloud model, in a
+  // Workspace where cloud is on, with screenshots on in the model settings
+  // (ADR 0004). It has been masked like the text before it was ever encoded.
+  if (!observation.send_screenshot) {
+    observation.screenshot_jpeg.clear();
+  }
 
   // Said last, so it compares the finished Observation against the finished
   // one before it -- after settling, after redaction, after the description.
@@ -1124,19 +1294,203 @@ bool BrowserToolSurface::MoveAndClick(const gfx::Rect& bounds) {
   const gfx::Point at = gfx::ToRoundedPoint(gfx::ScalePoint(
       gfx::PointF(bounds.CenterPoint()), scale > 0 ? 1.0f / scale : 1.0f));
 
-  const gfx::Rect container = contents->GetContainerBounds();
-  const base::TimeTicks now = ui::EventTimeForNow();
+  // Queued rather than sent, so a click that takes a human's time finishes
+  // before whatever was asked for next. See EnqueueInput.
+  EnqueueInput(base::BindOnce(&BrowserToolSurface::ClickStep,
+                              weak_factory_.GetWeakPtr(), at, CurrentPage()));
+  return true;
+}
 
-  auto at_target = [&](blink::WebInputEvent::Type type) {
-    blink::WebMouseEvent event(type, blink::WebInputEvent::kNoModifiers, now);
+void BrowserToolSurface::EnqueueInput(InputStep step) {
+  input_queue_.push_back(std::move(step));
+  if (!input_running_) {
+    RunNextInput();
+  }
+}
+
+void BrowserToolSurface::RunNextInput() {
+  if (input_queue_.empty()) {
+    input_running_ = false;
+    Notify(PointerEvent::Kind::kIdle, pointer_position_);
+    std::vector<base::OnceClosure> waiters = std::move(idle_waiters_);
+    idle_waiters_.clear();
+    for (base::OnceClosure& waiter : waiters) {
+      std::move(waiter).Run();
+    }
+    return;
+  }
+  input_running_ = true;
+  InputStep step = std::move(input_queue_.front());
+  input_queue_.pop_front();
+  std::move(step).Run(base::BindOnce(&BrowserToolSurface::RunNextInput,
+                                     weak_factory_.GetWeakPtr()));
+}
+
+void BrowserToolSurface::WhenInputIdle(base::OnceClosure callback) {
+  if (!input_running_ && input_queue_.empty()) {
+    std::move(callback).Run();
+    return;
+  }
+  idle_waiters_.push_back(std::move(callback));
+}
+
+base::WeakPtr<content::Page> BrowserToolSurface::CurrentPage() const {
+  content::WebContents* contents = ActiveContents();
+  return contents ? contents->GetPrimaryPage().GetWeakPtr()
+                  : base::WeakPtr<content::Page>();
+}
+
+bool BrowserToolSurface::IsCurrentPage(
+    const base::WeakPtr<content::Page>& page) const {
+  content::WebContents* contents = ActiveContents();
+  return page && contents && &contents->GetPrimaryPage() == page.get();
+}
+
+content::RenderWidgetHost* BrowserToolSurface::InputWidget() const {
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !contents->GetPrimaryMainFrame()) {
+    return nullptr;
+  }
+  // The VIEW's widget, not the main frame's -- see ClickStep.
+  content::RenderWidgetHostView* view = contents->GetRenderWidgetHostView();
+  return view ? view->GetRenderWidgetHost() : nullptr;
+}
+
+bool BrowserToolSurface::SendMouse(blink::WebInputEvent::Type type,
+                                   gfx::PointF screen) {
+  content::WebContents* contents = ActiveContents();
+  content::RenderWidgetHost* widget = InputWidget();
+  if (!contents || !widget) {
+    return false;
+  }
+  const gfx::Rect container = contents->GetContainerBounds();
+  const gfx::PointF local(screen.x() - container.x(), screen.y() - container.y());
+  const bool is_move = type == blink::WebInputEvent::Type::kMouseMove;
+  // A move that would land outside the page is not the page's to see. The
+  // pointer crossing the browser's own toolbar on its way in is not a mouse
+  // event for the web content, and sending it would put a position outside the
+  // widget into the page.
+  if (is_move && (local.x() < 0 || local.y() < 0 ||
+                  local.x() >= container.width() ||
+                  local.y() >= container.height())) {
+    return false;
+  }
+  blink::WebMouseEvent event(type, blink::WebInputEvent::kNoModifiers,
+                             ui::EventTimeForNow());
+  if (!is_move) {
     event.button = blink::WebMouseEvent::Button::kLeft;
     event.click_count = 1;
-    // Widget coordinates, which is what the tree's bounds are already in: both
-    // are the frame's own space with scroll offsets applied.
-    event.SetPositionInWidget(at.x(), at.y());
-    event.SetPositionInScreen(at.x() + container.x(), at.y() + container.y());
-    return event;
-  };
+  }
+  // Widget coordinates, which is what the tree's bounds are already in: both
+  // are the frame's own space with scroll offsets applied.
+  event.SetPositionInWidget(local.x(), local.y());
+  event.SetPositionInScreen(screen.x(), screen.y());
+  widget->ForwardMouseEvent(event);
+  return true;
+}
+
+void BrowserToolSurface::SendWheel(gfx::PointF screen,
+                                   float delta_y,
+                                   int phase) {
+  content::WebContents* contents = ActiveContents();
+  content::RenderWidgetHost* widget = InputWidget();
+  if (!contents || !widget) {
+    return;
+  }
+  const gfx::Rect container = contents->GetContainerBounds();
+  blink::WebMouseWheelEvent event(blink::WebInputEvent::Type::kMouseWheel,
+                                  blink::WebInputEvent::kNoModifiers,
+                                  ui::EventTimeForNow());
+  event.SetPositionInWidget(screen.x() - container.x(),
+                            screen.y() - container.y());
+  event.SetPositionInScreen(screen.x(), screen.y());
+  // Positive is the wheel rolling away from the user, which scrolls the page UP.
+  event.delta_y = delta_y;
+  event.wheel_ticks_y = delta_y / 100.0f;
+  event.delta_units = ui::ScrollGranularity::kScrollByPrecisePixel;
+  event.phase = static_cast<blink::WebMouseWheelEvent::Phase>(phase);
+  widget->ForwardWheelEvent(event);
+}
+
+void BrowserToolSurface::Notify(PointerEvent::Kind kind,
+                                gfx::PointF screen,
+                                int direction) {
+  if (kind != PointerEvent::Kind::kIdle) {
+    pointer_position_ = screen;
+    has_pointer_position_ = true;
+  }
+  if (!pointer_observer_) {
+    return;
+  }
+  PointerEvent event;
+  event.kind = kind;
+  event.position = gfx::ToRoundedPoint(screen);
+  event.direction = direction;
+  pointer_observer_->OnPointer(event);
+}
+
+gfx::PointF BrowserToolSurface::PointerStart(gfx::PointF target) const {
+  // From where the drawn pointer stands, if something draws one: the move then
+  // begins at the character's hand instead of appearing beside the target.
+  if (pointer_observer_) {
+    if (const std::optional<gfx::Point> home = pointer_observer_->PointerHome()) {
+      return gfx::PointF(*home);
+    }
+  }
+  if (has_pointer_position_) {
+    return pointer_position_;
+  }
+  // No history and nothing drawn: arrive from the lower left, the way a hand
+  // that was resting there would.
+  return gfx::PointF(target.x() - 220, target.y() + 150);
+}
+
+void BrowserToolSurface::Later(base::TimeDelta delay, base::OnceClosure task) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, std::move(task), delay);
+}
+
+void BrowserToolSurface::RunTimeline(
+    base::TimeDelta duration,
+    base::RepeatingCallback<void(base::TimeDelta)> tick,
+    base::OnceClosure finished) {
+  timeline_start_ = base::TimeTicks::Now();
+  timeline_duration_ = duration;
+  timeline_tick_ = std::move(tick);
+  timeline_finished_ = std::move(finished);
+  // Ten milliseconds: a mouse reports at about a hundred a second, and a page
+  // that samples movement sees a pointer rather than a slideshow.
+  timeline_timer_.Start(FROM_HERE, base::Milliseconds(10), this,
+                        &BrowserToolSurface::OnTimelineTick);
+  timeline_tick_.Run(base::TimeDelta());
+}
+
+void BrowserToolSurface::OnTimelineTick() {
+  const base::TimeDelta elapsed =
+      std::min(base::TimeTicks::Now() - timeline_start_, timeline_duration_);
+  // Copied: a tick may end the timeline, which clears the callback it runs.
+  base::RepeatingCallback<void(base::TimeDelta)> tick = timeline_tick_;
+  tick.Run(elapsed);
+  if (elapsed >= timeline_duration_ && timeline_timer_.IsRunning()) {
+    timeline_timer_.Stop();
+    timeline_tick_.Reset();
+    base::OnceClosure finished = std::move(timeline_finished_);
+    std::move(finished).Run();
+  }
+}
+
+void BrowserToolSurface::ClickStep(gfx::Point at,
+                                   base::WeakPtr<content::Page> page,
+                                   base::OnceClosure done) {
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !InputWidget() || !IsCurrentPage(page)) {
+    std::move(done).Run();
+    return;
+  }
+  click_page_ = page;
+  // The VIEW's widget, not the main frame's -- see MoveAndClick's history.
+  const gfx::Rect container = contents->GetContainerBounds();
+  const gfx::PointF target(at.x() + container.x(), at.y() + container.y());
 
   // Move, then press, then release -- all three, in that order.
   //
@@ -1145,14 +1499,135 @@ bool BrowserToolSurface::MoveAndClick(const gfx::Rect& bounds) {
   // cursor arrive before the press does; a press out of nowhere lands on
   // whatever the page last thought was under the pointer. And a press without
   // its release leaves the page believing a button is still held down.
-  blink::WebMouseEvent move =
-      at_target(blink::WebInputEvent::Type::kMouseMove);
-  move.button = blink::WebMouseEvent::Button::kNoButton;
-  move.click_count = 0;
-  widget->ForwardMouseEvent(move);
-  widget->ForwardMouseEvent(at_target(blink::WebInputEvent::Type::kMouseDown));
-  widget->ForwardMouseEvent(at_target(blink::WebInputEvent::Type::kMouseUp));
+  if (!human_motion_) {
+    SendMouse(blink::WebInputEvent::Type::kMouseMove, target);
+    SendMouse(blink::WebInputEvent::Type::kMouseDown, target);
+    SendMouse(blink::WebInputEvent::Type::kMouseUp, target);
+    last_action_at_ = base::TimeTicks::Now();
+    std::move(done).Run();
+    return;
+  }
+
+  MoveThen(target, base::BindOnce(&BrowserToolSurface::PressAt,
+                                  weak_factory_.GetWeakPtr(), target,
+                                  std::move(done)));
+}
+
+void BrowserToolSurface::MoveThen(gfx::PointF target, base::OnceClosure then) {
+  auto path = std::make_shared<PointerPath>(PointerStart(target), target,
+                                            path_seed_++);
+  RunTimeline(
+      path->duration(),
+      base::BindRepeating(
+          [](base::WeakPtr<BrowserToolSurface> self,
+             std::shared_ptr<PointerPath> path, base::TimeDelta elapsed) {
+            if (!self) {
+              return;
+            }
+            const gfx::PointF at = path->At(elapsed);
+            self->SendMouse(blink::WebInputEvent::Type::kMouseMove, at);
+            self->Notify(PointerEvent::Kind::kMove, at);
+          },
+          weak_factory_.GetWeakPtr(), path),
+      std::move(then));
+}
+
+void BrowserToolSurface::PressAt(gfx::PointF target, base::OnceClosure done) {
+  Notify(PointerEvent::Kind::kArrive, target);
+  // Arrived. If the page changed under the pointer on the way, the press is
+  // not for this page: it was judged against the one that was here.
+  if (!IsCurrentPage(click_page_)) {
+    Notify(PointerEvent::Kind::kIdle, target);
+    std::move(done).Run();
+    return;
+  }
+  // A beat on the target, then press, hold, release. Short: this is motion for
+  // the eye and for pages that watch the pointer, not a delay to be waited out.
+  Later(base::Milliseconds(30),
+        base::BindOnce(
+            [](base::WeakPtr<BrowserToolSurface> self, gfx::PointF target,
+               base::OnceClosure done) {
+              if (!self) {
+                return;
+              }
+              if (!self->IsCurrentPage(self->click_page_)) {
+                std::move(done).Run();
+                return;
+              }
+              self->SendMouse(blink::WebInputEvent::Type::kMouseDown, target);
+              self->Notify(PointerEvent::Kind::kPress, target);
+              self->Later(base::Milliseconds(40),
+                          base::BindOnce(&BrowserToolSurface::ReleaseAt, self,
+                                         target, std::move(done)));
+            },
+            weak_factory_.GetWeakPtr(), target, std::move(done)));
+}
+
+void BrowserToolSurface::ReleaseAt(gfx::PointF target, base::OnceClosure done) {
+  SendMouse(blink::WebInputEvent::Type::kMouseUp, target);
+  Notify(PointerEvent::Kind::kRelease, target);
+  last_action_at_ = base::TimeTicks::Now();
+  std::move(done).Run();
+}
+
+bool BrowserToolSurface::HoverNode(const ObservedNode& node) {
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !InputWidget() || node.offscreen || node.bounds.IsEmpty()) {
+    return false;
+  }
+  // Accessibility bounds are in device pixels; a mouse event wants DIP. See
+  // MoveAndClick.
+  content::RenderWidgetHostView* host_view = contents->GetRenderWidgetHostView();
+  const float scale = host_view ? host_view->GetDeviceScaleFactor() : 1.0f;
+  const gfx::Point at = gfx::ToRoundedPoint(gfx::ScalePoint(
+      gfx::PointF(node.bounds.CenterPoint()), scale > 0 ? 1.0f / scale : 1.0f));
+  last_action_could_navigate_ = false;
+  find_query_.clear();
+  EnqueueInput(base::BindOnce(&BrowserToolSurface::HoverStep,
+                              weak_factory_.GetWeakPtr(), at, CurrentPage()));
   return true;
+}
+
+void BrowserToolSurface::HoverStep(gfx::Point at,
+                                   base::WeakPtr<content::Page> page,
+                                   base::OnceClosure done) {
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !InputWidget() || !IsCurrentPage(page)) {
+    std::move(done).Run();
+    return;
+  }
+  const gfx::Rect container = contents->GetContainerBounds();
+  const gfx::PointF target(at.x() + container.x(), at.y() + container.y());
+  if (!human_motion_) {
+    SendMouse(blink::WebInputEvent::Type::kMouseMove, target);
+    last_action_at_ = base::TimeTicks::Now();
+    std::move(done).Run();
+    return;
+  }
+  // Onto it, and a beat of dwell: a menu that opens on hover opens on a
+  // transition, and the look that follows should find it open.
+  MoveThen(target,
+           base::BindOnce(
+               [](base::WeakPtr<BrowserToolSurface> self, gfx::PointF target,
+                  base::OnceClosure done) {
+                 if (!self) {
+                   return;
+                 }
+                 self->Notify(PointerEvent::Kind::kArrive, target);
+                 self->Later(
+                     base::Milliseconds(220),
+                     base::BindOnce(
+                         [](base::WeakPtr<BrowserToolSurface> self,
+                            base::OnceClosure done) {
+                           if (!self) {
+                             return;
+                           }
+                           self->last_action_at_ = base::TimeTicks::Now();
+                           std::move(done).Run();
+                         },
+                         self, std::move(done)));
+               },
+               weak_factory_.GetWeakPtr(), target, std::move(done)));
 }
 
 bool BrowserToolSurface::ClickNode(const ObservedNode& node) {
@@ -1280,15 +1755,62 @@ bool BrowserToolSurface::TypeIntoNode(const ObservedNode& node,
   // missed click was finally spotted. Sending it only when the field actually
   // holds text keeps the common case (an empty search box) from ever reaching
   // for it.
-  if (!node.value.empty()) {
-    SendKey(widget, ui::VKEY_A, ui::DomCode::US_A,
-            ui::DomKey::FromCharacter('a'), ui::EF_CONTROL_DOWN);
-  }
-
-  for (const char16_t character : base::UTF8ToUTF16(text)) {
-    TypeCharacter(widget, character);
-  }
+  EnqueueInput(base::BindOnce(&BrowserToolSurface::TypeStep,
+                              weak_factory_.GetWeakPtr(),
+                              /*select_all=*/!node.value.empty(), text,
+                              CurrentPage()));
   return true;
+}
+
+void BrowserToolSurface::TypeText(content::RenderWidgetHost* widget,
+                                  const std::string& text) {
+  // A newline is the Enter KEY and a tab the Tab key. Sent as characters they
+  // were invisible to rich editors: a Notion list typed as "Milk\nEggs" came
+  // out as "MilkEggs" on one line, because only a real Enter makes a new block.
+  for (const char16_t character : base::UTF8ToUTF16(text)) {
+    if (character == '\n') {
+      // A carriage return as the character is what an editor inserts a new
+      // line or block on. Key down and up alone reach the page's listeners
+      // and change nothing -- measured: "Milk\nEggs" came out "MilkEggs".
+      const base::TimeTicks now = ui::EventTimeForNow();
+      widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(ui::KeyEvent(
+          ui::EventType::kKeyPressed, ui::VKEY_RETURN, ui::DomCode::ENTER,
+          ui::EF_NONE, ui::DomKey::ENTER, now)));
+      widget->ForwardKeyboardEvent(
+          input::NativeWebKeyboardEvent(ui::KeyEvent::FromCharacter(
+              '\r', ui::VKEY_RETURN, ui::DomCode::ENTER, ui::EF_NONE, now)));
+      widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(ui::KeyEvent(
+          ui::EventType::kKeyReleased, ui::VKEY_RETURN, ui::DomCode::ENTER,
+          ui::EF_NONE, ui::DomKey::ENTER, now)));
+    } else if (character == '\t') {
+      SendKey(widget, ui::VKEY_TAB, ui::DomCode::TAB, ui::DomKey::TAB,
+              ui::EF_NONE);
+    } else if (character != '\r') {
+      TypeCharacter(widget, character);
+    }
+  }
+}
+
+bool BrowserToolSurface::TypeIntoFocus(const std::string& text) {
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !contents->GetPrimaryMainFrame()) {
+    return false;
+  }
+  content::RenderWidgetHost* widget =
+      contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  if (!widget) {
+    return false;
+  }
+  EnqueueInput(base::BindOnce(&BrowserToolSurface::TypeStep,
+                              weak_factory_.GetWeakPtr(),
+                              /*select_all=*/false, text, CurrentPage()));
+  return true;
+}
+
+bool BrowserToolSurface::ClickAtPoint(const gfx::Point& point) {
+  // The same path as clicking an element, aimed at a point: a small box
+  // around it, so MoveAndClick's centre is the point itself.
+  return MoveAndClick(gfx::Rect(point.x() - 1, point.y() - 1, 3, 3));
 }
 
 bool BrowserToolSurface::SetNodeValue(const ObservedNode& node,
@@ -1318,11 +1840,9 @@ bool BrowserToolSurface::SetNodeValue(const ObservedNode& node,
     return false;
   }
 
-  for (const char16_t character : base::UTF8ToUTF16(value)) {
-    TypeCharacter(widget, character);
-  }
-  SendKey(widget, ui::VKEY_RETURN, ui::DomCode::ENTER, ui::DomKey::ENTER,
-          ui::EF_NONE);
+  EnqueueInput(base::BindOnce(&BrowserToolSurface::ChooseStep,
+                              weak_factory_.GetWeakPtr(), value,
+                              CurrentPage()));
   return true;
 }
 
@@ -1331,9 +1851,243 @@ bool BrowserToolSurface::ScrollPage(bool down, const std::string& amount) {
   // page-at-a-time only. Honouring the direction and ignoring the distance is
   // the honest reading; a scroll that goes the right way but not as far is a
   // step the agent can repeat.
-  return PerformAction(
-      down ? ax::mojom::Action::kScrollDown : ax::mojom::Action::kScrollUp,
-      ui::kInvalidAXNodeID, amount);
+  if (!human_motion_) {
+    return PerformAction(
+        down ? ax::mojom::Action::kScrollDown : ax::mojom::Action::kScrollUp,
+        ui::kInvalidAXNodeID, amount);
+  }
+
+  // A hand turns a wheel: the pointer goes to the page, then rolls it by a
+  // fraction of what is showing, as a glide. The jump to the very top or
+  // bottom is the Home and End keys, which is what a person presses.
+  if (amount == "top" || amount == "bottom") {
+    return PressKey(amount == "top" ? "Home" : "End");
+  }
+  content::WebContents* contents = ActiveContents();
+  if (!contents) {
+    return false;
+  }
+  last_action_could_navigate_ = false;
+  const gfx::Rect container = contents->GetContainerBounds();
+  const float distance = static_cast<float>(container.height()) *
+                         (amount == "half" ? 0.45f : 0.85f);
+  const gfx::Point from(container.x() + container.width() * 62 / 100,
+                        container.y() + container.height() * 55 / 100);
+  EnqueueInput(base::BindOnce(&BrowserToolSurface::ScrollStep,
+                              weak_factory_.GetWeakPtr(), from,
+                              down ? distance : -distance));
+  return true;
+}
+
+void BrowserToolSurface::ScrollStep(gfx::Point screen_from,
+                                    float pixels,
+                                    base::OnceClosure done) {
+  if (!InputWidget()) {
+    std::move(done).Run();
+    return;
+  }
+  const gfx::PointF at(screen_from);
+  MoveThen(at, base::BindOnce(&BrowserToolSurface::ScrollGlide,
+                              weak_factory_.GetWeakPtr(), at, pixels,
+                              std::move(done)));
+}
+
+void BrowserToolSurface::ScrollGlide(gfx::PointF at,
+                                     float pixels,
+                                     base::OnceClosure done) {
+  const base::TimeDelta duration = ScrollDuration(pixels);
+  const int direction = pixels > 0 ? 1 : -1;
+  struct Progress {
+    float sent = 0;
+    bool began = false;
+  };
+  auto progress = std::make_shared<Progress>();
+  RunTimeline(
+      duration,
+      base::BindRepeating(
+          [](base::WeakPtr<BrowserToolSurface> self, gfx::PointF at,
+             float pixels, int direction, base::TimeDelta duration,
+             std::shared_ptr<Progress> progress, base::TimeDelta elapsed) {
+            if (!self) {
+              return;
+            }
+            const bool last = elapsed >= duration;
+            const float target =
+                pixels * static_cast<float>(MinimumJerk(
+                             elapsed.InSecondsF() / duration.InSecondsF()));
+            const float delta = target - progress->sent;
+            progress->sent = target;
+            // The wheel reports positive as rolling away from the user, which
+            // scrolls the page UP: scrolling down is the negative direction.
+            int phase = blink::WebMouseWheelEvent::kPhaseChanged;
+            if (!progress->began) {
+              phase = blink::WebMouseWheelEvent::kPhaseBegan;
+              progress->began = true;
+            } else if (last) {
+              phase = blink::WebMouseWheelEvent::kPhaseEnded;
+            }
+            self->SendWheel(at, -delta, phase);
+            self->Notify(PointerEvent::Kind::kScroll, at, direction);
+          },
+          weak_factory_.GetWeakPtr(), at, pixels, direction, duration,
+          progress),
+      base::BindOnce(
+          [](base::WeakPtr<BrowserToolSurface> self, base::OnceClosure done) {
+            if (!self) {
+              return;
+            }
+            self->last_action_at_ = base::TimeTicks::Now();
+            std::move(done).Run();
+          },
+          weak_factory_.GetWeakPtr(), std::move(done)));
+}
+
+void BrowserToolSurface::TypeStep(bool select_all,
+                                  std::string text,
+                                  base::WeakPtr<content::Page> page,
+                                  base::OnceClosure done) {
+  content::WebContents* contents = ActiveContents();
+  content::RenderWidgetHost* widget =
+      contents && contents->GetPrimaryMainFrame()
+          ? contents->GetPrimaryMainFrame()->GetRenderWidgetHost()
+          : nullptr;
+  if (!widget || !IsCurrentPage(page)) {
+    std::move(done).Run();
+    return;
+  }
+  last_action_at_ = base::TimeTicks::Now();
+  Notify(PointerEvent::Kind::kTypeBegin, pointer_position_);
+  if (select_all) {
+    SendKey(widget, ui::VKEY_A, ui::DomCode::US_A,
+            ui::DomKey::FromCharacter('a'), ui::EF_CONTROL_DOWN);
+  }
+
+  const std::u16string wide = base::UTF8ToUTF16(text);
+  if (!human_motion_ || wide.size() < 8) {
+    TypeText(widget, text);
+    Notify(PointerEvent::Kind::kTypeEnd, pointer_position_);
+    std::move(done).Run();
+    return;
+  }
+
+  // In a burst rather than one instant, so the character visibly types and the
+  // page sees keystrokes arrive over time; never more than half a second
+  // however long the text, because the task is waiting on it.
+  const base::TimeDelta duration = std::clamp(
+      base::Milliseconds(4) * static_cast<int64_t>(wide.size()),
+      base::Milliseconds(120), base::Milliseconds(500));
+  auto typed = std::make_shared<size_t>(0);
+  RunTimeline(
+      duration,
+      base::BindRepeating(
+          [](base::WeakPtr<BrowserToolSurface> self, std::u16string wide,
+             base::TimeDelta duration, std::shared_ptr<size_t> typed,
+             base::WeakPtr<content::Page> page, base::TimeDelta elapsed) {
+            // Each burst re-checks: typing takes a couple of seconds, and a
+            // page that navigates in that time must not get the rest.
+            if (!self || !self->IsCurrentPage(page)) {
+              return;
+            }
+            content::WebContents* contents = self->ActiveContents();
+            content::RenderWidgetHost* widget =
+                contents && contents->GetPrimaryMainFrame()
+                    ? contents->GetPrimaryMainFrame()->GetRenderWidgetHost()
+                    : nullptr;
+            if (!widget) {
+              return;
+            }
+            const size_t due =
+                elapsed >= duration
+                    ? wide.size()
+                    : static_cast<size_t>(wide.size() * elapsed.InSecondsF() /
+                                          duration.InSecondsF());
+            if (due > *typed) {
+              self->TypeText(
+                  widget, base::UTF16ToUTF8(wide.substr(*typed, due - *typed)));
+              *typed = due;
+            }
+          },
+          weak_factory_.GetWeakPtr(), wide, duration, typed, page),
+      base::BindOnce(
+          [](base::WeakPtr<BrowserToolSurface> self, base::OnceClosure done) {
+            if (!self) {
+              return;
+            }
+            self->last_action_at_ = base::TimeTicks::Now();
+            self->Notify(PointerEvent::Kind::kTypeEnd, self->pointer_position_);
+            std::move(done).Run();
+          },
+          weak_factory_.GetWeakPtr(), std::move(done)));
+}
+
+void BrowserToolSurface::ChooseStep(std::string value,
+                                   base::WeakPtr<content::Page> page,
+                                   base::OnceClosure done) {
+  content::WebContents* contents = ActiveContents();
+  content::RenderWidgetHost* widget =
+      contents && contents->GetPrimaryMainFrame()
+          ? contents->GetPrimaryMainFrame()->GetRenderWidgetHost()
+          : nullptr;
+  if (widget && IsCurrentPage(page)) {
+    for (const char16_t character : base::UTF8ToUTF16(value)) {
+      TypeCharacter(widget, character);
+    }
+    SendKey(widget, ui::VKEY_RETURN, ui::DomCode::ENTER, ui::DomKey::ENTER,
+            ui::EF_NONE);
+    last_action_at_ = base::TimeTicks::Now();
+  }
+  std::move(done).Run();
+}
+
+void BrowserToolSurface::KeyStep(ui::KeyboardCode key_code,
+                                 ui::DomCode dom_code,
+                                 ui::DomKey dom_key,
+                                 int flags,
+                                 base::WeakPtr<content::Page> page,
+                                 base::OnceClosure done) {
+  content::WebContents* contents = ActiveContents();
+  if (!contents || !contents->GetPrimaryMainFrame() || !IsCurrentPage(page)) {
+    std::move(done).Run();
+    return;
+  }
+  // Same reason as SetNodeValue: the key has to arrive at a page that is
+  // actually the focused thing, not at one sitting behind a focused panel.
+  // Here, at the moment of the key and not when it was asked for, so it is
+  // still immediately before the events that need it.
+  contents->Focus();
+  content::RenderWidgetHost* widget =
+      contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
+  if (!widget) {
+    std::move(done).Run();
+    return;
+  }
+  last_action_could_navigate_ = true;
+  last_action_at_ = base::TimeTicks::Now();
+
+  // A real synthesised keystroke, not an accessibility action. Keys are not
+  // something the accessibility API expresses -- kDoDefault on a node activates
+  // that node, which is a click, not a keypress. A page listening for keydown,
+  // a form submitting on Enter, or a text field handling Backspace all need
+  // actual key events, and they need both halves: some handlers run on keyup.
+  const base::TimeTicks now = base::TimeTicks::Now();
+  const ui::KeyEvent press(ui::EventType::kKeyPressed, key_code, dom_code,
+                           flags, dom_key, now);
+  const ui::KeyEvent release(ui::EventType::kKeyReleased, key_code, dom_code,
+                             flags, dom_key, now);
+
+  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(press));
+  // Enter and Space are also CHARACTERS, and the character event is what
+  // editors insert on and what a form submits on. Without it Enter reached a
+  // page's keydown listeners and nothing else. Not with Control or Alt held:
+  // Control+Enter is a command, not a line break.
+  if (!(flags & (ui::EF_CONTROL_DOWN | ui::EF_ALT_DOWN | ui::EF_COMMAND_DOWN)) &&
+      (key_code == ui::VKEY_RETURN || key_code == ui::VKEY_SPACE)) {
+    const char16_t character = key_code == ui::VKEY_RETURN ? '\r' : ' ';
+    widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(
+        ui::KeyEvent::FromCharacter(character, key_code, dom_code, flags, now)));
+  }
+  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(release));
+  std::move(done).Run();
 }
 
 bool BrowserToolSurface::PressKey(const std::string& key) {
@@ -1345,37 +2099,44 @@ bool BrowserToolSurface::PressKey(const std::string& key) {
   if (!contents) {
     return false;
   }
-  // Same reason as SetNodeValue: the key has to arrive at a page that is
-  // actually the focused thing, not at one sitting behind a focused panel.
-  contents->Focus();
-
   // An unknown name is a refusal, not a guess. The kernel already checked this
   // against the contract's enum, so reaching here with something else means the
   // two disagree.
-  const std::optional<NamedKey> named = KeyByName(key);
+  // "Control+a", "Shift+Enter": modifiers first, the key last.
+  int flags = ui::EF_NONE;
+  std::string last = key;
+  const std::vector<std::string> parts = base::SplitString(
+      key, "+", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  if (parts.size() > 1) {
+    for (size_t i = 0; i + 1 < parts.size(); ++i) {
+      const std::string& modifier = parts[i];
+      if (base::EqualsCaseInsensitiveASCII(modifier, "Control") ||
+          base::EqualsCaseInsensitiveASCII(modifier, "Ctrl")) {
+        flags |= ui::EF_CONTROL_DOWN;
+      } else if (base::EqualsCaseInsensitiveASCII(modifier, "Shift")) {
+        flags |= ui::EF_SHIFT_DOWN;
+      } else if (base::EqualsCaseInsensitiveASCII(modifier, "Alt")) {
+        flags |= ui::EF_ALT_DOWN;
+      } else if (base::EqualsCaseInsensitiveASCII(modifier, "Meta")) {
+        flags |= ui::EF_COMMAND_DOWN;
+      } else {
+        return false;
+      }
+    }
+    last = parts.back();
+  }
+  const std::optional<NamedKey> named = KeyByName(last);
   if (!named) {
     return false;
   }
 
-  content::RenderWidgetHost* widget =
-      contents->GetPrimaryMainFrame()->GetRenderWidgetHost();
-  if (!widget) {
+  if (!contents->GetPrimaryMainFrame()->GetRenderWidgetHost()) {
     return false;
   }
-
-  // A real synthesised keystroke, not an accessibility action. Keys are not
-  // something the accessibility API expresses -- kDoDefault on a node activates
-  // that node, which is a click, not a keypress. A page listening for keydown,
-  // a form submitting on Enter, or a text field handling Backspace all need
-  // actual key events, and they need both halves: some handlers run on keyup.
-  const base::TimeTicks now = base::TimeTicks::Now();
-  const ui::KeyEvent press(ui::EventType::kKeyPressed, named->key_code,
-                           named->dom_code, ui::EF_NONE, named->dom_key, now);
-  const ui::KeyEvent release(ui::EventType::kKeyReleased, named->key_code,
-                             named->dom_code, ui::EF_NONE, named->dom_key, now);
-
-  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(press));
-  widget->ForwardKeyboardEvent(input::NativeWebKeyboardEvent(release));
+  EnqueueInput(base::BindOnce(&BrowserToolSurface::KeyStep,
+                              weak_factory_.GetWeakPtr(), named->key_code,
+                              named->dom_code, named->dom_key, flags,
+                              CurrentPage()));
   return true;
 }
 

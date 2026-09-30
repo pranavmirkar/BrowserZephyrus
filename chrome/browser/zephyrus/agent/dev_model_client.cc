@@ -9,6 +9,8 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/time/time.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/strings/string_split.h"
 #include "base/no_destructor.h"
@@ -86,6 +88,16 @@ void Trace(const std::string& what) {
       base::ThreadPool::CreateSequencedTaskRunner(
           {base::MayBlock(), base::TaskPriority::BEST_EFFORT}));
 
+  // When, since the first line of this run, so a slow task can be read as a
+  // timeline instead of guessed at. Its own line, so nothing that reads the
+  // trace by the start of a line has to change.
+  static const base::TimeTicks first_line = base::TimeTicks::Now();
+  const std::string stamped =
+      "TIME " +
+      base::NumberToString(
+          (base::TimeTicks::Now() - first_line).InMilliseconds()) +
+      "\n" + what;
+
   (*runner)->PostTask(
       FROM_HERE,
       base::BindOnce(
@@ -111,7 +123,7 @@ void Trace(const std::string& what) {
             }
             base::AppendToFile(path, text);
           },
-          path, what));
+          path, stamped));
 }
 
 constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
@@ -215,6 +227,10 @@ void Record(const std::string& user_prompt, const std::string& reply) {
 }
 
 }  // namespace
+
+void AgentTrace(const std::string& what) {
+  Trace(what);
+}
 
 // static
 std::unique_ptr<DevModelClient> DevModelClient::CreateIfConfigured(
@@ -389,6 +405,10 @@ void DevModelClient::Propose(const std::string& system_prompt,
                              const std::string& user_prompt,
                              ProposeCallback callback) {
   if (replaying_) {
+    // What the model WOULD have been asked, so a scripted run can be checked
+    // for what the agent was told.
+    Trace(base::StrCat({"\n================ ASKED (replay) ================\n",
+                        user_prompt, "\n"}));
     if (!loaded_) {
       // Held until the recording arrives, in order.
       waiting_.push_back(std::move(callback));

@@ -120,6 +120,10 @@ struct PendingApproval {
   // way back in (see TaskLoop).
   array<string> history;
   string last_url;
+  // What the agent had written down with notes.add. Carried for the same
+  // reason as the history, and more so: notes are the only memory that
+  // outlives the page they came from.
+  string notes;
 };
 
 // How a task ended. Every one of these is a stopping point -- the loop never
@@ -141,9 +145,94 @@ enum TaskStatus {
   kCancelled = 5,
 };
 
+// Tokens a run spent, as the provider reported them. Zero for a local model.
+struct TokenUsage {
+  uint64 input;
+  uint64 output;
+  uint64 cache_read;
+  uint64 cache_write;
+};
+
+// The browser's side of speaking to a cloud model (ADR 0004). The kernel builds
+// the request and reads the reply; this only sends it.
+//
+// The browser adds the key, sends only to the endpoint the user configured,
+// accepts only that provider's request path and a fixed list of non-secret
+// headers, sends without any Workspace's cookies, and caps the reply's size.
+// Anything else is refused without sending, as status 0 and a JSON error body
+// the kernel reads like any provider error.
+interface ModelTransport {
+  Send(string path, map<string, string> headers, string body)
+      => (int32 status, string body);
+};
+
+// A cloud model to run a Task on.
+struct CloudModel {
+  // "anthropic", "openai" (any OpenAI-compatible endpoint) or "gemini".
+  string kind;
+  string model;
+  // Insist on a native tool call. Off for servers that reject that.
+  bool force_tool;
+  uint32 max_tokens_per_step;
+
+  // List prices in US dollars per million tokens, from the browser's table.
+  // Zero when the model's price is not known; the token cap then applies.
+  double usd_per_mtok_input;
+  double usd_per_mtok_output;
+  double usd_per_mtok_cache_read;
+  double usd_per_mtok_cache_write;
+  // What this run may spend. The kernel stops the task the moment a reply
+  // takes it past either. Zero means no cap of that kind; the browser always
+  // sets at least one.
+  double max_usd;
+  uint64 max_tokens;
+
+  pending_remote<ModelTransport> transport;
+};
+
+// One earlier exchange in this chat.
+struct ConversationTurn {
+  // What the user said, verbatim (bounded by the browser). Trusted: it is the
+  // user's own words.
+  string user;
+  // How it ended: "done", "asked" (the agent's last message was a question),
+  // "stopped" or "failed".
+  string outcome;
+  // What the agent answered or asked. It may quote a page, so it is DATA -- the
+  // loop labels it as such -- and secrets in it were masked before it got here.
+  string agent;
+  // Where the page was when it ended.
+  string url;
+};
+
+// What the agent knows before it starts, beyond the page in front of it.
+//
+// Filled by the browser, which owns the memory; the kernel process only reads
+// it. Nothing here is a capability: it changes what the model is TOLD, and every
+// action it then proposes is judged exactly as before.
+struct TaskMemory {
+  // Earlier in this chat, oldest first.
+  array<ConversationTurn> conversation;
+  // Things the user asked it to keep, already ranked for this task. The user's
+  // own words: the kernel refuses to save anything that is not (see the
+  // memory.remember rules in policy.rs).
+  array<string> facts;
+  // Set when the last exchange ended with a QUESTION to the user and this task
+  // is their answer to it: what they first asked, so the agent carries on with
+  // that instead of starting over.
+  string continuing;
+  // Notes the agent wrote in the previous task, so a follow-up still has them.
+  string notes;
+};
+
 struct TaskOutcome {
   TaskStatus status;
   string message;
+  // What the agent wrote down with notes.add, for the next task in this chat.
+  string notes;
+  // What the run spent. The browser carries the remaining budget across a
+  // resume, the same as steps, so asking often cannot buy more.
+  TokenUsage usage;
   // Set only when status is kNeedsApproval: what to ask the user about, and
   // what to hand back to RunTask if they say yes.
   PendingApproval? pending;
@@ -192,9 +281,15 @@ interface AgentKernel {
   // before the model is asked for anything, and then the loop carries on. It is
   // single use -- the loop does not remember it, so the next call that needs
   // approval stops the task again.
+  //
+  // Exactly one of `model` (a local model, text in and text out) and `cloud`
+  // (a provider the kernel speaks to through the browser) must be set; a task
+  // given both or neither fails without starting.
   RunTask(string task,
           pending_remote<ToolRunner> runner,
-          pending_remote<AgentModel> model,
+          pending_remote<AgentModel>? model,
           uint32 max_steps,
-          PendingApproval? approved) => (TaskOutcome outcome);
+          PendingApproval? approved,
+          CloudModel? cloud,
+          TaskMemory? memory) => (TaskOutcome outcome);
 };

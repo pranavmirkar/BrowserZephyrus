@@ -10,20 +10,41 @@
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/views/frame/zephyrus_agent_mascot_overlay.h"
+#include "chrome/browser/ui/views/frame/zephyrus_hands_free.h"
+#include "chrome/browser/ui/views/frame/zephyrus_voice_setup.h"
+#include "chrome/browser/ui/views/frame/zephyrus_mascot_bubble.h"
+#include "chrome/browser/ui/views/frame/zephyrus_agent_memory_access.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "content/public/browser/web_contents.h"
+#include "chrome/browser/zephyrus/agent/bundled_keys.h"
+#include "chrome/browser/zephyrus/agent/voice_input.h"
+#include "chrome/browser/zephyrus/agent/model_settings.h"
+#include "chrome/browser/browser_process.h"
+#include "components/os_crypt/async/browser/os_crypt_async.h"
+#include "components/os_crypt/async/common/encryptor.h"
+#include "components/prefs/pref_service.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/color/zephyrus_color_mixer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
+#include "chrome/browser/ui/views/frame/zephyrus_agent_settings.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "chrome/browser/zephyrus/agent/dev_model_client.h"
 #include "components/vector_icons/vector_icons.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/accelerators/accelerator_manager.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/canvas.h"
@@ -93,7 +114,7 @@ constexpr int kFollowSlack = 24;
 // Raised, but not far. The answer to a slow loop is fewer wasted steps -- the
 // repeat guard, verification that reports what actually happened, an
 // Observation worth reading -- not more of them.
-constexpr uint32_t kMaxSteps = 20;
+constexpr uint32_t kMaxSteps = 60;
 
 // Lines kept in the log.
 //
@@ -125,6 +146,95 @@ std::string PlainAnswer(const std::string& value_json) {
     }
   }
   return value_json;
+}
+
+using Place = ZephyrusAgentMascotOverlay::Place;
+
+struct Pose {
+  MascotMood mood;
+  Place place;
+};
+
+// Which of the panel's learned durations a tool's trip is judged against.
+enum class TripKind { kNone, kNavigation, kTabs };
+TripKind TripFor(const std::string& tool) {
+  if (tool.starts_with("browser.")) {
+    return TripKind::kNavigation;
+  }
+  if (tool.starts_with("tabs.")) {
+    return TripKind::kTabs;
+  }
+  return TripKind::kNone;
+}
+
+// The mascot's pose for a running tool, and where it goes to do it. Coarse on
+// purpose: a person glancing at the window should be able to tell typing from
+// clicking from scrolling, and no more is readable at this size. For a tool on
+// the page the mascot stays where the pointer is -- the pointer events move it
+// -- and for the ones that are not, it walks to where they happen.
+Pose PoseFor(const std::string& tool) {
+  if (tool == "page.type" || tool == "page.press") {
+    return {MascotMood::kTyping, Place::kStay};
+  }
+  if (tool == "page.click" || tool == "page.click_at" ||
+      tool == "page.select") {
+    return {MascotMood::kClicking, Place::kStay};
+  }
+  if (tool == "page.scroll") {
+    return {MascotMood::kScrolling, Place::kStay};
+  }
+  if (tool == "page.read" || tool == "notes.add") {
+    return {MascotMood::kReading, Place::kStay};
+  }
+  if (tool == "page.find" || tool == "page.observe" ||
+      tool == "selection.read") {
+    return {MascotMood::kSearching, Place::kStay};
+  }
+  if (tool.starts_with("browser.")) {
+    return {MascotMood::kTyping, Place::kAddressBar};
+  }
+  if (tool.starts_with("tabs.")) {
+    return {MascotMood::kClicking, Place::kTabStrip};
+  }
+  return {MascotMood::kWorking, Place::kStay};
+}
+
+std::u16string DescribeMood(MascotMood mood) {
+  switch (mood) {
+    case MascotMood::kIdle:
+      return u"Ready";
+    case MascotMood::kSleeping:
+      return u"Resting";
+    case MascotMood::kYawning:
+      return u"Getting sleepy";
+    case MascotMood::kWaving:
+      return u"Hi";
+    case MascotMood::kListening:
+      return u"Listening";
+    case MascotMood::kThinking:
+      return u"Thinking";
+    case MascotMood::kReading:
+      return u"Reading";
+    case MascotMood::kSearching:
+      return u"Searching the page";
+    case MascotMood::kTyping:
+      return u"Typing";
+    case MascotMood::kClicking:
+      return u"Clicking";
+    case MascotMood::kScrolling:
+      return u"Scrolling";
+    case MascotMood::kAsking:
+      return u"Needs your answer";
+    case MascotMood::kHappy:
+      return u"Done";
+    case MascotMood::kConfused:
+      return u"Hit a problem";
+    case MascotMood::kAlert:
+      return u"Stopped by a safety rule";
+    case MascotMood::kWorking:
+      return u"Working";
+  }
+  return u"";
 }
 
 std::unique_ptr<views::Label> MakeLabel(const std::u16string& text,
@@ -440,6 +550,36 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
   title_ = header->AddChildView(
       MakeLabel(u"Agent", zephyrus::m3::Type::kTitleMedium));
   header->SetFlexForView(title_, 1);
+  // Which model, which key, what it may spend, and whether this workspace
+  // may use it (ADR 0004).
+  new_chat_button_ = header->AddChildView(std::make_unique<views::ImageButton>(
+      base::BindRepeating(&ZephyrusAgentPanel::NewChat,
+                          base::Unretained(this))));
+  new_chat_button_->SetPreferredSize(
+      gfx::Size(kIconButtonSize, kIconButtonSize));
+  new_chat_button_->SetImageHorizontalAlignment(
+      views::ImageButton::ALIGN_CENTER);
+  new_chat_button_->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
+  new_chat_button_->GetViewAccessibility().SetName(u"New chat");
+  new_chat_button_->SetTooltipText(u"New chat");
+  views::InstallCircleHighlightPathGenerator(new_chat_button_);
+  InstallStateLayer(new_chat_button_);
+  settings_button_ = header->AddChildView(std::make_unique<views::ImageButton>(
+      base::BindRepeating(
+          [](ZephyrusAgentPanel* panel) {
+            zephyrus::ShowAgentSettings(panel->browser_view_,
+                                        panel->settings_button_);
+          },
+          base::Unretained(this))));
+  settings_button_->SetPreferredSize(
+      gfx::Size(kIconButtonSize, kIconButtonSize));
+  settings_button_->SetImageHorizontalAlignment(
+      views::ImageButton::ALIGN_CENTER);
+  settings_button_->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
+  settings_button_->GetViewAccessibility().SetName(u"Agent model settings");
+  settings_button_->SetTooltipText(u"Model settings");
+  views::InstallCircleHighlightPathGenerator(settings_button_);
+  InstallStateLayer(settings_button_);
   close_button_ = header->AddChildView(std::make_unique<views::ImageButton>(
       base::BindRepeating(&ZephyrusAgentPanel::Close,
                           base::Unretained(this))));
@@ -493,6 +633,30 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
   empty_label_->SetMultiLine(true);
   empty_label_->SetHorizontalAlignment(gfx::ALIGN_CENTER);
   empty_label_->SetMaximumWidth(kDefaultWidth - 64);
+  // Things to try, one press each. An empty box asks a person to invent a
+  // task; these show what an agent is for, and the last one -- an inbox behind
+  // a sign-in -- is the hand-off working.
+  auto* chips = empty->AddChildView(std::make_unique<views::BoxLayoutView>());
+  chips->SetOrientation(views::BoxLayout::Orientation::kVertical);
+  chips->SetBetweenChildSpacing(8);
+  chips->SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kStretch);
+  for (const std::u16string& text : {
+           std::u16string(u"Summarize this page"),
+           std::u16string(u"Today's top 5 India headlines"),
+           std::u16string(u"Best 3 laptops under ₹60,000"),
+           std::u16string(u"Check my latest email in Gmail"),
+       }) {
+    chips_.push_back(chips->AddChildView(MakeM3Button(
+        base::BindRepeating(&ZephyrusAgentPanel::StartTask,
+                            base::Unretained(this), base::UTF16ToUTF8(text)),
+        text, 16)));
+  }
+  // Hands-free is opt-in and has to be set up (a voice recorded) before it does
+  // anything, so the way in is here, where a first-time user is looking.
+  chips_.push_back(chips->AddChildView(MakeM3Button(
+      base::BindRepeating(&zephyrus::ShowVoiceSetup,
+                          base::Unretained(browser_view_.get())),
+      u"Set up \"Hey Zep\" (hands-free)", 16)));
   layout->SetFlexForView(empty_state_, 1);
 
   // ---- The log --------------------------------------------------------------
@@ -531,6 +695,17 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
   log_scrolled_subscription_ = log_scroll_->AddContentsScrolledCallback(
       base::BindRepeating(&ZephyrusAgentPanel::OnLogScrolled,
                           base::Unretained(this)));
+
+  // ---- What the mascot is doing, in words -----------------------------------------
+  //
+  // The character itself is not here: it belongs to the whole window
+  // (ZephyrusAgentMascotOverlay), so it can walk to the page, the address bar
+  // and the tabs and be the agent's pointer. This line says what it is doing,
+  // for anyone the pose does not reach.
+  mascot_caption_ = AddChildView(MakeLabel(DescribeMood(MascotMood::kIdle),
+                                           zephyrus::m3::Type::kLabelLarge));
+  mascot_caption_->SetProperty(views::kMarginsKey,
+                               gfx::Insets::TLBR(2, kInset, 8, kInset));
 
   // ---- The approval card ----------------------------------------------------
   //
@@ -606,6 +781,17 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
   input_->SetTextColorId(kColorZephyrusOnSurface);
   input_->SetPlaceholderTextColorId(kColorZephyrusOnSurfaceVariant);
   input_bar->SetFlexForView(input_, 1);
+
+  // Voice: press to talk, press again to send. See OnMic.
+  mic_button_ = input_bar->AddChildView(std::make_unique<views::ImageButton>(
+      base::BindRepeating(&ZephyrusAgentPanel::OnMic, base::Unretained(this))));
+  mic_button_->SetPreferredSize(gfx::Size(kIconButtonSize, kIconButtonSize));
+  mic_button_->SetImageHorizontalAlignment(views::ImageButton::ALIGN_CENTER);
+  mic_button_->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
+  mic_button_->GetViewAccessibility().SetName(u"Speak a task");
+  mic_button_->SetTooltipText(u"Speak a task");
+  views::InstallCircleHighlightPathGenerator(mic_button_);
+  InstallStateLayer(mic_button_);
 
   send_button_ = input_bar->AddChildView(std::make_unique<views::ImageButton>(
       base::BindRepeating(&ZephyrusAgentPanel::OnSendOrStop,
@@ -717,8 +903,46 @@ void ZephyrusAgentPanel::OnSendOrStop() {
   }
 }
 
+views::View* ZephyrusAgentPanel::settings_button() {
+  return settings_button_;
+}
+
 void ZephyrusAgentPanel::StartTask(const std::string& task) {
+  // Typing a task and pressing a chip are the same thing, and either one ends
+  // the empty state.
+  task_started_ = base::TimeTicks::Now();
   AddLine(task, LineKind::kTask);
+
+  ZephyrusWorkspaceManager* workspace_manager =
+      browser_view_ ? browser_view_->zephyrus_workspace_manager() : nullptr;
+  current_workspace_ =
+      workspace_manager ? workspace_manager->current_workspace_id() : 0;
+  ConversationMemory& chat = chats_[current_workspace_];
+
+  // What the agent is given beyond the page: this chat, and whether this
+  // message answers a question it asked. An answer is the SAME task going on --
+  // sent as a new one, "a new browser window" was taken for a fresh request and
+  // the Figma prototype it was about was forgotten on the spot.
+  mojom::TaskMemoryPtr memory = chat.Snapshot();
+  current_message_ = task;
+  current_task_ = memory->continuing.empty()
+                      ? task
+                      : base::StrCat({memory->continuing,
+                                      " (the user's answer: ", task, ")"});
+  Profile* profile = browser_view_ && browser_view_->browser()
+                         ? browser_view_->browser()->profile()
+                         : nullptr;
+  if (profile && profile->GetPrefs()->GetBoolean(kMemoryPref)) {
+    if (LongTermMemory* store = GetLongTermMemory(profile)) {
+      // Ranked against what is being asked and what was just said, so a fact
+      // about a daughter surfaces for a gift and not for a tax form.
+      std::string context = current_task_;
+      if (!chat.empty()) {
+        base::StrAppend(&context, {" ", chat.Last()->user});
+      }
+      memory->facts = store->Recall(context, current_workspace_);
+    }
+  }
 
   // A fresh controller per task. It holds the kernel connection, the executor
   // and the Observation for one task's lifetime, and reusing one across tasks
@@ -726,19 +950,45 @@ void ZephyrusAgentPanel::StartTask(const std::string& task) {
   controller_ = std::make_unique<ZephyrusAgentTaskController>(
       browser_view_ ? browser_view_->browser() : nullptr);
   controller_->SetDelegate(this);
+  // The chat was read above, before this task's controller existed; it goes
+  // to the controller now that there is one.
+  controller_->SetMemory(std::move(memory));
 
   SetTaskRunning(true);
-  if (!controller_->StartTaskWithConfiguredModel(
-          task, kMaxSteps,
-          base::BindOnce(&ZephyrusAgentPanel::OnTaskFinished,
-                         base::Unretained(this)))) {
-    SetTaskRunning(false);
-    // Said plainly rather than left to look like a hang. This is the ordinary
-    // state of a build nobody passed the development switches to.
-    AddLine(
-        "No model is configured. Start the browser with "
-        "--zephyrus-agent-model-endpoint and --zephyrus-agent-model.",
-        LineKind::kStep);
+  ShowMascot(MascotMood::kThinking);
+  SayStatus("On it...");
+  ZephyrusWorkspaceManager* workspaces =
+      browser_view_ ? browser_view_->zephyrus_workspace_manager() : nullptr;
+  const auto result = controller_->StartTaskWithConfiguredModel(
+      current_task_, kMaxSteps,
+      workspaces ? workspaces->current_workspace_id() : 0,
+      base::BindOnce(&ZephyrusAgentPanel::OnTaskFinished,
+                     base::Unretained(this)));
+  using StartResult = ZephyrusAgentTaskController::StartResult;
+  if (result == StartResult::kStarted) {
+    return;
+  }
+  SetTaskRunning(false);
+  ShowMascot(MascotMood::kConfused, Place::kHome);
+  // Said plainly rather than left to look like a hang, and each one says
+  // where to go next.
+  switch (result) {
+    case StartResult::kNoModel:
+      AddLine("No model is set up. Open Model settings (the gear above) to "
+              "connect one with your API key.",
+              LineKind::kStep);
+      break;
+    case StartResult::kCloudOffInThisWorkspace:
+      AddLine("The cloud model is off in this workspace, so nothing was sent. "
+              "Turn it on in Model settings (the gear above) to use it here.",
+              LineKind::kStep);
+      break;
+    case StartResult::kCloudOffInPrivate:
+      AddLine("Private Workspace never sends pages to a cloud model.",
+              LineKind::kStep);
+      break;
+    case StartResult::kStarted:
+      break;
   }
 }
 
@@ -747,42 +997,266 @@ void ZephyrusAgentPanel::OnTaskFinished(mojom::TaskOutcomePtr outcome) {
   ClearApprovalCard();
 
   if (!outcome) {
+    ShowMascot(MascotMood::kConfused, Place::kHome);
     AddLine("The agent stopped without answering.", LineKind::kStep);
     return;
+  }
+
+  // What it took, under the answer: how many steps, how long, how much was
+  // read and written. An agent that spends someone's money and time should say
+  // so without being asked.
+  std::string spent;
+  {
+    const int seconds = static_cast<int>(
+        (base::TimeTicks::Now() - task_started_).InSeconds());
+    spent = base::StrCat({base::NumberToString(outcome->steps),
+                          outcome->steps == 1 ? " step" : " steps", " · ",
+                          seconds >= 60
+                              ? base::StrCat({base::NumberToString(seconds / 60),
+                                              " min ",
+                                              base::NumberToString(seconds % 60),
+                                              " s"})
+                              : base::StrCat({base::NumberToString(seconds), " s"})});
+    if (outcome->usage) {
+      const uint64_t tokens = outcome->usage->input + outcome->usage->output +
+                              outcome->usage->cache_read +
+                              outcome->usage->cache_write;
+      if (tokens > 0) {
+        spent += tokens >= 1000
+                     ? base::StrCat({" · ",
+                                     base::NumberToString(tokens / 1000), "k tokens"})
+                     : base::StrCat({" · ", base::NumberToString(tokens),
+                                     " tokens"});
+      }
+    }
+  }
+
+  RecordTurn(*outcome);
+  if (!test_queue_.empty()) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](base::WeakPtr<ZephyrusAgentPanel> panel) {
+              if (panel && !panel->test_queue_.empty()) {
+                const std::string next = panel->test_queue_.front();
+                panel->test_queue_.pop_front();
+                panel->StartTask(next);
+              }
+            },
+            weak_factory_.GetWeakPtr()),
+        base::Seconds(1));
+  }
+
+  using State = MascotMood;
+  switch (outcome->status) {
+    case mojom::TaskStatus::kCompleted:
+      ShowMascot(State::kHappy, Place::kHome);
+      break;
+    case mojom::TaskStatus::kAskedTheUser:
+      ShowMascot(State::kAsking, Place::kHome);
+      break;
+    case mojom::TaskStatus::kCancelled:
+      ShowMascot(State::kIdle, Place::kHome);
+      break;
+    case mojom::TaskStatus::kOutOfSteps:
+    case mojom::TaskStatus::kNeedsApproval:
+    case mojom::TaskStatus::kFailed:
+      ShowMascot(State::kConfused, Place::kHome);
+      break;
   }
 
   switch (outcome->status) {
     case mojom::TaskStatus::kCompleted:
     case mojom::TaskStatus::kAskedTheUser:
       AddLine(PlainAnswer(outcome->message), LineKind::kAnswer);
+      AddLine(spent, LineKind::kStep);
+      SayAnswer(PlainAnswer(outcome->message));
       break;
     case mojom::TaskStatus::kOutOfSteps:
       AddLine("Stopped after " + base::NumberToString(outcome->steps) +
                   " steps without finishing.",
               LineKind::kStep);
+      SayAnswer("Stopped after " + base::NumberToString(outcome->steps) +
+                " steps without finishing.");
       break;
     case mojom::TaskStatus::kCancelled:
       // The controller's own message ("you stopped it") is written for a log
       // line under someone else's name; in the user's own panel, "Stopped" is
       // the whole story.
       AddLine("Stopped.", LineKind::kStep);
+      if (ZephyrusMascotBubble* bubble = Bubble()) {
+        bubble->Clear();
+      }
       break;
     case mojom::TaskStatus::kNeedsApproval:
     case mojom::TaskStatus::kFailed:
       AddLine(outcome->message, LineKind::kStep);
+      SayAnswer(outcome->message);
       break;
   }
 }
 
+void ZephyrusAgentPanel::StartTaskForTesting(const std::string& task) {
+  for (const std::string& part : base::SplitStringUsingSubstr(
+           task, "|||", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    test_queue_.push_back(part);
+  }
+  if (!test_queue_.empty()) {
+    const std::string first = test_queue_.front();
+    test_queue_.pop_front();
+    StartTask(first);
+  }
+}
+
+void ZephyrusAgentPanel::RecordTurn(const mojom::TaskOutcome& outcome) {
+  ChatTurn turn;
+  turn.user = current_message_;
+  turn.task = current_task_;
+  switch (outcome.status) {
+    case mojom::TaskStatus::kCompleted:
+      turn.outcome = "done";
+      turn.agent = PlainAnswer(outcome.message);
+      break;
+    case mojom::TaskStatus::kAskedTheUser:
+      turn.outcome = "asked";
+      turn.agent = PlainAnswer(outcome.message);
+      break;
+    case mojom::TaskStatus::kFailed:
+      turn.outcome = "failed";
+      turn.agent = outcome.message;
+      break;
+    default:
+      turn.outcome = "stopped";
+      turn.agent = outcome.message;
+      break;
+  }
+  turn.notes = outcome.notes;
+  // Where the page was when it ended: a follow-up usually refers to it.
+  if (browser_view_ && browser_view_->browser()) {
+    if (content::WebContents* contents =
+            browser_view_->browser()->tab_strip_model()->GetActiveWebContents()) {
+      turn.url = contents->GetLastCommittedURL().spec();
+    }
+  }
+  chats_[current_workspace_].Record(std::move(turn));
+}
+
+void ZephyrusAgentPanel::NewChat() {
+  if (task_running_) {
+    return;  // Stop it first; a task's context is not something to pull away.
+  }
+  ZephyrusWorkspaceManager* workspaces =
+      browser_view_ ? browser_view_->zephyrus_workspace_manager() : nullptr;
+  chats_[workspaces ? workspaces->current_workspace_id() : 0].Clear();
+  log_->RemoveAllChildViews();
+  log_scroll_->SetVisible(false);
+  empty_state_->SetVisible(true);
+  ClearApprovalCard();
+  ShowMascot(MascotMood::kWaving, Place::kHome);
+  input_->RequestFocus();
+}
+
 void ZephyrusAgentPanel::OnAgentProgress(const std::string& line) {
   AddLine(line, LineKind::kStep);
+  SayStatus(line);
 }
 
 void ZephyrusAgentPanel::OnAgentApprovalNeeded(
     const std::string& reason,
     const std::string& risk,
+    const std::string& tool,
     base::OnceCallback<void(bool)> answer) {
-  ShowApprovalCard(reason, std::move(answer));
+  ShowMascot(MascotMood::kAsking, Place::kHome);
+  ShowApprovalCard(reason, tool, std::move(answer));
+}
+
+void ZephyrusAgentPanel::OnAgentActivity(Activity activity,
+                                         const std::string& tool) {
+  using State = MascotMood;
+  switch (activity) {
+    case Activity::kLooking:
+      ShowMascot(State::kThinking);
+      break;
+    case Activity::kActing:
+      // The loop's own bookkeeping calls are not something the agent is DOING.
+      if (tool != "task.complete" && tool != "task.ask") {
+        const Pose pose = PoseFor(tool);
+        acting_since_ = base::TimeTicks::Now();
+        // A trip to the address bar or the tabs is judged against how long
+        // this kind of action has been taking: there is no point arriving
+        // after the navigation is over.
+        const TripKind trip = TripFor(tool);
+        const base::TimeDelta budget =
+            trip == TripKind::kNavigation ? typical_navigation_
+            : trip == TripKind::kTabs     ? typical_tab_action_
+                                          : base::TimeDelta::Max();
+        ShowMascot(pose.mood, pose.place, budget);
+      }
+      break;
+    case Activity::kFinished: {
+      // What the action actually took, folded into what is expected of the
+      // next one. Smoothed, and bounded: one page that took twenty seconds
+      // should not send the mascot on a trip it cannot make, nor one that took
+      // a millisecond keep it home for good.
+      const TripKind trip = TripFor(tool);
+      if (trip != TripKind::kNone && !acting_since_.is_null()) {
+        const base::TimeDelta took = std::clamp(
+            base::TimeTicks::Now() - acting_since_, base::Milliseconds(50),
+            base::Seconds(6));
+        base::TimeDelta& typical = trip == TripKind::kNavigation
+                                       ? typical_navigation_
+                                       : typical_tab_action_;
+        typical = (typical * 2 + took) / 3;
+      }
+      break;
+    }
+    case Activity::kRefused:
+      ShowMascot(State::kAlert);
+      break;
+    case Activity::kFailed:
+      ShowMascot(State::kConfused);
+      break;
+  }
+}
+
+ZephyrusAgentMascotOverlay* ZephyrusAgentPanel::Overlay() const {
+  return browser_view_ ? browser_view_->zephyrus_agent_mascot() : nullptr;
+}
+
+PointerObserver* ZephyrusAgentPanel::GetPointerObserver() {
+  return Overlay();
+}
+
+ZephyrusMascotBubble* ZephyrusAgentPanel::Bubble() const {
+  return browser_view_ ? browser_view_->zephyrus_mascot_bubble() : nullptr;
+}
+
+void ZephyrusAgentPanel::SayStatus(const std::string& text) {
+  if (ZephyrusMascotBubble* bubble = Bubble()) {
+    bubble->ShowStatus(base::UTF8ToUTF16(text));
+    if (ZephyrusAgentMascotOverlay* overlay = Overlay()) {
+      overlay->PlaceBubble();
+    }
+  }
+}
+
+void ZephyrusAgentPanel::SayAnswer(const std::string& text) {
+  if (ZephyrusMascotBubble* bubble = Bubble()) {
+    bubble->ShowAnswer(base::UTF8ToUTF16(text));
+    if (ZephyrusAgentMascotOverlay* overlay = Overlay()) {
+      overlay->PlaceBubble();
+    }
+  }
+}
+
+void ZephyrusAgentPanel::ShowMascot(MascotMood mood,
+                                    Place place,
+                                    base::TimeDelta budget) {
+  mascot_caption_->SetText(DescribeMood(mood));
+  if (ZephyrusAgentMascotOverlay* overlay = Overlay()) {
+    overlay->SetMood(mood);
+    overlay->GoTo(place, budget);
+  }
 }
 
 void ZephyrusAgentPanel::AddLine(const std::string& text, LineKind kind) {
@@ -891,7 +1365,15 @@ void ZephyrusAgentPanel::SetTaskRunning(bool running) {
 
 void ZephyrusAgentPanel::ShowApprovalCard(
     const std::string& reason,
+    const std::string& tool,
     base::OnceCallback<void(bool)> answer) {
+  // A hand-off is the agent asking the user to DO something, not to permit
+  // something: the words say so, or "Allow once" would read as permission for
+  // a sign-in the agent cannot perform.
+  const bool handoff = tool == "task.handoff";
+  approval_title_->SetText(handoff ? u"Your turn" : u"Allow this step?");
+  allow_button_->SetText(handoff ? u"Continue" : u"Allow once");
+  decline_button_->SetText(handoff ? u"Cancel task" : u"Not now");
   // A second question while one is on screen would strand the first. It cannot
   // happen today -- the loop stops on the first -- but leaving the older
   // callback unanswered is the sort of thing that becomes a hang later.
@@ -902,6 +1384,19 @@ void ZephyrusAgentPanel::ShowApprovalCard(
   approval_answer_ = std::move(answer);
   approval_reason_->SetText(base::UTF8ToUTF16(reason));
   approval_->SetVisible(true);
+  // The same question, where the person is looking. Either place answers it, and
+  // whichever does first ends it in both.
+  if (ZephyrusMascotBubble* bubble = Bubble()) {
+    bubble->ShowQuestion(
+        handoff ? u"Your turn" : u"Allow this step?",
+        base::UTF8ToUTF16(reason), handoff ? u"Continue" : u"Allow once",
+        handoff ? u"Cancel task" : u"Not now",
+        base::BindRepeating(&ZephyrusAgentPanel::AnswerApproval,
+                            weak_factory_.GetWeakPtr()));
+    if (ZephyrusAgentMascotOverlay* overlay = Overlay()) {
+      overlay->PlaceBubble();
+    }
+  }
   InvalidateLayout();
   // The card takes height from the log; keep the end in view if it was.
   if (was_at_bottom) {
@@ -912,6 +1407,9 @@ void ZephyrusAgentPanel::ShowApprovalCard(
 void ZephyrusAgentPanel::ClearApprovalCard() {
   approval_->SetVisible(false);
   approval_answer_.Reset();
+  if (ZephyrusMascotBubble* bubble = Bubble()) {
+    bubble->ClearQuestion();
+  }
   InvalidateLayout();
 }
 
@@ -921,8 +1419,13 @@ void ZephyrusAgentPanel::AnswerApproval(bool approved) {
   }
   base::OnceCallback<void(bool)> answer = std::move(approval_answer_);
   approval_->SetVisible(false);
+  if (ZephyrusMascotBubble* bubble = Bubble()) {
+    bubble->ClearQuestion();
+  }
   InvalidateLayout();
   AddLine(approved ? "You allowed it." : "You declined.", LineKind::kStep);
+  ShowMascot(approved ? MascotMood::kThinking : MascotMood::kIdle,
+             approved ? Place::kStay : Place::kHome);
   std::move(answer).Run(approved);
 }
 
@@ -952,6 +1455,15 @@ void ZephyrusAgentPanel::ApplyRoles() {
       ui::ImageModel::FromVectorIcon(vector_icons::kChatSparkIcon, primary,
                                      kIconSize));
   title_->SetEnabledColor(on_surface);
+  settings_button_->SetImageModel(
+      views::Button::STATE_NORMAL,
+      ui::ImageModel::FromVectorIcon(vector_icons::kSettingsIcon, on_variant,
+                                     20));
+  views::InkDrop::Get(settings_button_)->SetBaseColor(on_variant);
+  new_chat_button_->SetImageModel(
+      views::Button::STATE_NORMAL,
+      ui::ImageModel::FromVectorIcon(vector_icons::kAdd2Icon, on_variant, 20));
+  views::InkDrop::Get(new_chat_button_)->SetBaseColor(on_variant);
   close_button_->SetImageModel(
       views::Button::STATE_NORMAL,
       ui::ImageModel::FromVectorIcon(vector_icons::kCloseIcon, on_variant,
@@ -963,9 +1475,17 @@ void ZephyrusAgentPanel::ApplyRoles() {
   progress_->SetBackgroundColor(
       zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer));
 
-  empty_icon_->SetImage(ui::ImageModel::FromVectorIcon(
-      vector_icons::kChatSparkIcon, on_variant, 32));
+  // The mascot below says "ready" now; a second emblem above it was one
+  // character too many.
+  empty_icon_->SetVisible(false);
   empty_label_->SetEnabledColor(on_variant);
+  for (views::LabelButton* chip : chips_) {
+    chip->SetEnabledTextColors(on_surface);
+    chip->SetBackground(views::CreateRoundedRectBackground(
+        zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer), 20));
+    views::InkDrop::Get(chip)->SetBaseColor(on_surface);
+  }
+  mascot_caption_->SetEnabledColor(on_variant);
 
   approval_->SetBackground(views::CreateRoundedRectBackground(
       zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHighest),
@@ -1002,6 +1522,222 @@ void ZephyrusAgentPanel::ApplyRoles() {
       ui::ImageModel::FromVectorIcon(
           task_running_ ? kStopCircleIcon : kArrowUpwardIcon, send_ink, 20));
   views::InkDrop::Get(send_button_)->SetBaseColor(send_ink);
+
+  // Red while it is listening, so nobody talks to a microphone that is off or
+  // forgets one that is on.
+  const SkColor mic_ink =
+      listening_ ? zephyrus::m3::Role(*this, kColorZephyrusError) : on_variant;
+  mic_button_->SetImageModel(
+      views::Button::STATE_NORMAL,
+      ui::ImageModel::FromVectorIcon(
+          listening_ ? kStopCircleIcon : vector_icons::kMicIcon, mic_ink, 20));
+  views::InkDrop::Get(mic_button_)->SetBaseColor(mic_ink);
+}
+
+void ZephyrusAgentPanel::OnMic() {
+  if (transcribing_) {
+    return;
+  }
+  if (listening_) {
+    listening_ = false;
+    transcribing_ = true;
+    mic_button_->SetTooltipText(u"Speak a task");
+    AddLine("Listening stopped. Working out what you said...", LineKind::kStep);
+    ShowMascot(MascotMood::kThinking);
+    ApplyRoles();
+    voice_->StopAndTranscribe(
+        std::move(voice_key_), std::move(voice_endpoint_),
+        base::BindOnce(&ZephyrusAgentPanel::OnTranscript,
+                       weak_factory_.GetWeakPtr()));
+    voice_key_.clear();
+    voice_endpoint_.clear();
+    if (hands_free_) {
+      hands_free_->Resume();
+    }
+    return;
+  }
+  // The key is read now, when it is needed, and not kept after the request.
+  if (!g_browser_process || !g_browser_process->os_crypt_async()) {
+    AddLine("Voice needs the system keystore, which is not available.",
+            LineKind::kStep);
+    return;
+  }
+  g_browser_process->os_crypt_async()->GetInstance(base::BindOnce(
+      &ZephyrusAgentPanel::OnVoiceKey, weak_factory_.GetWeakPtr()));
+}
+
+void ZephyrusAgentPanel::OnVoiceKey(
+    scoped_refptr<os_crypt_async::Encryptor> encryptor) {
+  Profile* profile = browser_view_ && browser_view_->browser()
+                         ? browser_view_->browser()->profile()
+                         : nullptr;
+  std::optional<std::string> key =
+      encryptor && profile
+          ? LoadApiKey(*profile->GetPrefs(), *encryptor, kVoiceKeyKind)
+          : std::nullopt;
+  if (!key) {
+    AddLine("Add an AssemblyAI key in Model settings (the gear above) to "
+            "speak tasks.",
+            LineKind::kStep);
+    return;
+  }
+  if (!voice_) {
+    // The system network context: no Workspace's cookies go with it.
+    voice_ = std::make_unique<VoiceInput>(
+        g_browser_process->shared_url_loader_factory());
+  }
+  // The wake listener steps aside: two things listening at once would each hear
+  // half of what was said.
+  if (hands_free_) {
+    hands_free_->Pause();
+  }
+  if (!voice_->Start()) {
+    if (hands_free_) {
+      hands_free_->Resume();
+    }
+    AddLine("The microphone could not be opened. Check that one is connected "
+            "and that Windows lets desktop apps use it (Settings > Privacy > "
+            "Microphone).",
+            LineKind::kStep);
+    return;
+  }
+  voice_key_ = std::move(*key);
+  // A demo build's token goes to its proxy; a key the user saved goes straight
+  // to AssemblyAI. Decided by where the key came from, never by a setting.
+  voice_endpoint_ =
+      UsesBundledKey(*profile->GetPrefs(), kVoiceKeyKind)
+          ? BundledProxyUrl() + "/api/assemblyai/transcribe"
+          : std::string();
+  listening_ = true;
+  mic_button_->SetTooltipText(u"Stop and send");
+  AddLine("Listening... press the red button when you are done.",
+          LineKind::kStep);
+  ShowMascot(MascotMood::kListening);
+  SayStatus("Listening... press Ctrl+Shift+Space or the red button when you "
+            "are done.");
+  ApplyRoles();
+}
+
+void ZephyrusAgentPanel::OnTranscript(bool ok, const std::string& text) {
+  transcribing_ = false;
+  ApplyRoles();
+  if (!ok) {
+    ShowMascot(MascotMood::kConfused);
+    AddLine(text, LineKind::kStep);
+    return;
+  }
+  // What was heard becomes the task, exactly as if it had been typed -- same
+  // input, same send, same kernel. Voice adds a way in, not a way around.
+  input_->SetText(base::UTF8ToUTF16(text));
+  Submit();
+}
+
+void ZephyrusAgentPanel::AddedToWidget() {
+  if (!hands_free_) {
+    hands_free_ = std::make_unique<ZephyrusHandsFree>(browser_view_, this);
+  }
+  hands_free_->Start();
+  if (views::FocusManager* focus_manager = GetFocusManager()) {
+    focus_manager->RegisterAccelerator(
+        ui::Accelerator(ui::VKEY_SPACE, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN),
+        ui::AcceleratorManager::kNormalPriority, this);
+    focus_manager->RegisterAccelerator(
+        ui::Accelerator(ui::VKEY_OEM_COMMA,
+                        ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN),
+        ui::AcceleratorManager::kNormalPriority, this);
+  }
+}
+
+void ZephyrusAgentPanel::RemovedFromWidget() {
+  if (views::FocusManager* focus_manager = GetFocusManager()) {
+    focus_manager->UnregisterAccelerators(this);
+  }
+}
+
+bool ZephyrusAgentPanel::CanHandleAccelerators() const {
+  return true;
+}
+
+bool ZephyrusAgentPanel::AcceleratorPressed(
+    const ui::Accelerator& accelerator) {
+  if (accelerator.key_code() == ui::VKEY_SPACE) {
+    OnMic();
+    return true;
+  }
+  if (accelerator.key_code() == ui::VKEY_OEM_COMMA && hands_free_) {
+    hands_free_->SetMuted(!hands_free_->muted());
+    SayStatus(hands_free_->muted() ? "Hey Zep is muted. Ctrl+Shift+, turns it "
+                                     "back on."
+                                   : "Hey Zep is listening again.");
+    return true;
+  }
+  return false;
+}
+
+// ---- "Hey Zep" ----------------------------------------------------------------
+
+void ZephyrusAgentPanel::OnVoiceWake(const std::string& who) {
+  ShowMascot(MascotMood::kListening);
+  SayStatus(who.empty() ? "Listening..." : "Listening, " + who + "...");
+}
+
+void ZephyrusAgentPanel::OnVoiceTranscribing() {
+  ShowMascot(MascotMood::kThinking);
+  SayStatus("Working out what you said...");
+}
+
+void ZephyrusAgentPanel::OnVoiceHeard(const std::string& text) {
+  // What the person said, lowercased and stripped to letters, for the one thing
+  // decided from the words alone: whether they meant "stop".
+  std::string words;
+  for (char c : text) {
+    if (base::IsAsciiAlpha(c)) {
+      words.push_back(base::ToLowerASCII(c));
+    } else if (!words.empty() && words.back() != ' ') {
+      words.push_back(' ');
+    }
+  }
+  base::TrimWhitespaceASCII(words, base::TRIM_ALL, &words);
+  const bool wants_stop = words == "stop" || words == "cancel" ||
+                          words == "stop it" || words == "stop that" ||
+                          words == "never mind" || words == "nevermind" ||
+                          words == "stop the task";
+  if (wants_stop) {
+    if (task_running_ && controller_) {
+      controller_->Cancel();
+      ShowMascot(MascotMood::kIdle);
+      SayStatus("Stopped.");
+    } else {
+      OnVoiceIdle();
+    }
+    return;
+  }
+  if (task_running_) {
+    OnVoiceNotice(
+        "I am still on the last task. Say \"Hey Zep, stop\" to cancel it.");
+    return;
+  }
+  // What was heard becomes the task, exactly as if it had been typed: same
+  // input, same send, same kernel. Voice adds a way in, not a way around.
+  input_->SetText(base::UTF8ToUTF16(text));
+  Submit();
+}
+
+void ZephyrusAgentPanel::OnVoiceNotice(const std::string& text) {
+  AddLine(text, LineKind::kStep);
+  ShowMascot(MascotMood::kConfused);
+  SayStatus(text);
+}
+
+void ZephyrusAgentPanel::OnVoiceIdle() {
+  if (!task_running_) {
+    ShowMascot(MascotMood::kIdle);
+  }
+  if (ZephyrusMascotBubble* bubble = Bubble()) {
+    if (!bubble->HasQuestion() && bubble->answer_text().empty()) {
+      bubble->Clear();
+    }
+  }
 }
 
 BEGIN_METADATA(ZephyrusAgentPanel)

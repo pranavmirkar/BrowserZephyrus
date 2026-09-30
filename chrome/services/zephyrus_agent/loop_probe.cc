@@ -34,6 +34,14 @@
 //    "pending":{"tool":...,"arguments_json":...,"reason":...,"risk":...,
 //               "history":[...],"last_url":...}}
 //
+// A run may name a cloud model instead, "cloud":{"kind":...,"model":...,
+// "force_tool":true,"max_tokens_per_step":1024,"usd_per_mtok_input":...,
+// "max_usd":...,"max_tokens":...}, and the loop then speaks to it through the
+// benchmark as the browser's transport (ADR 0004):
+//
+//   {"event":"send","path":"...","headers":{...},"body":"..."}
+//                                        <- {"status":200,"body":"..."}
+//
 // after which another "run" line may follow -- that is how a resume after an
 // approval works, exactly as the browser does it: a NEW TaskLoop holding the
 // approved call and the remaining budget. End of input ends the process, at
@@ -45,6 +53,7 @@
 #include <string>
 #include <utility>
 
+#include "base/containers/flat_map.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -60,7 +69,7 @@
 namespace zephyrus::agent {
 namespace {
 
-void Send(const base::DictValue& message) {
+void Emit(const base::DictValue& message) {
   std::cout << base::WriteJson(message).value_or("{}") << std::endl;
 }
 
@@ -122,8 +131,34 @@ const char* StatusName(mojom::TaskStatus status) {
 }
 
 // The browser and the model, both answered by the benchmark.
-class Bench : public mojom::ToolRunner, public mojom::AgentModel {
+class Bench : public mojom::ToolRunner,
+              public mojom::AgentModel,
+              public mojom::ModelTransport {
  public:
+  mojo::PendingRemote<mojom::ModelTransport> BindTransport() {
+    return transport_.BindNewPipeAndPassRemote();
+  }
+
+  // mojom::ModelTransport:
+  void Send(const std::string& path,
+            const base::flat_map<std::string, std::string>& headers,
+            const std::string& body,
+            SendCallback callback) override {
+    base::DictValue event;
+    event.Set("event", "send");
+    event.Set("path", path);
+    base::DictValue header_dict;
+    for (const auto& [name, value] : headers) {
+      header_dict.Set(name, value);
+    }
+    event.Set("headers", std::move(header_dict));
+    event.Set("body", body);
+    Emit(event);
+    const base::DictValue answer = Receive();
+    std::move(callback).Run(answer.FindInt("status").value_or(0),
+                            TextOr(answer, "body"));
+  }
+
   mojo::PendingRemote<mojom::ToolRunner> BindRunner() {
     return runner_.BindNewPipeAndPassRemote();
   }
@@ -136,7 +171,7 @@ class Bench : public mojom::ToolRunner, public mojom::AgentModel {
     base::DictValue event;
     event.Set("event", "observe");
     event.Set("level", level);
-    Send(event);
+    Emit(event);
     std::move(callback).Run(TextOr(Receive(), "observation_json"));
   }
   void Execute(const std::string& tool,
@@ -158,7 +193,7 @@ class Bench : public mojom::ToolRunner, public mojom::AgentModel {
     event.Set("event", "propose");
     event.Set("system", system_prompt);
     event.Set("user", user_prompt);
-    Send(event);
+    Emit(event);
     std::move(callback).Run(TextOr(Receive(), "response"));
   }
 
@@ -171,7 +206,7 @@ class Bench : public mojom::ToolRunner, public mojom::AgentModel {
     event.Set("tool", tool);
     event.Set("arguments_json", arguments_json);
     event.Set("approved", approved);
-    Send(event);
+    Emit(event);
     const base::DictValue answer = Receive();
     auto outcome = mojom::ToolOutcome::New();
     outcome->status = StatusFrom(TextOr(answer, "status"));
@@ -182,6 +217,7 @@ class Bench : public mojom::ToolRunner, public mojom::AgentModel {
   }
 
   mojo::Receiver<mojom::ToolRunner> runner_{this};
+  mojo::Receiver<mojom::ModelTransport> transport_{this};
   mojo::Receiver<mojom::AgentModel> model_{this};
 };
 
@@ -208,11 +244,9 @@ void RunOnce(const Kernel& kernel, const base::DictValue& request) {
 
   Bench bench;
   base::RunLoop run_loop;
-  TaskLoop::Start(
-      kernel, TextOr(request, "task"), bench.BindRunner(), bench.BindModel(),
-      static_cast<uint32_t>(request.FindInt("max_steps").value_or(12)),
-      std::move(approved),
-      base::BindOnce(
+  const uint32_t max_steps =
+      static_cast<uint32_t>(request.FindInt("max_steps").value_or(12));
+  auto done = base::BindOnce(
           [](base::OnceClosure quit, mojom::TaskOutcomePtr outcome) {
             base::DictValue done;
             done.Set("event", "done");
@@ -233,10 +267,47 @@ void RunOnce(const Kernel& kernel, const base::DictValue& request) {
               pending.Set("history", std::move(history));
               done.Set("pending", std::move(pending));
             }
-            Send(done);
+            base::DictValue usage;
+            if (outcome->usage) {
+              usage.Set("input", static_cast<double>(outcome->usage->input));
+              usage.Set("output", static_cast<double>(outcome->usage->output));
+              usage.Set("cache_read",
+                        static_cast<double>(outcome->usage->cache_read));
+              usage.Set("cache_write",
+                        static_cast<double>(outcome->usage->cache_write));
+            }
+            done.Set("usage", std::move(usage));
+            Emit(done);
             std::move(quit).Run();
           },
-          run_loop.QuitClosure()));
+          run_loop.QuitClosure());
+
+  if (const base::DictValue* spec = request.FindDict("cloud")) {
+    auto cloud = mojom::CloudModel::New();
+    cloud->kind = TextOr(*spec, "kind");
+    cloud->model = TextOr(*spec, "model");
+    cloud->force_tool = spec->FindBool("force_tool").value_or(true);
+    cloud->max_tokens_per_step =
+        static_cast<uint32_t>(spec->FindInt("max_tokens_per_step").value_or(1024));
+    cloud->usd_per_mtok_input = spec->FindDouble("usd_per_mtok_input").value_or(0);
+    cloud->usd_per_mtok_output =
+        spec->FindDouble("usd_per_mtok_output").value_or(0);
+    cloud->usd_per_mtok_cache_read =
+        spec->FindDouble("usd_per_mtok_cache_read").value_or(0);
+    cloud->usd_per_mtok_cache_write =
+        spec->FindDouble("usd_per_mtok_cache_write").value_or(0);
+    cloud->max_usd = spec->FindDouble("max_usd").value_or(0);
+    cloud->max_tokens =
+        static_cast<uint64_t>(spec->FindDouble("max_tokens").value_or(0));
+    cloud->transport = bench.BindTransport();
+    TaskLoop::StartCloud(kernel, TextOr(request, "task"), bench.BindRunner(),
+                         std::move(cloud), max_steps, std::move(approved),
+                         std::move(done));
+  } else {
+    TaskLoop::Start(kernel, TextOr(request, "task"), bench.BindRunner(),
+                    bench.BindModel(), max_steps, std::move(approved),
+                    std::move(done));
+  }
   run_loop.Run();
   base::RunLoop().RunUntilIdle();
 }

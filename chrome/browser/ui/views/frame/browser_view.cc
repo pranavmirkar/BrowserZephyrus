@@ -177,7 +177,12 @@
 // ZEPHYRUS PROFILES FRONTEND - DISABLED.
 // #include "chrome/browser/ui/views/frame/zephyrus_profile_switcher.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
+#include "chrome/browser/ui/views/frame/zephyrus_agent_mascot_overlay.h"
+#include "chrome/browser/ui/views/frame/zephyrus_hands_free.h"
+#include "chrome/browser/ui/views/frame/zephyrus_mascot_bubble.h"
+#include "chrome/browser/ui/views/frame/zephyrus_voice_setup.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
+#include "chrome/browser/ui/views/frame/zephyrus_agent_settings.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_engine_picker.h"
 #include "chrome/browser/ui/views/frame/zephyrus_sidebar_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_tab_strip.h"
@@ -1013,6 +1018,19 @@ BrowserView::BrowserView(Browser* browser)
     // a popup or app window has neither.
     zephyrus_agent_panel_ = AddChildView(
         std::make_unique<zephyrus::agent::ZephyrusAgentPanel>(this));
+
+    // The agent's mascot: a transparent layer over the whole window that is
+    // also the agent's pointer. Kept on top by FitToParent, which the layout
+    // calls, so it stays above anything added after it.
+    zephyrus_agent_mascot_ = AddChildView(
+        std::make_unique<zephyrus::agent::ZephyrusAgentMascotOverlay>(this));
+    zephyrus_agent_mascot_->RefreshPresence();
+    // What it says, above it. A sibling ABOVE the overlay, not a child of it: the
+    // overlay passes every click through, and the bubble has to catch the ones
+    // aimed at its own buttons.
+    zephyrus_mascot_bubble_ = AddChildView(
+        std::make_unique<zephyrus::agent::ZephyrusMascotBubble>());
+    zephyrus_agent_mascot_->SetBubble(zephyrus_mascot_bubble_);
 
     // The theming panel shares that column. Only one is open at a time,
     // so the window never has to be wide enough for both.
@@ -5035,6 +5053,84 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
                     }
                     return;
                   }
+                  // =agent-panel opens the agent panel and nothing else, to
+                  // inspect it as a person first sees it.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "agent-panel") {
+                    if (auto* panel = view->zephyrus_agent_panel()) {
+                      panel->Open();
+                    }
+                    return;
+                  }
+                  // =voice-setup opens the "Hey Zep and voices" dialog.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "voice-setup") {
+                    zephyrus::ShowVoiceSetup(view.get());
+                    return;
+                  }
+                  // =voice-light turns the microphone light on, to check it
+                  // shows with the mascot switched off.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "voice-light") {
+                    if (auto* overlay = view->zephyrus_agent_mascot()) {
+                      overlay->SetListening(true);
+                    }
+                    return;
+                  }
+                  // =voice-hands-free feeds a spoken command from
+                  // --zephyrus-test-voice-dir through the real hands-free path.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "voice-hands-free") {
+                    if (auto* panel = view->zephyrus_agent_panel()) {
+                      if (auto* hands_free = panel->hands_free()) {
+                        hands_free->RunTestScenario(
+                            base::CommandLine::ForCurrentProcess()
+                                ->GetSwitchValueASCII(
+                                    "zephyrus-test-voice-dir"));
+                      }
+                    }
+                    return;
+                  }
+                  // --zephyrus-test-agent-task=<text> runs an agent task, to
+                  // exercise the whole path from the panel down.
+                  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
+                          "zephyrus-test-agent-task")) {
+                    if (auto* panel = view->zephyrus_agent_panel()) {
+                      panel->Open();
+                      panel->StartTaskForTesting(
+                          base::CommandLine::ForCurrentProcess()
+                              ->GetSwitchValueASCII("zephyrus-test-agent-task"));
+                    }
+                    return;
+                  }
+                  // =agent-settings opens the agent panel and its model
+                  // settings, to inspect them.
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "agent-settings") {
+                    if (auto* panel = view->zephyrus_agent_panel()) {
+                      panel->Open();
+                      base::SequencedTaskRunner::GetCurrentDefault()
+                          ->PostDelayedTask(
+                              FROM_HERE,
+                              base::BindOnce(
+                                  [](base::WeakPtr<BrowserView> later) {
+                                    if (later && later->zephyrus_agent_panel()) {
+                                      zephyrus::ShowAgentSettings(
+                                          later.get(),
+                                          later->zephyrus_agent_panel()
+                                              ->settings_button());
+                                    }
+                                  },
+                                  view),
+                              base::Milliseconds(800));
+                    }
+                    return;
+                  }
                   // =menu opens the three-dots menu instead, to inspect it.
                   if (base::CommandLine::ForCurrentProcess()
                           ->GetSwitchValueASCII("zephyrus-test-compact") ==
@@ -5744,6 +5840,9 @@ void BrowserView::Layout(PassKey) {
   UpdateZephyrusSidebarBounds();
   UpdateZephyrusTabStripBounds();
   UpdateZephyrusAgentPanelBounds();
+  if (zephyrus_agent_mascot_) {
+    zephyrus_agent_mascot_->FitToParent();
+  }
   UpdateZephyrusCustomizePanelBounds();
   ApplyZephyrusSidebarReveal();
 

@@ -5,11 +5,15 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_AGENT_TOOL_SURFACE_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_AGENT_TOOL_SURFACE_H_
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
+#include "base/timer/timer.h"
+#include "chrome/browser/zephyrus/agent/pointer_events.h"
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "chrome/browser/zephyrus/agent/local_vision_client.h"
@@ -27,6 +31,7 @@
 class Browser;
 
 namespace content {
+class Page;
 class RenderWidgetHost;
 class ScopedAccessibilityMode;
 class WebContents;
@@ -52,6 +57,36 @@ class BrowserToolSurface : public ToolSurface {
   BrowserToolSurface(const BrowserToolSurface&) = delete;
   BrowserToolSurface& operator=(const BrowserToolSurface&) = delete;
 
+  // How much of a page the model is shown per step. The defaults were measured
+  // on a 7B local model, for which a long list costs accuracy; a cloud model
+  // reads far more, and at thirty elements a busy app like Notion spent the
+  // whole list on its sidebar before reaching the editor.
+  // Show the model each step's page as a labelled screenshot. See
+  // model_screenshots_.
+  void SetModelScreenshots(bool enabled) { model_screenshots_ = enabled; }
+
+  // Move the pointer and turn the wheel the way a hand does: along a curved,
+  // eased path that takes longer for a longer reach, with a pause before the
+  // press and a hold before the release; scrolling as a glide of wheel events
+  // rather than a jump; typing at a pace instead of all at once. Off by
+  // default, so a test drives the surface instantly and a person watching a
+  // real run sees a person's motion. Every action still goes through the same
+  // input pipeline as a real mouse, in the same order, so a page cannot tell
+  // the difference -- which is the point where it matters: menus that open on
+  // hover, and pages that watch for a pointer that never moved.
+  void SetHumanMotion(bool enabled) { human_motion_ = enabled; }
+
+  // Told where the pointer is and what it is doing, to draw it. Not owned;
+  // must outlive this or be cleared with null.
+  void SetPointerObserver(PointerObserver* observer) {
+    pointer_observer_ = observer;
+  }
+
+  void SetObservationBudget(size_t max_elements, size_t max_text_length) {
+    max_elements_ = max_elements;
+    max_text_length_ = max_text_length;
+  }
+
   // ToolSurface:
   std::string GetActiveUrl() override;
   std::vector<TabInfo> ListTabs() override;
@@ -65,14 +100,18 @@ class BrowserToolSurface : public ToolSurface {
   void Observe(ObserveCallback callback) override;
   void ObserveForFind(const std::string& query, ObserveCallback callback) override;
   void ObserveForCheck(ObserveCallback callback) override;
+  void ObserveQuick(ObserveCallback callback) override;
   ui::AXTreeID CurrentTreeId() override;
   bool ClickNode(const ObservedNode& node) override;
+  bool HoverNode(const ObservedNode& node) override;
   bool TypeIntoNode(const ObservedNode& node,
                     const std::string& text) override;
   bool SetNodeValue(const ObservedNode& node,
                     const std::string& value) override;
   bool ScrollPage(bool down, const std::string& amount) override;
   bool PressKey(const std::string& key) override;
+  bool TypeIntoFocus(const std::string& text) override;
+  bool ClickAtPoint(const gfx::Point& point) override;
   std::string ReadSelection() override;
 
  private:
@@ -128,6 +167,72 @@ class BrowserToolSurface : public ToolSurface {
   // action path, which matters because that path is where focus is lost.
   bool MoveAndClick(const gfx::Rect& bounds);
 
+  // ---- Ordered input ------------------------------------------------------
+  //
+  // Everything that reaches the page as input goes through one queue, and
+  // nothing looks at the page until the queue is empty. With instant input that
+  // is invisible -- each step finishes as it is enqueued. With human motion a
+  // click takes most of a second, and this is what keeps the click, the typing
+  // that follows it and the look at what happened in the order they were asked
+  // for, without any caller having to wait.
+  using InputStep = base::OnceCallback<void(base::OnceClosure done)>;
+  void EnqueueInput(InputStep step);
+  void RunNextInput();
+  void WhenInputIdle(base::OnceClosure callback);
+
+  // The steps themselves.
+  //
+  // Each takes the PAGE that was showing when it was asked for, and does nothing
+  // if a different one is showing when its turn comes. With instant input the
+  // two are the same moment. With human motion a click is most of a second
+  // away, and a page that navigates in that time -- a redirect, a script -- must
+  // not receive a click or a keystroke that was judged against the page before
+  // it: the policy decision was about THAT page's elements.
+  void ClickStep(gfx::Point at,
+                 base::WeakPtr<content::Page> page,
+                 base::OnceClosure done);
+  void TypeStep(bool select_all,
+                std::string text,
+                base::WeakPtr<content::Page> page,
+                base::OnceClosure done);
+  void ChooseStep(std::string value,
+                  base::WeakPtr<content::Page> page,
+                  base::OnceClosure done);
+  void ScrollStep(gfx::Point screen_from, float pixels, base::OnceClosure done);
+  void HoverStep(gfx::Point at,
+                 base::WeakPtr<content::Page> page,
+                 base::OnceClosure done);
+  void MoveThen(gfx::PointF target, base::OnceClosure then);
+  void PressAt(gfx::PointF target, base::OnceClosure done);
+  void ReleaseAt(gfx::PointF target, base::OnceClosure done);
+  void ScrollGlide(gfx::PointF at, float pixels, base::OnceClosure done);
+  void KeyStep(ui::KeyboardCode key_code,
+               ui::DomCode dom_code,
+               ui::DomKey dom_key,
+               int flags,
+               base::WeakPtr<content::Page> page,
+               base::OnceClosure done);
+  base::WeakPtr<content::Page> CurrentPage() const;
+  bool IsCurrentPage(const base::WeakPtr<content::Page>& page) const;
+
+  // The widget input goes to, or null.
+  content::RenderWidgetHost* InputWidget() const;
+  // One mouse event at a point in SCREEN coordinates. False if there is no
+  // page, or a move that would land outside it.
+  bool SendMouse(blink::WebInputEvent::Type type, gfx::PointF screen);
+  void SendWheel(gfx::PointF screen, float delta_y, int phase);
+  void Notify(PointerEvent::Kind kind, gfx::PointF screen, int direction = 0);
+  // Where a move begins: where the drawn pointer is, if something draws one.
+  gfx::PointF PointerStart(gfx::PointF target) const;
+
+  // A repeating tick with the time elapsed since it began, for `duration`, then
+  // `finished`. One at a time, because the queue runs one step at a time.
+  void RunTimeline(base::TimeDelta duration,
+                   base::RepeatingCallback<void(base::TimeDelta)> tick,
+                   base::OnceClosure finished);
+  void OnTimelineTick();
+  void Later(base::TimeDelta delay, base::OnceClosure task);
+
   // One keystroke, press and release, with whatever modifiers are given.
   bool SendKey(content::RenderWidgetHost* widget,
                ui::KeyboardCode key_code,
@@ -138,6 +243,7 @@ class BrowserToolSurface : public ToolSurface {
   // One printable character, as the three events a real key produces: press,
   // the character itself, release. The character event is what inserts; the
   // other two are what the page's handlers watch for.
+  void TypeText(content::RenderWidgetHost* widget, const std::string& text);
   bool TypeCharacter(content::RenderWidgetHost* widget, char16_t character);
 
   // Takes a picture of the page, downscaled and JPEG-encoded, or nothing at
@@ -177,6 +283,9 @@ class BrowserToolSurface : public ToolSurface {
   // Built on first use and kept, because it is null in the ordinary case and
   // building it per step would mean re-reading the command line every time.
   std::unique_ptr<LocalVisionClient> vision_;
+  // Send each step's screenshot, with every offered element outlined and
+  // labelled by its id, to the model as an image. Set for cloud models.
+  bool model_screenshots_ = false;
   bool vision_checked_ = false;
 
   std::unique_ptr<FetchWatcher> fetch_watcher_;
@@ -188,7 +297,10 @@ class BrowserToolSurface : public ToolSurface {
 
   std::string settle_signature_;
   std::string find_query_;
+  size_t max_elements_ = kMaxObservedElements;
+  size_t max_text_length_ = kMaxObservedTextLength;
   int settle_rounds_ = 0;
+  base::TimeTicks settle_started_;
 
   // Consecutive looks that agreed with each other.
   //
@@ -234,6 +346,24 @@ class BrowserToolSurface : public ToolSurface {
   bool has_answered_ = false;
 
   raw_ptr<Browser> browser_;
+
+  // The look in flight is a quick one. See ToolSurface::ObserveQuick.
+  bool quick_look_ = false;
+  bool human_motion_ = false;
+  raw_ptr<PointerObserver> pointer_observer_ = nullptr;
+  std::deque<InputStep> input_queue_;
+  bool input_running_ = false;
+  std::vector<base::OnceClosure> idle_waiters_;
+  gfx::PointF pointer_position_;
+  bool has_pointer_position_ = false;
+  uint32_t path_seed_ = 0x5EED;
+  // The page a click in flight was aimed at. See ClickStep.
+  base::WeakPtr<content::Page> click_page_;
+  base::RepeatingTimer timeline_timer_;
+  base::TimeTicks timeline_start_;
+  base::TimeDelta timeline_duration_;
+  base::RepeatingCallback<void(base::TimeDelta)> timeline_tick_;
+  base::OnceClosure timeline_finished_;
 
   // The tab `accessibility_` was turned on for, so a tab switch re-scopes it.
   // The tree the last Observation's ids came from.

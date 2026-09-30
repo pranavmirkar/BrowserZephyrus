@@ -44,6 +44,7 @@
 // but a reply the kernel could not shape into one is passed back as it is so
 // the benchmark can grade it as the schema failure it is.
 
+#include <algorithm>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -109,6 +110,56 @@ std::string Extract(const zephyrus::agent::Kernel& kernel,
   return base::WriteJson(out).value_or("{}");
 }
 
+// The kernel's provider adapters (ADR 0004), so the benchmark speaks to real
+// providers with the code the browser runs. The benchmark plays the browser's
+// part: it adds the key and sends the request.
+std::string ProviderBuild(const zephyrus::agent::Kernel& kernel,
+                          const base::DictValue& request) {
+  const zephyrus::agent::ProviderRequest built = kernel.build_provider_request(
+      TextOr(request, "kind"), TextOr(request, "model"),
+      TextOr(request, "system"), TextOr(request, "user"),
+      TextOr(request, "image_jpeg_base64"),
+      static_cast<uint32_t>(request.FindInt("max_tokens").value_or(1024)),
+      request.FindBool("force_tool").value_or(true), TextOr(request, "effort"));
+  base::DictValue out;
+  out.Set("error", std::string(built.error));
+  out.Set("path", std::string(built.path));
+  base::DictValue headers;
+  for (const auto& header : built.headers) {
+    headers.Set(std::string(header.name), std::string(header.value));
+  }
+  out.Set("headers", std::move(headers));
+  out.Set("body", std::string(built.body));
+  return base::WriteJson(out).value_or("{}");
+}
+
+std::string ProviderParse(const zephyrus::agent::Kernel& kernel,
+                          const base::DictValue& request) {
+  const int status = request.FindInt("status").value_or(0);
+  const zephyrus::agent::ProviderReply reply = kernel.parse_provider_reply(
+      TextOr(request, "kind"),
+      static_cast<uint16_t>(status < 0 || status > 999 ? 0 : status),
+      TextOr(request, "body"));
+  base::DictValue out;
+  out.Set("error", std::string(reply.error));
+  out.Set("found", reply.found);
+  out.Set("tool", std::string(reply.tool));
+  out.Set("arguments_json", std::string(reply.arguments_json));
+  out.Set("text", std::string(reply.text));
+  base::DictValue usage;
+  // Token counts fit an int for any single reply; clamp rather than wrap.
+  auto clamp = [](uint64_t value) {
+    return static_cast<int>(std::min<uint64_t>(value, 0x7fffffff));
+  };
+  usage.Set("input", clamp(reply.input_tokens));
+  usage.Set("output", clamp(reply.output_tokens));
+  usage.Set("cache_read", clamp(reply.cache_read_tokens));
+  usage.Set("cache_write", clamp(reply.cache_write_tokens));
+  out.Set("usage", std::move(usage));
+  out.Set("stop", std::string(reply.stop));
+  return base::WriteJson(out).value_or("{}");
+}
+
 }  // namespace
 
 int main() {
@@ -136,6 +187,14 @@ int main() {
     if (op == "extract") {
       std::cout << Extract(*kernel, TextOr(request_json, "response"))
                 << std::endl;
+      continue;
+    }
+    if (op == "provider_build") {
+      std::cout << ProviderBuild(*kernel, request_json) << std::endl;
+      continue;
+    }
+    if (op == "provider_parse") {
+      std::cout << ProviderParse(*kernel, request_json) << std::endl;
       continue;
     }
     if (!op.empty() && op != "decide") {

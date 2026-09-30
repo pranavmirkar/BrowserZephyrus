@@ -62,6 +62,12 @@ inline constexpr char kAgentVisionSwitch[] = "zephyrus-agent-vision";
 // sending someone's browsing to a host on the internet. This is the same rule
 // the benchmark harness enforces, for the same reason, and it is checked here
 // rather than trusted to whoever wrote the flag.
+// Appends `what` to the agent trace, when the development switch
+// --zephyrus-agent-trace=<file> names one; otherwise does nothing. The file is
+// started over on a browser run's first write. It holds page text, which is
+// why it is a development switch with an explicit path.
+void AgentTrace(const std::string& what);
+
 class DevModelClient : public mojom::AgentModel {
  public:
   // Null unless both switches are present AND the endpoint is loopback.

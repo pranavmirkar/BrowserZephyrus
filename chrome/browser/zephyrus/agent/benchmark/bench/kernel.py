@@ -138,6 +138,18 @@ class Kernel:
             "elements": elements,
         })
 
+    def provider_build(self, kind: str, model: str, system: str, user: str,
+                       max_tokens: int = 1024, force_tool: bool = True) -> dict[str, Any]:
+        """The kernel's request for one step to a cloud provider (ADR 0004)."""
+        return self._ask({"op": "provider_build", "kind": kind, "model": model,
+                          "system": system, "user": user,
+                          "max_tokens": max_tokens, "force_tool": force_tool})
+
+    def provider_parse(self, kind: str, status: int, body: str) -> dict[str, Any]:
+        """The kernel's reading of a provider's HTTP reply."""
+        return self._ask({"op": "provider_parse", "kind": kind, "status": status,
+                          "body": body})
+
     def close(self) -> None:
         if self._process.stdin:
             self._process.stdin.close()

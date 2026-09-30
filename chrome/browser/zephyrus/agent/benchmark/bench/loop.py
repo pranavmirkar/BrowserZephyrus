@@ -187,10 +187,26 @@ def run_one(fixture: dict[str, Any], provider, contract, policy=None) -> Traject
     return trajectory
 
 
+# A benchmark run's safety cap on a cloud model's spend per task, in tokens,
+# when nothing tighter was asked for. A loop gone wrong on a frontier model
+# costs real money; this is the browser's rule applied to the benchmark.
+DEFAULT_CLOUD_TOKEN_CAP = 2_000_000
+
+
 def _drive(pipe: _Pipe, world: World, trajectory: Trajectory, provider,
            contract, policy) -> None:
     remaining = world.budget
-    pipe.send({"op": "run", "task": world.task, "max_steps": remaining})
+    # A cloud provider is driven through the loop's OWN cloud path: the kernel
+    # builds each request and reads each reply, and the benchmark only sends,
+    # as the browser's transport does.
+    cloud = None
+    if hasattr(provider, "cloud_spec"):
+        cloud = provider.cloud_spec(max_tokens=DEFAULT_CLOUD_TOKEN_CAP)
+    run = {"op": "run", "task": world.task, "max_steps": remaining}
+    if cloud:
+        run["cloud"] = cloud
+    pipe.send(run)
+    last_send: tuple[str, int] | None = None
 
     # The step whose reply has been sent to the loop but has not (yet) led to
     # an execute. If the loop's next question is anything else, it refused the
@@ -219,6 +235,32 @@ def _drive(pipe: _Pipe, world: World, trajectory: Trajectory, provider,
         if kind == "observe":
             close_open_step()
             pipe.send({"observation_json": render_observation(world.observation)})
+            continue
+
+        if kind == "send":
+            status, body, latency = provider.send(
+                event["path"], event.get("headers") or {}, event["body"])
+            retry = last_send is not None and last_send[0] == event["body"] and \
+                (last_send[1] == -1 or last_send[1] == 429 or 500 <= last_send[1] <= 599)
+            last_send = (event["body"], status)
+            if retry and open_step is not None:
+                # The loop resending after a transient failure: the same turn.
+                open_step.latency_ms += latency
+            else:
+                close_open_step()
+                parsed = provider._kernel.provider_parse(
+                    provider._kind, status, body)
+                call = None
+                if parsed.get("found"):
+                    call = ToolCall(parsed["tool"],
+                                    _arguments(parsed.get("arguments_json") or "{}"))
+                elif parsed.get("text"):
+                    call = extract_call(parsed["text"])
+                open_step = Step(len(trajectory.steps), call, body[:200], "",
+                                 world.state, world.state, latency,
+                                 parsed.get("usage") or None)
+                trajectory.steps.append(open_step)
+            pipe.send({"status": status, "body": body})
             continue
 
         if kind == "propose":

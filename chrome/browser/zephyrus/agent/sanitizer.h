@@ -25,6 +25,10 @@ enum class Sensitivity {
   kPaymentCard,
   // A person's name, which is the hardest of these and the least certain.
   kPersonalName,
+  // Plain text on the page (not in any control) that looks like an email
+  // address, a phone number or a card number. It has no element to classify, so
+  // it is found by its own words and painted over where it is drawn.
+  kPageText,
 };
 
 // One thing to hide, and where it is on screen.
@@ -52,6 +56,20 @@ Sensitivity ClassifyElement(const ObservedNode& node);
 // hides one harmless string costs the model a little context; a miss puts a
 // real address or card number on the wire, and that cannot be taken back.
 Sensitivity ClassifyText(std::string_view text);
+
+// True if plain text should be painted over in the PICTURE.
+//
+// Narrower than the rule for the text channel, on purpose. A black rectangle
+// over a title costs the model the page; a redacted word in text costs it one
+// word. So the picture is masked for an email address, or for a run of ten or
+// more digits (a phone or a card, however spaced), and not for a seven-digit
+// number that is far more likely to be a price or a video title.
+bool ContainsPrivateText(std::string_view text);
+
+// Replaces runs of digits and their separators that add up to a phone or card
+// number written with spaces or dashes ("4111 1111 1111 1111"). The word-wise
+// rules cannot see these: every word of one is four digits. True if it changed.
+bool RedactSpacedNumbers(std::string& text);
 
 // Everything in this Observation that must not be sent, with its position.
 std::vector<Redaction> FindRedactions(const Observation& observation);

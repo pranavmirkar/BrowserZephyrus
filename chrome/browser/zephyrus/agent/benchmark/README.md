@@ -23,6 +23,22 @@ than the sources it links is refused, because its results would describe code
 that no longer exists; see "One reader of model replies" and "The shipped
 loop".
 
+Cloud models are spoken to by the kernel's own adapters (ADR 0004), so a run
+measures the code the browser ships. The runner only adds the key, from
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`, never from an
+argument:
+
+```
+python run_tasks.py --provider anthropic --model claude-opus-5-5 --policy --allow-remote
+python run_tasks.py --provider openai --model <model id> --policy --allow-remote
+python run_tasks.py --provider gemini --model <model id> --policy --allow-remote
+python run_tasks.py --provider openai --model qwen2.5:7b --base-url http://127.0.0.1:11434/v1 --policy
+```
+
+The last line is the same OpenAI-compatible adapter against a local Ollama, no
+key needed. `--no-force-tool` is for servers that reject `tool_choice:
+required`.
+
 ```
 python run_benchmark.py --provider ollama --model minicpm5:1b
 python run_benchmark.py --provider openai-compatible --model local --base-url http://127.0.0.1:8080

@@ -12,16 +12,25 @@
 
 assert(is_win)
 
+# The mascot is a table of rectangles and a few interpolators, with no
+# dependencies at all -- which is also why the browser's agent panel can share
+# it, and the two cannot drift apart.
+source_set("mascot") {
+  sources = [
+    "mascot.cc",
+    "mascot.h",
+  ]
+}
+
 executable("zephyrus_setup") {
   sources = [
     "installer_runner.cc",
     "installer_runner.h",
-    "mascot.cc",
-    "mascot.h",
     "setup_resource_ids.h",
     "setup_resources.rc",
     "setup_window.cc",
   ]
+  deps = [ ":mascot" ]
 
   configs -= [ "//build/config/win:console" ]
   configs += [ "//build/config/win:windowed" ]

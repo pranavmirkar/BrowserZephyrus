@@ -39,6 +39,8 @@ class AgentKernelService : public mojom::AgentKernel {
                mojo::PendingRemote<mojom::AgentModel> model,
                uint32_t max_steps,
                mojom::PendingApprovalPtr approved,
+               mojom::CloudModelPtr cloud,
+               mojom::TaskMemoryPtr memory,
                RunTaskCallback callback) override;
 
  private:

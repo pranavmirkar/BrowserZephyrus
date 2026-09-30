@@ -14,4 +14,11 @@ declare_args() {
   # to run the agent harness; the installer packager refuses a build that has
   # it on (chrome/installer/zephyrus_setup/tools/package_installer.py).
   zephyrus_dev_switches = !is_official_build
+
+  # Absolute path to a JSON file of {"anthropic": "...", "assemblyai": "..."}
+  # to compile into the build (obfuscated, see agent/tools/gen_bundled_keys.py),
+  # so a demo works with nothing entered. Empty (the default) bundles nothing.
+  # Keep the file OUTSIDE the source tree; the keys must be dedicated,
+  # spend-capped and revoked after the event.
+  zephyrus_bundled_keys_file = ""
 }

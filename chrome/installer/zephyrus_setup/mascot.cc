@@ -7,6 +7,8 @@
 #include <math.h>
 
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 
 namespace zephyrus_setup {
 
@@ -85,6 +87,16 @@ bool IsBlinking(double t) {
 }
 
 }  // namespace
+
+std::span<const Rect> TorsoArt() {
+  return kTorso;
+}
+std::span<const Rect> LegArt() {
+  return kLegs;
+}
+std::span<const Rect> EyesHappyArt() {
+  return kEyesHappy;
+}
 
 std::vector<Rect> BuildMascot(State state, double t) {
   std::vector<Rect> out;
@@ -284,6 +296,7 @@ std::vector<Rect> BuildMascot(State state, double t) {
                      bw * 0.19f, kWhite});
       break;
     }
+
   }
 
   return out;

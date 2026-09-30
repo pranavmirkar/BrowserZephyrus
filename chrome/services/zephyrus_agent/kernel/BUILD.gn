@@ -21,6 +21,7 @@ rust_static_library("kernel") {
     "src/extraction.rs",
     "src/lib.rs",
     "src/policy.rs",
+    "src/providers.rs",
     "src/tests.rs",
   ]
 

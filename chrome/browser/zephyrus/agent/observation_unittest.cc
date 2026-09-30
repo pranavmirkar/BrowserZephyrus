@@ -92,6 +92,51 @@ TEST(ObservationTest, LeavesOutRolesThatAreNotControls) {
   EXPECT_EQ(observation.elements[0].name, "Buy now");
 }
 
+TEST(ObservationTest, AnEditableRegionIsOfferedAsATextbox) {
+  // A contenteditable root -- how Notion and most rich editors are built. Its
+  // role is a generic container, so before this it was never offered and a
+  // model asked to write in Notion had nowhere to type.
+  ui::AXNodeData titled = MakeNode(2, ax::mojom::Role::kGenericContainer);
+  titled.AddBoolAttribute(ax::mojom::BoolAttribute::kNonAtomicTextFieldRoot,
+                          true);
+  titled.AddState(ax::mojom::State::kEditable);
+  titled.AddState(ax::mojom::State::kRichlyEditable);
+  titled.AddStringAttribute(ax::mojom::StringAttribute::kPlaceholder,
+                            "Type '/' for commands");
+  ui::AXNodeData empty = MakeNode(3, ax::mojom::Role::kGenericContainer);
+  empty.AddBoolAttribute(ax::mojom::BoolAttribute::kNonAtomicTextFieldRoot,
+                         true);
+  empty.AddState(ax::mojom::State::kEditable);
+  // A plain div is still not offered.
+  ui::AXNodeData plain = MakeNode(4, ax::mojom::Role::kGenericContainer);
+
+  // The block's text, as a child of the block only.
+  ui::AXNodeData words = MakeNode(5, ax::mojom::Role::kStaticText, "Groceries");
+  titled.child_ids.push_back(words.id);
+  ui::AXTreeUpdate update = MakeTree({titled, empty, plain});
+  update.nodes.push_back(words);
+
+  Observation observation =
+      BuildObservation(update, "https://example.org/page", "A page",
+                       kMaxObservedElements, kMaxObservedTextLength);
+  ASSERT_EQ(observation.elements.size(), 2u);
+  // What it holds is its value, so it is not described as empty.
+  EXPECT_EQ(observation.elements[0].value, "Groceries");
+  EXPECT_TRUE(observation.elements[1].value.empty());
+  EXPECT_EQ(observation.elements[0].role, "textbox");
+  EXPECT_EQ(observation.elements[0].name, "Type '/' for commands");
+  EXPECT_EQ(observation.elements[1].role, "textbox");
+  EXPECT_EQ(observation.elements[1].name, "empty editable area");
+}
+
+TEST(ObservationTest, AProtectedEditableRegionIsNotOffered) {
+  ui::AXNodeData secret = MakeNode(2, ax::mojom::Role::kGenericContainer);
+  secret.AddBoolAttribute(ax::mojom::BoolAttribute::kNonAtomicTextFieldRoot,
+                          true);
+  secret.AddState(ax::mojom::State::kProtected);
+  EXPECT_TRUE(Build({secret}).elements.empty());
+}
+
 TEST(ObservationTest, ANamelessControlIsNotOffered) {
   // Neither is worth putting in front of a model: it has nothing to choose by.
   //
@@ -971,6 +1016,60 @@ TEST(ObservationTest, AWrittenDateCountsWhenThereIsNoAge) {
   EXPECT_NE(link->posted.find("August"), std::string::npos)
       << "detail was " << link->detail;
   EXPECT_NE(link->posted.find("2025"), std::string::npos) << link->posted;
+}
+
+TEST(ObservationTest, ADropDownOffersItsChoicesEvenWhileItIsClosed) {
+  // MEASURED: asked to pick a delivery time, the model passed an option's hidden
+  // value ("19:30") to a list that offers "7:30 pm", because a closed <select>
+  // showed only the one chosen. The choices live in a popup that is not on
+  // screen, so this is built with the popup invisible, as it is in a real page.
+  ui::AXNodeData list = MakeNode(2, ax::mojom::Role::kPopUpButton, "Delivery time");
+  ui::AXNodeData popup = MakeNode(3, ax::mojom::Role::kMenuListPopup);
+  popup.AddState(ax::mojom::State::kInvisible);
+  ui::AXNodeData first = MakeNode(4, ax::mojom::Role::kMenuListOption, "6:00 pm");
+  ui::AXNodeData second = MakeNode(5, ax::mojom::Role::kMenuListOption, "7:30 pm");
+  list.child_ids = {3};
+  popup.child_ids = {4, 5};
+
+  ui::AXTreeUpdate update = MakeTree({list, popup, first, second});
+  // MakeTree parents everything under the root; put the popup and options where
+  // they belong.
+  update.nodes[0].child_ids = {2};
+  Observation observation = BuildObservation(
+      update, "https://example.org/order", "Order", kMaxObservedElements,
+      kMaxObservedTextLength);
+
+  ASSERT_EQ(observation.elements.size(), 1u);
+  EXPECT_EQ(observation.elements[0].name, "Delivery time");
+  ASSERT_EQ(observation.elements[0].options.size(), 2u);
+  EXPECT_EQ(observation.elements[0].options[0], "6:00 pm");
+  EXPECT_EQ(observation.elements[0].options[1], "7:30 pm");
+}
+
+TEST(ObservationTest, OrdinaryControlsCarryNoOptions) {
+  Observation observation = Build({
+      MakeNode(2, ax::mojom::Role::kButton, "Buy now"),
+      MakeNode(3, ax::mojom::Role::kLink, "Specifications"),
+  });
+  ASSERT_EQ(observation.elements.size(), 2u);
+  EXPECT_TRUE(observation.elements[0].options.empty());
+  EXPECT_TRUE(observation.elements[1].options.empty());
+}
+
+TEST(ObservationTest, PrivatePlainTextIsRememberedWhereItIsDrawn) {
+  ui::AXNodeData paragraph = MakeNode(2, ax::mojom::Role::kStaticText,
+                                      "Deliver to asha.rao@example.com");
+  paragraph.relative_bounds.bounds = gfx::RectF(30, 120, 300, 20);
+  ui::AXNodeData plain = MakeNode(3, ax::mojom::Role::kStaticText,
+                                  "Anvil Pro, 48 kg");
+  plain.relative_bounds.bounds = gfx::RectF(30, 160, 200, 20);
+  ui::AXTreeUpdate update = MakeTree({paragraph, plain});
+  update.nodes[0].relative_bounds.bounds = gfx::RectF(0, 0, 1000, 800);
+  Observation observation = BuildObservation(
+      update, "https://example.org/order", "Order", kMaxObservedElements,
+      kMaxObservedTextLength);
+  ASSERT_EQ(observation.private_regions.size(), 1u);
+  EXPECT_EQ(observation.private_regions[0], gfx::Rect(30, 120, 300, 20));
 }
 
 }  // namespace

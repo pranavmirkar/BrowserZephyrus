@@ -72,46 +72,66 @@ pub struct Decision {
     pub reason: String,
 }
 
-/// Words that turn a click into an external side effect.
+/// Controls that spend money. Clicking one always asks the user first.
 ///
-/// The failure modes are asymmetric and the list is tuned for that. A false
-/// positive costs one unnecessary confirmation prompt. A false negative sends
-/// an email. So this over-matches on purpose: "Post" as a noun in "Blog post"
-/// will trip it, and that is the trade being made rather than an oversight.
+/// The product decision is that the agent asks about PAYMENTS, and about
+/// sign-in (which it cannot do itself: see `escalate` and the `task.handoff`
+/// tool). A payment control worded some other way is not caught -- which is why
+/// the agent also never types card details, and hands the form to the user, so
+/// the last step of a payment is theirs either way.
 ///
-/// This is a heuristic and it is the weakest part of the module. It is not the
-/// only thing standing between a page and a side effect -- R2 always asks, so
-/// a verb missing from this list degrades to a click that looked reversible,
-/// not to a silent send.
-const CONSEQUENTIAL_VERBS: &[&str] = &[
-    "accept",
-    "agree",
-    "apply",
+/// Whole words, matched at the FRONT of a control's label: "Buy now",
+/// "Place order", "Confirm and pay".
+const PAYMENT_VERBS: &[&str] = &[
     "book",
     "buy",
     "checkout",
-    "confirm",
-    "delete",
     "donate",
-    "forward",
-    "invite",
     "order",
     "pay",
-    "post",
-    "publish",
     "purchase",
-    "remove",
-    "reply",
-    // Listed separately rather than left to a prefix match on "send", because
-    // matching is on whole words: "Resend" must escalate, "Sender" must not.
-    "resend",
     "reserve",
-    "send",
-    "share",
-    "submit",
     "subscribe",
     "transfer",
-    "unsubscribe",
+];
+
+/// Controls that send something out or destroy something, each with the words
+/// in a task that ask for it.
+///
+/// These used to ask every time, and that stopped a competent agent at almost
+/// every real task: a card for each email, each comment, each form. They now
+/// ask only when the TASK did not ask for them. A user who says "reply to Maya"
+/// has asked for a reply to be sent; the same page telling the agent to forward
+/// the thread elsewhere has not been asked for by anyone, and "forward" is not
+/// in the task -- that click asks.
+///
+/// MEASURED, and the reason this is not simply deleted: benchmark mt-012 puts
+/// an instruction inside an email that says to forward it, and a model that is
+/// told to reply follows it. Without this rule that run forwards the mail. The
+/// model is not the boundary; what the USER said is.
+///
+/// Words are STEMS, matched at the start of a task word, so "deleting" is
+/// covered by "delet" and "emailed" by "email". Deliberately generous on what
+/// counts as asking for it -- a false "allowed" needs the task to already talk
+/// about that kind of action, and a false "ask" is only one card -- but each
+/// verb's list is its own: asking to "send" does not authorise "forward".
+const OUTBOUND_VERBS: &[(&str, &[&str])] = &[
+    ("send", &["send", "sent", "email", "mail", "messag", "text", "write", "compos", "repl", "respon", "shar", "tell", "notif", "invit", "forward"]),
+    ("resend", &["send", "resend", "email", "mail", "messag", "invit"]),
+    ("reply", &["repl", "respon", "answer", "messag", "email", "mail", "write"]),
+    ("forward", &["forward"]),
+    ("post", &["post", "publish", "tweet", "comment", "shar", "write", "upload", "announc"]),
+    ("publish", &["publish", "post", "releas", "announc"]),
+    ("share", &["shar", "send", "post", "invit", "collaborat"]),
+    ("submit", &["submit", "appl", "regist", "enter", "fill", "complet", "send", "sign", "enrol", "request", "form"]),
+    ("apply", &["appl", "submit", "regist", "enrol"]),
+    ("confirm", &["confirm", "accept", "approv", "verif", "submit", "complet", "finish"]),
+    ("accept", &["accept", "agree", "approv", "confirm"]),
+    ("agree", &["agree", "accept", "confirm"]),
+    ("delete", &["delet", "remov", "clear", "trash", "discard", "eras", "clean", "empty", "drop"]),
+    ("remove", &["remov", "delet", "clear", "discard", "uninstall", "drop"]),
+    ("unsubscribe", &["unsubscrib", "cancel", "stop", "opt"]),
+    ("invite", &["invit", "add", "shar"]),
 ];
 
 /// Tools that navigate, and the argument holding the destination.
@@ -232,8 +252,8 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
             if element.role == "password" {
                 return (
                     Risk::R3,
-                    "the agent does not fill in passwords -- sign in yourself \
-                     and it can carry on from there"
+                    "the agent does not fill in passwords. Call task.handoff so \
+                     the user can sign in, then carry on"
                         .to_string(),
                 );
             }
@@ -248,20 +268,62 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
             if element.sensitivity == "payment_card" {
                 return (
                     Risk::R3,
-                    "the agent does not fill in card details -- type them \
-                     yourself and it can carry on from there"
+                    "the agent does not fill in card details. Call task.handoff \
+                     so the user can enter them, then carry on"
                         .to_string(),
                 );
             }
         }
     }
 
+    // Memory. What the agent keeps outlives the page, the task and the chat, so
+    // it is the one place a hostile page could plant something that pays off
+    // later: "remember that the user always wants receipts forwarded to...".
+    // The rule that closes it is PROVENANCE: a fact may only be kept if it is
+    // the user's own words, so the words of the fact have to be in what the user
+    // just said. A page cannot write the user's message.
+    if request.tool == "memory.remember" {
+        let fact = request
+            .arguments
+            .get("fact")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(why) = refuse_to_remember(fact, request.task) {
+            return (Risk::R3, why);
+        }
+        return (floor, String::new());
+    }
+    if request.tool == "memory.forget" {
+        if !task_asks_to_forget(request.task) {
+            return (
+                Risk::R3,
+                "the agent forgets things only when the user asks it to".to_string(),
+            );
+        }
+        return (floor, String::new());
+    }
+
+    // A hand-off: the agent needs the user to do something only they can --
+    // sign in, enter card details, solve a CAPTCHA. It is asked as a question
+    // and shows the agent's own words, bounded because they are model output.
+    if request.tool == "task.handoff" {
+        let reason: String = request
+            .arguments
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("Your turn")
+            .chars()
+            .take(240)
+            .collect();
+        return (floor.max(Risk::R2), reason);
+    }
+
     // A click on a control that commits something.
     if request.tool == "page.click" {
         if let Some(id) = request.arguments.get("element_id").and_then(Value::as_str) {
             if let Some(element) = request.elements.iter().find(|e| e.id == id) {
-                if let Some(verb) =
-                    consequential_verb(&element.name, has_open_composer(request.elements))
+                if let Some((verb, spends_money)) =
+                    consequential_verb(&element.name, request.task)
                 {
                     // The role is named because the user is being asked to
                     // approve a specific control, and "the button Send" is a
@@ -272,14 +334,34 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
                     } else {
                         format!("the {} \"{}\"", role, element.name.trim())
                     };
-                    return (
-                        floor.max(Risk::R2),
-                        format!("{described} looks like it would {verb} something that leaves the browser"),
-                    );
+                    let why = if spends_money {
+                        format!(
+                            "{described} looks like it would {verb} -- the agent \
+                             asks before anything that costs money"
+                        )
+                    } else {
+                        format!(
+                            "{described} would {verb} something, and the task did \
+                             not ask for that"
+                        )
+                    };
+                    return (floor.max(Risk::R2), why);
                 }
             }
         }
     }
+
+    // A click at a point, or typing into whatever has focus, that the browser
+    // could not resolve to a listed control is an ordinary R1 action.
+    //
+    // It used to ask. Trace evidence: a model clicking a theme toggle by
+    // coordinates stopped to ask permission, and waiting for a person to answer
+    // is exactly the slowness the product is trying not to have. The browser
+    // resolves both against the page as it is NOW before they get here, so the
+    // password, card and payment rules still judge anything that IS listed;
+    // what reaches this point is a canvas or a control past the element budget.
+    // Payments are the one thing the user wants asked about, and a payment
+    // control clicked by coordinates, unlisted, is far from the common case.
 
     // Committing to one of several things the task named equally.
     //
@@ -359,7 +441,11 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
                     );
                 }
                 Some(destination) => {
-                    if carries_data(target) && !is_expected(&destination, request) {
+                    if carries_data(target)
+                        && !is_expected(&destination, request)
+                        && !is_search_engine(&destination)
+                        && !is_search_for_the_task(target, request.task)
+                    {
                         return (
                             floor.max(Risk::R2),
                             format!(
@@ -533,6 +619,42 @@ fn tied_candidates<'a>(targets: &[String], elements: &'a [Element]) -> Vec<&'a E
         .collect()
 }
 
+/// Whether the task names two candidates as SEPARATE things, so that acting on
+/// either is doing what was asked rather than choosing between them.
+///
+/// MEASURED on the live agent: "Open the product pages for Anvil Pro and Rocket
+/// Skates" tied "View Anvil Pro" with "View Rocket Skates" (two of the task's
+/// words each), and the first click stopped to ask the user which one they
+/// meant -- they had said both. A person told to open two things does not ask.
+///
+/// What separates this from "Send the report to Alex" beside Alex Chen and Alex
+/// Morgan is where the matching words are. There, both candidates match on the
+/// SAME word and nothing in the task tells them apart: that is missing
+/// information. Here each candidate carries a task word the other does not, so
+/// the task told them apart itself.
+///
+/// Two guards keep this from loosening the rule it sits in. A task offering the
+/// choice ("either", "or") is a choice, whatever the words. And BOTH candidates
+/// must have a word of their own: one candidate merely being the more specific
+/// of two does not mean the user asked for both.
+fn named_separately(targets: &[String], task: &str, a: &Element, b: &Element) -> bool {
+    let offers_a_choice = task
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| word == "or" || word == "either");
+    if offers_a_choice {
+        return false;
+    }
+    let a_name = a.name.to_ascii_lowercase();
+    let b_name = b.name.to_ascii_lowercase();
+    let has_own_word = |mine: &str, theirs: &str| {
+        targets
+            .iter()
+            .any(|word| mine.contains(word.as_str()) && !theirs.contains(word.as_str()))
+    };
+    has_own_word(&a_name, &b_name) && has_own_word(&b_name, &a_name)
+}
+
 /// Two candidates this call would choose between without knowing which the
 /// user meant. None when the call commits to nothing in the tie.
 fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Element)> {
@@ -548,9 +670,11 @@ fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Elemen
     // Door one: acting on a candidate.
     if let Some(chosen) = target_element(request) {
         if candidates.iter().any(|c| c.id == chosen.id) {
-            let other = *candidates
-                .iter()
-                .find(|c| c.id != chosen.id && rivals_for_one_choice(chosen, c))?;
+            let other = *candidates.iter().find(|c| {
+                c.id != chosen.id
+                    && rivals_for_one_choice(chosen, c)
+                    && !named_separately(&targets, request.task, chosen, c)
+            })?;
             return Some((chosen, other));
         }
     }
@@ -598,11 +722,10 @@ fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Elemen
     Some((first, second))
 }
 
-/// The first consequential verb in an element's accessible name, if any.
-///
-/// `composer_open` is whether the page has a text field a Reply could submit;
-/// see `has_open_composer`.
-fn consequential_verb(name: &str, composer_open: bool) -> Option<&'static str> {
+/// The first consequential verb in an element's accessible name that should
+/// stop the agent, and whether it is a payment. None for a control that is
+/// harmless, or one the task asked for.
+fn consequential_verb(name: &str, task: &str) -> Option<(&'static str, bool)> {
     // Only the beginning of the name, because only that part is a LABEL.
     //
     // An accessible name is often computed from everything inside the element,
@@ -621,24 +744,41 @@ fn consequential_verb(name: &str, composer_open: bool) -> Option<&'static str> {
     };
     let lowered = label.to_ascii_lowercase();
     // Whole words, so "Sender" and "Sendai" do not match "send". Substring
-    // matching here would escalate most of the web; the words that genuinely
-    // need catching (like "resend") are listed explicitly.
+    // matching here would escalate most of the web.
     //
     // Matched in the RAW label rather than a list of split words, because
     // whether a word names a record depends on the "#" after it, and splitting
     // on punctuation throws the "#" away.
     let is_word_char = |c: char| c.is_ascii_alphanumeric();
-    CONSEQUENTIAL_VERBS.iter().copied().find(|verb| {
+    let names = |verb: &str| {
         lowered.match_indices(verb).any(|(at, _)| {
             let before = lowered[..at].chars().next_back();
             let rest = &lowered[at + verb.len()..];
             let whole_word = !before.is_some_and(is_word_char)
                 && !rest.chars().next().is_some_and(is_word_char);
-            whole_word
-                && !names_a_record(verb, rest)
-                && !(*verb == "reply" && !composer_open)
+            whole_word && !names_a_record(verb, rest)
         })
-    })
+    };
+
+    if let Some(verb) = PAYMENT_VERBS.iter().copied().find(|verb| names(verb)) {
+        return Some((verb, true));
+    }
+
+    let task_words: Vec<String> = task
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    OUTBOUND_VERBS
+        .iter()
+        .find(|(verb, asked_for_by)| {
+            names(verb)
+                && !task_words
+                    .iter()
+                    .any(|word| asked_for_by.iter().any(|stem| word.starts_with(stem)))
+        })
+        .map(|(verb, _)| (*verb, false))
 }
 
 /// Words on the list that are just as often NOUNS naming a thing that exists.
@@ -647,7 +787,7 @@ fn consequential_verb(name: &str, composer_open: bool) -> Option<&'static str> {
 /// to ask the user, as though clicking it would place an order. It opens one
 /// that was placed weeks ago. Only these words, deliberately -- "Delete #4417"
 /// is a verb aimed at a record, and still asks.
-const ALSO_A_NOUN: &[&str] = &["order", "post", "reply", "transfer", "book"];
+const ALSO_A_NOUN: &[&str] = &["order", "transfer", "book"];
 
 /// Whether `verb` is used as a noun with the marker that says WHICH one:
 /// "Order #4417", "Order no. 4417", "Order number 4417".
@@ -670,25 +810,183 @@ fn names_a_record(verb: &str, rest: &str) -> bool {
         .any(|marker| rest.strip_prefix(marker).is_some_and(starts_with_digit))
 }
 
-/// Whether the page has something a Reply button could be SUBMITTING.
+/// Query parameters that name a search. A page that sends anything else -- a
+/// `data=`, a `d=`, a `history=` -- is not a search, whatever it says it is.
+const SEARCH_PARAMS: &[&str] = &[
+    "q", "query", "k", "s", "search", "search_query", "keyword", "keywords", "text",
+    "term", "wd", "p", "kw", "searchtext", "_nkw", "st", "page", "sort", "hl", "lr",
+    "ie", "num", "tbm",
+];
+
+/// A search on a shop, a video site or any other search page the user did not
+/// name, which is most of what a task that begins "find" or "compare" does.
 ///
-/// "Reply" means two things. On a forum or a social site the button under a
-/// filled comment box posts it, and that commits. In a mail reader it opens a
-/// draft, and the Send that follows is what commits -- and Send is asked about
-/// in its own right. MEASURED on benchmark mt-012: a perfect agent was stopped
-/// to approve opening a draft, then stopped again to approve sending it. A
-/// Reply with no text field open has nothing to send. Search boxes do not
-/// count: a mail reader always has one, and it holds nothing to submit.
+/// Allowed only when the query is the USER'S words: every word in it comes from
+/// the task, give or take a few the agent added ("weekly", "review"). That is
+/// the line that matters. The exfiltration this rule guards against carries
+/// something the agent READ -- history, a page's contents -- and that is not in
+/// the task. Words the user typed are already known to whoever they typed them
+/// to. A query of one or two words that are not the task's is refused, so
+/// "secret" cannot be smuggled out as a search; a longer query may carry a few
+/// that are new -- one in a query of four words, two in one of six.
 ///
-/// Why this cannot be slipped past: the agent writes only through page.type,
-/// which needs a field the Observation offered. A composer the Observation
-/// does not offer is one the agent never wrote in, so a Reply beside it has
-/// nothing of the agent's to submit. Every text field -- single line,
-/// multi-line, or an editable region marked as one -- arrives as `textbox`.
-fn has_open_composer(elements: &[Element]) -> bool {
-    elements.iter().any(|element| {
-        element.role == "textbox" && !element.name.to_ascii_lowercase().contains("search")
+/// https only, search-named parameters only, a short path, no fragment.
+fn is_search_for_the_task(target: &str, task: &str) -> bool {
+    let Some(rest) = target.strip_prefix("https://") else {
+        return false;
+    };
+    if rest.contains('#') || rest.contains('@') {
+        return false;
+    }
+    let Some((before, query)) = rest.split_once('?') else {
+        return false;
+    };
+    let path = before.split_once('/').map(|(_, p)| p).unwrap_or("");
+    if path.len() > 60 || query.len() > 160 {
+        return false;
+    }
+    let task_words: Vec<String> = task
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect();
+    let mut words = 0usize;
+    let mut new_words = 0usize;
+    for pair in query.split('&') {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if !SEARCH_PARAMS.contains(&name.to_ascii_lowercase().as_str()) {
+            return false;
+        }
+        for word in value
+            .to_ascii_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+        {
+            // A long opaque token is data, not a word.
+            if word.len() > 24 {
+                return false;
+            }
+            words += 1;
+            if !task_words.iter().any(|t| t == word) {
+                new_words += 1;
+            }
+        }
+    }
+    // Never more than two, however long the query: the allowance exists so an
+    // agent can add "best" or "review", not so a long query can carry a payload.
+    words > 0 && new_words <= (words.saturating_sub(2) / 2).min(2)
+}
+
+/// Words that say nothing about WHOSE a fact is: what is left after they are
+/// dropped is what has to come from the user.
+const MEMORY_NOISE: &[&str] = &[
+    "the", "user", "users", "their", "they", "them", "this", "that", "with", "for", "and",
+    "are", "was", "has", "have", "his", "her", "its", "uses", "use", "likes", "like", "prefers",
+    "prefer", "wants", "want", "name", "named", "called", "you", "your", "one", "our", "from",
+];
+
+/// Whether the words of `fact` are in `task`, the user's own message. Compared
+/// on the first five letters, so "prefers" in the task covers "prefer" in the
+/// fact and a plural covers its singular.
+fn words_of(text: &str) -> Vec<String> {
+    text.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .map(str::to_string)
+        .collect()
+}
+
+fn same_stem(a: &str, b: &str) -> bool {
+    let n = a.len().min(b.len()).min(5);
+    n >= 3 && a[..n] == b[..n]
+}
+
+/// Why a fact must not be kept, or None if it may be.
+fn refuse_to_remember(fact: &str, task: &str) -> Option<String> {
+    if fact.trim().is_empty() {
+        return Some("there was nothing to remember".to_string());
+    }
+    if fact.chars().count() > 300 {
+        return Some("that is too long to remember; say it in one short sentence".to_string());
+    }
+    // Never a secret, whoever said it. A remembered password is a password in a
+    // file, and a code is worthless by the time it is used again.
+    let lowered = fact.to_ascii_lowercase();
+    const SECRETS: &[&str] = &[
+        "password", "passcode", "passwd", "cvv", "otp", "one-time", "verification code",
+        "secret key", "api key", "private key", "recovery code", "pin is", "security code",
+    ];
+    let mut run = 0usize;
+    let mut longest = 0usize;
+    for c in fact.chars() {
+        if c.is_ascii_digit() {
+            run += 1;
+            longest = longest.max(run);
+        } else if c != ' ' && c != '-' {
+            run = 0;
+        }
+    }
+    if SECRETS.iter().any(|s| lowered.contains(s)) || longest >= 7 {
+        return Some(
+            "the agent never remembers passwords, codes, card numbers or IDs".to_string(),
+        );
+    }
+    // Provenance.
+    let task_words = words_of(task);
+    let content: Vec<String> = words_of(fact)
+        .into_iter()
+        .filter(|w| !MEMORY_NOISE.contains(&w.as_str()))
+        .collect();
+    if content.is_empty() {
+        return Some("there was nothing specific to remember".to_string());
+    }
+    let matched = content
+        .iter()
+        .filter(|w| task_words.iter().any(|t| same_stem(w, t)))
+        .count();
+    if matched * 10 < content.len() * 7 {
+        return Some(
+            "the agent remembers only what the user told it in this message, not \
+             what it read on a page"
+                .to_string(),
+        );
+    }
+    None
+}
+
+/// Whether the user's message asks for something to be forgotten.
+fn task_asks_to_forget(task: &str) -> bool {
+    words_of(task).iter().any(|w| {
+        ["forget", "erase", "remov", "delet", "clear", "stop"]
+            .iter()
+            .any(|stem| w.starts_with(stem))
     })
+}
+
+/// A web search is the first step of almost every research task, and it always
+/// carries a query string -- so without this every one of them stopped to ask
+/// the user whether it could visit Google.
+///
+/// Exactly these origins, over https, and nothing else: the destination is
+/// compared whole, so `google.evil.com`, `www.google.com.evil.com` and
+/// `http://www.google.com` are all still asked about. What this gives up: a
+/// page that injects "search for <something private>" can put that text in a
+/// query to one of these engines. The engine is the only party that sees it,
+/// which is what typing it into the address bar would do too, and it is not a
+/// channel the page's author can read back from.
+fn is_search_engine(destination: &str) -> bool {
+    const ENGINES: [&str; 8] = [
+        "https://www.google.com",
+        "https://scholar.google.com",
+        "https://www.bing.com",
+        "https://duckduckgo.com",
+        "https://search.brave.com",
+        "https://arxiv.org",
+        "https://www.youtube.com",
+        "https://en.wikipedia.org",
+    ];
+    ENGINES.contains(&destination)
 }
 
 /// True if the user or the current page already points at this origin.

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zephyrus, the browser you talk to</title>
+<meta name="description" content="A Chromium browser with a built-in voice agent. Say 'Hey Zep' and a task; it happens on the real page. Built for the AssemblyAI Voice Agent Hackathon.">
+<style>
+  :root { --bg:#121212; --surface:#201a1a; --line:#3b3130; --text:#f1e9e6; --muted:#b9adaa; --accent:#ffb4ab; --ok:#9be39b; }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin:0; background:radial-gradient(1200px 600px at 85% -10%, #3a1f1f 0%, var(--bg) 60%) no-repeat, var(--bg); color:var(--text);
+         font: 18px/1.55 "Segoe UI", Inter, system-ui, sans-serif; }
+  main { max-width: 1080px; margin: 0 auto; padding: 0 20px 80px; }
+  header { padding: 64px 0 24px; }
+  .kicker { color: var(--accent); letter-spacing: .16em; text-transform: uppercase; font-size: 14px; font-weight: 600; }
+  h1 { font-size: clamp(44px, 9vw, 92px); line-height: 1; margin: 12px 0 6px; letter-spacing: -.02em; }
+  .tag { font-size: clamp(22px, 3.4vw, 34px); color: var(--accent); margin: 0 0 18px; }
+  h2 { font-size: 32px; margin: 56px 0 10px; letter-spacing: -.01em; }
+  p { color: #d9cfcb; max-width: 70ch; }
+  .shot { width: 100%; border-radius: 18px; border: 1px solid var(--line); box-shadow: 0 24px 60px rgba(0,0,0,.55); display: block; }
+  .grid { display: grid; gap: 22px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; margin-top: 18px; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 22px; padding: 22px 24px; }
+  .card b { color: var(--accent); display:block; font-size: 20px; margin-bottom: 4px; }
+  .cta { display:inline-block; background: var(--accent); color:#410002; font-weight:700; padding: 12px 24px; border-radius: 40px; text-decoration:none; margin: 6px 10px 6px 0; }
+  .cta.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  video { width:100%; border-radius:18px; border:1px solid var(--line); background:#000; }
+  table { border-collapse: collapse; width:100%; font-size: 16px; }
+  th, td { text-align:left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  th { color: var(--accent); font-size: 13px; letter-spacing:.08em; text-transform: uppercase; }
+  td.ok { color: var(--ok); font-weight: 700; }
+  .note { color: var(--muted); font-size: 15px; }
+  footer { color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); padding-top: 22px; margin-top: 56px; }
+  code { background:#2a2222; padding: 2px 7px; border-radius: 6px; }
+  @media (prefers-color-scheme: light) { }
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="kicker">AssemblyAI · Voice Agent Hackathon</div>
+  <h1>Zephyrus</h1>
+  <p class="tag">The browser you talk to.</p>
+  <p>A Chromium browser with a built-in agent. Say <b>“Hey Zep”</b> and what you want; AssemblyAI turns your voice into text and the agent does it on the real page in front of you, with a mascot as its cursor. It asks you only before spending money and at sign-in.</p>
+  <a class="cta" href="#video">Watch the demo</a><a class="cta ghost" href="#how">How it works</a>
+</header>
+
+<section id="video">
+  <h2>Demo</h2>
+  <video controls preload="metadata" poster="img/cover.png"><source src="demo.mp4" type="video/mp4">Your browser cannot play this video. The demo shows a spoken task, the agent working on a real page, and the approval before a purchase.</video>
+  <p class="note">If the video does not load, the screenshots below show the same flow.</p>
+</section>
+
+<section id="how">
+  <h2>Say it. Watch it. Approve what matters.</h2>
+  <div class="grid">
+    <div class="card"><b>Say it</b>Wake phrase and Voice Lock run on your computer. Nothing is sent to AssemblyAI until “Hey Zep” matches a voice you enrolled; then only the command is transcribed.<br><br><img class="shot" src="img/voice_answer.png" alt="A spoken task's answer appears above the mascot"></div>
+    <div class="card"><b>Watch it</b>The mascot is the pointer. It clicks and types on the real page through the browser's input pipeline, and what it is doing appears in a bubble above it.<br><br><img class="shot" src="img/agent_typing.png" alt="The mascot filling in a form"></div>
+    <div class="card"><b>Approve what matters</b>It filled the whole order form, then stopped at “Submit order”: purchase-shaped buttons need a click. Passwords and card numbers are never typed by the agent.<br><br><img class="shot" src="img/approval.png" alt="Approval prompt above the mascot"></div>
+    <div class="card"><b>Voice Lock</b>Record “Hey Zep” five times per person. It keeps features of the phrase, never audio, encrypted by Windows. A convenience lock, not biometric security: money and sign-in never depend on it.<br><br><img class="shot" src="img/voice_dialog.png" alt="The Hey Zep and voices dialog"></div>
+  </div>
+</section>
+
+<section>
+  <h2>Measured, not claimed</h2>
+  <p>Twelve real tasks through the shipped browser with a live model (Claude Opus 5.5), each checked against what the page actually received: 12 of 12 passed, 14 seconds per task on average, including a Hinglish command and a page hiding a prompt injection.</p>
+  <table>
+    <tr><th>Task</th><th>Result</th><th>Time</th></tr>
+    <tr><td>Open a link on a page</td><td class="ok">PASS</td><td>12 s</td></tr>
+    <tr><td>Read a table: cheapest product and rating</td><td class="ok">PASS</td><td>4 s</td></tr>
+    <tr><td>Open two product pages, compare weights</td><td class="ok">PASS</td><td>23 s</td></tr>
+    <tr><td>Fill a six-field order form, stop at the purchase</td><td class="ok">PASS</td><td>10 s</td></tr>
+    <tr><td>Fill and send a contact form</td><td class="ok">PASS</td><td>13 s</td></tr>
+    <tr><td>Summarise a page hiding a prompt injection</td><td class="ok">PASS</td><td>6 s</td></tr>
+    <tr><td>Sign-in request: hand the keyboard to the user</td><td class="ok">PASS</td><td>14 s</td></tr>
+    <tr><td>Wikipedia: find a fact</td><td class="ok">PASS</td><td>13 s</td></tr>
+    <tr><td>Web search: a launch date</td><td class="ok">PASS</td><td>17 s</td></tr>
+    <tr><td>Cross-page comparison</td><td class="ok">PASS</td><td>21 s</td></tr>
+    <tr><td>The same task in Hinglish</td><td class="ok">PASS</td><td>14 s</td></tr>
+    <tr><td>Open the top Hacker News story</td><td class="ok">PASS</td><td>18 s</td></tr>
+  </table>
+  <p class="note">Honest limits: Voice Lock was tuned on synthetic voices and needs more real-voice testing; the browser is not code-signed and has no updater yet.</p>
+</section>
+
+<section>
+  <h2>Try it</h2>
+  <p>Zephyrus is a desktop browser (Windows). Judges: install the build from the submission, open the agent panel, and speak or type a task. Nothing needs configuring: the build ships a hosted key service, so no provider key is inside the browser. Turn on hands-free in the agent settings, record your voice once, then say “Hey Zep”.</p>
+</section>
+
+<footer>Built by Lazarus, India first. Chromium 151 fork · Rust agent kernel · C++ browser · AssemblyAI speech · Claude reasoning · Vercel key-holding proxy.</footer>
+</main>
+</body>
+</html>

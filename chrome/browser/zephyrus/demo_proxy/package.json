@@ -1,0 +1,8 @@
+{
+  "name": "zephyrus-demo-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Holds the provider keys for the Zephyrus hackathon build so the browser never does.",
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test test/*.test.js" }
+}

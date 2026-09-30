@@ -252,5 +252,122 @@ TEST(SanitizerTest, TheLineAroundAnElementIsRedactedToo) {
   EXPECT_NE(detail.find("We will write to"), std::string::npos) << detail;
 }
 
+TEST(SanitizerTest, ReadingAPageDoesNotSendItsPrivateTextInTheClear) {
+  // page.read pages through `full_text`, which was copied from `text` before
+  // redaction and never redacted itself: the short view of a page was masked and
+  // the long view of the same page was not.
+  Observation observation;
+  observation.text = "Ship to Asha Rao, call 9876543210 or write a.rao@example.com.";
+  observation.full_text = observation.text + " Card 4111 1111 1111 1111 expires 12/28.";
+  RedactObservation(observation);
+  for (const std::string* text : {&observation.text, &observation.full_text}) {
+    EXPECT_EQ(text->find("9876543210"), std::string::npos) << *text;
+    EXPECT_EQ(text->find("a.rao@example.com"), std::string::npos) << *text;
+  }
+  EXPECT_EQ(observation.full_text.find("4111"), std::string::npos)
+      << observation.full_text;
+  // Not more than it has to: the rest of the sentence is still there.
+  EXPECT_NE(observation.full_text.find("Ship to"), std::string::npos);
+}
+
+TEST(SanitizerTest, ANumberWrittenInGroupsIsCaughtWhereverItIsSeen) {
+  std::string card = "Pay with 4111 1111 1111 1111 today";
+  EXPECT_TRUE(RedactSpacedNumbers(card));
+  EXPECT_EQ(card.find("4111"), std::string::npos) << card;
+  std::string phone = "Call +91 98765 43210 now";
+  EXPECT_TRUE(RedactSpacedNumbers(phone));
+  EXPECT_EQ(phone.find("98765"), std::string::npos) << phone;
+  // Dates, times and ordinary sums are not.
+  for (const char* harmless :
+       {"Published 2026-09-30 at 10:43", "Total 1,299.00 rupees",
+        "Room 204, floor 3", "Call 15 January 2026"}) {
+    std::string text = harmless;
+    EXPECT_FALSE(RedactSpacedNumbers(text)) << harmless;
+    EXPECT_EQ(text, harmless);
+  }
+}
+
+TEST(SanitizerTest, ADropDownOfSavedAddressesDoesNotListThem) {
+  // The choices a list offers reach the model in their own field. A list of
+  // saved cards or addresses is the private thing itself.
+  Observation observation;
+  ObservedNode list = Field("combobox", "Delivery address", "");
+  list.options = {"Home, write to a.rao@example.com", "Office, 9876543210",
+                  "Visa 4111 1111 1111 1111", "Pick up in store"};
+  observation.elements.push_back(list);
+  ObservedNode phone_list = Field("combobox", "Mobile number", "");
+  phone_list.options = {"98765 43210", "Other"};
+  observation.elements.push_back(phone_list);
+
+  RedactObservation(observation);
+
+  ASSERT_EQ(observation.elements[0].options.size(), 4u);
+  for (const std::string& option : observation.elements[0].options) {
+    EXPECT_EQ(option.find("a.rao@"), std::string::npos) << option;
+    EXPECT_EQ(option.find("9876543210"), std::string::npos) << option;
+    EXPECT_EQ(option.find("4111"), std::string::npos) << option;
+  }
+  EXPECT_EQ(observation.elements[0].options[3], "Pick up in store");
+  // A control that IS the private thing offers no choices at all.
+  EXPECT_TRUE(observation.elements[1].options.empty());
+}
+
+TEST(SanitizerTest, PlainTextOnThePageIsPaintedOverInThePicture) {
+  // The picture is the whole page; only controls used to be masked in it. An
+  // address shown as ordinary text was redacted in the JSON and plain to see in
+  // the image sent beside it.
+  Observation observation;
+  observation.private_regions = {gfx::Rect(40, 300, 220, 18)};
+  const std::vector<Redaction> found = FindRedactions(observation);
+  ASSERT_EQ(found.size(), 1u);
+  EXPECT_EQ(found[0].kind, Sensitivity::kPageText);
+  EXPECT_EQ(found[0].bounds, gfx::Rect(40, 300, 220, 18));
+}
+
+TEST(SanitizerTest, ThePictureRuleLeavesTitlesAndPricesAlone) {
+  // A black box over a video title costs the model the page.
+  EXPECT_TRUE(ContainsPrivateText("Write to asha.rao@example.com"));
+  EXPECT_TRUE(ContainsPrivateText("Call 9876543210"));
+  EXPECT_TRUE(ContainsPrivateText("Card 4111 1111 1111 1111"));
+  EXPECT_FALSE(ContainsPrivateText("I Spent 1000000 Dollars"));
+  EXPECT_FALSE(ContainsPrivateText("Order 1234567 shipped on 30 September"));
+  EXPECT_FALSE(ContainsPrivateText("Anvil Pro, 48 kg, $249.00"));
+}
+
+TEST(SanitizerTest, ANumberGluedToTheWordBesideItIsStillCaught) {
+  // The accessibility text has no separator between blocks, so a value arrives
+  // fused to the next label. Word-wise it is not a number and used to pass.
+  Observation observation;
+  observation.text = "Phone: 9876543210Email: shown belowSaved 9123456789";
+  observation.full_text = observation.text;
+  RedactObservation(observation);
+  for (const std::string* text : {&observation.text, &observation.full_text}) {
+    EXPECT_EQ(text->find("9876543210"), std::string::npos) << *text;
+    EXPECT_EQ(text->find("9123456789"), std::string::npos) << *text;
+    EXPECT_NE(text->find("Phone:"), std::string::npos) << *text;
+  }
+  EXPECT_TRUE(ContainsPrivateText("Phone: 9876543210Email:"));
+  // A seven-digit order number beside letters is still not private.
+  std::string order = "Order 1234567shipped";
+  EXPECT_FALSE(RedactSpacedNumbers(order));
+}
+
+TEST(SanitizerTest, TheRealValueIsKeptForTheBrowserAndNeverSerialised) {
+  // Typed text is checked against what the field holds. A masked value made
+  // every phone, email and card field fail that check. The real value stays on
+  // the node for the browser and must never reach the JSON the model reads.
+  Observation observation;
+  ObservedNode phone = Field("textbox", "Telephone", "9876543210");
+  observation.elements.push_back(phone);
+  RedactObservation(observation);
+  EXPECT_EQ(observation.elements[0].value, kRedactedMarker);
+  EXPECT_EQ(observation.elements[0].raw_value, "9876543210");
+  for (int level : {0, 1, 2}) {
+    const std::string json = observation.ToJson(level);
+    EXPECT_EQ(json.find("9876543210"), std::string::npos)
+        << "level " << level << ": " << json;
+  }
+}
+
 }  // namespace
 }  // namespace zephyrus::agent

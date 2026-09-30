@@ -14,6 +14,8 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_tool_surface.h"
 #include "chrome/browser/zephyrus/agent/dev_model_client.h"
+#include "chrome/browser/zephyrus/agent/model_settings.h"
+#include "chrome/browser/zephyrus/agent/model_transport.h"
 #include "chrome/browser/zephyrus/agent/tool_executor.h"
 #include "chrome/browser/zephyrus/agent/tool_runner_impl.h"
 #include "chrome/services/zephyrus_agent/public/mojom/agent_kernel.mojom.h"
@@ -23,7 +25,13 @@
 
 class Browser;
 
+namespace os_crypt_async {
+class Encryptor;
+}
+
 namespace zephyrus::agent {
+
+class PointerObserver;
 
 // One task, from the user's words to an answer, including the questions in
 // between.
@@ -55,9 +63,29 @@ class ZephyrusAgentTaskController : public mojom::AgentModel,
     // Handed over rather than shown here on purpose: with a panel to put it in,
     // a browser-modal dialog seizes the whole window for a question the agent
     // asked, and splits one conversation across two surfaces.
+    //
+    // `tool` is what is being asked about. task.handoff is not an approval at
+    // all but a request for the user to do something -- sign in, pay -- and is
+    // shown as one: "Continue" instead of "Allow once".
     virtual void OnAgentApprovalNeeded(const std::string& reason,
                                        const std::string& risk,
+                                       const std::string& tool,
                                        base::OnceCallback<void(bool)> answer) = 0;
+
+    // What the agent is doing right now, for the mascot. Kept apart from the
+    // log line, which is prose for a person and not something to parse.
+    enum class Activity {
+      kLooking,  // the page was looked at; the model is choosing what to do
+      kActing,   // `tool` is running
+      kRefused,  // policy refused `tool`
+      kFailed,   // `tool` ran and did not work
+      kFinished, // `tool` ran and is done, however it went
+    };
+    virtual void OnAgentActivity(Activity activity, const std::string& tool) {}
+
+    // Who draws the agent's pointer, if anyone. Not owned. The default is
+    // nobody, and the agent then moves the pointer without a picture of it.
+    virtual PointerObserver* GetPointerObserver();
   };
 
   // Not owned; must outlive this.
@@ -80,15 +108,29 @@ class ZephyrusAgentTaskController : public mojom::AgentModel,
                  uint32_t max_steps,
                  FinishedCallback done);
 
-  // Runs `task` with whatever model the command line configured.
+  // Why a task did or did not start.
+  enum class StartResult {
+    kStarted,
+    // No cloud model in the agent settings, and no development model.
+    kNoModel,
+    // A cloud model is set up, but the user has not allowed it in the
+    // Workspace this window is showing (ADR 0004: off until enabled).
+    kCloudOffInThisWorkspace,
+    // Private Workspace never sends page content to a cloud model.
+    kCloudOffInPrivate,
+  };
+
+  // Runs `task` with the model the user configured: the cloud model from the
+  // agent settings if this Workspace allows it, otherwise the development
+  // model if the command line set one up. `workspace_id` is the Workspace the
+  // window is showing, which is the one the task is bound to (ADR 0003).
   //
-  // This is the entry point a UI should call. It returns false, having done
-  // nothing, when no model is configured -- which is the ordinary case in a
-  // build nobody passed the development switches to, and is why there is no
-  // agent in a normal browser today.
-  bool StartTaskWithConfiguredModel(const std::string& task,
-                                    uint32_t max_steps,
-                                    FinishedCallback done);
+  // This is the entry point a UI should call. Anything but kStarted means
+  // nothing was started and `done` will not run.
+  StartResult StartTaskWithConfiguredModel(const std::string& task,
+                                           uint32_t max_steps,
+                                           int workspace_id,
+                                           FinishedCallback done);
 
   // Answers every approval question with `answer` instead of showing a
   // dialog. Test-facing: it replaces the UI, not the decision -- everything
@@ -105,6 +147,11 @@ class ZephyrusAgentTaskController : public mojom::AgentModel,
   // Safe to call when nothing is running.
   void Cancel();
 
+  // What the agent knows before it starts: the chat so far and the user's saved
+  // facts. Set before the task starts, and handed to the kernel on every run of
+  // it, resumes included.
+  void SetMemory(mojom::TaskMemoryPtr memory) { memory_ = std::move(memory); }
+
   void SetAutoAnswerForTesting(bool answer) { auto_answer_ = answer; }
   bool HasPendingApprovalForTesting() const { return !pending_.is_null(); }
 
@@ -115,6 +162,12 @@ class ZephyrusAgentTaskController : public mojom::AgentModel,
 
  private:
   void Run(mojom::PendingApprovalPtr approved);
+  // What StartTask and a cloud start share: the kernel, the executor, the
+  // surface, then the first run.
+  void Begin();
+  // The key is read only now, when a task needs it, and never kept past the
+  // task: it lives in `transport_` and dies with it.
+  void OnEncryptorForTask(scoped_refptr<os_crypt_async::Encryptor> encryptor);
   void OnTaskOutcome(mojom::TaskOutcomePtr outcome);
   void ShowApproval(mojom::PendingApprovalPtr pending);
 
@@ -173,6 +226,21 @@ class ZephyrusAgentTaskController : public mojom::AgentModel,
   // Only present when the development switches were passed. Owned here so it
   // outlives the runs that talk to it.
   std::unique_ptr<DevModelClient> dev_model_;
+
+  // The cloud model, when the task uses one. `transport_` holds the key.
+  std::optional<CloudModelConfig> cloud_config_;
+  std::optional<ModelPrices> cloud_prices_;
+  std::unique_ptr<ModelTransport> transport_;
+  // What is left of the spending limit. Carried across a resume, like the step
+  // budget, so asking often cannot buy more. Dollars when the price is known,
+  // tokens when it is not.
+  double usd_remaining_ = 0;
+  // The Workspace the task is bound to, so consent is checked on every run
+  // and not only the first: turning cloud off while a task waits for approval
+  // must stop the resume from sending anything.
+  int workspace_id_ = 0;
+  mojom::TaskMemoryPtr memory_;
+  uint64_t tokens_remaining_ = 0;
 
   base::WeakPtrFactory<ZephyrusAgentTaskController> weak_factory_{this};
 };

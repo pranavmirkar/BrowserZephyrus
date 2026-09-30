@@ -5,12 +5,14 @@
 #ifndef CHROME_SERVICES_ZEPHYRUS_AGENT_TASK_LOOP_H_
 #define CHROME_SERVICES_ZEPHYRUS_AGENT_TASK_LOOP_H_
 
+#include <deque>
 #include <memory>
 #include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
@@ -54,7 +56,20 @@ class TaskLoop {
                     mojo::PendingRemote<mojom::AgentModel> model,
                     uint32_t max_steps,
                     mojom::PendingApprovalPtr approved,
-                    DoneCallback done);
+                    DoneCallback done,
+                    mojom::TaskMemoryPtr memory = nullptr);
+
+  // The same, with a cloud model the kernel speaks to through the browser's
+  // transport (ADR 0004). The kernel builds each request, reads each reply and
+  // enforces the spending limit in `cloud`.
+  static void StartCloud(const Kernel& kernel,
+                         std::string task,
+                         mojo::PendingRemote<mojom::ToolRunner> runner,
+                         mojom::CloudModelPtr cloud,
+                         uint32_t max_steps,
+                         mojom::PendingApprovalPtr approved,
+                         DoneCallback done,
+                         mojom::TaskMemoryPtr memory = nullptr);
 
   TaskLoop(const TaskLoop&) = delete;
   TaskLoop& operator=(const TaskLoop&) = delete;
@@ -70,9 +85,23 @@ class TaskLoop {
            std::string task,
            mojo::PendingRemote<mojom::ToolRunner> runner,
            mojo::PendingRemote<mojom::AgentModel> model,
+           mojom::CloudModelPtr cloud,
            uint32_t max_steps,
            mojom::PendingApprovalPtr approved,
-           DoneCallback done);
+           DoneCallback done,
+           mojom::TaskMemoryPtr memory);
+
+  // What the agent is told it knows, before the page: the user's saved facts and
+  // the chat so far. Empty when there is nothing.
+  std::string MemoryPrompt() const;
+
+  // Asks whichever model this task has for the next call.
+  void AskModel();
+  // The cloud path: send what the kernel built, and read what came back.
+  void SendCloudRequest();
+  void OnCloudReply(int32_t status, const std::string& body);
+  // What this run has spent, at the prices the browser supplied.
+  double SpentUsd() const;
   ~TaskLoop();
 
   // One turn: observe, propose, execute.
@@ -82,6 +111,15 @@ class TaskLoop {
   void OnExecuted(std::string tool,
                   std::string arguments_json,
                   mojom::ToolOutcomePtr outcome);
+  // The history line for a page.read or notes.add that succeeded, and the
+  // update to notes_/last_read_ it caused.
+  std::string NoteOrReadLine(const std::string& tool,
+                             const std::string& arguments_json,
+                             const mojom::ToolOutcome& outcome);
+  // Runs the next call the model made in the same turn. See `queued_`.
+  void RunQueued();
+  // Drops the rest of this turn's calls, saying so in the history.
+  void DropQueued(std::string_view why);
 
   // Answers `done_` and schedules deletion. Safe to call from inside a mojo
   // reply callback, which is where every caller is.
@@ -157,6 +195,19 @@ class TaskLoop {
 
   mojo::Remote<mojom::ToolRunner> runner_;
   mojo::Remote<mojom::AgentModel> model_;
+
+  // Set instead of `model_` for a cloud model. `cloud_->transport` has been
+  // moved into `transport_`.
+  mojom::CloudModelPtr cloud_;
+  mojo::Remote<mojom::ModelTransport> transport_;
+  // The request being sent, kept so a transient failure can resend exactly it.
+  std::string pending_path_;
+  base::flat_map<std::string, std::string> pending_headers_;
+  std::string pending_body_;
+  // Consecutive transient failures of the current request. See OnCloudReply.
+  int transient_failures_ = 0;
+  // What this run has spent, reported in the outcome.
+  mojom::TokenUsage usage_;
   DoneCallback done_;
 
   // Set only on the first step, and consumed there. An approval is for one
@@ -166,7 +217,34 @@ class TaskLoop {
 
   uint32_t steps_ = 0;
   uint32_t loading_rechecks_ = 0;
+  // The last action was a click on a link and the page has not moved yet: a
+  // link to another site can take a couple of seconds to start opening, and the
+  // look that follows the click usually beats it. Re-looked at for free (no
+  // model step) a few times before the model is asked what to do.
+  bool link_click_pending_ = false;
+  uint32_t link_rechecks_ = 0;
   std::string observation_json_;
+  // This step's screenshot (JPEG, base64), lifted out of the Observation so it
+  // travels as an image and never as prompt text or part of the page key.
+  std::string screenshot_base64_;
+  // What the agent has written down with notes.add. Shown on every turn,
+  // unlike the history, which has a window: a research task reads a dozen
+  // pages, forgets each as it leaves, and answers from these.
+  std::string notes_;
+  // What the browser remembers for this task: the chat so far and the user's
+  // saved facts. See mojom::TaskMemory.
+  mojom::TaskMemoryPtr memory_;
+  // How hard a cloud model is asked to think per step; empty for the provider's
+  // default. Dropped for the rest of the task if the provider refuses it.
+  std::string effort_;
+  // The text of the agent's most recent page.read, and only that one -- an
+  // older read is replaced, so the prompt is bounded however long the reading.
+  std::string last_read_;
+  // Calls the model made after the first in the same turn, not yet run: tool
+  // and arguments, in order. Run one by one as each before it succeeds, with
+  // no new look and no step spent; the first that fails, is refused or needs
+  // approval drops the rest. Every one is still judged by policy on its own.
+  std::deque<std::pair<std::string, std::string>> queued_;
 
   // What has happened so far, oldest first, already shaped for the prompt. A
   // model with no memory of its last step repeats it.

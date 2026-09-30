@@ -13,14 +13,17 @@
 
 #include "chrome/services/zephyrus_agent/task_loop.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/run_loop.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "chrome/services/zephyrus_agent/kernel/src/lib.rs.h"
@@ -88,6 +91,14 @@ class FakeToolRunner : public mojom::ToolRunner {
           {R"({"url":"https://docs.example.com/x","title":"X","scroll":)",
            base::NumberToString(page), R"(,"elements":[]})"});
     }
+    if (!later_observation_json.empty() && observations > 1) {
+      observation_json = later_observation_json;
+    }
+    if (navigate_at_observation > 0 && observations >= navigate_at_observation) {
+      observation_json =
+          R"({"url":"https://other.example/","title":"Other",)"
+          R"("what_changed":"you are now on Other","elements":[]})";
+    }
     std::move(callback).Run(observation_json);
   }
 
@@ -130,6 +141,10 @@ class FakeToolRunner : public mojom::ToolRunner {
   base::RepeatingClosure on_execute;
 
   bool change_page_each_time = false;
+  // From this look on, the page is somewhere else: a link that was slow to open.
+  int navigate_at_observation = 0;
+  // What every look after the first sees, when a test needs its own page.
+  std::string later_observation_json;
   bool note_a_change_after_the_first_look = false;
   // After this many distinct pages, start showing them again in order --
   // a site you can walk in a circle, which is most sites.
@@ -201,6 +216,45 @@ TEST_F(TaskLoopTest, LoadingRechecksDoNotSpendModelSteps) {
   EXPECT_EQ(outcome->steps, 1u);
   EXPECT_EQ(runner_.observations, 2);
   EXPECT_EQ(model_->user_prompts.size(), 1u);
+}
+
+TEST_F(TaskLoopTest, ASlowLinkIsWaitedForWithoutSpendingModelSteps) {
+  // MEASURED: the click was right and the page had not started to open when the
+  // next look was taken, so the model was told "nothing on the page changed" and
+  // gave up. Looking again is cheap; asking the model is not.
+  runner_.observation_json =
+      R"({"url":"https://news.example/","title":"News","elements":[)"
+      R"({"id":"e1","role":"link","name":"Top story"}]})";
+  runner_.later_observation_json =
+      R"({"url":"https://news.example/","title":"News",)"
+      R"("what_changed":"nothing on the page changed","elements":[)"
+      R"({"id":"e1","role":"link","name":"Top story"}]})";
+  runner_.navigate_at_observation = 4;
+  auto outcome = Run({R"({"name":"page.click","arguments":{"element_id":"e1"}})",
+                      R"({"name":"task.complete","arguments":{"answer":"done"}})"});
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted);
+  // Two model calls (click, then complete), however many looks it took.
+  EXPECT_EQ(model_->user_prompts.size(), 2u);
+  EXPECT_GE(runner_.observations, 4);
+  // And the model was told where the click ended up, not that nothing changed.
+  EXPECT_NE(model_->user_prompts.back().find("That took you to a new page"),
+            std::string::npos)
+      << model_->user_prompts.back();
+}
+
+TEST_F(TaskLoopTest, AButtonThatChangesNothingIsNotWaitedFor) {
+  // The control for the test above: only a LINK is worth waiting for. A button
+  // that changed nothing is answered at once.
+  runner_.observation_json =
+      R"({"url":"https://news.example/","title":"News","elements":[)"
+      R"({"id":"e1","role":"button","name":"Like"}]})";
+  runner_.later_observation_json =
+      R"({"url":"https://news.example/","title":"News",)"
+      R"("what_changed":"nothing on the page changed","elements":[)"
+      R"({"id":"e1","role":"button","name":"Like"}]})";
+  Run({R"({"name":"page.click","arguments":{"element_id":"e1"}})",
+       R"({"name":"task.complete","arguments":{"answer":"done"}})"});
+  EXPECT_EQ(runner_.observations, 2);
 }
 
 TEST_F(TaskLoopTest, RecoveryDoesNotRecommendTheSameFailedClick) {
@@ -539,6 +593,16 @@ TEST_F(TaskLoopTest, WalkingInACircleIsCaughtToo) {
   ASSERT_TRUE(outcome);
   EXPECT_LT(outcome->steps, 10u)
       << "it went round the loop " << outcome->steps << " times";
+  // And it is told the truth about why: the call DID something the first time,
+  // so "the page did not change" would be false and would not help it decide.
+  bool told_it_went_round = false;
+  for (const std::string& prompt : model_->user_prompts) {
+    if (prompt.find("goes round in a circle") != std::string::npos ||
+        prompt.find("only goes round in a circle") != std::string::npos) {
+      told_it_went_round = true;
+    }
+  }
+  EXPECT_TRUE(told_it_went_round);
 }
 
 TEST_F(TaskLoopTest, StopsRepeatingACallThatChangedNothing) {
@@ -1114,6 +1178,477 @@ TEST_F(TaskLoopTest, ASilentPageIsNotClaimedToBePlaying) {
   ASSERT_GE(model_->user_prompts.size(), 2u);
   EXPECT_EQ(model_->user_prompts[1].find("playing media"), std::string::npos)
       << model_->user_prompts[1];
+}
+
+
+// --- cloud models (ADR 0004) --------------------------------------------
+
+// Stands in for the browser's transport: records what the kernel asked to
+// send and answers from a script, repeating the last answer.
+class FakeTransport : public mojom::ModelTransport {
+ public:
+  struct Answer {
+    int32_t status;
+    std::string body;
+  };
+
+  explicit FakeTransport(std::vector<Answer> answers)
+      : answers_(std::move(answers)) {}
+
+  mojo::PendingRemote<mojom::ModelTransport> Bind() {
+    return receiver_.BindNewPipeAndPassRemote();
+  }
+
+  void Send(const std::string& path,
+            const base::flat_map<std::string, std::string>& headers,
+            const std::string& body,
+            SendCallback callback) override {
+    paths.push_back(path);
+    bodies.push_back(body);
+    last_headers = headers;
+    const Answer& answer = answers_[std::min(sends_++, answers_.size() - 1)];
+    std::move(callback).Run(answer.status, answer.body);
+  }
+
+  std::vector<std::string> paths;
+  std::vector<std::string> bodies;
+  base::flat_map<std::string, std::string> last_headers;
+
+ private:
+  std::vector<Answer> answers_;
+  size_t sends_ = 0;
+  mojo::Receiver<mojom::ModelTransport> receiver_{this};
+};
+
+// An Anthropic reply making one native tool call, with some usage.
+FakeTransport::Answer ToolUse(const std::string& wire_name,
+                              const std::string& input_json,
+                              int input_tokens = 1000,
+                              int output_tokens = 50) {
+  return {200, base::StrCat({R"({"content":[{"type":"tool_use","id":"t","name":")",
+                             wire_name, R"(","input":)", input_json,
+                             R"(}],"stop_reason":"tool_use","usage":{"input_tokens":)",
+                             base::NumberToString(input_tokens),
+                             R"(,"output_tokens":)",
+                             base::NumberToString(output_tokens), "}}"})};
+}
+
+class CloudTaskLoopTest : public testing::Test {
+ protected:
+  mojom::TaskOutcomePtr RunCloud(std::vector<FakeTransport::Answer> answers,
+                                 double max_usd = 0,
+                                 uint64_t max_tokens = 0) {
+    transport_ = std::make_unique<FakeTransport>(std::move(answers));
+    auto cloud = mojom::CloudModel::New();
+    cloud->kind = "anthropic";
+    cloud->model = "claude-test";
+    cloud->force_tool = true;
+    cloud->max_tokens_per_step = 1024;
+    // $10 / $50 per million: a 1,000-in / 50-out step costs $0.0125.
+    cloud->usd_per_mtok_input = 10;
+    cloud->usd_per_mtok_output = 50;
+    cloud->max_usd = max_usd;
+    cloud->max_tokens = max_tokens;
+    cloud->transport = transport_->Bind();
+
+    mojom::TaskOutcomePtr outcome;
+    base::RunLoop run_loop;
+    TaskLoop::StartCloud(
+        *kernel_, "Find the spec sheet", runner_.Bind(), std::move(cloud),
+        max_steps_, std::move(approved_),
+        base::BindLambdaForTesting([&](mojom::TaskOutcomePtr got) {
+          outcome = std::move(got);
+          run_loop.Quit();
+        }),
+        std::move(memory_));
+    run_loop.Run();
+    return outcome;
+  }
+
+  // Mock time, so a retry's delay costs the test nothing.
+  base::test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  uint32_t max_steps_ = 8;
+  mojom::PendingApprovalPtr approved_;
+  mojom::TaskMemoryPtr memory_;
+  FakeToolRunner runner_;
+  std::unique_ptr<FakeTransport> transport_;
+  ::rust::Box<Kernel> kernel_ = load_kernel();
+};
+
+TEST_F(CloudTaskLoopTest, RunsOnNativeToolCalls) {
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUse("page_click", R"({"element_id":"e3"})"),
+      ToolUse("task_complete", R"({"answer":"found it"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  // The wire name came back as the contract's, and the call ran.
+  ASSERT_FALSE(runner_.executed.empty());
+  EXPECT_EQ(runner_.executed[0], "page.click");
+  // Spend is summed across the run and reported.
+  ASSERT_TRUE(outcome->usage);
+  EXPECT_EQ(outcome->usage->input, 2000u);
+  EXPECT_EQ(outcome->usage->output, 100u);
+  // The kernel built the request: the provider's path, the loop's own rules.
+  EXPECT_EQ(transport_->paths[0], "/v1/messages");
+  EXPECT_NE(transport_->bodies[0].find("You control a web browser"),
+            std::string::npos);
+  EXPECT_NE(transport_->bodies[0].find("\"tool_choice\""), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, NoHeaderTheKernelSendsCarriesACredential) {
+  RunCloud({ToolUse("task_complete", R"({"answer":"x"})")});
+  for (const auto& [name, value] : transport_->last_headers) {
+    const std::string lowered = base::ToLowerASCII(name);
+    EXPECT_EQ(lowered.find("auth"), std::string::npos) << name;
+    EXPECT_EQ(lowered.find("key"), std::string::npos) << name;
+  }
+}
+
+TEST_F(CloudTaskLoopTest, TransientFailuresAreRetriedWithoutSpendingAStep) {
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      {429, R"({"error":{"message":"slow down"}})"},
+      {529, R"({"error":{"message":"overloaded"}})"},
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  EXPECT_EQ(transport_->paths.size(), 3u);
+  EXPECT_EQ(outcome->steps, 1u) << "a retry must not cost a step";
+}
+
+TEST_F(CloudTaskLoopTest, AProviderThatStaysDownEndsTheTaskWithItsWords) {
+  mojom::TaskOutcomePtr outcome =
+      RunCloud({{503, R"({"error":{"message":"service unavailable"}})"}});
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
+  EXPECT_NE(outcome->message.find("service unavailable"), std::string::npos)
+      << outcome->message;
+  // The first try and three retries, then it stops.
+  EXPECT_EQ(transport_->paths.size(), 4u);
+}
+
+TEST_F(CloudTaskLoopTest, ABrowserRefusalIsNotRetried) {
+  mojom::TaskOutcomePtr outcome = RunCloud(
+      {{0, R"({"error":{"message":"refused: that path is not allowed"}})"}});
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
+  EXPECT_EQ(transport_->paths.size(), 1u);
+}
+
+TEST_F(CloudTaskLoopTest, AnAuthErrorIsShownAsTheProviderSaidIt) {
+  mojom::TaskOutcomePtr outcome = RunCloud(
+      {{401, R"({"type":"error","error":{"message":"invalid x-api-key"}})"}});
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
+  EXPECT_NE(outcome->message.find("invalid x-api-key"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, TheSpendingLimitStopsTheTask) {
+  // Each step costs $0.0125. A $0.02 limit allows one step, and the second
+  // reply takes it over, so the task stops before acting on it.
+  mojom::TaskOutcomePtr outcome = RunCloud(
+      {ToolUse("page_scroll", R"({"direction":"down","amount":1})"),
+       ToolUse("page_click", R"({"element_id":"e3"})")},
+      /*max_usd=*/0.02);
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
+  EXPECT_NE(outcome->message.find("spending limit"), std::string::npos);
+  EXPECT_EQ(runner_.executed.size(), 1u)
+      << "the reply that crossed the limit must not be acted on";
+}
+
+TEST_F(CloudTaskLoopTest, TheTokenCapWorksWhenThePriceIsUnknown) {
+  mojom::TaskOutcomePtr outcome =
+      RunCloud({ToolUse("page_scroll", R"({"direction":"down","amount":1})",
+                        5000, 100)},
+               /*max_usd=*/0, /*max_tokens=*/4000);
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
+  EXPECT_NE(outcome->message.find("spending limit"), std::string::npos);
+  EXPECT_TRUE(runner_.executed.empty());
+}
+
+TEST_F(CloudTaskLoopTest, TextInsteadOfACallIsReadByTheExtractor) {
+  // A provider that answered in prose containing a call, as an
+  // OpenAI-compatible server without forced tools can.
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      {200, R"({"content":[{"type":"text","text":"{\"name\":\"task.complete\",\"arguments\":{\"answer\":\"ok\"}}"}],"usage":{"input_tokens":10,"output_tokens":5}})"},
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+}
+
+// One reply carrying several native calls, as Claude, GPT and Gemini all can.
+FakeTransport::Answer ToolUses(
+    const std::vector<std::pair<std::string, std::string>>& calls) {
+  std::string blocks;
+  for (const auto& [wire_name, input_json] : calls) {
+    if (!blocks.empty()) {
+      blocks += ",";
+    }
+    base::StrAppend(&blocks, {R"({"type":"tool_use","id":"t","name":")",
+                              wire_name, R"(","input":)", input_json, "}"});
+  }
+  return {200, base::StrCat({R"({"content":[)", blocks,
+                             R"(],"stop_reason":"tool_use","usage":)"
+                             R"({"input_tokens":1000,"output_tokens":50}})"})};
+}
+
+TEST_F(CloudTaskLoopTest, SeveralCallsInOneTurnRunInOrderOnOneLook) {
+  // The Notion list: click the page, type a line, Enter, type the next.
+  // Enter twice against one look is a list, not a loop, so the repeat guard
+  // must not see it.
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUses({{"page_click", R"({"element_id":"e3"})"},
+                {"page_type", R"({"text":"Milk"})"},
+                {"page_press", R"({"key":"Enter"})"},
+                {"page_type", R"({"text":"Eggs"})"},
+                {"page_press", R"({"key":"Enter"})"}}),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.click", "page.type", "page.press",
+                                      "page.type", "page.press",
+                                      "task.complete"}));
+  EXPECT_EQ(outcome->steps, 2u) << "one turn is one step, however many calls";
+  EXPECT_EQ(runner_.observations, 2) << "no look between calls in a turn";
+  // The model is told it may batch.
+  EXPECT_NE(transport_->bodies[0].find("several tool calls"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, AFailedCallInATurnDropsTheRestAndSaysSo) {
+  int calls = 0;
+  runner_.on_execute = base::BindLambdaForTesting([&] {
+    runner_.next_status = ++calls == 2 ? mojom::ToolStatus::kFailed
+                                       : mojom::ToolStatus::kOk;
+  });
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUses({{"page_click", R"({"element_id":"e3"})"},
+                {"page_type", R"({"text":"Milk"})"},
+                {"page_press", R"({"key":"Enter"})"},
+                {"page_type", R"({"text":"Eggs"})"}}),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.click", "page.type",
+                                      "task.complete"}));
+  // The next turn is told exactly which calls did not run.
+  ASSERT_EQ(transport_->bodies.size(), 2u);
+  EXPECT_NE(transport_->bodies[1].find("were NOT run (page.press, page.type)"),
+            std::string::npos)
+      << transport_->bodies[1];
+}
+
+TEST_F(CloudTaskLoopTest, ACallNeedingApprovalInATurnStopsTheRest) {
+  int calls = 0;
+  runner_.on_execute = base::BindLambdaForTesting([&] {
+    runner_.next_status = ++calls == 2 ? mojom::ToolStatus::kNeedsApproval
+                                       : mojom::ToolStatus::kOk;
+  });
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUses({{"page_type", R"({"element_id":"e4","text":"hi"})"},
+                {"page_click", R"({"element_id":"e2"})"},
+                {"task_complete", R"({"answer":"sent"})"}}),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kNeedsApproval);
+  ASSERT_TRUE(outcome->pending);
+  EXPECT_EQ(outcome->pending->tool, "page.click");
+  // The call after the one awaiting approval never ran: a task that asks
+  // permission to send must not report itself complete in the same breath.
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.type", "page.click"}));
+  bool told = false;
+  for (const std::string& line : outcome->pending->history) {
+    told |= line.find("were NOT run (task.complete)") != std::string::npos;
+  }
+  EXPECT_TRUE(told);
+}
+
+
+// --- research: page.read and notes.add --------------------------------------
+
+TEST_F(CloudTaskLoopTest, NotesSurviveTheHistoryWindowAndReachEveryPrompt) {
+  // A research task reads more pages than the history window holds. The notes
+  // are what is left of them, so they must be in the prompt on every turn
+  // after they are written, however many steps have passed.
+  std::vector<FakeTransport::Answer> answers;
+  answers.push_back(ToolUse("notes_add", R"json({"text":"Paris is the capital (source: a.example)"})json"));
+  for (int i = 0; i < 30; ++i) {
+    answers.push_back(ToolUse("page_scroll", R"({"direction":"down","amount":1})"));
+  }
+  answers.push_back(ToolUse("task_complete", R"({"answer":"Paris"})"));
+  runner_.change_page_each_time = true;
+  max_steps_ = 40;
+  mojom::TaskOutcomePtr outcome = RunCloud(std::move(answers));
+  ASSERT_TRUE(outcome);
+  ASSERT_GE(transport_->bodies.size(), 30u);
+  EXPECT_EQ(transport_->bodies[0].find("YOUR NOTES"), std::string::npos);
+  for (size_t i = 1; i < transport_->bodies.size(); ++i) {
+    EXPECT_NE(transport_->bodies[i].find("Paris is the capital"),
+              std::string::npos)
+        << "turn " << i;
+  }
+}
+
+TEST_F(CloudTaskLoopTest, FullNotesAreRefusedLoudlyNotDroppedQuietly) {
+  const std::string big(7900, 'x');
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUse("notes_add", R"({"text":")" + big + R"("})"),
+      ToolUse("notes_add", R"({"text":"one more finding that does not fit ....................................................................................................."})"),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_TRUE(outcome);
+  ASSERT_EQ(transport_->bodies.size(), 3u);
+  EXPECT_NE(transport_->bodies[2].find("did NOT save that"), std::string::npos)
+      << "the model must be told, not left believing it was saved";
+}
+
+TEST_F(CloudTaskLoopTest, OnlyTheLatestReadIsInThePromptAndReadingIsProgress) {
+  // Six reads of an unchanging page is what reading a long article looks like,
+  // and the loop must not mistake it for being stuck. Only the last read's
+  // text is kept, so the prompt does not grow with the reading.
+  int reads = 0;
+  runner_.on_execute = base::BindLambdaForTesting([&] {
+    ++reads;
+    runner_.next_value_json =
+        base::StrCat({R"({"url":"https://a.example/","offset":)",
+                      base::NumberToString(reads * 6000),
+                      R"(,"total":99999,"next_offset":)",
+                      base::NumberToString(reads * 6000 + 6000),
+                      R"(,"text":"CHUNK-)", base::NumberToString(reads),
+                      R"("})"});
+  });
+  std::vector<FakeTransport::Answer> answers;
+  for (int i = 0; i < 6; ++i) {
+    answers.push_back(ToolUse(
+        "page_read", base::StrCat({R"({"offset":)",
+                                   base::NumberToString(i * 6000), "}"})));
+  }
+  answers.push_back(ToolUse("task_complete", R"({"answer":"read it"})"));
+  mojom::TaskOutcomePtr outcome = RunCloud(std::move(answers));
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  ASSERT_EQ(transport_->bodies.size(), 7u);
+  const std::string& last = transport_->bodies[6];
+  EXPECT_NE(last.find("CHUNK-6"), std::string::npos);
+  EXPECT_EQ(last.find("CHUNK-5"), std::string::npos)
+      << "an older read must have been replaced";
+  EXPECT_NE(last.find("More follows: page.read with offset 42000"),
+            std::string::npos);
+}
+TEST_F(CloudTaskLoopTest, AHandoffPausesTheTaskAndResumesFromTheSamePlace) {
+  // Sign-in and payment forms are the user's. The agent hands the browser over,
+  // the task pauses, and it carries on -- with its history -- when they say so.
+  runner_.next_status = mojom::ToolStatus::kNeedsApproval;
+  runner_.next_message = "Please sign in to Gmail, then press Continue.";
+  mojom::TaskOutcomePtr paused = RunCloud({
+      ToolUse("page_scroll", R"({"direction":"down","amount":"page"})"),
+      ToolUse("task_handoff",
+              R"json({"reason":"Please sign in to Gmail, then press Continue."})json"),
+  });
+  // The scroll needed approval in this fake, so it stops first; what matters is
+  // that a paused task hands back the exact call.
+  ASSERT_TRUE(paused);
+  ASSERT_EQ(paused->status, mojom::TaskStatus::kNeedsApproval);
+  ASSERT_TRUE(paused->pending);
+
+  // The user presses Continue: the loop resumes from what it had.
+  paused->pending->tool = "task.handoff";
+  paused->pending->arguments_json =
+      R"json({"reason":"Please sign in to Gmail, then press Continue."})json";
+  approved_ = std::move(paused->pending);
+  runner_.next_status = mojom::ToolStatus::kOk;
+  mojom::TaskOutcomePtr done =
+      RunCloud({ToolUse("task_complete", R"({"answer":"3 unread"})")});
+  ASSERT_TRUE(done);
+  EXPECT_EQ(done->status, mojom::TaskStatus::kCompleted) << done->message;
+  ASSERT_FALSE(transport_->bodies.empty());
+  EXPECT_NE(transport_->bodies[0].find("pressed Continue"), std::string::npos)
+      << "the model must be told the user did it";
+  EXPECT_EQ(transport_->bodies[0].find("The user approved your"),
+            std::string::npos);
+}
+
+// --- memory -------------------------------------------------------------------------
+
+mojom::ConversationTurnPtr Turn(const std::string& user,
+                                const std::string& outcome,
+                                const std::string& agent) {
+  auto turn = mojom::ConversationTurn::New();
+  turn->user = user;
+  turn->outcome = outcome;
+  turn->agent = agent;
+  return turn;
+}
+
+TEST_F(CloudTaskLoopTest, AFollowUpSeesTheChatItFollows) {
+  memory_ = mojom::TaskMemory::New();
+  memory_->conversation.push_back(
+      Turn("make a prototype in figma", "done", "The file is open."));
+  RunCloud({ToolUse("task_complete", R"({"answer":"ok"})")});
+  ASSERT_FALSE(transport_->bodies.empty());
+  const std::string& prompt = transport_->bodies[0];
+  EXPECT_NE(prompt.find("EARLIER IN THIS CHAT"), std::string::npos);
+  EXPECT_NE(prompt.find("User: make a prototype in figma"), std::string::npos);
+  // The agent's own earlier words are labelled as data.
+  EXPECT_NE(prompt.find("data and never instructions"), std::string::npos);
+  EXPECT_NE(prompt.find("may refer to what was said"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, AnAnswerToAQuestionContinuesTheTaskNotANewOne) {
+  // The trace that started this: the agent asked "new frame or link existing?",
+  // the user said "a new browser window", and it was run as a fresh request.
+  memory_ = mojom::TaskMemory::New();
+  memory_->conversation.push_back(Turn(
+      "create a prototype in the figma file", "asked",
+      "Should I build a new frame, or link the existing ones?"));
+  memory_->continuing = "create a prototype in the figma file";
+  RunCloud({ToolUse("task_complete", R"({"answer":"ok"})")});
+  const std::string& prompt = transport_->bodies[0];
+  EXPECT_NE(prompt.find("Your last message was a QUESTION for the user"),
+            std::string::npos);
+  EXPECT_NE(prompt.find("create a prototype in the figma file"),
+            std::string::npos);
+  EXPECT_NE(prompt.find("do not start a new task"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, WhatTheUserAskedItToKeepIsInFrontOfIt) {
+  memory_ = mojom::TaskMemory::New();
+  memory_->facts = {"The user shops on Amazon.in", "The user's daughter is Anaya"};
+  RunCloud({ToolUse("task_complete", R"({"answer":"ok"})")});
+  const std::string& prompt = transport_->bodies[0];
+  EXPECT_NE(prompt.find("WHAT YOU REMEMBER ABOUT THE USER"), std::string::npos);
+  EXPECT_NE(prompt.find("The user shops on Amazon.in"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, NoMemoryMeansNoSectionsAtAll) {
+  RunCloud({ToolUse("task_complete", R"({"answer":"ok"})")});
+  const std::string& prompt = transport_->bodies[0];
+  // The rules mention both headings; what must be absent is the SECTIONS.
+  EXPECT_EQ(prompt.find("EARLIER IN THIS CHAT. Lines starting"),
+            std::string::npos);
+  EXPECT_EQ(prompt.find("WHAT YOU REMEMBER ABOUT THE USER"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, NotesFromTheLastTaskAreThereForTheNextAndComeBack) {
+  memory_ = mojom::TaskMemory::New();
+  memory_->notes = "Source 1: rtings.com - ANC uses microphones";
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUse("notes_add", R"({"text":"Source 2: wikipedia.org"})"),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_TRUE(outcome);
+  // Carried in, added to, and handed back for the task after this one.
+  EXPECT_NE(transport_->bodies[0].find("Source 1: rtings.com"), std::string::npos);
+  EXPECT_NE(outcome->notes.find("Source 1: rtings.com"), std::string::npos);
+  EXPECT_NE(outcome->notes.find("Source 2: wikipedia.org"), std::string::npos);
 }
 
 }  // namespace

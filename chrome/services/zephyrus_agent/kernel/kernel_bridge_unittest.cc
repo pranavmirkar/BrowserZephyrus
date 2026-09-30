@@ -51,8 +51,8 @@ PolicyRequest MakeRequest(const char* tool, const char* arguments_json) {
 TEST(ZephyrusAgentKernelBridge, LoadsTheEmbeddedContract) {
   rust::Box<Kernel> kernel = load_kernel();
   ASSERT_TRUE(kernel->is_valid()) << std::string(kernel->last_error());
-  EXPECT_EQ(std::string(kernel->contract_version()), "1.0.0");
-  EXPECT_EQ(kernel->tool_count(), 18u);
+  EXPECT_EQ(std::string(kernel->contract_version()), "1.4.0");
+  EXPECT_EQ(kernel->tool_count(), 26u);
 }
 
 TEST(ZephyrusAgentKernelBridge, AllowsAnOrdinaryRead) {

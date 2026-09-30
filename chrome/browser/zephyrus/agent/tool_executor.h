@@ -11,6 +11,7 @@
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "ui/gfx/geometry/point.h"
 #include "base/sequence_checker.h"
 #include "base/values.h"
 #include "chrome/browser/zephyrus/agent/agent_kernel_client.h"
@@ -54,6 +55,19 @@ class ToolExecutor {
   using ExecuteCallback = base::OnceCallback<void(Result)>;
 
   // Neither pointer may be null, and both must outlive this object.
+  // Where memory.remember and memory.forget take effect. The kernel has
+  // already judged the call -- it is the user's own words, and not a secret --
+  // so this only does it. Unset (or off in settings), the tools fail plainly.
+  struct MemorySink {
+    MemorySink();
+    MemorySink(const MemorySink&);
+    MemorySink& operator=(const MemorySink&);
+    ~MemorySink();
+    base::RepeatingCallback<bool(const std::string&)> remember;
+    base::RepeatingCallback<int(const std::string&)> forget;
+  };
+  void SetMemory(MemorySink sink) { memory_ = std::move(sink); }
+
   ToolExecutor(AgentKernelClient* kernel, ToolSurface* surface);
   ~ToolExecutor();
 
@@ -106,6 +120,25 @@ class ToolExecutor {
             bool user_approved,
             ExecuteCallback callback);
 
+  // Typing with no element named, judged against what has focus NOW. Not the
+  // last Observation's focus: after Enter in an editor, or a click earlier in
+  // the same turn, focus is somewhere that look never saw.
+  void SendIntoFocus(std::string arguments_json,
+                     std::string task,
+                     bool user_approved,
+                     ExecuteCallback callback,
+                     Observation fresh);
+  // Asks the kernel about `policy_tool`/`policy_arguments` -- the call as
+  // resolved against the page -- and performs `tool`/`arguments_json` if it
+  // allows. `extra` is one more element to show policy, or null.
+  void Decide(const std::string& tool,
+              const std::string& arguments_json,
+              const std::string& policy_tool,
+              const std::string& policy_arguments,
+              const ObservedNode* extra,
+              const std::string& task,
+              bool user_approved,
+              ExecuteCallback callback);
   void OnDecided(std::string tool,
                  std::string arguments_json,
                  bool user_approved,
@@ -171,12 +204,27 @@ class ToolExecutor {
                        base::DictValue arguments,
                        ExecuteCallback callback);
   void OnClickChecked(ExecuteCallback callback, Observation fresh);
-  void LookToVerify(std::string text, ExecuteCallback callback);
+  void LookToVerify(std::string text, ExecuteCallback callback, int attempt = 0);
+  void OnReadPage(int offset, ExecuteCallback callback, Observation fresh);
+  // A point on the screenshot, in the page's device pixels, or nullopt when
+  // there is no screenshot to measure against.
+  std::optional<gfx::Point> ScreenshotToPage(int x, int y) const;
+  // The smallest offered element in `observation` containing `point`, or
+  // null.
+  static const ObservedNode* ElementAt(const Observation& observation,
+                                       const gfx::Point& point);
+  // Clicks `point` if what is under it now is what policy judged.
+  void ClickAtIfUnchanged(gfx::Point point,
+                          ExecuteCallback callback,
+                          Observation fresh);
+
   void OnVerified(std::string text,
                   ExecuteCallback callback,
+                  int attempt,
                   Observation fresh);
 
   Observation observation_;
+  MemorySink memory_;
 
   raw_ptr<AgentKernelClient> kernel_;
   raw_ptr<ToolSurface> surface_;

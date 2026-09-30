@@ -106,6 +106,8 @@ class ZephyrusSidebarView;
 class ZephyrusTabStrip;
 class ZephyrusSearchOverlay;
 namespace zephyrus::agent {
+class ZephyrusAgentMascotOverlay;
+class ZephyrusMascotBubble;
 class ZephyrusAgentPanel;
 }
 class ZephyrusTabSwitcher;
@@ -306,6 +308,16 @@ class BrowserView : public BrowserWindow,
 
   // Width the layout should keep clear on the right for the panel, or zero.
   int ZephyrusAgentPanelWidth() const;
+
+  // The agent's mascot, over the whole window. Null in windows without an
+  // agent panel.
+  zephyrus::agent::ZephyrusAgentMascotOverlay* zephyrus_agent_mascot() {
+    return zephyrus_agent_mascot_;
+  }
+  // What the agent is saying, above the mascot. Null where the mascot is.
+  zephyrus::agent::ZephyrusMascotBubble* zephyrus_mascot_bubble() {
+    return zephyrus_mascot_bubble_;
+  }
 
   // "Customize Zephyrus", the right-hand panel that replaces Chromium's
   // side panel for theming. Shares the agent panel's column and its
@@ -1439,6 +1451,10 @@ class BrowserView : public BrowserWindow,
   raw_ptr<zephyrus::ZephyrusCustomizePanel> zephyrus_customize_panel_ =
       nullptr;
   raw_ptr<zephyrus::agent::ZephyrusAgentPanel> zephyrus_agent_panel_ =
+      nullptr;
+  raw_ptr<zephyrus::agent::ZephyrusAgentMascotOverlay> zephyrus_agent_mascot_ =
+      nullptr;
+  raw_ptr<zephyrus::agent::ZephyrusMascotBubble> zephyrus_mascot_bubble_ =
       nullptr;
   // Ctrl+Tab switcher. Also a view rather than a bubble, for the blur.
   raw_ptr<ZephyrusTabSwitcher> zephyrus_tab_switcher_ = nullptr;

@@ -11,12 +11,14 @@
 #include <vector>
 #include <utility>
 
+#include "base/base64.h"
 #include "base/json/json_writer.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
+#include "chrome/browser/zephyrus/agent/sanitizer.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/accessibility/ax_node.h"
 #include "ui/accessibility/ax_tree.h"
@@ -69,6 +71,15 @@ constexpr RoleName kOfferedRoles[] = {
 // The word for this node's role, or empty if it is not something we offer.
 std::string RoleNameFor(const ui::AXNode& node) {
   const ax::mojom::Role role = node.GetRole();
+  // An editable region that is not an <input>: a contenteditable root, which is
+  // how Notion, Google Docs-style editors and most rich text boxes are built.
+  // Its role is a generic container or a paragraph, so the table below never
+  // offered it, and a model asked to write in Notion was shown nowhere to
+  // type -- it searched the page, found nothing, and was called stuck.
+  if (node.data().IsNonAtomicTextField() &&
+      !node.HasState(ax::mojom::State::kProtected)) {
+    return "textbox";
+  }
   for (const RoleName& entry : kOfferedRoles) {
     if (entry.role != role) {
       continue;
@@ -399,11 +410,67 @@ bool IsPageChrome(ax::mojom::Role role) {
   }
 }
 
+// The labels a drop-down offers. Walks the whole subtree, hidden or not: a
+// collapsed native list keeps its options in a popup that is not on screen.
+constexpr size_t kMaxOptions = 30;
+
+void CollectOptionLabels(const ui::AXNode& node,
+                         std::vector<std::string>& labels) {
+  for (const ui::AXNode* child : node.children()) {
+    if (!child || labels.size() >= kMaxOptions) {
+      return;
+    }
+    const ax::mojom::Role role = child->GetRole();
+    if (role == ax::mojom::Role::kMenuListOption ||
+        role == ax::mojom::Role::kListBoxOption ||
+        role == ax::mojom::Role::kMenuItem) {
+      const std::string label = child->GetStringAttribute(
+          ax::mojom::StringAttribute::kName);
+      if (!label.empty()) {
+        labels.push_back(Shorten(label, 60));
+      }
+      continue;
+    }
+    CollectOptionLabels(*child, labels);
+  }
+}
+
+// Notes where plain text on the page is private, so the picture can be painted
+// over it. Per line where the tree has lines, per node where it does not.
+void NotePrivateText(const ui::AXTree& tree,
+                     const ui::AXNode& node,
+                     std::vector<gfx::Rect>& regions) {
+  const auto note = [&](const ui::AXNode& text_node) {
+    bool offscreen = false;
+    const gfx::Rect bounds =
+        gfx::ToEnclosingRect(tree.GetTreeBounds(&text_node, &offscreen));
+    if (!offscreen && !bounds.IsEmpty()) {
+      regions.push_back(bounds);
+    }
+  };
+  bool had_lines = false;
+  for (const ui::AXNode* child : node.children()) {
+    if (child && child->GetRole() == ax::mojom::Role::kInlineTextBox) {
+      had_lines = true;
+      if (ContainsPrivateText(
+              child->GetStringAttribute(ax::mojom::StringAttribute::kName))) {
+        note(*child);
+      }
+    }
+  }
+  if (!had_lines &&
+      ContainsPrivateText(
+          node.GetStringAttribute(ax::mojom::StringAttribute::kName))) {
+    note(node);
+  }
+}
+
 void Collect(const ui::AXTree& tree,
              const ui::AXNode& node,
              bool inside_chrome,
              std::vector<ObservedNode>& content,
-             std::vector<ObservedNode>& chrome) {
+             std::vector<ObservedNode>& chrome,
+             std::vector<gfx::Rect>& private_regions) {
   // Invisible and ignored are NOT the same thing, and treating them the same
   // was a bug that made this return nothing at all on real pages.
   //
@@ -418,10 +485,29 @@ void Collect(const ui::AXTree& tree,
 
   inside_chrome = inside_chrome || IsPageChrome(node.GetRole());
 
+  if (node.GetRole() == ax::mojom::Role::kStaticText) {
+    NotePrivateText(tree, node, private_regions);
+  }
+
   const std::string role = node.IsIgnored() ? std::string() : RoleNameFor(node);
   if (!role.empty()) {
     std::string name = DescribeNode(node);
     std::string value = node.GetValueForControl();
+    // An editable region rarely has a label. What it says is how a person
+    // tells one from another, and an empty one is still somewhere to type --
+    // it is where a new block of text goes.
+    // Its value is what it says. The control value is empty for these, so a
+    // block holding "Groceries" was described to the model as "currently
+    // empty" -- and typing, which selects existing text before replacing it,
+    // would not have known there was any.
+    if (value.empty() && node.data().IsNonAtomicTextField()) {
+      value = Shorten(node.GetTextContentUTF8());
+    }
+    if (name.empty() && node.data().IsNonAtomicTextField()) {
+      std::string text = node.GetTextContentUTF8();
+      name = text.empty() ? std::string("empty editable area")
+                          : Shorten("editable: " + text, 80);
+    }
 
     // A control with nothing to call it is one the model cannot choose between.
     // Text fields used to be offered anyway, on the theory that an input is
@@ -440,6 +526,10 @@ void Collect(const ui::AXTree& tree,
         observed.name = std::move(name);
         observed.value = std::move(value);
         observed.ax_id = node.id();
+        if (node.GetRole() == ax::mojom::Role::kPopUpButton ||
+            node.GetRole() == ax::mojom::Role::kComboBoxSelect) {
+          CollectOptionLabels(node, observed.options);
+        }
 
         // Where it is on screen. Only the browser ever sees this; it is what
         // lets the executor put a real pointer on a field, which is the only
@@ -464,7 +554,7 @@ void Collect(const ui::AXTree& tree,
 
   for (const ui::AXNode* child : node.children()) {
     if (child) {
-      Collect(tree, *child, inside_chrome, content, chrome);
+      Collect(tree, *child, inside_chrome, content, chrome, private_regions);
     }
   }
 }
@@ -720,6 +810,14 @@ std::string Observation::ToJson(int level) const {
       if (!node.value.empty()) {
         entry.Set("value", node.value);
       }
+      if (!node.options.empty()) {
+        // What a list offers, so page.select is given a choice that exists.
+        base::ListValue choices;
+        for (const std::string& option : node.options) {
+          choices.Append(option);
+        }
+        entry.Set("options", std::move(choices));
+      }
       if (!focused_id.empty() && node.id == focused_id) {
         entry.Set("focused", true);
       }
@@ -759,6 +857,13 @@ std::string Observation::ToJson(int level) const {
       // first hundred" lead the model to different next steps.
       root.Set("truncated", true);
     }
+  }
+
+  // Not prompt text: the kernel's loop removes this before building the
+  // prompt and attaches it as an image. It rides here because the Observation
+  // is the one thing that already crosses to the kernel every step.
+  if (send_screenshot && !screenshot_jpeg.empty()) {
+    root.Set("screenshot_jpeg_base64", base::Base64Encode(screenshot_jpeg));
   }
 
   std::string json;
@@ -810,7 +915,8 @@ Observation BuildObservation(const ui::AXTreeUpdate& update,
   // when there is too much.
   std::vector<ObservedNode> content;
   std::vector<ObservedNode> chrome;
-  Collect(tree, *tree.root(), /*inside_chrome=*/false, content, chrome);
+  Collect(tree, *tree.root(), /*inside_chrome=*/false, content, chrome,
+          observation.private_regions);
 
   for (std::vector<ObservedNode>* group : {&content, &chrome}) {
     for (ObservedNode& node : *group) {
@@ -854,6 +960,11 @@ Observation BuildObservation(const ui::AXTreeUpdate& update,
   FindGroups(observation.elements);
 
   observation.text = tree.root()->GetTextContentUTF8();
+  observation.full_text = observation.text;
+  if (observation.full_text.size() > kMaxFullTextLength) {
+    base::TruncateUTF8ToByteSize(observation.full_text, kMaxFullTextLength,
+                                 &observation.full_text);
+  }
   if (observation.text.size() > max_text_length) {
     base::TruncateUTF8ToByteSize(observation.text, max_text_length,
                                &observation.text);

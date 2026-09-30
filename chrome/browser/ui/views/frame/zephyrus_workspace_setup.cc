@@ -27,6 +27,7 @@
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_customize_panel.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
+#include "chrome/browser/ui/views/frame/zephyrus_m3_controls.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3_switch.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_icons.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_image.h"
@@ -103,8 +104,6 @@ constexpr int kHeroInset = 8;
 constexpr int kBodyInset = 20;
 constexpr float kHeroCorner = static_cast<float>(
     zephyrus::m3::ConcentricInner(zephyrus::kRadiusPopup, kHeroInset));
-constexpr float kCardCorner = 24.f;
-constexpr float kFieldCorner = 16.f;
 
 struct Seed {
   SkColor color;
@@ -591,189 +590,12 @@ class Segment : public views::Button {
 BEGIN_METADATA(Segment)
 END_METADATA
 
-// ---------------------------------------------------------------------------
-// Containers
-// ---------------------------------------------------------------------------
-
-// A tonal card: the container a group of controls sits on.
-class Card : public views::View {
-  METADATA_HEADER(Card, views::View)
-
- public:
-  explicit Card(const gfx::Insets& padding) {
-    SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, padding, 0));
-  }
-  void OnPaintBackground(gfx::Canvas* canvas) override {
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setColor(m3::Role(*this, kColorZephyrusSurfaceContainerHigh));
-    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kCardCorner, flags);
-  }
-};
-
-BEGIN_METADATA(Card)
-END_METADATA
-
-class FilledField;
-
-// The editable text inside a FilledField; tells the field to repaint its
-// focus outline.
-class FieldText : public views::Textfield {
-  METADATA_HEADER(FieldText, views::Textfield)
-
- public:
-  explicit FieldText(views::View* owner) : owner_(owner) {}
-  void OnFocus() override {
-    views::Textfield::OnFocus();
-    owner_->SchedulePaint();
-  }
-  void OnBlur() override {
-    views::Textfield::OnBlur();
-    owner_->SchedulePaint();
-  }
-
- private:
-  raw_ptr<views::View> owner_;
-};
-
-BEGIN_METADATA(FieldText)
-END_METADATA
-
-// An M3 filled text field, rounded the Expressive way: a soft container, a
-// small label inside it, and a 2dp primary outline while focused.
-class FilledField : public views::View {
-  METADATA_HEADER(FilledField, views::View)
-
- public:
-  explicit FilledField(std::u16string label) : label_(std::move(label)) {
-    SetLayoutManager(std::make_unique<views::FillLayout>());
-    SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(24, 16, 8, 16)));
-    field_ = AddChildView(std::make_unique<FieldText>(this));
-    field_->SetBorder(views::CreateEmptyBorder(gfx::Insets()));
-    field_->SetBackgroundEnabled(false);
-    field_->SetFontList(m3::Font(m3::Type::kBodyLarge));
-    field_->GetViewAccessibility().SetName(label_);
-    SetPreferredSize(gfx::Size(kCardWidth, 60));
-  }
-
-  views::Textfield* field() { return field_; }
-
-  void OnPaintBackground(gfx::Canvas* canvas) override {
-    const gfx::RectF bounds(GetLocalBounds());
-    const bool focused = field_->HasFocus();
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setColor(m3::Role(*this, kColorZephyrusSurfaceContainerHighest));
-    canvas->DrawRoundRect(bounds, kFieldCorner, flags);
-    const SkColor primary = m3::Role(*this, kColorZephyrusPrimary);
-    if (focused) {
-      gfx::RectF ring = bounds;
-      ring.Inset(1.f);
-      flags.setStyle(cc::PaintFlags::kStroke_Style);
-      flags.setStrokeWidth(2.f);
-      flags.setColor(primary);
-      canvas->DrawRoundRect(ring, kFieldCorner - 1.f, flags);
-    }
-    canvas->DrawStringRect(
-        label_, m3::Font(m3::Type::kBodySmall),
-        focused ? primary : m3::Role(*this, kColorZephyrusOnSurfaceVariant),
-        gfx::Rect(16, 8, width() - 32, 16));
-  }
-
- private:
-  const std::u16string label_;
-  raw_ptr<FieldText> field_ = nullptr;
-};
-
-BEGIN_METADATA(FilledField)
-END_METADATA
-
-// A list row: headline + supporting text, and a trailing switch. Clicking
-// anywhere on the row toggles it, as M3 list items do.
-class SwitchRow : public views::Button {
-  METADATA_HEADER(SwitchRow, views::Button)
-
- public:
-  SwitchRow(std::u16string headline, std::u16string supporting, bool on)
-      : views::Button(base::BindRepeating(&SwitchRow::Toggle,
-                                          base::Unretained(this))) {
-    SetAnimateOnStateChange(false);
-    SetFocusBehavior(FocusBehavior::NEVER);  // The switch takes focus.
-    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(10, 16),
-        16));
-    layout->set_cross_axis_alignment(
-        views::BoxLayout::CrossAxisAlignment::kCenter);
-    auto* text = AddChildView(std::make_unique<views::View>());
-    text->SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kVertical, gfx::Insets(), 2));
-    headline_ = text->AddChildView(std::make_unique<views::Label>(headline));
-    headline_->SetFontList(m3::Font(m3::Type::kBodyLarge));
-    headline_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    supporting_ =
-        text->AddChildView(std::make_unique<views::Label>(supporting));
-    supporting_->SetFontList(m3::Font(m3::Type::kBodyMedium));
-    supporting_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    supporting_->SetMultiLine(true);
-    supporting_->SetMaximumWidth(270);
-    layout->SetFlexForView(text, 1);
-    switch_ = AddChildView(std::make_unique<m3::Switch>(base::BindRepeating(
-        &SwitchRow::Changed, base::Unretained(this))));
-    switch_->SetIsOn(on);
-    switch_->GetViewAccessibility().SetName(headline);
-  }
-
-  bool is_on() const { return switch_->GetIsOn(); }
-  void set_on_change(base::RepeatingClosure on_change) {
-    on_change_ = std::move(on_change);
-  }
-
-  void OnThemeChanged() override {
-    views::Button::OnThemeChanged();
-    headline_->SetEnabledColor(m3::Role(*this, kColorZephyrusOnSurface));
-    supporting_->SetEnabledColor(
-        m3::Role(*this, kColorZephyrusOnSurfaceVariant));
-  }
-
- private:
-  // A press on the row body: flip the switch, which then reports it.
-  void Toggle() {
-    switch_->SetIsOn(!switch_->GetIsOn());
-    Changed();
-  }
-  void Changed() {
-    if (on_change_) {
-      on_change_.Run();
-    }
-  }
-
-  raw_ptr<views::Label> headline_ = nullptr;
-  raw_ptr<views::Label> supporting_ = nullptr;
-  raw_ptr<m3::Switch> switch_ = nullptr;
-  base::RepeatingClosure on_change_;
-};
-
-BEGIN_METADATA(SwitchRow)
-END_METADATA
-
-class SectionLabel : public views::Label {
-  METADATA_HEADER(SectionLabel, views::Label)
-
- public:
-  explicit SectionLabel(const std::u16string& text) : views::Label(text) {
-    SetFontList(m3::Font(m3::Type::kLabelLarge, /*emphasized=*/true));
-    SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    SetProperty(views::kMarginsKey, gfx::Insets::TLBR(18, 4, 8, 0));
-  }
-  void OnThemeChanged() override {
-    views::Label::OnThemeChanged();
-    SetEnabledColor(m3::Role(*this, kColorZephyrusOnSurfaceVariant));
-  }
-};
-
-BEGIN_METADATA(SectionLabel)
-END_METADATA
+// The Card, FilledField, SwitchRow and SectionLabel this card is built from
+// live in zephyrus_m3_controls.h, shared with the agent settings.
+using zephyrus::m3::Card;
+using zephyrus::m3::FilledField;
+using zephyrus::m3::SectionLabel;
+using zephyrus::m3::SwitchRow;
 
 }  // namespace
 
@@ -825,7 +647,7 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
         0));
 
     // -- Name --
-    name_field_ = body->AddChildView(std::make_unique<FilledField>(u"Name"));
+    name_field_ = body->AddChildView(std::make_unique<FilledField>(u"Name", kCardWidth));
     name_field_->SetProperty(views::kMarginsKey,
                              gfx::Insets::TLBR(16, 0, 0, 0));
     name_field_->field()->SetText(initial_name_);

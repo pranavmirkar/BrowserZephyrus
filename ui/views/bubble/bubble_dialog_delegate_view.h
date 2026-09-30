@@ -206,6 +206,8 @@ class ZephyrusSearchEnginePicker;
 class ZephyrusIconPicker;
 // Zephyrus: workspace setup card (zephyrus_workspace_setup.cc).
 class ZephyrusWorkspaceSetup;
+// Zephyrus: agent model settings (zephyrus_agent_settings.cc).
+class ZephyrusAgentSettings;
 
 namespace views {
 
@@ -959,6 +961,7 @@ class VIEWS_EXPORT BubbleDialogDelegateView : public View,
   friend class ::ZephyrusSearchEnginePicker;
   friend class ::ZephyrusIconPicker;
   friend class ::ZephyrusWorkspaceSetup;
+  friend class ::ZephyrusAgentSettings;
 
   // |shadow| usually doesn't need to be explicitly set, just uses the default
   // argument. Unless on Mac when the bubble needs to use Views base shadow,

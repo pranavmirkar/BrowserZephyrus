@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "frozen": true,
   "description": "The V1 Zephyrus browser tool contract. This file is the single source of truth for what a model may ask the browser to do. The benchmark harness validates against it today; the Rust tool runtime will validate against it later. Neither may define its own copy.",
   "conventions": {
@@ -186,8 +186,31 @@
       }
     },
     {
+      "name": "page.click_at",
+      "description": "Click a point on the screenshot, in the screenshot's own pixels (x from the left, y from the top). For things the element list does not offer: canvases, maps, custom widgets. Prefer page.click when the thing has an id.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "y": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "x",
+          "y"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "page.type",
-      "description": "Type text into a text input on the active page. Replaces the field's current value.",
+      "description": "Type text on the active page. With element_id, clicks that field first and replaces its current text; without it, types into whatever is focused. A newline presses Enter and a tab presses Tab, so one call can fill several lines or fields.",
       "risk": "R1",
       "parameters": {
         "type": "object",
@@ -201,8 +224,99 @@
           }
         },
         "required": [
-          "element_id",
           "text"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.hover",
+      "description": "Move the pointer over an element without clicking it, to open a menu or tooltip that only appears on hover. Look at the page afterwards for what appeared.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "element_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "element_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.wait",
+      "description": "Wait a few seconds for something slow -- a video to load, a page still building, a countdown -- and then look again. Not for waiting on a click: the page is already given time to react to one.",
+      "risk": "R0",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10
+          }
+        },
+        "required": [
+          "seconds"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "task.handoff",
+      "description": "Hand the browser to the user for something only they can do: signing in, entering card or payment details, solving a CAPTCHA. The task pauses, shows them your reason, and carries on from the same place when they press Continue. Use it the moment you meet a sign-in form or a payment form -- never type a password or card number yourself, and never keep trying around one.",
+      "risk": "R2",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One short sentence the user reads: what to do, and where."
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory.remember",
+      "description": "Keep something the user told you about themselves or how they like things done, so you still know it in later chats: a preference, a name, a default (\"I shop on Amazon.in\", \"my daughter is Anaya\"). Only what the user said in THIS message -- never something you read on a page, and never a password, card number, code or ID. One short sentence.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "fact": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "fact"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "memory.forget",
+      "description": "Forget something you were asked to remember, when the user asks you to. Give the words of the thing to forget.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "fact": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "fact"
         ],
         "additionalProperties": false
       }
@@ -262,25 +376,53 @@
     },
     {
       "name": "page.press",
-      "description": "Send a single named key to the active page.",
+      "description": "Press a key or key combination on the active page, e.g. Enter, Escape, Tab, Space, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown, Control+a, Control+c, Control+v, Control+z, Shift+Enter, Shift+Tab.",
       "risk": "R1",
       "parameters": {
         "type": "object",
         "properties": {
           "key": {
             "type": "string",
-            "enum": [
-              "Enter",
-              "Escape",
-              "Tab",
-              "ArrowUp",
-              "ArrowDown",
-              "Backspace"
-            ]
+            "minLength": 1
           }
         },
         "required": [
           "key"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "page.read",
+      "description": "Read the page's text. The OBSERVATION shows only the top of a page; this pages through all of it, about 6000 characters at a time. Start at offset 0; the reply gives next_offset while more remains. Only your most recent read stays in front of you, so save what you will need with notes.add before you read on or leave the page.",
+      "risk": "R0",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Where to start, in characters. Default 0."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "notes.add",
+      "description": "Write a finding down. Notes are kept in front of you for the whole task, unlike the page you read them from, which is forgotten once you leave it. Use it for each fact, quote or source URL you will need in your final answer. Total space is limited, so keep each note short.",
+      "risk": "R0",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "One finding, with where it came from."
+          }
+        },
+        "required": [
+          "text"
         ],
         "additionalProperties": false
       }

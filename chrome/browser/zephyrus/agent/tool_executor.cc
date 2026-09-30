@@ -4,6 +4,9 @@
 
 #include "chrome/browser/zephyrus/agent/tool_executor.h"
 
+#include <algorithm>
+#include <cstdint>
+
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 
@@ -187,6 +190,12 @@ ToolExecutor::ToolExecutor(AgentKernelClient* kernel, ToolSurface* surface)
 
 ToolExecutor::~ToolExecutor() = default;
 
+ToolExecutor::MemorySink::MemorySink() = default;
+ToolExecutor::MemorySink::MemorySink(const MemorySink&) = default;
+ToolExecutor::MemorySink& ToolExecutor::MemorySink::operator=(
+    const MemorySink&) = default;
+ToolExecutor::MemorySink::~MemorySink() = default;
+
 void ToolExecutor::Execute(const std::string& tool,
                            const std::string& arguments_json,
                            const std::string& task,
@@ -215,9 +224,80 @@ void ToolExecutor::Send(const std::string& tool,
   auto safe_callback = mojo::WrapCallbackWithDefaultInvokeIfNotRun(
       std::move(callback), Failed("the agent stopped before this could run"));
 
+  // What the kernel judges is the call RESOLVED against the page: typing with
+  // no element named goes to the focused one, and a click at a point is a
+  // click on whatever element is there. The password rule, the send-button
+  // rule and every other rule therefore see exactly what would be touched.
+  // What is performed afterwards is still the call as the model made it.
+  std::string policy_tool = tool;
+  std::string policy_arguments = arguments_json;
+  if (std::optional<base::DictValue> args =
+          base::JSONReader::ReadDict(arguments_json, base::JSON_PARSE_RFC)) {
+    if (tool == "page.type" && !args->FindString("element_id")) {
+      surface_->ObserveQuick(base::BindOnce(
+          &ToolExecutor::SendIntoFocus, weak_factory_.GetWeakPtr(),
+          arguments_json, task, user_approved, std::move(safe_callback)));
+      return;
+    }
+    if (tool == "page.click_at") {
+      const std::optional<int> x = args->FindInt("x");
+      const std::optional<int> y = args->FindInt("y");
+      if (x && y) {
+        if (const std::optional<gfx::Point> point = ScreenshotToPage(*x, *y)) {
+          if (const ObservedNode* under = ElementAt(observation_, *point)) {
+            base::DictValue as_click;
+            as_click.Set("element_id", under->id);
+            policy_tool = "page.click";
+            policy_arguments = base::WriteJson(as_click).value_or("{}");
+          }
+        }
+      }
+    }
+  }
+
+  Decide(tool, arguments_json, policy_tool, policy_arguments,
+         /*extra=*/nullptr, task, user_approved, std::move(safe_callback));
+}
+
+void ToolExecutor::SendIntoFocus(std::string arguments_json,
+                                 std::string task,
+                                 bool user_approved,
+                                 ExecuteCallback callback,
+                                 Observation fresh) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  // Shown to policy under an id no Observation issues, so it cannot collide
+  // with a real one, carrying the focused field's real role, name and
+  // sensitivity -- which is what the password and card rules read. Nothing
+  // focused, or focus on something the look could not describe, leaves the
+  // call unresolved, and the kernel asks the user about it.
+  constexpr char kFocusedId[] = "focused";
+  std::string policy_arguments = arguments_json;
+  std::optional<ObservedNode> focused;
+  if (const ObservedNode* node = fresh.Find(fresh.focused_id)) {
+    focused = *node;
+    focused->id = kFocusedId;
+    if (std::optional<base::DictValue> args =
+            base::JSONReader::ReadDict(arguments_json, base::JSON_PARSE_RFC)) {
+      args->Set("element_id", kFocusedId);
+      policy_arguments = base::WriteJson(*args).value_or(arguments_json);
+    }
+  }
+  Decide("page.type", arguments_json, "page.type", policy_arguments,
+         focused ? &*focused : nullptr, task, user_approved,
+         std::move(callback));
+}
+
+void ToolExecutor::Decide(const std::string& tool,
+                          const std::string& arguments_json,
+                          const std::string& policy_tool,
+                          const std::string& policy_arguments,
+                          const ObservedNode* extra,
+                          const std::string& task,
+                          bool user_approved,
+                          ExecuteCallback callback) {
   auto request = mojom::PolicyRequest::New();
-  request->tool = tool;
-  request->arguments_json = arguments_json;
+  request->tool = policy_tool;
+  request->arguments_json = policy_arguments;
   request->task = task;
   // Deliberately from the browser, not from the caller. The kernel decides
   // whether a destination is expected partly by comparing it to the current
@@ -235,11 +315,19 @@ void ToolExecutor::Send(const std::string& tool,
     element->sensitivity = node.sensitivity;
     request->elements.push_back(std::move(element));
   }
+  if (extra) {
+    auto element = mojom::ObservedElement::New();
+    element->id = extra->id;
+    element->role = extra->role;
+    element->name = extra->name;
+    element->sensitivity = extra->sensitivity;
+    request->elements.push_back(std::move(element));
+  }
 
   kernel_->Decide(
       std::move(request),
       base::BindOnce(&ToolExecutor::OnDecided, weak_factory_.GetWeakPtr(), tool,
-                     arguments_json, user_approved, std::move(safe_callback)));
+                     arguments_json, user_approved, std::move(callback)));
 }
 
 void ToolExecutor::OnDecided(std::string tool,
@@ -499,14 +587,120 @@ void ToolExecutor::Perform(const std::string& tool,
     return;
   }
 
-  if (tool == "page.click" || tool == "page.type" || tool == "page.select") {
+  // Typing with no element named: into whatever the page has focused, without
+  // a click that would move the caret. This is how a model continues typing
+  // in an editor after pressing Enter, which is how lists get written.
+  if (tool == "page.type" && !arguments.FindString("element_id")) {
+    const std::string* text = arguments.FindString("text");
+    if (!text) {
+      std::move(callback).Run(Failed("there was nothing to type"));
+      return;
+    }
+    if (!surface_->TypeIntoFocus(*text)) {
+      std::move(callback).Run(Failed("the page could not take typing"));
+      return;
+    }
+    if (text->empty()) {
+      std::move(callback).Run(Ok());
+      return;
+    }
+    VerifyEntered(*text, std::move(callback));
+    return;
+  }
+
+  // Memory: the kernel has judged it, this does it.
+  if (tool == "memory.remember" || tool == "memory.forget") {
+    const std::string* fact = arguments.FindString("fact");
+    if (!fact || fact->empty()) {
+      std::move(callback).Run(Failed("there was nothing to " +
+                                     std::string(tool == "memory.remember"
+                                                     ? "remember"
+                                                     : "forget")));
+      return;
+    }
+    if (tool == "memory.remember") {
+      std::move(callback).Run(
+          memory_.remember && memory_.remember.Run(*fact)
+              ? Ok("{\"remembered\":true}")
+              : Failed("memory is switched off, so nothing was kept"));
+      return;
+    }
+    if (!memory_.forget) {
+      std::move(callback).Run(Failed("memory is switched off"));
+      return;
+    }
+    const int removed = memory_.forget.Run(*fact);
+    std::move(callback).Run(
+        Ok(base::StrCat({"{\"forgotten\":", base::NumberToString(removed), "}"})));
+    return;
+  }
+
+  // Notes live in the task loop, which reads the call itself; all that is
+  // checked here is that there is something to write down.
+  if (tool == "notes.add") {
+    const std::string* text = arguments.FindString("text");
+    std::move(callback).Run(text && !text->empty()
+                                ? Ok("{\"saved\":true}")
+                                : Failed("there was nothing to write down"));
+    return;
+  }
+
+  if (tool == "page.read") {
+    const int offset = std::max(0, arguments.FindInt("offset").value_or(0));
+    surface_->ObserveQuick(base::BindOnce(&ToolExecutor::OnReadPage,
+                                             weak_factory_.GetWeakPtr(), offset,
+                                             std::move(callback)));
+    return;
+  }
+
+  // A click at a point on the screenshot, for what the element list does not
+  // offer. The kernel has already judged it as a click on whatever is there.
+  if (tool == "page.click_at") {
+    const std::optional<int> x = arguments.FindInt("x");
+    const std::optional<int> y = arguments.FindInt("y");
+    const std::optional<gfx::Point> point =
+        x && y ? ScreenshotToPage(*x, *y) : std::nullopt;
+    if (!point) {
+      std::move(callback).Run(Failed(
+          "there is no screenshot to point at -- use page.click with an id"));
+      return;
+    }
+    surface_->ObserveQuick(base::BindOnce(
+        &ToolExecutor::ClickAtIfUnchanged, weak_factory_.GetWeakPtr(), *point,
+        std::move(callback)));
+    return;
+  }
+
+  // Waiting: nothing on the page changes, so there is nothing to check. The
+  // loop looks at the page when this returns.
+  if (tool == "page.wait") {
+    const int seconds =
+        std::clamp(arguments.FindInt("seconds").value_or(1), 1, 10);
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](ExecuteCallback callback) { std::move(callback).Run(Ok()); },
+            std::move(callback)),
+        base::Seconds(seconds));
+    return;
+  }
+
+  // The user is being handed something. Nothing to do here: the task has
+  // already stopped to ask, and this runs only once they have pressed Continue.
+  if (tool == "task.handoff") {
+    std::move(callback).Run(Ok("{\"handed_back\":true}"));
+    return;
+  }
+
+  if (tool == "page.click" || tool == "page.type" || tool == "page.select" ||
+      tool == "page.hover") {
     const std::string* id = arguments.FindString("element_id");
     const ObservedNode* expected = id ? observation_.Find(*id) : nullptr;
     if (!expected) {
       std::move(callback).Run(Failed("that element is not on the page"));
       return;
     }
-    surface_->ObserveForCheck(base::BindOnce(
+    surface_->ObserveQuick(base::BindOnce(
         &ToolExecutor::OnElementReady, weak_factory_.GetWeakPtr(), tool,
         arguments.Clone(), *expected, std::move(callback)));
     return;
@@ -523,17 +717,27 @@ void ToolExecutor::OnElementReady(std::string tool,
     std::move(callback).Run(Failed("the page changed while the model was thinking; choose from the next observation"));
     return;
   }
+  // The same element in the fresh look: same name, role and sensitivity, and
+  // of those, the one nearest where it was. Two with one name is ordinary --
+  // Notion shows "New page" in its sidebar AND as a button -- and refusing
+  // the click as "ambiguous" cost a real run five steps on a target the model
+  // had named exactly. Nearest-to-where-it-was is what a person would click.
   const ObservedNode* match = nullptr;
+  int64_t best = 0;
+  const gfx::Point was = expected.bounds.CenterPoint();
   for (const auto& node : fresh.elements) {
     if (node.name != expected.name || node.role != expected.role ||
         node.sensitivity != expected.sensitivity) {
       continue;
     }
-    if (match) {
-      std::move(callback).Run(Failed("the target is ambiguous after the page updated; use page.find to choose a distinct target"));
-      return;
+    const gfx::Vector2d offset = node.bounds.CenterPoint() - was;
+    const int64_t distance =
+        static_cast<int64_t>(offset.x()) * offset.x() +
+        static_cast<int64_t>(offset.y()) * offset.y();
+    if (!match || distance < best) {
+      match = &node;
+      best = distance;
     }
-    match = &node;
   }
   if (!match) {
     std::move(callback).Run(Failed("the target disappeared while the model was thinking; choose from the next observation"));
@@ -580,7 +784,7 @@ void ToolExecutor::DispatchElement(const std::string& tool,
                                    ExecuteCallback callback) {
   Result result = PerformOnElement(tool, arguments);
   if (result.status == Result::Status::kOk && tool == "page.click") {
-    surface_->ObserveForCheck(base::BindOnce(
+    surface_->ObserveQuick(base::BindOnce(
         &ToolExecutor::OnClickChecked, weak_factory_.GetWeakPtr(),
         std::move(callback)));
     return;
@@ -719,20 +923,31 @@ void ToolExecutor::VerifyEntered(std::string text, ExecuteCallback callback) {
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE,
       base::BindOnce(&ToolExecutor::LookToVerify, weak_factory_.GetWeakPtr(),
-                     std::move(text), std::move(callback)),
+                     std::move(text), std::move(callback), /*attempt=*/0),
       base::Milliseconds(250));
 }
 
-void ToolExecutor::LookToVerify(std::string text, ExecuteCallback callback) {
+void ToolExecutor::LookToVerify(std::string text,
+                                ExecuteCallback callback,
+                                int attempt) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  surface_->ObserveForCheck(base::BindOnce(&ToolExecutor::OnVerified,
+  surface_->ObserveQuick(base::BindOnce(&ToolExecutor::OnVerified,
                                           weak_factory_.GetWeakPtr(),
                                           std::move(text),
-                                          std::move(callback)));
+                                          std::move(callback), attempt));
 }
+
+// How many more times to look before saying typed text did not land. The keys
+// go out at a human pace on an ordered queue, and the first look is a quarter of
+// a second after the CALL, not after the last key: MEASURED on a ten-digit phone
+// number, the field held the whole number a moment later, the look had found
+// only part of it, and the model was told "did not go in" about text that had.
+constexpr int kMaxVerifyRetries = 3;
+constexpr base::TimeDelta kVerifyRetryDelay = base::Milliseconds(350);
 
 void ToolExecutor::OnVerified(std::string text,
                               ExecuteCallback callback,
+                              int attempt,
                               Observation fresh) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -744,25 +959,196 @@ void ToolExecutor::OnVerified(std::string text,
   // took the same slot -- which is precisely the bug that had the agent
   // clicking a footer link when it asked for a search box. A check is not a
   // look, and must not behave like one.
-  bool landed = false;
+  // Compared without whitespace or case. A newline becomes a new block in an
+  // editor, so the typed text never appears whole in any single field -- and
+  // an exact match reported a list that had gone in perfectly as "did not go
+  // in", which sent the model to type it all a second time.
+  const auto squash = [](const std::string& in) {
+    std::string out;
+    for (char c : in) {
+      if (!base::IsAsciiWhitespace(c)) {
+        out.push_back(base::ToLowerASCII(c));
+      }
+    }
+    return out;
+  };
+  const std::string wanted = squash(text);
+  std::string holder;
+  // What a field holds, for THIS check only: the real value where the one the
+  // model sees is masked. `holder`, which is reported back to the model, keeps
+  // using the masked one.
+  const auto held = [](const ObservedNode& node) -> const std::string& {
+    return node.raw_value.empty() ? node.value : node.raw_value;
+  };
   for (const ObservedNode& node : fresh.elements) {
-    if (!node.value.empty() && node.value.find(text) != std::string::npos) {
-      landed = true;
-      break;
+    if (!held(node).empty() &&
+        squash(held(node)).find(wanted) != std::string::npos) {
+      std::move(callback).Run(Ok());
+      return;
+    }
+    if (node.id == fresh.focused_id) {
+      holder = node.value;
     }
   }
-
-  if (landed) {
+  if (!wanted.empty() && squash(fresh.text).find(wanted) != std::string::npos) {
     std::move(callback).Run(Ok());
     return;
   }
 
-  // Say what was checked, not just that it failed. "It did not go in" sends the
-  // model to try the same thing again; naming the field and the text gives it
-  // something to change.
-  std::move(callback).Run(
-      Failed("that did not go in -- nothing on the page holds \"" + text +
-             "\" now. Look at the page and check you picked the right field."));
+  // Nothing of it anywhere -- not even its first word -- is a real failure:
+  // the page never took the keys. Telling the model "ok" there builds its next
+  // step on a lie, so that case still fails, and says what was looked for.
+  std::string first_word;
+  for (char c : text) {
+    if (base::IsAsciiWhitespace(c)) {
+      if (!first_word.empty()) {
+        break;
+      }
+      continue;
+    }
+    first_word.push_back(base::ToLowerASCII(c));
+  }
+  bool some_landed = first_word.empty();
+  for (const ObservedNode& node : fresh.elements) {
+    if (!some_landed &&
+        squash(held(node)).find(first_word) != std::string::npos) {
+      some_landed = true;
+    }
+  }
+  // Not found whole: the typing may still be going in. Look again a few times
+  // before believing it failed or reporting only part of it.
+  if (attempt < kMaxVerifyRetries) {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&ToolExecutor::LookToVerify, weak_factory_.GetWeakPtr(),
+                       std::move(text), std::move(callback), attempt + 1),
+        kVerifyRetryDelay);
+    return;
+  }
+  if (!some_landed) {
+    std::move(callback).Run(
+        Failed("that did not go in -- nothing on the page holds \"" + text +
+               "\" now. Look at the page and check you picked the right field."));
+    return;
+  }
+
+  // Found in part, not as a whole -- which is NOT proof it failed: the keys were sent,
+  // and a list split into blocks, a field that reformats, or an editor that
+  // hides its value all look like this. Say what was seen and let the model
+  // judge from the screenshot, rather than claim a failure it cannot know.
+  base::DictValue report;
+  report.Set("typed", true);
+  report.Set("confirmed", false);
+  if (!holder.empty()) {
+    report.Set("focused_field_now_shows", holder.substr(0, 300));
+  }
+  report.Set("note",
+             "The keys were sent but the exact text was not found in one "
+             "field. Check the screenshot before typing it again.");
+  std::move(callback).Run(Ok(base::WriteJson(report).value_or("{}")));
+}
+
+void ToolExecutor::OnReadPage(int offset,
+                              ExecuteCallback callback,
+                              Observation fresh) {
+  // One chunk of the page's text, split on character boundaries. Bytes, not
+  // characters: the prompt has a byte budget, and counting characters here
+  // would let a page of four-byte characters take four times the room.
+  constexpr size_t kChunk = 6000;
+  const std::string& text = fresh.full_text;
+  const auto continuation = [&](size_t at) {
+    return at < text.size() && (static_cast<uint8_t>(text[at]) & 0xC0) == 0x80;
+  };
+  size_t start = std::min(static_cast<size_t>(offset), text.size());
+  while (continuation(start)) {
+    ++start;
+  }
+  size_t end = std::min(start + kChunk, text.size());
+  while (end > start && continuation(end)) {
+    --end;
+  }
+
+  base::DictValue value;
+  value.Set("url", fresh.url);
+  value.Set("offset", static_cast<int>(start));
+  value.Set("total", static_cast<int>(text.size()));
+  if (start >= text.size() && !text.empty()) {
+    value.Set("text", "");
+    value.Set("note", "that is past the end of the page's text");
+  } else if (text.empty()) {
+    value.Set("text", "");
+    value.Set("note",
+              "this page has no readable text -- look at the screenshot");
+  } else {
+    value.Set("text", text.substr(start, end - start));
+    if (end < text.size()) {
+      value.Set("next_offset", static_cast<int>(end));
+    }
+    if (fresh.full_text.size() >= kMaxFullTextLength) {
+      value.Set("truncated", true);
+    }
+  }
+  std::string json;
+  base::JSONWriter::Write(value, &json);
+  std::move(callback).Run(Ok(std::move(json)));
+}
+
+void ToolExecutor::ClickAtIfUnchanged(gfx::Point point,
+                                      ExecuteCallback callback,
+                                      Observation fresh) {
+  // Policy judged the element that was under the point in the look the model
+  // saw. A point is not an element: if an earlier call in the same turn opened
+  // a dialog, a "Send" may now sit where "Close" was, and clicking it would
+  // press something no rule looked at. Same element or no click.
+  const ObservedNode* judged = ElementAt(observation_, point);
+  const ObservedNode* now = ElementAt(fresh, point);
+  const bool same =
+      fresh.url == observation_.url &&
+      (judged == nullptr) == (now == nullptr) &&
+      (!judged || (judged->name == now->name && judged->role == now->role &&
+                   judged->sensitivity == now->sensitivity));
+  if (!same) {
+    std::move(callback).Run(Failed(
+        "the page changed under that point since your screenshot; look at the "
+        "new one and aim again"));
+    return;
+  }
+  if (!surface_->ClickAtPoint(point)) {
+    std::move(callback).Run(Failed("that point could not be clicked"));
+    return;
+  }
+  surface_->ObserveQuick(base::BindOnce(&ToolExecutor::OnClickChecked,
+                                           weak_factory_.GetWeakPtr(),
+                                           std::move(callback)));
+}
+
+std::optional<gfx::Point> ToolExecutor::ScreenshotToPage(int x, int y) const {
+  const gfx::Size shot = observation_.screenshot_size;
+  if (shot.IsEmpty() || observation_.viewport.IsEmpty() || x < 0 || y < 0 ||
+      x > shot.width() || y > shot.height()) {
+    return std::nullopt;
+  }
+  const double device =
+      observation_.device_scale > 0 ? observation_.device_scale : 1.0;
+  return gfx::Point(
+      static_cast<int>(x * observation_.viewport.width() * device / shot.width()),
+      static_cast<int>(y * observation_.viewport.height() * device /
+                       shot.height()));
+}
+
+// static
+const ObservedNode* ToolExecutor::ElementAt(const Observation& observation,
+                                            const gfx::Point& point) {
+  const ObservedNode* smallest = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    if (node.offscreen || !node.bounds.Contains(point)) {
+      continue;
+    }
+    if (!smallest || node.bounds.size().Area64() < smallest->bounds.size().Area64()) {
+      smallest = &node;
+    }
+  }
+  return smallest;
 }
 
 ToolExecutor::Result ToolExecutor::PerformOnElement(
@@ -786,7 +1172,14 @@ ToolExecutor::Result ToolExecutor::PerformOnElement(
     if (!key) {
       return Failed("no key was named");
     }
-    return surface_->PressKey(*key) ? Ok() : Failed("the key had no effect");
+    return surface_->PressKey(*key)
+               ? Ok()
+               : Failed("\"" + *key +
+                        "\" is not a key this browser knows. Use Enter, "
+                        "Escape, Tab, Space, Backspace, Delete, ArrowUp, "
+                        "ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, "
+                        "PageDown, or a combination like Control+a or "
+                        "Shift+Enter.");
   }
 
   if (tool == "selection.read") {
@@ -821,6 +1214,15 @@ ToolExecutor::Result ToolExecutor::PerformOnElement(
     return surface_->ClickNode(*node)
                ? Ok()
                : Failed("that could not be clicked");
+  }
+
+  if (tool == "page.hover") {
+    if (node->offscreen) {
+      return Failed("\"" + node->name +
+                    "\" is scrolled out of view -- scroll to it first");
+    }
+    return surface_->HoverNode(*node) ? Ok()
+                                      : Failed("the pointer could not go there");
   }
 
   if (tool == "page.type" || tool == "page.select") {

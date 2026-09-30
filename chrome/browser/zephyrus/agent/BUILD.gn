@@ -2,7 +2,26 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//chrome/browser/zephyrus/buildflags/zephyrus.gni")
 import("//testing/test.gni")
+
+# The header of obfuscated keys, generated into the build directory. Never a
+# source file: the keys are not in the tree.
+action("bundled_keys_data") {
+  script = "tools/gen_bundled_keys.py"
+  outputs = [ "$target_gen_dir/bundled_keys_data.h" ]
+  args = [
+    "--output",
+    rebase_path(outputs[0], root_build_dir),
+  ]
+  if (zephyrus_bundled_keys_file != "") {
+    inputs = [ zephyrus_bundled_keys_file ]
+    args += [
+      "--keys",
+      zephyrus_bundled_keys_file,
+    ]
+  }
+}
 
 # The browser's handle on the agent kernel. The kernel itself lives in
 # //chrome/services/zephyrus_agent and runs in a utility process; nothing here
@@ -10,31 +29,72 @@ import("//testing/test.gni")
 source_set("agent") {
   sources = [
     "agent_kernel_client.cc",
+    "agent_memory.cc",
+    "agent_memory.h",
+    "agent_kernel_client.h",
+    "bundled_keys.cc",
+    "bundled_keys.h",
     "dev_model_client.cc",
     "dev_model_client.h",
+    "hands_free.cc",
+    "hands_free.h",
     "local_vision_client.cc",
     "local_vision_client.h",
-    "agent_kernel_client.h",
+    "mascot_rig.cc",
+    "mascot_rig.h",
+    "model_settings.cc",
+    "model_settings.h",
+    "model_transport.cc",
+    "model_transport.h",
     "observation.cc",
     "observation.h",
+    "pointer_events.cc",
+    "pointer_events.h",
+    "pointer_path.cc",
+    "pointer_path.h",
     "sanitizer.cc",
     "sanitizer.h",
     "tool_executor.cc",
+    "tool_executor.h",
     "tool_runner_impl.cc",
     "tool_runner_impl.h",
-    "tool_executor.h",
     "tool_surface.cc",
     "tool_surface.h",
+    "phrase_recorder.cc",
+    "phrase_recorder.h",
+    "voice_dsp.cc",
+    "voice_dsp.h",
+    "voice_library.cc",
+    "voice_library.h",
+    "voice_lock.cc",
+    "voice_lock.h",
+    "voice_profile_store.cc",
+    "voice_profile_store.h",
   ]
 
+  # Voice commands record through the Windows waveIn API; the rest of the
+  # browser's audio stack has no plain "give me the microphone" call.
+  if (is_win) {
+    sources += [
+      "voice_input.cc",
+      "voice_input.h",
+    ]
+    libs = [ "winmm.lib" ]
+  }
+
   deps = [
+    ":bundled_keys_data",
     "//base",
     "//chrome/browser/zephyrus/buildflags:dev_switches",
+    "//chrome/installer/zephyrus_setup:mascot",
+    "//components/os_crypt/async/common",
+    "//components/prefs",
     "//content/public/browser",
+    "//mojo/public/cpp/bindings",
+    "//net",
     "//net/traffic_annotation",
     "//services/network/public/cpp",
     "//ui/accessibility",
-    "//mojo/public/cpp/bindings",
   ]
 
   public_deps = [ "//chrome/services/zephyrus_agent/public/mojom" ]
@@ -47,25 +107,38 @@ source_set("agent") {
 #   autoninja -C out/Release zephyrus_agent_unittests
 test("zephyrus_agent_unittests") {
   sources = [
+    "agent_memory_unittest.cc",
     "dev_model_client_unittest.cc",
     "local_vision_client_unittest.cc",
+    "mascot_rig_unittest.cc",
+    "model_settings_unittest.cc",
+    "model_transport_unittest.cc",
     "observation_unittest.cc",
+    "pointer_path_unittest.cc",
     "sanitizer_unittest.cc",
     "tool_executor_unittest.cc",
+    "voice_unittest.cc",
   ]
+  data = [ "testdata/voice/" ]
+  if (is_win) {
+    sources += [ "voice_input_unittest.cc" ]
+  }
 
   deps = [
     ":agent",
     "//base",
     "//base/test:test_support",
     "//chrome/services/zephyrus_agent:lib",
+    "//components/os_crypt/async/browser:test_support",
+    "//components/os_crypt/async/common",
+    "//components/prefs:test_support",
     "//mojo/core/test:run_all_unittests",
+    "//mojo/public/cpp/bindings",
     "//net",
     "//services/network:test_support",
     "//services/network/public/cpp",
-    "//ui/gfx:test_support",
-    "//mojo/public/cpp/bindings",
     "//testing/gtest",
+    "//ui/gfx:test_support",
     "//url",
   ]
 }

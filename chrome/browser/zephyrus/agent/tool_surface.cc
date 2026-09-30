@@ -22,4 +22,22 @@ void ToolSurface::ObserveForFind(const std::string& query,
   Observe(std::move(callback));
 }
 
+// Surfaces that cannot do these say so; the executor turns false into a
+// refusal the model can read.
+bool ToolSurface::HoverNode(const ObservedNode& node) {
+  return false;
+}
+
+void ToolSurface::ObserveQuick(ObserveCallback callback) {
+  ObserveForCheck(std::move(callback));
+}
+
+bool ToolSurface::TypeIntoFocus(const std::string& text) {
+  return false;
+}
+
+bool ToolSurface::ClickAtPoint(const gfx::Point& point) {
+  return false;
+}
+
 }  // namespace zephyrus::agent

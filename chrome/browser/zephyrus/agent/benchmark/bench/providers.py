@@ -28,6 +28,10 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 
+# The runners' --base-url default: a local Ollama.
+DEFAULT_LOCAL = "http://127.0.0.1:11434"
+
+
 class ProviderError(Exception):
     """The model could not be reached or returned something unusable."""
 
@@ -298,6 +302,136 @@ class ClaudeProvider:
         ) / 1_000_000
 
 
+class KernelCloudProvider:
+    """A cloud model, spoken to by the KERNEL's adapters (ADR 0004).
+
+    The kernel builds the request and reads the reply, exactly as the browser
+    will. This class plays only the browser's part: it adds the key, which the
+    kernel never sees, and sends to a base URL the kernel cannot choose. So a
+    run here measures the adapter code that ships, not a Python copy of it.
+
+    Keys come from the environment and never from an argument, because a key on
+    a command line ends up in shell history.
+    """
+
+    KEYS = {
+        "anthropic": ("ANTHROPIC_API_KEY", "x-api-key", ""),
+        "openai": ("OPENAI_API_KEY", "Authorization", "Bearer "),
+        "gemini": ("GEMINI_API_KEY", "x-goog-api-key", ""),
+    }
+    BASE_URLS = {
+        "anthropic": "https://api.anthropic.com",
+        "openai": "https://api.openai.com/v1",
+        "gemini": "https://generativelanguage.googleapis.com",
+    }
+    # What the kernel may ask to send, mirroring the browser's allowlist: the
+    # kernel chooses the body, never an auth header.
+    ALLOWED_HEADERS = {"content-type", "anthropic-version"}
+
+    def __init__(self, kind: str, model: str, base_url: str | None, timeout: float,
+                 kernel, force_tool: bool = True) -> None:
+        import os
+
+        if kind not in self.KEYS:
+            raise ProviderError(f"unknown cloud provider {kind!r}")
+        if not model:
+            raise ProviderError(f"--model is required for {kind}")
+        variable, self._auth_header, prefix = self.KEYS[kind]
+        key = os.environ.get(variable, "")
+        # A local OpenAI-compatible server (Ollama, vLLM) needs no key.
+        self._base_url = (base_url or self.BASE_URLS[kind]).rstrip("/")
+        if not key and not (kind == "openai" and is_loopback(self._base_url)):
+            raise ProviderError(f"set {variable} to use the {kind} provider")
+        self._auth_value = prefix + key if key else ""
+        self._kind = kind
+        self._model = model
+        self._timeout = timeout
+        self._kernel = kernel
+        self._force_tool = force_tool
+        self.name = f"{kind}:{model}"
+
+    def cloud_spec(self, max_usd: float = 0, max_tokens: int = 0) -> dict[str, Any]:
+        """The run's CloudModel, for driving the shipped loop's cloud path."""
+        prices = PRICES.get(self._model, (0, 0, 0, 0))
+        return {
+            "kind": self._kind, "model": self._model,
+            "force_tool": self._force_tool, "max_tokens_per_step": 16000,
+            "usd_per_mtok_input": prices[0], "usd_per_mtok_output": prices[1],
+            "usd_per_mtok_cache_read": prices[2],
+            "usd_per_mtok_cache_write": prices[3],
+            "max_usd": max_usd, "max_tokens": max_tokens,
+        }
+
+    def send(self, path: str, headers: dict[str, str], body: str) -> tuple[int, str, int]:
+        """The browser's part only: check, add the key, send. (status, body, ms).
+
+        Mirrors the browser transport's rules, so the benchmark cannot be more
+        permissive than the product: only the kernel's own headers, never an
+        auth header from it, and the reply capped. A network failure is -1, as
+        the browser reports it, so the loop's retry rule sees the same thing.
+        """
+        out = {}
+        for name, value in (headers or {}).items():
+            if name.lower() not in self.ALLOWED_HEADERS:
+                return 0, json.dumps({"error": {"message":
+                                      f"refused: header {name!r} is not allowed"}}), 0
+            out[name] = value
+        if self._auth_value:
+            out[self._auth_header] = self._auth_value
+        started = time.monotonic()
+        http = urllib.request.Request(self._base_url + path, data=body.encode("utf-8"),
+                                      headers=out, method="POST")
+        try:
+            with urllib.request.urlopen(http, timeout=self._timeout) as response:
+                status, raw = response.status, response.read(4 * 1024 * 1024)
+        except urllib.error.HTTPError as exc:
+            # Handed to the kernel like a success: reading the provider's error
+            # is its job too, and it words it for the user.
+            status, raw = exc.code, exc.read(4 * 1024 * 1024)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            return -1, json.dumps({"error": {"message": f"network error: {exc}"}}), \
+                int((time.monotonic() - started) * 1000)
+        return status, raw.decode("utf-8", "replace"), int((time.monotonic() - started) * 1000)
+
+    def complete(self, system: str, user: str) -> Completion:
+        request = self._kernel.provider_build(self._kind, self._model, system, user,
+                                              max_tokens=16000,
+                                              force_tool=self._force_tool)
+        if request.get("error"):
+            raise ProviderError(request["error"])
+        status, text, latency = self.send(request["path"], request.get("headers") or {},
+                                          request["body"])
+        reply = self._kernel.provider_parse(self._kind, status, text)
+        usage = reply.get("usage") or None
+        if reply.get("error"):
+            raise ProviderError(reply["error"])
+        if reply.get("found"):
+            # Handed to the loop in the one shape every extractor reads. The
+            # call came through the provider's native tool calling; the loop
+            # and the policy still judge it as they judge any other.
+            arguments = json.loads(reply.get("arguments_json") or "{}")
+            return Completion(json.dumps({"name": reply["tool"], "arguments": arguments}),
+                              latency, usage)
+        return Completion(reply.get("text") or "", latency, usage)
+
+    def cost(self, usage: dict[str, int]) -> float | None:
+        prices = PRICES.get(self._model)
+        if prices is None:
+            return None
+        return (usage.get("input", 0) * prices[0] + usage.get("output", 0) * prices[1]
+                + usage.get("cache_read", 0) * prices[2]
+                + usage.get("cache_write", 0) * prices[3]) / 1_000_000
+
+
+# List prices, US dollars per million tokens: input, output, cache read, cache
+# write. Checked 2026-09-23. A model not listed reports tokens without a cost
+# and is held to a token cap instead, rather than a guessed price.
+PRICES: dict[str, tuple[float, float, float, float]] = {
+    "claude-opus-5": (5.00, 25.00, 0.50, 6.25),
+    "claude-opus-5-5": (4.00, 20.00, 0.20, 5.00),
+}
+
+
 class ReplayProvider:
     """Replays recorded responses from a file, keyed by fixture id.
 
@@ -323,8 +457,18 @@ class ReplayProvider:
         return Completion(self._responses[self._current], 0)
 
 
+CLOUD_KINDS = ("anthropic", "openai", "gemini")
+
+
 def build(kind: str, model: str, base_url: str, timeout: float,
-          effort: str | None = None) -> Provider:
+          effort: str | None = None, kernel=None, force_tool: bool = True) -> Provider:
+    if kind in CLOUD_KINDS:
+        if kernel is None:
+            raise ProviderError(f"the {kind} provider needs the kernel probe")
+        # --base-url defaults to the local Ollama address, which only means
+        # something for the OpenAI-compatible kind.
+        custom = base_url if kind == "openai" and base_url != DEFAULT_LOCAL else None
+        return KernelCloudProvider(kind, model, custom, timeout, kernel, force_tool)
     if kind == "ollama":
         return OllamaProvider(model, base_url, timeout)
     if kind == "openai-compatible":
@@ -349,7 +493,11 @@ def is_remote(kind: str, base_url: str) -> bool:
     passed it as local -- the one provider that is certainly remote would have
     been the one the guard let through without --allow-remote.
     """
-    if kind == "claude":
+    if kind in ("claude", "anthropic", "gemini"):
+        return True
+    if kind == "openai" and base_url == DEFAULT_LOCAL:
+        # The default --base-url is Ollama's; for this kind it means the real
+        # OpenAI endpoint (see build), which is certainly remote.
         return True
     if kind in ("replay", "script"):
         return False

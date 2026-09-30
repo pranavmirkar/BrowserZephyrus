@@ -219,6 +219,8 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
   // it still has to be allowlisted here or the toggle silently reads as unset.
   (*s_allowlist)["zephyrus.privacy.auto_reset_ids"] =
       settings_api::PrefType::kBoolean;
+  (*s_allowlist)["zephyrus.appearance.m3_containers"] =
+      settings_api::PrefType::kBoolean;
   (*s_allowlist)["zephyrus.adblock.enabled"] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)["zephyrus.adblock.aggressive_popup"] =

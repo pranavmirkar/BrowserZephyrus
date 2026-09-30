@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/zephyrus/agent/model_settings.h"
 #include "chrome/browser/zephyrus/privacy/privacy_crypto_impl.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 
@@ -1750,6 +1751,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   // sidebar (the default -- zephyrus::kDefaultUiLayout). Mirrored by
   // zephyrus::kUiLayoutPref / zephyrus::UiLayout; read clamped.
   registry->RegisterIntegerPref("zephyrus.ui_layout", 2);
+  // Whether the title-bar controls (back/forward/reload/new tab and the window
+  // buttons) sit in tonal Material 3 containers. Appearance settings toggle;
+  // ToolbarView observes it and repaints live. Literal for the layering reason
+  // above; mirrored by kZephyrusContainersPref in toolbar_view.cc.
+  registry->RegisterBooleanPref("zephyrus.appearance.m3_containers", true);
   // Whether entering Private Workspace requires an OS unlock. Registered on the
   // REGULAR profile deliberately: the private profile is destroyed every
   // session, so a setting stored there would silently forget itself — and a
@@ -1768,6 +1774,10 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   // since a rotated key now razes the database, that means wiping the
   // user's privacy history at every start, silently.
   zephyrus_privacy::PrivacyCryptoImpl::RegisterProfilePrefs(registry);
+  // The agent's cloud model: provider, model, spending limit, encrypted keys and
+  // the Workspaces allowed to use it (ADR 0004). Delegated for the same reason
+  // as the line above: one owner for the names.
+  zephyrus::agent::RegisterProfilePrefs(registry);
   registry->RegisterBooleanPref("zephyrus.adblock.enabled", true);
   registry->RegisterBooleanPref("zephyrus.adblock.aggressive_popup", true);
   registry->RegisterListPref("zephyrus.adblock.allowlist");

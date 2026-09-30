@@ -547,6 +547,9 @@ class ToolbarView : public views::AccessiblePaneView,
   // added action into one long run, which is not what a button group means.
   std::vector<std::vector<ZephyrusGroupSegment>> ZephyrusTitlebarGroups() const;
 
+  // Applies zephyrus_m3_containers_ to the painter and the caption buttons.
+  void OnZephyrusContainersChanged();
+
   // Paints every title-bar button group's containers, behind the controls.
   raw_ptr<views::View> zephyrus_nav_pill_backdrop_ = nullptr;
   // See LendZephyrusChromeTo().
@@ -640,6 +643,9 @@ class ToolbarView : public views::AccessiblePaneView,
   BooleanPrefMember show_home_button_;
 
   BooleanPrefMember show_chrome_labs_button_;
+
+  // Appearance: tonal M3 containers behind the title-bar controls.
+  BooleanPrefMember zephyrus_m3_containers_;
 
   // The display mode used when laying out the toolbar.
   const DisplayMode display_mode_;

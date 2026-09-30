@@ -227,7 +227,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--provider", default="ollama",
                         choices=["ollama", "openai-compatible", "replay", "script",
-                                 "claude"])
+                                 "claude", "anthropic", "openai", "gemini"],
+                        help="anthropic, openai and gemini speak through the "
+                             "kernel's own adapters (ADR 0004); keys come from "
+                             "ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY.")
+    parser.add_argument("--no-force-tool", action="store_true",
+                        help="Cloud kinds: do not insist on a native tool call. "
+                             "For OpenAI-compatible servers that reject "
+                             "tool_choice=required; the reply is then read "
+                             "from its text.")
     parser.add_argument("--model", required=True,
                         help="Model name, or optimal|lazy|trap for --provider script.")
     parser.add_argument("--base-url", default="http://127.0.0.1:11434")
@@ -313,7 +321,7 @@ def run(args, contract, tool_listing, kernel) -> int:
         try:
             provider = providers.build(
                 args.provider, args.model, args.base_url, args.timeout,
-                args.effort,
+                args.effort, kernel=kernel, force_tool=not args.no_force_tool,
             )
         except providers.ProviderError as exc:
             print(str(exc), file=sys.stderr)

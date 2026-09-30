@@ -4,7 +4,9 @@
 
 #include "chrome/browser/zephyrus/agent/sanitizer.h"
 
+#include <algorithm>
 #include <utility>
+#include <vector>
 
 #include "base/notreached.h"
 #include "base/strings/string_split.h"
@@ -144,8 +146,61 @@ std::string_view DescribeSensitivity(Sensitivity kind) {
       return "payment_card";
     case Sensitivity::kPersonalName:
       return "personal_name";
+    case Sensitivity::kPageText:
+      return "page_text";
   }
   NOTREACHED();
+}
+
+bool IsNumberChar(char c) {
+  return base::IsAsciiDigit(c) || c == ' ' || c == '-' || c == '(' ||
+         c == ')' || c == '+' || c == '.';
+}
+
+// A number written with separators counts as private from this many digits: a
+// card (13 to 19) always is, a phone number with a country code (12) is, and a
+// date or a timestamp (8 to 10) is not.
+constexpr size_t kSpacedNumberDigits = 12;
+
+// And ten digits in one unbroken row are private wherever they sit, including
+// glued to the letters beside them. MEASURED on a real page: the accessibility
+// text joins its blocks with no separator, so "Phone: 9876543210" followed by
+// "Email: ..." arrived as "9876543210Email:", one word that is not a number, and
+// the phone number went to the model in the clear.
+constexpr size_t kGluedNumberDigits = 10;
+
+// The [begin, end) ranges of such runs in `text`. A run ends at its last digit,
+// so a full stop after it stays with the sentence.
+std::vector<std::pair<size_t, size_t>> SpacedNumberRuns(std::string_view text) {
+  std::vector<std::pair<size_t, size_t>> runs;
+  size_t i = 0;
+  while (i < text.size()) {
+    if (!base::IsAsciiDigit(text[i])) {
+      ++i;
+      continue;
+    }
+    size_t j = i;
+    size_t digits = 0;
+    size_t in_a_row = 0;
+    size_t longest_row = 0;
+    size_t last_digit_end = i;
+    while (j < text.size() && IsNumberChar(text[j])) {
+      if (base::IsAsciiDigit(text[j])) {
+        ++digits;
+        ++in_a_row;
+        longest_row = std::max(longest_row, in_a_row);
+        last_digit_end = j + 1;
+      } else {
+        in_a_row = 0;
+      }
+      ++j;
+    }
+    if (digits >= kSpacedNumberDigits || longest_row >= kGluedNumberDigits) {
+      runs.emplace_back(i, last_digit_end);
+    }
+    i = std::max(j, i + 1);
+  }
+  return runs;
 }
 
 // Replaces the private words in `text`, leaving the rest. True if it changed.
@@ -157,9 +212,10 @@ bool RedactWords(std::string& text) {
   if (text.empty()) {
     return false;
   }
+  // First the numbers written in groups, which no single word gives away.
+  bool changed = RedactSpacedNumbers(text);
   std::vector<std::string> words = base::SplitString(
       text, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
-  bool changed = false;
   for (std::string& word : words) {
     if (ClassifyText(word) != Sensitivity::kNone) {
       word = kRedactedMarker;
@@ -173,6 +229,32 @@ bool RedactWords(std::string& text) {
 }
 
 }  // namespace
+
+bool RedactSpacedNumbers(std::string& text) {
+  const std::vector<std::pair<size_t, size_t>> runs = SpacedNumberRuns(text);
+  // From the end, so the earlier offsets stay true.
+  for (auto it = runs.rbegin(); it != runs.rend(); ++it) {
+    text.replace(it->first, it->second - it->first, kRedactedMarker);
+  }
+  return !runs.empty();
+}
+
+bool ContainsPrivateText(std::string_view text) {
+  if (!SpacedNumberRuns(text).empty()) {
+    return true;
+  }
+  for (const std::string& word : base::SplitString(
+           text, " ", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL)) {
+    const Sensitivity kind = ClassifyText(word);
+    if (kind == Sensitivity::kEmail || kind == Sensitivity::kPaymentCard) {
+      return true;
+    }
+    if (kind == Sensitivity::kPhone && CountDigits(word) >= 10) {
+      return true;
+    }
+  }
+  return false;
+}
 
 Sensitivity ClassifyText(std::string_view text) {
   const std::string lowered = base::ToLowerASCII(text);
@@ -255,6 +337,14 @@ std::vector<Redaction> FindRedactions(const Observation& observation) {
     redaction.bounds = node.offscreen ? gfx::Rect() : node.bounds;
     found.push_back(std::move(redaction));
   }
+  // Plain text that is private: no element, so found in the tree and kept as a
+  // region to paint over.
+  for (const gfx::Rect& region : observation.private_regions) {
+    Redaction redaction;
+    redaction.kind = Sensitivity::kPageText;
+    redaction.bounds = region;
+    found.push_back(std::move(redaction));
+  }
   return found;
 }
 
@@ -274,8 +364,12 @@ void RedactObservation(Observation& observation) {
     // it is filled in, it is here" is everything a model needs to decide what to
     // do next, and it is not the user's email address.
     if (!node.value.empty()) {
+      node.raw_value = node.value;
       node.value = kRedactedMarker;
     }
+    // A sensitive control's choices go with it: a list of saved cards or
+    // addresses is the private thing itself.
+    node.options.clear();
 
     // And the name, where the private thing is the name itself. Word-wise, so
     // "Signed in as [redacted]" survives as something the model can still find
@@ -297,6 +391,11 @@ void RedactObservation(Observation& observation) {
   // sensitive. A harmless button beside someone's address still shows it.
   for (ObservedNode& node : observation.elements) {
     RedactWords(node.detail);
+    // The labels a drop-down offers can carry the same things ("Home, 12 MG
+    // Road", "Visa ending 4242"), and they reach the model in its own field.
+    for (std::string& option : node.options) {
+      RedactWords(option);
+    }
   }
 
   // The page's running text: one long run with no structure, so anything that
@@ -304,6 +403,11 @@ void RedactObservation(Observation& observation) {
   // full here -- a bare ten-digit word in prose is a phone number far more
   // often than it is anything else.
   RedactWords(observation.text);
+  // The rest of the page, for page.read. It was copied from `text` BEFORE this
+  // point and never touched, so reading a page sent its addresses, phone numbers
+  // and emails to the model in the clear while the short view of the same page
+  // was masked.
+  RedactWords(observation.full_text);
 
   // The title gets the narrower rule, for the reason names do: a title is a
   // title. "I Spent 1000000 Dollars" is seven digits and a video, and blanking

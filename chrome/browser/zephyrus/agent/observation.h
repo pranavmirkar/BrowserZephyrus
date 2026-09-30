@@ -31,6 +31,24 @@ struct ObservedNode {
   std::string name;
   std::string value;
 
+  // What the field REALLY holds, kept only for a field whose `value` was
+  // replaced by "[redacted]". It exists so the browser can check that text it
+  // typed landed, which it cannot do against a mask: every phone, email and card
+  // field then failed verification, the model was told "did not go in" about
+  // text that had, retried, and gave up or handed the form to the user.
+  //
+  // NEVER SERIALISED. ToJson writes named fields one by one and this is not one
+  // of them; a test pins that. Do not read it for anything that leaves the
+  // browser.
+  std::string raw_value;
+
+  // For a drop-down list: the labels of the choices, in order. A collapsed
+  // <select> shows only the one chosen, so without this the model has to guess
+  // what it can pick -- MEASURED, it passed an option's hidden value ("19:30")
+  // for a list that offers "7:30 pm", and the choice did not take. Empty for
+  // everything else, and capped: a country list is not worth the prompt.
+  std::vector<std::string> options;
+
   // The node's id WITHIN THIS SNAPSHOT. Never leaves the browser, and never
   // shown to the model: the model works in issued ids so a made-up one resolves
   // to nothing.
@@ -143,7 +161,16 @@ struct Observation {
   std::string url;
   std::string title;
   std::vector<ObservedNode> elements;
+  // Where plain text on the page (not in any control) looks like an email
+  // address, a phone number or a card number, in the viewport's coordinates.
+  // The picture is painted over here; the text channel is redacted by words.
+  std::vector<gfx::Rect> private_regions;
   std::string text;
+  // The page's text past the budget above, for page.read. Never sent to the
+  // model as part of an Observation: `text` is the prefix the model is shown,
+  // and this is what it can page through on request. Bounded, because a page
+  // decides how long it is.
+  std::string full_text;
 
   // What changed since the agent last looked, in plain words, or empty.
   //
@@ -224,6 +251,21 @@ struct Observation {
   // value beside it in plain sight.
   gfx::Size viewport;
 
+  // Device pixels per DIP when the picture was taken. Element bounds are in
+  // device pixels and the viewport is in DIPs, so scaling one onto the other
+  // without this puts every mask and every label 1.5x off on a 150% display.
+  float device_scale = 1.f;
+
+  // The screenshot's own size, when one was taken. page.click_at speaks in its
+  // pixels, and this is what turns them back into the page's.
+  gfx::Size screenshot_size;
+
+  // Whether the picture goes to the model, as an image (cloud models; see
+  // BrowserToolSurface::SetModelScreenshots). When true, ToJson carries it as
+  // base64 and the kernel's loop lifts it out before the text is ever shown to
+  // the model, attaching it as an image instead.
+  bool send_screenshot = false;
+
   // The tree this came from. Compared before acting: if the page has been
   // replaced, every id in here refers to something that no longer exists, and
   // acting on a matching id in the new tree would act on the wrong thing.
@@ -299,6 +341,7 @@ bool IsTextEntryRole(std::string_view role);
 // cut falls on the site's furniture rather than on what the task is about.
 inline constexpr size_t kMaxObservedElements = 30;
 inline constexpr size_t kMaxObservedTextLength = 700;
+inline constexpr size_t kMaxFullTextLength = 60000;
 
 }  // namespace zephyrus::agent
 

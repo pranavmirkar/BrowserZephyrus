@@ -458,6 +458,8 @@ auto& GetViewCommandMap() {
   return kViewCommandMap;
 }
 
+// Appearance setting; registered as a literal in browser_prefs.cc.
+constexpr char kZephyrusContainersPref[] = "zephyrus.appearance.m3_containers";
 constexpr int kBrowserAppMenuRefreshExpandedMargin = 5;
 constexpr int kBrowserAppMenuRefreshCollapsedMargin = 2;
 constexpr int kLargeSpaceBetweenButtons = 6;
@@ -1065,14 +1067,11 @@ void ToolbarView::Init() {
   // it beyond the rule would group it with minimise and close, and would sit in
   // the 2px of air that separator's spacing was balanced on.
   //
-  // Only present when a model is actually configured. An icon that opens a
-  // panel which can only say "no model configured" is worse than no icon, and
-  // in a normal build there is nothing behind it yet.
-  if (zephyrus::DevSwitchesEnabled() && browser_->is_type_normal() &&
-      base::CommandLine::ForCurrentProcess()->HasSwitch(
-          zephyrus::agent::kAgentModelEndpointSwitch) &&
-      base::CommandLine::ForCurrentProcess()->HasSwitch(
-          zephyrus::agent::kAgentModelSwitch)) {
+  // In every normal window. It used to appear only when the development model
+  // switches were passed, because the panel then had nothing behind it. Now a
+  // user connects a cloud model from the panel's own settings (ADR 0004), so
+  // the panel is where setting one up starts.
+  if (browser_->is_type_normal()) {
     auto agent_button = std::make_unique<ToolbarButton>(base::BindRepeating(
         [](Browser* browser) {
           BrowserView* view = BrowserView::GetBrowserViewForBrowser(browser);
@@ -1135,6 +1134,12 @@ void ToolbarView::Init() {
   if (home_) {
     home_->SetVisible(show_home_button_.GetValue());
   }
+
+  zephyrus_m3_containers_.Init(
+      kZephyrusContainersPref, prefs,
+      base::BindRepeating(&ToolbarView::OnZephyrusContainersChanged,
+                          base::Unretained(this)));
+  OnZephyrusContainersChanged();
 
   if (glic::GlicEnabling::IsProfileEligible(browser_view_->GetProfile())) {
     auto* vertical_tab_strip_state_controller =
@@ -2403,6 +2408,15 @@ class ZephyrusWin11CaptionButton : public views::Button {
     }
   }
 
+  // Whether a tonal container sits behind this glyph. Without one the glyph
+  // reads against the title bar, so it uses onSurface, not the container ink.
+  void SetContained(bool contained) {
+    if (contained_ != contained) {
+      contained_ = contained;
+      SchedulePaint();
+    }
+  }
+
   // The group owns the complete container and state layer. A second circular
   // hover fill here would cover the connected corners with a different shape.
   void OnPaintBackground(gfx::Canvas* canvas) override {}
@@ -2428,8 +2442,10 @@ class ZephyrusWin11CaptionButton : public views::Button {
         GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
     // Pair the glyph with the container, including Close's error state.
     const SkColor symbol_color = zephyrus::m3::Role(
-        *this, hot && kind_ == Kind::kClose ? kColorZephyrusOnErrorContainer
-                                          : kColorZephyrusOnSecondaryContainer);
+        *this, hot && kind_ == Kind::kClose
+                   ? kColorZephyrusOnErrorContainer
+                   : contained_ ? kColorZephyrusOnSecondaryContainer
+                                : kColorZephyrusOnSurface);
 
     gfx::ScopedCanvas scoped(canvas);
     const gfx::Rect contents = GetContentsBounds();
@@ -2497,6 +2513,7 @@ class ZephyrusWin11CaptionButton : public views::Button {
  private:
   Kind kind_;
   bool maximized_ = false;
+  bool contained_ = true;
   SkColor foreground_ = SK_ColorWHITE;
 };
 
@@ -3457,6 +3474,15 @@ class ZephyrusGlassPill : public views::View {
       std::vector<std::vector<ZephyrusGroupSegment>>()>;
   void SetGroupSource(GroupSource source) { source_ = std::move(source); }
 
+  // Appearance setting. Off: no container at rest, only the hover and pressed
+  // state layer, so the controls still answer the pointer.
+  void SetContained(bool contained) {
+    if (contained_ != contained) {
+      contained_ = contained;
+      SchedulePaint();
+    }
+  }
+
   // views::View:
   void OnPaint(gfx::Canvas* canvas) override {
     if (!source_) {
@@ -3492,6 +3518,19 @@ class ZephyrusGlassPill : public views::View {
               color, ink, group[i].pressed ? zephyrus::m3::kPressed
                                           : zephyrus::m3::kHover);
         }
+        if (!contained_) {
+          if (!(group[i].hovered || group[i].pressed)) {
+            continue;
+          }
+          // No container to tint: Close keeps its error container (a warning
+          // affordance), everything else is a bare onSurface state layer.
+          color = group[i].close
+                      ? color
+                      : SkColorSetA(
+                            zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+                            group[i].pressed ? zephyrus::m3::kPressed
+                                             : zephyrus::m3::kHover);
+        }
         fill.setColor(color);
         canvas->sk_canvas()->drawRRect(rrect, fill);
       }
@@ -3500,6 +3539,7 @@ class ZephyrusGlassPill : public views::View {
 
  private:
   GroupSource source_;
+  bool contained_ = true;
 };
 
 BEGIN_METADATA(ZephyrusGlassPill)
@@ -3720,6 +3760,25 @@ void ToolbarView::AddZephyrusWindowControls() {
                                          gfx::Insets::TLBR(-3, 0, -3, 0));
   zephyrus_close_button_->SetProperty(views::kMarginsKey,
                                       gfx::Insets::TLBR(-3, 0, -3, -6));
+  OnZephyrusContainersChanged();
+}
+
+void ToolbarView::OnZephyrusContainersChanged() {
+  // Read the pref itself, not the member: this also runs from
+  // AddZephyrusWindowControls(), which can precede Init() binding the member.
+  const bool contained =
+      browser_->profile()->GetPrefs()->GetBoolean(kZephyrusContainersPref);
+  if (zephyrus_nav_pill_backdrop_) {
+    static_cast<ZephyrusGlassPill*>(zephyrus_nav_pill_backdrop_.get())
+        ->SetContained(contained);
+  }
+  for (views::Button* button :
+       {zephyrus_minimize_button_.get(), zephyrus_maximize_button_.get(),
+        zephyrus_close_button_.get()}) {
+    if (button) {
+      static_cast<ZephyrusWin11CaptionButton*>(button)->SetContained(contained);
+    }
+  }
 }
 
 void ToolbarView::SetZephyrusOmniboxFocused(bool focused) {

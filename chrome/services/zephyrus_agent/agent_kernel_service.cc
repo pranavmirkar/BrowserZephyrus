@@ -75,6 +75,8 @@ void AgentKernelService::RunTask(
     mojo::PendingRemote<mojom::AgentModel> model,
     uint32_t max_steps,
     mojom::PendingApprovalPtr approved,
+    mojom::CloudModelPtr cloud,
+    mojom::TaskMemoryPtr memory,
     RunTaskCallback callback) {
   // A kernel with no contract has no rules, and a loop with no rules is not
   // something to start.
@@ -83,12 +85,32 @@ void AgentKernelService::RunTask(
     outcome->status = mojom::TaskStatus::kFailed;
     outcome->message = "the agent is not available";
     outcome->steps = 0;
+    outcome->usage = mojom::TokenUsage::New();
     std::move(callback).Run(std::move(outcome));
     return;
   }
 
+  // Exactly one model. Both would leave it unclear which one decided; neither
+  // would start a loop that can only wait.
+  const bool has_cloud = cloud && cloud->transport.is_valid();
+  if (model.is_valid() == has_cloud) {
+    auto outcome = mojom::TaskOutcome::New();
+    outcome->status = mojom::TaskStatus::kFailed;
+    outcome->message = "the task was given no model, or two";
+    outcome->steps = 0;
+    outcome->usage = mojom::TokenUsage::New();
+    std::move(callback).Run(std::move(outcome));
+    return;
+  }
+  if (has_cloud) {
+    TaskLoop::StartCloud(*kernel_, task, std::move(runner), std::move(cloud),
+                         max_steps, std::move(approved), std::move(callback),
+                         std::move(memory));
+    return;
+  }
   TaskLoop::Start(*kernel_, task, std::move(runner), std::move(model),
-                  max_steps, std::move(approved), std::move(callback));
+                  max_steps, std::move(approved), std::move(callback),
+                  std::move(memory));
 }
 
 }  // namespace zephyrus::agent

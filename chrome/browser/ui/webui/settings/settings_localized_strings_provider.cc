@@ -848,6 +848,12 @@ void AddZephyrusAdblockStrings(content::WebUIDataSource* html_source) {
       u"Clears the internal IDs this installation would otherwise keep "
       u"forever, so they cannot be used to recognise it across sessions. "
       u"This does not hide your IP address or clear cookies.");
+  html_source->AddString("zephyrusM3ContainersLabel",
+                         u"Tonal containers behind toolbar buttons");
+  html_source->AddString(
+      "zephyrusM3ContainersSubLabel",
+      u"Draws the rounded Material 3 shapes behind the navigation and window "
+      u"buttons. Turn off for plain, borderless buttons.");
   html_source->AddString("zephyrusAdblockEnabledLabel",
                          u"Block ads and trackers");
   html_source->AddString(

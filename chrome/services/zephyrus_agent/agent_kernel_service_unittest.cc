@@ -61,7 +61,7 @@ class AgentKernelServiceTest : public testing::Test {
     request->task = "Find the spec sheet";
     request->url = "https://docs.example.com/laptops/x1";
     request->elements.push_back(Element("e1", "link", "Specifications"));
-    request->elements.push_back(Element("e2", "button", "Send to a friend"));
+    request->elements.push_back(Element("e2", "button", "Buy now"));
     request->elements.push_back(Element("e3", "button", "Next page"));
     return request;
   }
@@ -133,8 +133,8 @@ TEST_F(AgentKernelServiceTest, ReportsTheContractItEnforces) {
       }));
   run_loop.Run();
 
-  EXPECT_EQ(version, "1.0.0");
-  EXPECT_EQ(tool_count, 18u);
+  EXPECT_EQ(version, "1.4.0");
+  EXPECT_EQ(tool_count, 26u);
 }
 
 TEST_F(AgentKernelServiceTest, AllowsAnOrdinaryRead) {
@@ -152,7 +152,7 @@ TEST_F(AgentKernelServiceTest, AsksBeforeAConsequentialClick) {
   EXPECT_EQ(decision->risk, "R2");
   // The reason is the text the user will read in the prompt, so it has to
   // survive serialization intact and still name the control.
-  EXPECT_NE(decision->reason.find("Send to a friend"), std::string::npos)
+  EXPECT_NE(decision->reason.find("Buy now"), std::string::npos)
       << decision->reason;
 }
 

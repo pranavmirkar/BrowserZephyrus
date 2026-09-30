@@ -32,6 +32,8 @@ mod contract;
 mod extraction;
 #[forbid(unsafe_code)]
 mod policy;
+#[forbid(unsafe_code)]
+mod providers;
 
 #[cfg(test)]
 mod tests;
@@ -98,6 +100,45 @@ mod ffi {
         arguments_json: String,
     }
 
+    /// One non-secret HTTP header of a provider request.
+    struct ProviderHeader {
+        name: String,
+        value: String,
+    }
+
+    /// A request for the browser to send to a cloud model provider. See
+    /// `providers` and ADR 0004: no key, no host, just what to say.
+    struct ProviderRequest {
+        /// Empty on success; otherwise why no request could be built.
+        error: String,
+        /// Relative to the base URL the user configured for the provider.
+        path: String,
+        headers: Vec<ProviderHeader>,
+        body: String,
+    }
+
+    /// A provider's reply, read.
+    struct ProviderReply {
+        /// Empty on success; otherwise words the panel can show.
+        error: String,
+        /// True when the model made a native tool call.
+        found: bool,
+        /// The CONTRACT name, mapped back from the wire name.
+        tool: String,
+        arguments_json: String,
+        /// Calls the model made after the first in the same turn, in order:
+        /// contract names and their arguments, the two lists the same length.
+        more_tools: Vec<String>,
+        more_arguments_json: Vec<String>,
+        /// Text the model wrote. Read with extract_call when `found` is false.
+        text: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_read_tokens: u64,
+        cache_write_tokens: u64,
+        stop: String,
+    }
+
     struct PolicyDecision {
         disposition: Disposition,
         /// Effective risk class: the tool's floor raised by what this specific
@@ -146,23 +187,54 @@ mod ffi {
         /// of a bracket. A kernel that failed to load has no tools, so nothing
         /// matches and the caller is told no call was found, which is true.
         fn extract_call(self: &Kernel, response: &str) -> ExtractedCall;
+
+        /// Build a cloud provider request for one step. `kind` is "anthropic",
+        /// "openai" or "gemini".
+        fn build_provider_request(
+            self: &Kernel,
+            kind: &str,
+            model: &str,
+            system: &str,
+            user: &str,
+            image_jpeg_base64: &str,
+            max_tokens: u32,
+            force_tool: bool,
+            effort: &str,
+        ) -> ProviderRequest;
+
+        /// Read a cloud provider's HTTP reply.
+        fn parse_provider_reply(
+            self: &Kernel,
+            kind: &str,
+            status: u16,
+            body: &str,
+        ) -> ProviderReply;
     }
 }
 
 /// The kernel, or a record of why there isn't one.
 pub struct Kernel {
     contract: Option<Contract>,
+    /// The contract's tools as providers see them. Present exactly when
+    /// `contract` is: a contract whose names cannot be put on the wire is a
+    /// contract the kernel cannot use.
+    tools: Option<providers::ToolTable>,
     error: String,
 }
 
 pub fn load_kernel() -> Box<Kernel> {
-    Box::new(match Contract::parse(CONTRACT_JSON) {
-        Ok(contract) => Kernel {
+    let loaded = Contract::parse(CONTRACT_JSON).and_then(|contract| {
+        providers::ToolTable::from_contract(CONTRACT_JSON).map(|tools| (contract, tools))
+    });
+    Box::new(match loaded {
+        Ok((contract, tools)) => Kernel {
             contract: Some(contract),
+            tools: Some(tools),
             error: String::new(),
         },
         Err(problem) => Kernel {
             contract: None,
+            tools: None,
             error: problem,
         },
     })
@@ -276,7 +348,11 @@ fn extract_call_with(contract: Option<&Contract>, response: &str) -> ffi::Extrac
     match extraction::extract_call(response, &known) {
         Some(call) => ffi::ExtractedCall {
             found: true,
-            tool: call.name,
+            // A model that has been calling tools natively writes the wire name
+            // (`page_click`) when it falls back to prose. MEASURED: twice in one
+            // run it did, and was told "page_click is not a tool in this
+            // browser" for a tool that is. Map it back to the contract's name.
+            tool: canonical_name(&known, call.name),
             arguments_json: call.arguments_json,
         },
         None => ffi::ExtractedCall {
@@ -284,5 +360,114 @@ fn extract_call_with(contract: Option<&Contract>, response: &str) -> ffi::Extrac
             tool: String::new(),
             arguments_json: String::from("{}"),
         },
+    }
+}
+
+/// `page_click` -> `page.click`, when that is what the contract has.
+fn canonical_name(known: &[String], name: String) -> String {
+    if known.iter().any(|k| *k == name) {
+        return name;
+    }
+    if let Some((head, tail)) = name.split_once('_') {
+        let dotted = format!("{head}.{tail}");
+        if known.iter().any(|k| *k == dotted) {
+            return dotted;
+        }
+    }
+    name
+}
+
+/// See `providers`. The cxx-facing shape: no Option, no Result, so absence and
+/// failure are fields.
+impl Kernel {
+    pub fn build_provider_request(
+        &self,
+        kind: &str,
+        model: &str,
+        system: &str,
+        user: &str,
+        image_jpeg_base64: &str,
+        max_tokens: u32,
+        force_tool: bool,
+        effort: &str,
+    ) -> ffi::ProviderRequest {
+        let failed = |error: String| ffi::ProviderRequest {
+            error,
+            path: String::new(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+        let Some(tools) = self.tools.as_ref() else {
+            return failed(format!("the agent is not available ({})", self.error));
+        };
+        let Some(kind) = providers::Kind::parse(kind) else {
+            return failed(format!("`{kind}` is not a model provider this browser speaks"));
+        };
+        let turn = providers::Turn {
+            kind,
+            model,
+            system,
+            user,
+            max_tokens,
+            image_jpeg_base64,
+            force_tool,
+            effort,
+        };
+        match providers::build(tools, &turn) {
+            Ok(request) => ffi::ProviderRequest {
+                error: String::new(),
+                path: request.path,
+                headers: request
+                    .headers
+                    .into_iter()
+                    .map(|(name, value)| ffi::ProviderHeader { name, value })
+                    .collect(),
+                body: request.body,
+            },
+            Err(problem) => failed(problem),
+        }
+    }
+
+    pub fn parse_provider_reply(&self, kind: &str, status: u16, body: &str) -> ffi::ProviderReply {
+        let mut out = ffi::ProviderReply {
+            error: String::new(),
+            found: false,
+            tool: String::new(),
+            arguments_json: String::from("{}"),
+            more_tools: Vec::new(),
+            more_arguments_json: Vec::new(),
+            text: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            stop: String::new(),
+        };
+        let Some(tools) = self.tools.as_ref() else {
+            out.error = format!("the agent is not available ({})", self.error);
+            return out;
+        };
+        let Some(kind) = providers::Kind::parse(kind) else {
+            out.error = format!("`{kind}` is not a model provider this browser speaks");
+            return out;
+        };
+        let reply = providers::parse(tools, kind, status, body);
+        out.error = reply.error.unwrap_or_default();
+        if let Some((tool, arguments_json)) = reply.tool {
+            out.found = true;
+            out.tool = tool;
+            out.arguments_json = arguments_json;
+        }
+        for (tool, arguments_json) in reply.more {
+            out.more_tools.push(tool);
+            out.more_arguments_json.push(arguments_json);
+        }
+        out.text = reply.text;
+        out.input_tokens = reply.usage.input;
+        out.output_tokens = reply.usage.output;
+        out.cache_read_tokens = reply.usage.cache_read;
+        out.cache_write_tokens = reply.usage.cache_write;
+        out.stop = reply.stop;
+        out
     }
 }

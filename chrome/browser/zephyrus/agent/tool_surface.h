@@ -6,6 +6,8 @@
 #define CHROME_BROWSER_ZEPHYRUS_AGENT_TOOL_SURFACE_H_
 
 #include <string>
+
+#include "ui/gfx/geometry/point.h"
 #include <utility>
 #include <vector>
 
@@ -102,6 +104,15 @@ class ToolSurface {
   // decide whether it is finished.
   virtual void ObserveForCheck(ObserveCallback callback) = 0;
 
+  // A look for the executor's own bookkeeping -- refreshing where an element
+  // is just before acting on it, reading back what was typed, reporting the
+  // address after a click. One snapshot of the page as it is, taken once input
+  // in flight has landed: no waiting for it to settle and no picture. Settling
+  // is the loop's look at the start of the NEXT step, and doing it here as well
+  // meant every click waited for the page twice. The default is the settling
+  // look, so a surface that does not know the difference is merely slower.
+  virtual void ObserveQuick(ObserveCallback callback);
+
   // Identifies the tree the active page is currently showing. Compared against
   // the Observation's before acting on any element: if it has changed, every id
   // the model holds refers to something that no longer exists.
@@ -116,6 +127,11 @@ class ToolSurface {
   // need different parts of it, and which one is used is this layer's decision
   // to make. A caller that had to pick would eventually pick wrong.
   virtual bool ClickNode(const ObservedNode& node) = 0;
+
+  // Moves the pointer onto an element and leaves it there, without pressing.
+  // Menus and tooltips that open on hover are otherwise unreachable. Default:
+  // not supported.
+  virtual bool HoverNode(const ObservedNode& node);
 
   // Types text into a field, as a person would: put the pointer on it, then
   // send real keystrokes.
@@ -139,6 +155,14 @@ class ToolSurface {
 
   virtual bool ScrollPage(bool down, const std::string& amount) = 0;
   virtual bool PressKey(const std::string& key) = 0;
+
+  // Type into whatever the page has focused, without clicking anything first.
+  // A newline presses Enter and a tab presses Tab.
+  virtual bool TypeIntoFocus(const std::string& text);
+
+  // Click a point on the page, in device pixels, like ClickNode does for an
+  // element's centre.
+  virtual bool ClickAtPoint(const gfx::Point& point);
   virtual std::string ReadSelection() = 0;
 };
 
