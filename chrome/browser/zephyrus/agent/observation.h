@@ -197,6 +197,17 @@ struct Observation {
   // button's shape, which is exactly the kind of inference being inside the
   // browser lets us replace with a fact.
   bool media_playing = false;
+
+  // Files the browser began downloading since the agent last looked, named the
+  // way a person would read them off the downloads shelf (see SafeFileName).
+  //
+  // The other half of "did that click work". A download leaves the page exactly
+  // as it was, so the click looked like it did nothing: MEASURED in benchmark
+  // v2 (`download`), the model clicked the link, saw an unchanged page, and
+  // proposed the same click four more times -- four model calls, each refused,
+  // each paid for -- before giving up and telling the user to check their
+  // downloads. The browser knows a download started; the model had no way to.
+  std::vector<std::string> downloads_started;
   // The address of the DOCUMENT that was last actually loaded, which is not
   // always the address the page is currently showing.
   //

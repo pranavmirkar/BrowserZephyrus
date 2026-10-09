@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <map>
 
 #include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
@@ -809,11 +810,16 @@ void ToolExecutor::DispatchElement(const std::string& tool,
 void ToolExecutor::OnClickChecked(ExecuteCallback callback, Observation fresh) {
   base::DictValue evidence;
   evidence.Set("input_dispatched", true);
-  evidence.Set("url", fresh.url);
-  evidence.Set("title", fresh.title);
   evidence.Set("media_playing", fresh.media_playing);
-  // A dispatched click is not proof that the user's task succeeded.
-  evidence.Set("verification", "Check the next observation for the requested effect.");
+  // No url or title here. This look is taken the instant the click lands, before
+  // a navigation it started has committed, so it described the page the click
+  // LEFT -- "title: Acme Store" right after a click that had opened Products.
+  // The model read it as where it was now, doubted a click that had worked, and
+  // went back to check (benchmark v2, `example_cycle`). Where the click led is
+  // reported by the next observation, which waits for the page.
+  evidence.Set("verification",
+               "The click was made. What it did is shown by the page you are "
+               "given next; a page that opened is reported there.");
   std::string json;
   base::JSONWriter::Write(evidence, &json);
   std::move(callback).Run(Ok(std::move(json)));
@@ -993,6 +999,27 @@ void ToolExecutor::OnVerified(std::string text,
   if (!wanted.empty() && squash(fresh.text).find(wanted) != std::string::npos) {
     std::move(callback).Run(Ok());
     return;
+  }
+  // A value split across a SET of fields: the Day, Month and Year segments of a
+  // date input, or one box per digit. Typing "15112026" into the first segment
+  // fills all three (each advances to the next), so no single field ever holds
+  // the whole string and the check above called it "did not go in". MEASURED in
+  // benchmark v2, `date`: the page showed 15 / 11 / 2026, the model was told it
+  // had failed, and it went and clicked Confirm on a form it believed empty.
+  // Read the set's fields in page order as the one value they make together.
+  if (!wanted.empty()) {
+    std::map<std::string, std::string> joined;
+    for (const ObservedNode& node : fresh.elements) {
+      if (!node.group.empty()) {
+        joined[node.group] += squash(held(node));
+      }
+    }
+    for (const auto& [group, value] : joined) {
+      if (value.find(wanted) != std::string::npos) {
+        std::move(callback).Run(Ok());
+        return;
+      }
+    }
   }
 
   // Nothing of it anywhere -- not even its first word -- is a real failure:

@@ -648,6 +648,22 @@ void MascotRig::ApplyMood() {
   }
 }
 
+void QuantizeToDevicePixels(std::vector<Rect>& frame,
+                            float ox,
+                            float oy,
+                            float scale) {
+  for (Rect& r : frame) {
+    const float left = static_cast<float>(std::lround(ox + r.x * scale));
+    const float top = static_cast<float>(std::lround(oy + r.y * scale));
+    const float right = static_cast<float>(std::lround(ox + (r.x + r.w) * scale));
+    const float bottom = static_cast<float>(std::lround(oy + (r.y + r.h) * scale));
+    r.x = left;
+    r.y = top;
+    r.w = right - left;
+    r.h = bottom - top;
+  }
+}
+
 std::vector<Rect> MascotRig::Draw() const {
   std::vector<Rect> out;
   out.reserve(80);
@@ -658,6 +674,10 @@ std::vector<Rect> MascotRig::Draw() const {
   body.lean = Get(kLean);
   body.dx = Get(kBodyDx);
   body.dy = Get(kBodyDy);
+  if (pixel_snap_ > 0 &&
+      (mood_ == MascotMood::kIdle || mood_ == MascotMood::kSleeping)) {
+    body.dy = std::round(body.dy / pixel_snap_) * pixel_snap_;
+  }
 
   const float time = static_cast<float>(time_);
 

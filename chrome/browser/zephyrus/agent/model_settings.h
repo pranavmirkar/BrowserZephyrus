@@ -49,6 +49,13 @@ inline constexpr char kCloudForceToolPref[] = "zephyrus.agent.cloud.force_tool";
 inline constexpr char kCloudMaxUsdPref[] = "zephyrus.agent.cloud.max_usd";
 // Whether the mascot lives in the browser window. On by default.
 inline constexpr char kMascotPref[] = "zephyrus.agent.mascot";
+
+// Which character is drawn: today's pixel Zep ("zep", the default) or the lens
+// ("lens"), and the lens's body fill ("static" or "fluid"). Read together as a
+// MascotLook so a hand-edited or stale value can only ever mean one of the three
+// looks that exist.
+inline constexpr char kMascotSkinPref[] = "zephyrus.agent.mascot_skin";
+inline constexpr char kMascotLensFillPref[] = "zephyrus.agent.mascot_lens_fill";
 // Whether the agent keeps what it is told across chats (long-term memory). On by
 // default; the chat memory a follow-up needs is separate and always on.
 inline constexpr char kMemoryPref[] = "zephyrus.agent.memory";
@@ -74,6 +81,10 @@ inline constexpr char kUseProvidedKeysPref[] = "zephyrus.agent.use_provided_keys
 inline constexpr char kBundledDefaultKind[] = "anthropic";
 inline constexpr char kBundledDefaultModel[] = "claude-sonnet-5-5";
 
+// Developer builds only (see zephyrus::DevSwitchesEnabled): use this model
+// instead of the build's choice, e.g. --zephyrus-agent-model=claude-haiku-5-5.
+inline constexpr char kDevModelSwitch[] = "zephyrus-agent-model";
+
 // Hands-free voice: "Hey Zep", and Voice Lock. Registered by
 // RegisterProfilePrefs. Off by default: the microphone opens only when the
 // person asks.
@@ -93,6 +104,12 @@ inline constexpr char kVoiceOnboardingPref[] = "zephyrus.voice.onboarding_shown"
 inline constexpr char kVoiceKeyKind[] = "assemblyai";
 
 void RegisterProfilePrefs(PrefRegistrySimple* registry);
+
+enum class MascotLook { kZep, kLensStatic, kLensFluid };
+// Anything unrecognised is Zep: a pref nobody can set to a value that draws
+// nothing.
+MascotLook ReadMascotLook(const PrefService& prefs);
+void WriteMascotLook(PrefService& prefs, MascotLook look);
 
 // The endpoint a provider kind uses when the user has not chosen one.
 GURL DefaultBaseUrl(std::string_view kind);

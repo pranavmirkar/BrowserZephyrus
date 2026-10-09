@@ -91,9 +91,15 @@ const PAYMENT_VERBS: &[&str] = &[
     "pay",
     "purchase",
     "reserve",
-    "subscribe",
     "transfer",
 ];
+
+// NOT in the list above: "subscribe". It is the label of a free newsletter box
+// and of a free follow button far more often than of a paid plan, and a card
+// for "Subscribe asha@example.com to the newsletter" -- which the user asked for
+// in those words -- stopped a benchmark task that has nothing to do with money.
+// It is a payment when money is in the picture (see `subscribe_costs_money`)
+// and an ordinary outbound action otherwise.
 
 /// Controls that send something out or destroy something, each with the words
 /// in a task that ask for it.
@@ -131,6 +137,7 @@ const OUTBOUND_VERBS: &[(&str, &[&str])] = &[
     ("delete", &["delet", "remov", "clear", "trash", "discard", "eras", "clean", "empty", "drop"]),
     ("remove", &["remov", "delet", "clear", "discard", "uninstall", "drop"]),
     ("unsubscribe", &["unsubscrib", "cancel", "stop", "opt"]),
+    ("subscribe", &["subscrib", "newsletter", "sign", "join", "follow", "email", "regist", "enrol", "updat", "notif", "alert", "mailing"]),
     ("invite", &["invit", "add", "shar"]),
 ];
 
@@ -336,7 +343,7 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
         if let Some(id) = request.arguments.get("element_id").and_then(Value::as_str) {
             if let Some(element) = request.elements.iter().find(|e| e.id == id) {
                 if let Some((verb, spends_money)) =
-                    consequential_verb(&element.name, request.task)
+                    consequential_verb(&element.name, request.task, request.page_url, request.elements)
                 {
                     // The role is named because the user is being asked to
                     // approve a specific control, and "the button Send" is a
@@ -682,6 +689,15 @@ fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Elemen
 
     // Door one: acting on a candidate.
     if let Some(chosen) = target_element(request) {
+        // "Open the FIRST result", "the cheapest": the task says how to choose, so
+        // choosing is doing what was asked and not guessing. Only for LINKS, whose
+        // worst case is a navigation the user can go back from; a recipient, a
+        // button that commits, or a field is still asked about, and a stray
+        // "first" in a task ("First open the inbox, then send to Alex") must not
+        // be able to switch that off.
+        if chosen.role == "link" && task_says_how_to_choose(request.task) {
+            return None;
+        }
         if candidates.iter().any(|c| c.id == chosen.id) {
             let other = *candidates.iter().find(|c| {
                 c.id != chosen.id
@@ -738,7 +754,12 @@ fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Elemen
 /// The first consequential verb in an element's accessible name that should
 /// stop the agent, and whether it is a payment. None for a control that is
 /// harmless, or one the task asked for.
-fn consequential_verb(name: &str, task: &str) -> Option<(&'static str, bool)> {
+fn consequential_verb(
+    name: &str,
+    task: &str,
+    page_url: &str,
+    elements: &[Element],
+) -> Option<(&'static str, bool)> {
     // Only the beginning of the name, because only that part is a LABEL.
     //
     // An accessible name is often computed from everything inside the element,
@@ -776,6 +797,13 @@ fn consequential_verb(name: &str, task: &str) -> Option<(&'static str, bool)> {
     if let Some(verb) = PAYMENT_VERBS.iter().copied().find(|verb| names(verb)) {
         return Some((verb, true));
     }
+    // "Subscribe" costs money only when something says so: a price in the label,
+    // on the page, or a pricing/checkout address. A free newsletter or follow
+    // button falls through to the outbound list below, which asks only when the
+    // task did not ask for it.
+    if names("subscribe") && subscribe_costs_money(&lowered, page_url, elements) {
+        return Some(("subscribe", true));
+    }
 
     let task_words: Vec<String> = task
         .to_ascii_lowercase()
@@ -792,6 +820,66 @@ fn consequential_verb(name: &str, task: &str) -> Option<(&'static str, bool)> {
                     .any(|word| asked_for_by.iter().any(|stem| word.starts_with(stem)))
         })
         .map(|(verb, _)| (*verb, false))
+}
+
+/// A price, in any of the usual ways a page shows one.
+fn shows_a_price(text: &str) -> bool {
+    text.contains(['\u{20b9}', '$', '\u{20ac}', '\u{a3}', '\u{a5}'])
+        || [
+            "/mo", "/month", "/yr", "/year", "per month", "per year", "per week", "a month",
+            "billed", "inr", "usd",
+        ]
+        .iter()
+        .any(|marker| text.contains(marker))
+}
+
+/// Words that, in the control's OWN label, mean a paid thing.
+const MONEY_LABEL_WORDS: &[&str] = &[
+    "premium", "membership", "trial", "plan", "pay", "price", "upgrade", "billing",
+    "monthly", "yearly", "annual",
+];
+
+/// Address words of pages whose business is money.
+const MONEY_PATHS: &[&str] = &[
+    "pricing", "plans", "checkout", "billing", "payment", "premium", "membership",
+    "upgrade", "cart",
+];
+
+/// Whether a "Subscribe" control spends money: a price or a paid word in the
+/// label itself, a price anywhere among the page's controls, or a pricing,
+/// checkout or billing address. Errs towards asking: a wrong "money" is one card,
+/// a wrong "free" is a charge. The card form behind a paid plan is a hand-off
+/// either way, so this only decides what the user is asked BEFORE it.
+fn subscribe_costs_money(label: &str, page_url: &str, elements: &[Element]) -> bool {
+    if shows_a_price(label) || MONEY_LABEL_WORDS.iter().any(|word| label.contains(word)) {
+        return true;
+    }
+    let after_scheme = page_url.split_once("://").map(|(_, rest)| rest).unwrap_or(page_url);
+    let path = after_scheme
+        .split_once('/')
+        .map(|(_, rest)| rest.split(['?', '#']).next().unwrap_or(""))
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if MONEY_PATHS.iter().any(|word| path.contains(word)) {
+        return true;
+    }
+    elements
+        .iter()
+        .any(|element| shows_a_price(&element.name.to_ascii_lowercase()))
+}
+
+/// Words that tell the agent HOW to choose among look-alikes, so that choosing
+/// is following the task and not guessing: "the first result", "the cheapest".
+const CHOOSING_WORDS: &[&str] = &[
+    "first", "second", "third", "fourth", "fifth", "top", "last", "final", "1st", "2nd",
+    "3rd", "cheapest", "lowest", "highest", "best", "latest", "newest", "oldest", "earliest",
+    "biggest", "smallest", "closest", "nearest",
+];
+
+fn task_says_how_to_choose(task: &str) -> bool {
+    task.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| CHOOSING_WORDS.contains(&word))
 }
 
 /// Words on the list that are just as often NOUNS naming a thing that exists.

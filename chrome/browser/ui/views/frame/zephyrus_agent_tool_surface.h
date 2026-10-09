@@ -137,6 +137,7 @@ class BrowserToolSurface : public ToolSurface {
   // loosening the rule that caught it.
   class LoadWaiter;
   class FetchWatcher;
+  class DownloadWatcher;
 
   void TakeSnapshot(ObserveCallback callback);
 
@@ -295,6 +296,10 @@ class BrowserToolSurface : public ToolSurface {
   bool vision_checked_ = false;
 
   std::unique_ptr<FetchWatcher> fetch_watcher_;
+  // Names of files that began downloading since the last look. See
+  // Observation::downloads_started. Written by DownloadWatcher.
+  std::unique_ptr<DownloadWatcher> download_watcher_;
+  std::vector<std::string> pending_downloads_;
   // The last Observation handed out, kept only so the next one can say what
   // changed. Structured rather than re-parsed from JSON, because this is the
   // one place that has the real thing.

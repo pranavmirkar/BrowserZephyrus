@@ -37,6 +37,9 @@
 #include "content/public/browser/page.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/media_session.h"
+#include "content/public/browser/download_manager.h"
+#include "components/download/public/common/download_item.h"
+#include "base/scoped_observation.h"
 #include "content/public/browser/browser_accessibility_state.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
@@ -381,6 +384,57 @@ class BrowserToolSurface::FetchWatcher : public content::WebContentsObserver {
   int navigations_in_flight_ = 0;
 };
 
+// Notices files the browser starts downloading.
+//
+// A download does not change the page, so without this a click that worked is
+// indistinguishable from a click that did nothing. Names are page-controlled
+// text on their way into the model's prompt, so they are reduced to plain
+// filename characters and a short length here, where they enter.
+class BrowserToolSurface::DownloadWatcher
+    : public content::DownloadManager::Observer {
+ public:
+  DownloadWatcher(content::DownloadManager* manager, BrowserToolSurface* owner)
+      : owner_(owner) {
+    observation_.Observe(manager);
+  }
+
+  void OnDownloadCreated(content::DownloadManager*,
+                         download::DownloadItem* item) override {
+    std::string name = item->GetSuggestedFilename();
+    if (name.empty()) {
+      name = item->GetURL().ExtractFileName();
+    }
+    std::string safe;
+    for (char c : name) {
+      if (safe.size() >= 80) {
+        break;
+      }
+      const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                         (c >= '0' && c <= '9') || c == '.' || c == '-' ||
+                         c == '_' || c == '(' || c == ')';
+      // No spaces: a file's name is chosen by the page, and a name made of words
+      // can read as an instruction once it is in the model's prompt.
+      safe.push_back(plain ? c : '_');
+    }
+    if (safe.empty()) {
+      safe = "a file";
+    }
+    if (owner_->pending_downloads_.size() < 8) {
+      owner_->pending_downloads_.push_back(std::move(safe));
+    }
+  }
+
+  void ManagerGoingDown(content::DownloadManager*) override {
+    observation_.Reset();
+  }
+
+ private:
+  const raw_ptr<BrowserToolSurface> owner_;
+  base::ScopedObservation<content::DownloadManager,
+                          content::DownloadManager::Observer>
+      observation_{this};
+};
+
 // Runs `done` when the page stops loading, or when it has waited long enough.
 class BrowserToolSurface::LoadWaiter : public content::WebContentsObserver {
  public:
@@ -705,6 +759,12 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
   Observation observation = BuildObservation(
       update, url, title, find_query_.empty() ? max_elements_ : 5000,
       max_text_length_);
+  if (!download_watcher_ && browser_ && browser_->profile()) {
+    if (content::DownloadManager* manager =
+            browser_->profile()->GetDownloadManager()) {
+      download_watcher_ = std::make_unique<DownloadWatcher>(manager, this);
+    }
+  }
   if (!find_query_.empty()) {
     const auto matches = observation.Matching(find_query_);
     if (matches.empty()) {
@@ -1130,6 +1190,28 @@ void BrowserToolSurface::Answer(Observation observation,
   // After the mask, not before: the mask needs the real values to know what to
   // paint over and where.
   RedactObservation(observation);
+
+  // Downloads that began since the model last looked are reported by the look
+  // it is shown, and taken HERE, at the one exit.
+  //
+  // First written in OnSnapshot, where the news was attached to the first look
+  // of a settle -- which then looked again and threw that Observation away, so
+  // the model never heard about a download that had happened (MEASURED live:
+  // "created" and "drained" in the log, and not a word of it in the prompt). A
+  // look that is only a check must not take it either, so only a look that will
+  // be remembered does.
+  if (remember_this_look_ && !pending_downloads_.empty()) {
+    observation.downloads_started = std::move(pending_downloads_);
+    pending_downloads_.clear();
+    // This runs after RedactObservation, so a name is held to the same standard
+    // here: "invoice_9876543210.pdf" must not carry a number the page text would
+    // have had masked. The model is told a file started, not what it was called.
+    for (std::string& name : observation.downloads_started) {
+      if (ContainsPrivateText(name)) {
+        name = "a file";
+      }
+    }
+  }
 
   // Belt and braces on the promise that the picture never leaves. OnDescribed
   // clears it, but that is only one of the ways out -- vision switched on with

@@ -75,6 +75,12 @@ test('changing the expiry invalidates the signature', async () => {
   assert.equal(r.status, 401);
 });
 
+test('Haiku 5.5 is allowed, and a model that merely looks like it is not', async () => {
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-haiku-5-5' }) })).status, 200);
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-haiku-5-6' }) })).status, 400);
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-haiku-5-5 ' }) })).status, 400);
+});
+
 test('only allowed models, bounded output, no streaming', async () => {
   assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-fable-5-1' }) })).status, 400);
   assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ max_tokens: 999999 }) })).status, 400);

@@ -24,6 +24,7 @@
 #include "ui/accessibility/ax_tree.h"
 #include "ui/accessibility/ax_tree_update.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 namespace zephyrus::agent {
 namespace {
@@ -79,6 +80,25 @@ std::string RoleNameFor(const ui::AXNode& node) {
   if (node.data().IsNonAtomicTextField() &&
       !node.HasState(ax::mojom::State::kProtected)) {
     return "textbox";
+  }
+  // A table header that does something when clicked: the column you sort by.
+  //
+  // A <th> is a header, not a control, so the table below never offered it -- and
+  // sorting by clicking a header is how most tables on the web work. MEASURED
+  // (benchmark v2, `sort`): asked to sort a table by price, the model looked for
+  // a sort control, found none among the elements it was given, and honestly
+  // reported "no sort controls" about a page whose Price header sorts it. Offered
+  // only when the page says the header is live: it has a click action, or it
+  // carries a sort direction (aria-sort). A plain header stays out of the list.
+  if (role == ax::mojom::Role::kColumnHeader ||
+      role == ax::mojom::Role::kRowHeader) {
+    const ui::AXNodeData& data = node.data();
+    if (data.HasAction(ax::mojom::Action::kDoDefault) ||
+        data.GetDefaultActionVerb() == ax::mojom::DefaultActionVerb::kClick ||
+        data.GetIntAttribute(ax::mojom::IntAttribute::kSortDirection) !=
+            static_cast<int>(ax::mojom::SortDirection::kNone)) {
+      return "button";
+    }
   }
   for (const RoleName& entry : kOfferedRoles) {
     if (entry.role != role) {
@@ -435,6 +455,29 @@ void CollectOptionLabels(const ui::AXNode& node,
   }
 }
 
+// Where a node is on the PAGE, including the frames it sits inside.
+//
+// The snapshot of a page with an <iframe> is several trees combined, and the
+// combined tree hangs a child frame's root under its <iframe> node WITHOUT
+// moving it: everything in the frame reports its position relative to the
+// frame's own top-left. MEASURED on a form in an iframe: the field and its button
+// were outlined at the top of the page, 128 px above where they are, so the
+// pointer the agent sent to "click the field" landed on empty page and the text it
+// typed went nowhere ("that did not go in"). Adding up the origin of every
+// <iframe> the node is inside puts it back.
+gfx::RectF PageBounds(const ui::AXTree& tree,
+                      const ui::AXNode* node,
+                      bool* offscreen = nullptr) {
+  gfx::RectF bounds = tree.GetTreeBounds(node, offscreen);
+  for (const ui::AXNode* up = node->parent(); up; up = up->parent()) {
+    if (up->GetRole() == ax::mojom::Role::kIframe ||
+        up->GetRole() == ax::mojom::Role::kIframePresentational) {
+      bounds.Offset(tree.GetTreeBounds(up).OffsetFromOrigin());
+    }
+  }
+  return bounds;
+}
+
 // Notes where plain text on the page is private, so the picture can be painted
 // over it. Per line where the tree has lines, per node where it does not.
 void NotePrivateText(const ui::AXTree& tree,
@@ -443,7 +486,7 @@ void NotePrivateText(const ui::AXTree& tree,
   const auto note = [&](const ui::AXNode& text_node) {
     bool offscreen = false;
     const gfx::Rect bounds =
-        gfx::ToEnclosingRect(tree.GetTreeBounds(&text_node, &offscreen));
+        gfx::ToEnclosingRect(PageBounds(tree, &text_node, &offscreen));
     if (!offscreen && !bounds.IsEmpty()) {
       regions.push_back(bounds);
     }
@@ -542,7 +585,7 @@ void Collect(const ui::AXTree& tree,
         // applies the scroll offsets.
         bool offscreen = false;
         observed.bounds =
-            gfx::ToEnclosingRect(tree.GetTreeBounds(&node, &offscreen));
+            gfx::ToEnclosingRect(PageBounds(tree, &node, &offscreen));
         observed.offscreen = offscreen;
         observed.parent_ax_id =
             node.parent() ? node.parent()->id() : ui::kInvalidAXNodeID;
@@ -579,7 +622,7 @@ void PlaceAll(const ui::AXTree& tree,
   if (node.data().IsInvisible()) {
     return;
   }
-  const gfx::Rect bounds = gfx::ToEnclosingRect(tree.GetTreeBounds(&node));
+  const gfx::Rect bounds = gfx::ToEnclosingRect(PageBounds(tree, &node));
   if (!bounds.IsEmpty()) {
     out.push_back({&node, bounds});
   }
@@ -658,8 +701,12 @@ void FindGroups(std::vector<ObservedNode>& elements) {
 }  // namespace
 
 bool IsTextEntryRole(std::string_view role) {
+  // A spinbutton takes typed digits: it is how a quantity box is filled in, and
+  // each segment (Month, Day, Year) of a date input is one. Left out, "type 15
+  // into Day Date" was refused as "not something you can type into" and a task
+  // that sets a delivery date never got past the field (benchmark v2, `date`).
   return role == "textbox" || role == "searchbox" || role == "combobox" ||
-         role == "password";
+         role == "password" || role == "spinbutton";
 }
 
 Observation::Observation() = default;
@@ -789,6 +836,13 @@ std::string Observation::ToJson(int level) const {
     // Right at the top, because it is the answer to the question the model is
     // actually asking: did what I just did work?
     root.Set("what_changed", changed);
+  }
+  if (!downloads_started.empty()) {
+    base::ListValue files;
+    for (const std::string& name : downloads_started) {
+      files.Append(name);
+    }
+    root.Set("downloads_started", std::move(files));
   }
   if (media_playing) {
     // At the top level, beside url and title, because it describes the PAGE

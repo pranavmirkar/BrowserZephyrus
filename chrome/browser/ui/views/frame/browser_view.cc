@@ -5109,6 +5109,17 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
                     }
                     return;
                   }
+                  // =mascot-click plays an agent click (see
+                  // StartClickDemoForTesting).
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "mascot-click") {
+                    if (auto* overlay = view->zephyrus_agent_mascot()) {
+                      overlay->SetPresent(true);
+                      overlay->StartClickDemoForTesting();
+                    }
+                    return;
+                  }
                   // =voice-light turns the microphone light on, to check it
                   // shows with the mascot switched off.
                   if (base::CommandLine::ForCurrentProcess()

@@ -54,6 +54,8 @@ ObservedNode Node(const std::string& id,
 class FakeToolSurface : public ToolSurface {
  public:
   int checks = 0;
+  // What each field of "set1" ends up holding after any typing; see TypeIntoNode.
+  std::vector<std::string> spread_over_set;
 
   FakeToolSurface() {
     page_tree_id = ui::AXTreeID::CreateNewAXTreeID();
@@ -142,7 +144,16 @@ class FakeToolSurface : public ToolSurface {
     // When `typing_silently_fails` is set the call still reports success and
     // the page is left unchanged -- which is exactly the shape of the bug the
     // verification exists to catch.
-    if (mask_typed_values) {
+    if (!spread_over_set.empty()) {
+      // A segmented input: the digits go in the first field and carry on into the
+      // next ones, so no one field holds what was typed.
+      size_t at = 0;
+      for (ObservedNode& element : page_elements) {
+        if (element.group == "set1" && at < spread_over_set.size()) {
+          element.value = spread_over_set[at++];
+        }
+      }
+    } else if (mask_typed_values) {
       // A phone, email or card field: the page holds the text and the
       // Observation shows only a mask, with the real value kept for the browser.
       for (ObservedNode& element : page_elements) {
@@ -722,6 +733,22 @@ TEST_F(ToolExecutorTest, TypingTypesWhileSelectingAssigns) {
   EXPECT_EQ(surface_.filled_with, "India");
 }
 
+TEST_F(ToolExecutorTest, TypesIntoSpinButtonsLikeDateSegmentsAndQuantities) {
+  // An <input type=date> is exposed as three spinbuttons (Month, Day, Year), and
+  // a number input is one. Digits are typed into them with real keys, exactly as
+  // a person would, so refusing them as "not something you can type into" made
+  // every date and quantity field a dead end.
+  surface_.page_elements = {Node("e1", "spinbutton", "Month Date", 71),
+                            Node("e2", "spinbutton", "Day Date", 72),
+                            Node("e3", "spinbutton", "Year Date", 73)};
+  ObserveFirst();
+
+  ToolExecutor::Result day = Run("page.type", R"({"element_id":"e2","text":"15"})");
+  EXPECT_EQ(day.status, Status::kOk) << day.message;
+  EXPECT_EQ(surface_.filled, 72);
+  EXPECT_TRUE(surface_.typed) << "digits must be typed, not assigned";
+}
+
 TEST_F(ToolExecutorTest, StillRefusesWhenNothingWithThatNameTakesText) {
   // The fallback above only applies when something with the SAME name can hold
   // text. A lone button keeps its refusal, because silently retargeting to some
@@ -766,6 +793,42 @@ TEST_F(ToolExecutorTest, TextThatIsStillGoingInIsNotReportedAsFailed) {
   ToolExecutor::Result result =
       Run("page.type", R"({"element_id":"e1","text":"9876543210"})");
   EXPECT_EQ(result.status, Status::kOk) << result.message;
+}
+
+TEST_F(ToolExecutorTest, TextSpreadAcrossASetOfFieldsHasStillGoneIn) {
+  // MEASURED (benchmark v2, `date`): "15112026" typed into the Day segment of a
+  // date input fills Day, Month and Year, and no field holds the whole string.
+  // The model was told "did not go in", clicked Confirm believing the form empty,
+  // then went round in circles about it.
+  surface_.spread_over_set = {"15", "11", "2026"};
+  surface_.page_elements = {Node("e1", "spinbutton", "Day Date", 71),
+                            Node("e2", "spinbutton", "Month Date", 72),
+                            Node("e3", "spinbutton", "Year Date", 73)};
+  for (ObservedNode& element : surface_.page_elements) {
+    element.group = "set1";
+    element.group_size = 3;
+  }
+  ObserveFirst();
+
+  ToolExecutor::Result result =
+      Run("page.type", R"({"element_id":"e1","text":"15112026"})");
+  EXPECT_EQ(result.status, Status::kOk) << result.message;
+}
+
+TEST_F(ToolExecutorTest, TextThatIsInNoFieldOfASetIsStillAFailure) {
+  // The other half: the set check must not turn every typing into success.
+  surface_.typing_silently_fails = true;
+  surface_.page_elements = {Node("e1", "spinbutton", "Day Date", 71),
+                            Node("e2", "spinbutton", "Month Date", 72)};
+  for (ObservedNode& element : surface_.page_elements) {
+    element.group = "set1";
+    element.group_size = 2;
+  }
+  ObserveFirst();
+
+  ToolExecutor::Result result =
+      Run("page.type", R"({"element_id":"e1","text":"15112026"})");
+  EXPECT_NE(result.status, Status::kOk);
 }
 
 TEST_F(ToolExecutorTest, TextTypedIntoAMaskedFieldIsStillVerified) {

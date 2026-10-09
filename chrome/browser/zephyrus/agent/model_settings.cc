@@ -8,8 +8,10 @@
 #include <utility>
 
 #include "base/base64.h"
+#include "base/command_line.h"
 #include "base/values.h"
 #include "chrome/browser/zephyrus/agent/bundled_keys.h"
+#include "chrome/browser/zephyrus/buildflags/dev_switches.h"
 #include "components/os_crypt/async/common/encryptor.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -17,6 +19,21 @@
 
 namespace zephyrus::agent {
 namespace {
+
+// A model id is letters, digits, dots and hyphens; anything else is not one.
+bool IsPlausibleModelId(std::string_view id) {
+  if (id.empty() || id.size() > 64) {
+    return false;
+  }
+  for (char c : id) {
+    const bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+                    c == '.' || c == '-';
+    if (!ok) {
+      return false;
+    }
+  }
+  return true;
+}
 
 bool IsKnownKind(std::string_view kind) {
   return kind == "anthropic" || kind == "openai" || kind == "gemini";
@@ -36,6 +53,8 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterDoublePref(kCloudMaxUsdPref, 1.0);
   registry->RegisterBooleanPref(kCloudScreenshotsPref, true);
   registry->RegisterBooleanPref(kMascotPref, true);
+  registry->RegisterStringPref(kMascotSkinPref, "zep");
+  registry->RegisterStringPref(kMascotLensFillPref, "static");
   registry->RegisterBooleanPref(kMemoryPref, true);
   registry->RegisterDictionaryPref(kCloudKeysPref);
   registry->RegisterListPref(kCloudWorkspacesPref);
@@ -78,6 +97,20 @@ std::optional<CloudModelConfig> ReadCloudModelConfig(const PrefService& prefs) {
     // must not keep spending the demo's credit on it.
     config.model = kBundledDefaultModel;
   }
+  // A developer build may try another model with --zephyrus-agent-model=<id>,
+  // for benchmarking a cheaper one. Ignored in a build without dev switches,
+  // and it only changes the model NAME in the request: the demo proxy still
+  // decides which models its token may use, and the key and address are chosen
+  // as before.
+  if (zephyrus::DevSwitchesEnabled()) {
+    const base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
+    if (command_line && command_line->HasSwitch(kDevModelSwitch)) {
+      const std::string wanted = command_line->GetSwitchValueASCII(kDevModelSwitch);
+      if (IsPlausibleModelId(wanted)) {
+        config.model = wanted;
+      }
+    }
+  }
   if (!IsKnownKind(config.kind) || config.model.empty()) {
     return std::nullopt;
   }
@@ -101,6 +134,25 @@ std::optional<CloudModelConfig> ReadCloudModelConfig(const PrefService& prefs) {
   config.max_usd_per_task =
       std::clamp(prefs.GetDouble(kCloudMaxUsdPref), kMinUsd, kMaxUsd);
   return config;
+}
+
+MascotLook ReadMascotLook(const PrefService& prefs) {
+  if (prefs.GetString(kMascotSkinPref) != "lens") {
+    return MascotLook::kZep;
+  }
+  return prefs.GetString(kMascotLensFillPref) == "fluid"
+             ? MascotLook::kLensFluid
+             : MascotLook::kLensStatic;
+}
+
+void WriteMascotLook(PrefService& prefs, MascotLook look) {
+  prefs.SetString(kMascotSkinPref, look == MascotLook::kZep ? "zep" : "lens");
+  // The fill is only meaningful for the lens; leave it as it was for Zep so
+  // switching back to the lens remembers the last choice.
+  if (look != MascotLook::kZep) {
+    prefs.SetString(kMascotLensFillPref,
+                    look == MascotLook::kLensFluid ? "fluid" : "static");
+  }
 }
 
 void WriteCloudModelConfig(PrefService& prefs, const CloudModelConfig& config) {
@@ -237,10 +289,16 @@ std::optional<ModelPrices> KnownPrices(std::string_view model) {
   static constexpr Row kTable[] = {
       {"claude-opus-5-5", {4.00, 20.00, 0.20, 5.00}},
       {"claude-opus-5", {5.00, 25.00, 0.50, 6.25}},
-      // Sonnet-class list price ($3 / $15 per million, cache read 10%, write
-      // 125%). Not re-checked against the price page for 5.5 specifically; a
-      // stale price only moves where the spending limit bites.
-      {"claude-sonnet-5-5", {3.00, 15.00, 0.30, 3.75}},
+      // Checked 2026-10-08 against platform.claude.com/docs/en/about-claude/pricing.
+      // (This row said $3 / $15 before, the Sonnet 4.x list price: it made the
+      // spending limit bite at about two thirds of the real spend.) Cache read
+      // is 5% of input on 5.5, not 10%.
+      {"claude-sonnet-5-5", {2.00, 10.00, 0.10, 2.50}},
+      // Haiku 5.5 launched 2026-10-07. These are its prices for prompts up to
+      // 100,000 tokens, which every step of the agent is (a step is about 10-30k
+      // tokens); a prompt over 100,000 tokens costs five times as much, and the
+      // limit would then understate. About 20 times cheaper than Sonnet 5.5.
+      {"claude-haiku-5-5", {0.10, 0.50, 0.01, 0.125}},
   };
   for (const Row& row : kTable) {
     if (row.model == model) {

@@ -362,6 +362,26 @@ ui::AXNodeData MakeNodeAt(int id,
   return node;
 }
 
+TEST(ObservationTest, ASortableTableHeaderIsOfferedAndAPlainOneIsNot) {
+  // MEASURED (`sort`): the Price header of a table sorted it when clicked, was not
+  // in the list of things to click, and the model reported "no sort controls".
+  ui::AXNodeData live = MakeNode(2, ax::mojom::Role::kColumnHeader, "Price");
+  live.AddAction(ax::mojom::Action::kDoDefault);
+  ui::AXNodeData plain = MakeNode(3, ax::mojom::Role::kColumnHeader, "Product");
+  ui::AXNodeData sorted = MakeNode(4, ax::mojom::Role::kColumnHeader, "Rating");
+  sorted.AddIntAttribute(ax::mojom::IntAttribute::kSortDirection,
+                         static_cast<int>(ax::mojom::SortDirection::kAscending));
+  Observation observation = BuildObservation(
+      MakeTree({live, plain, sorted}), "https://example.org/table", "Table",
+      kMaxObservedElements, kMaxObservedTextLength);
+  std::vector<std::string> names;
+  for (const ObservedNode& node : observation.elements) {
+    names.push_back(node.name);
+    EXPECT_EQ(node.role, "button") << node.name;
+  }
+  EXPECT_EQ(names, (std::vector<std::string>{"Price", "Rating"}));
+}
+
 TEST(ObservationTest, ReportsWhereAVisibleControlIs) {
   Observation observation = BuildObservation(
       MakeViewport({MakeNodeAt(2, ax::mojom::Role::kSearchBox, "Search",
@@ -388,6 +408,47 @@ TEST(ObservationTest, MarksAControlScrolledOutOfViewAsOffscreen) {
 
   ASSERT_EQ(observation.elements.size(), 1u);
   EXPECT_TRUE(observation.elements[0].offscreen);
+}
+
+TEST(ObservationTest, ControlsInAnIframeAreWhereTheFrameIsNotAtTheTopOfThePage) {
+  // The combined snapshot hangs a child frame's root under its <iframe> node and
+  // reports everything in it relative to the frame's own top-left. A field 30 px
+  // down inside a frame that starts 128 px down the page is at y=158, not y=30
+  // (benchmark v2, `iframe`: the pointer landed on empty page, the typing went
+  // nowhere and the task failed).
+  ui::AXNodeData root = MakeNode(1, ax::mojom::Role::kRootWebArea);
+  root.relative_bounds.bounds = gfx::RectF(0, 0, 800, 600);
+  ui::AXNodeData frame = MakeNode(2, ax::mojom::Role::kIframe);
+  frame.relative_bounds.bounds = gfx::RectF(10, 128, 420, 200);
+  ui::AXNodeData frame_root = MakeNode(3, ax::mojom::Role::kRootWebArea);
+  frame_root.relative_bounds.bounds = gfx::RectF(0, 0, 420, 200);
+  ui::AXNodeData field =
+      MakeNodeAt(4, ax::mojom::Role::kTextField, "Attendee name", gfx::RectF(120, 30, 170, 24));
+  ui::AXNodeData outside =
+      MakeNodeAt(5, ax::mojom::Role::kButton, "Outside", gfx::RectF(500, 20, 60, 24));
+  root.child_ids = {2, 5};
+  frame.child_ids = {3};
+  frame_root.child_ids = {4};
+
+  ui::AXTreeUpdate update;
+  update.root_id = 1;
+  update.nodes = {root, frame, frame_root, field, outside};
+  update.has_tree_data = true;
+  update.tree_data.tree_id = ui::AXTreeID::CreateNewAXTreeID();
+
+  Observation observation = BuildObservation(
+      update, "https://example.org/page", "A page", kMaxObservedElements,
+      kMaxObservedTextLength);
+  const ObservedNode* inside = nullptr;
+  const ObservedNode* top_level = nullptr;
+  for (const ObservedNode& node : observation.elements) {
+    (node.name == "Attendee name" ? inside : top_level) = &node;
+  }
+  ASSERT_TRUE(inside);
+  ASSERT_TRUE(top_level);
+  EXPECT_EQ(inside->bounds, gfx::Rect(130, 158, 170, 24));
+  // A control that is NOT in a frame is not moved.
+  EXPECT_EQ(top_level->bounds, gfx::Rect(500, 20, 60, 24));
 }
 
 TEST(ObservationTest, DoesNotShowTheModelWhereThingsAre) {

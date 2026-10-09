@@ -17,6 +17,7 @@ const ALLOWED_MODELS = new Set([
   'claude-opus-5',
   'claude-sonnet-5-5',
   'claude-haiku-4-5-20251001',
+  'claude-haiku-5-5',
 ]);
 const MAX_OUTPUT_TOKENS = 16000;  // what the browser asks for; thinking counts against it
 const MAX_JSON_BYTES = 3 * 1024 * 1024;   // a step's page text plus a screenshot

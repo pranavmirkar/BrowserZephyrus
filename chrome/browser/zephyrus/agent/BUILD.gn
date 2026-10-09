@@ -38,6 +38,26 @@ source_set("agent") {
     "dev_model_client.h",
     "hands_free.cc",
     "hands_free.h",
+    "lens_eyes.cc",
+    "lens_eyes.h",
+    "lens_geometry.cc",
+    "lens_geometry.h",
+    "lens_math.h",
+    "lens_painter.cc",
+    "lens_painter.h",
+    "lens_quality.cc",
+    "lens_quality.h",
+    "lens_model.cc",
+    "lens_model.h",
+    "lens_mood_map.cc",
+    "lens_mood_map.h",
+    "lens_random.cc",
+    "lens_random.h",
+    "lens_spring.cc",
+    "lens_spring.h",
+    "lens_states.cc",
+    "lens_states.h",
+    "lens_states_activities.cc",
     "local_vision_client.cc",
     "local_vision_client.h",
     "mascot_commands.cc",
@@ -100,6 +120,7 @@ source_set("agent") {
     "//mojo/public/cpp/bindings",
     "//net",
     "//net/traffic_annotation",
+    "//skia",
     "//services/network/public/cpp",
     "//ui/accessibility",
   ]
@@ -116,6 +137,12 @@ test("zephyrus_agent_unittests") {
   sources = [
     "agent_memory_unittest.cc",
     "dev_model_client_unittest.cc",
+    "lens_model_unittest.cc",
+    "lens_mood_map_unittest.cc",
+    "lens_painter_unittest.cc",
+    "lens_quality_unittest.cc",
+    "lens_reference_unittest.cc",
+    "lens_unittest.cc",
     "local_vision_client_unittest.cc",
     "mascot_commands_unittest.cc",
     "mascot_rig_unittest.cc",
@@ -127,7 +154,10 @@ test("zephyrus_agent_unittests") {
     "tool_executor_unittest.cc",
     "voice_unittest.cc",
   ]
-  data = [ "testdata/voice/" ]
+  data = [
+    "testdata/lens_reference.json",
+    "testdata/voice/",
+  ]
   if (is_win) {
     sources += [ "voice_input_unittest.cc" ]
   }
@@ -147,6 +177,7 @@ test("zephyrus_agent_unittests") {
     "//services/network/public/cpp",
     "//testing/gtest",
     "//ui/gfx:test_support",
+    "//ui/gfx/codec",
     "//url",
   ]
 }
