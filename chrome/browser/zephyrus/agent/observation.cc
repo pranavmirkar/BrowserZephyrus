@@ -568,6 +568,19 @@ void Collect(const ui::AXTree& tree,
         observed.posted = PostedAgeIn(observed.detail);
         observed.name = std::move(name);
         observed.value = std::move(value);
+        switch (node.data().GetCheckedState()) {
+          case ax::mojom::CheckedState::kTrue:
+            observed.state = "checked";
+            break;
+          case ax::mojom::CheckedState::kFalse:
+            observed.state = "unchecked";
+            break;
+          case ax::mojom::CheckedState::kMixed:
+            observed.state = "mixed";
+            break;
+          case ax::mojom::CheckedState::kNone:
+            break;
+        }
         observed.ax_id = node.id();
         if (node.GetRole() == ax::mojom::Role::kPopUpButton ||
             node.GetRole() == ax::mojom::Role::kComboBoxSelect) {
@@ -879,6 +892,9 @@ std::string Observation::ToJson(int level) const {
         // The one fact "which is the latest" turns on, in the same place for
         // every candidate so they can be compared.
         entry.Set("posted", node.posted);
+      }
+      if (!node.state.empty()) {
+        entry.Set("state", node.state);
       }
       if (!node.detail.empty()) {
         // The line under the title: who posted it, how many views, how long

@@ -53,6 +53,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterDoublePref(kCloudMaxUsdPref, 1.0);
   registry->RegisterBooleanPref(kCloudScreenshotsPref, true);
   registry->RegisterBooleanPref(kMascotPref, true);
+  registry->RegisterBooleanPref("zephyrus.onboarding.done", false);
   registry->RegisterStringPref(kMascotSkinPref, "zep");
   registry->RegisterStringPref(kMascotLensFillPref, "static");
   registry->RegisterBooleanPref(kMemoryPref, true);

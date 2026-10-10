@@ -1184,8 +1184,55 @@ fn a_click_outside_the_tie_is_not_ambiguous() {
 
 #[test]
 fn a_click_inside_the_tie_still_asks() {
-    // The narrowing must not open the door it was guarding.
+    // The narrowing must not open the door it was guarding. "Open the invoice from
+    // March 2026" ends ON the invoice it opens, so which link is the point; and a
+    // task that pays one is a commit.
     assert_asks(&invoices_page("page.click", r#"{"element_id":"aug"}"#));
+    let mut request = invoices_page("page.click", r#"{"element_id":"aug"}"#);
+    request.task = "Find the invoice from March 2026 and pay it".to_string();
+    assert_asks(&request);
+}
+
+#[test]
+fn opening_a_link_to_read_is_not_a_choice() {
+    // S5 `inbox` and `lookup`, measured on Haiku 5.5: the answer was one click
+    // away on the next page and the agent stopped to ask "which one?".
+    for (task, first, second) in [
+        (
+            "Open every message from Priya Menon and tell me the three dates she mentions.",
+            "Priya Menon: Venue visit",
+            "Priya Menon: Caterer tasting",
+        ),
+        (
+            "In this people directory, look up Sunil from the Finance department and tell me his desk number.",
+            "Sunil Rao",
+            "Sunil Deshmukh",
+        ),
+    ] {
+        let request = ffi::PolicyRequest {
+            tool: "page.click".to_string(),
+            arguments_json: r#"{"element_id":"a"}"#.to_string(),
+            task: task.to_string(),
+            url: "https://intranet.example/people".to_string(),
+            elements: vec![element("a", "link", first), element("b", "link", second)],
+        };
+        assert_allowed(&request);
+    }
+}
+
+#[test]
+fn a_link_that_is_a_recipient_still_asks() {
+    // The same two Alexes as links: the task SENDS something to one of them.
+    for task in ["Send the report to Alex", "Open the inbox and then forward it to Alex", "Email Alex the report"] {
+        let request = ffi::PolicyRequest {
+            tool: "page.click".to_string(),
+            arguments_json: r#"{"element_id":"a"}"#.to_string(),
+            task: task.to_string(),
+            url: "https://mail.example/contacts".to_string(),
+            elements: vec![element("a", "link", "Alex Chen"), element("b", "link", "Alex Morgan")],
+        };
+        assert_asks(&request);
+    }
 }
 
 #[test]
@@ -1196,6 +1243,54 @@ fn typing_a_word_none_of_the_tie_has_is_not_ambiguous() {
         "page.type",
         r#"{"element_id":"find","text":"March 2026"}"#,
     ));
+}
+
+// Two false positives found by the long-task suite on Haiku 5.5 (S5), both of which
+// stopped a task to ask the user about something that was not a choice.
+
+#[test]
+fn applying_filters_narrows_a_list_and_does_not_ask() {
+    // S5 `finder`: "Using the filters on this page, find the cheapest backpack".
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"go"}"#.to_string(),
+        task: "Using the filters on this page, find the cheapest backpack under Rs 2000".to_string(),
+        url: "https://shop.example/backpacks".to_string(),
+        elements: vec![element("go", "button", "Apply filters"), element("rst", "button", "Reset")],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn applying_for_something_still_asks() {
+    // The narrowing must not open the door the verb was on the list for.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"go"}"#.to_string(),
+        task: "Read the job description".to_string(),
+        url: "https://jobs.example/role/12".to_string(),
+        elements: vec![element("go", "button", "Apply for this job")],
+    };
+    assert_asks(&request);
+}
+
+#[test]
+fn typing_into_one_part_of_a_date_is_not_choosing_between_the_parts() {
+    // S5 `enquiry`: "check-out 14 January 2027". The fields Day, Month and Year
+    // Check-out all match the task's words equally; writing "14" into the first
+    // picks none of them over the others, because it is not a name of any.
+    let request = ffi::PolicyRequest {
+        tool: "page.type".to_string(),
+        arguments_json: r#"{"element_id":"d","text":"14"}"#.to_string(),
+        task: "Send an enquiry, check-in 10 January 2027, check-out 14 January 2027".to_string(),
+        url: "https://stay.example/enquiry".to_string(),
+        elements: vec![
+            element("d", "spinbutton", "Day Check-out"),
+            element("m", "spinbutton", "Month Check-out"),
+            element("y", "spinbutton", "Year Check-out"),
+        ],
+    };
+    assert_allowed(&request);
 }
 
 #[test]

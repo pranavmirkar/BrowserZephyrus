@@ -687,15 +687,29 @@ fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Elemen
         return None;
     }
 
-    // Door one: acting on a candidate.
-    if let Some(chosen) = target_element(request) {
+    // Door one: clicking a candidate.
+    //
+    // A click, not typing: typing into a FIELD that is named like the task says
+    // nothing about which candidate was chosen, the text written is what chooses,
+    // and door two judges that. MEASURED, S5 `enquiry`: typing "14" into the
+    // field "Day Check-out" stopped to ask about "Month Check-out", a different
+    // part of the same date.
+    let chosen_element = if request.tool == "page.click" {
+        target_element(request)
+    } else {
+        None
+    };
+    if let Some(chosen) = chosen_element {
         // "Open the FIRST result", "the cheapest": the task says how to choose, so
         // choosing is doing what was asked and not guessing. Only for LINKS, whose
         // worst case is a navigation the user can go back from; a recipient, a
         // button that commits, or a field is still asked about, and a stray
         // "first" in a task ("First open the inbox, then send to Alex") must not
         // be able to switch that off.
-        if chosen.role == "link" && task_says_how_to_choose(request.task) {
+        if chosen.role == "link"
+            && (task_says_how_to_choose(request.task)
+                || (task_asks_for_information(request.task) && !task_commits(request.task)))
+        {
             return None;
         }
         if candidates.iter().any(|c| c.id == chosen.id) {
@@ -790,7 +804,7 @@ fn consequential_verb(
             let rest = &lowered[at + verb.len()..];
             let whole_word = !before.is_some_and(is_word_char)
                 && !rest.chars().next().is_some_and(is_word_char);
-            whole_word && !names_a_record(verb, rest)
+            whole_word && !names_a_record(verb, rest) && !narrows_a_view(verb, rest)
         })
     };
 
@@ -868,6 +882,63 @@ fn subscribe_costs_money(label: &str, page_url: &str, elements: &[Element]) -> b
         .any(|element| shows_a_price(&element.name.to_ascii_lowercase()))
 }
 
+/// Verbs that commit something whichever of several things they are aimed at,
+/// and that are not also everyday nouns.
+const COMMIT_VERBS: &[&str] = &[
+    "send", "forward", "reply", "respond", "pay", "buy", "purchase", "delete",
+    "remove", "cancel", "submit", "invite", "transfer", "assign", "approve",
+    "reject", "subscribe", "unsubscribe", "confirm", "register", "sign", "enrol",
+    "enroll", "publish",
+];
+
+/// Commit verbs that are just as often nouns ("every message from Priya", "the
+/// book"). They count only where a verb stands: starting the task, or after a word
+/// that starts a new instruction.
+const COMMIT_VERBS_AS_NOUNS: &[&str] = &[
+    "email", "mail", "message", "text", "call", "post", "order", "book", "share",
+    "add", "save", "update", "change", "set", "create", "upload", "write", "edit",
+    "apply", "fill", "enter", "type", "put",
+];
+
+/// Words of a task whose point is an ANSWER: what to find out, not which page to
+/// end up on. "Open the widget page" ends on the page it opens, so which link it
+/// is matters; "open every message and tell me the dates" ends on the dates, and
+/// the links are only the way to them.
+const INFORMATION_WORDS: &[&str] = &[
+    "tell", "what", "whats", "which", "who", "when", "where", "how", "list", "find",
+    "look", "check", "read", "summarise", "summarize", "compare", "count",
+];
+
+fn task_asks_for_information(task: &str) -> bool {
+    task.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| INFORMATION_WORDS.contains(&word))
+}
+
+/// Whether the task asks to DO something to what it names, rather than to look at
+/// it. Opening a link to read it is how the page's own details resolve a tie, and
+/// a wrong link is a navigation that can be undone; it is the commit that cannot
+/// be: a message sent, an order placed, a record changed. MEASURED, S5 `inbox`
+/// and `lookup` (Haiku 5.5): "Open every message from Priya Menon and tell me the
+/// dates" and "look up Sunil from the Finance department" stopped to ask "which
+/// one?", when the answer was one click away on the next page.
+fn task_commits(task: &str) -> bool {
+    let lowered = task.to_ascii_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.iter().enumerate().any(|(at, word)| {
+        COMMIT_VERBS.contains(word)
+            || (COMMIT_VERBS_AS_NOUNS.contains(word)
+                && (at == 0
+                    || matches!(
+                        words[at - 1],
+                        "and" | "then" | "also" | "please" | "first" | "next" | "to" | "now"
+                    )))
+    })
+}
+
 /// Words that tell the agent HOW to choose among look-alikes, so that choosing
 /// is following the task and not guessing: "the first result", "the cheapest".
 const CHOOSING_WORDS: &[&str] = &[
@@ -897,6 +968,17 @@ const ALSO_A_NOUN: &[&str] = &["order", "transfer", "book"];
 /// or a quantity as an id -- "Book 18:30", "Order 2 pizzas" -- and those are
 /// the verb doing exactly what the list exists to catch. MEASURED: a first
 /// version accepted a bare number, and "Book 18:30" stopped asking.
+/// "Apply filters", "Apply sort": the verb of the OUTBOUND list is a job or a
+/// course application, and here it narrows the list on screen. MEASURED, S5
+/// `finder`: the button "Apply filters" stopped the task to ask the user, with
+/// "the task did not ask for that".
+fn narrows_a_view(verb: &str, rest: &str) -> bool {
+    verb == "apply"
+        && ["filter", "sort", "search"]
+            .iter()
+            .any(|object| rest.trim_start().starts_with(object))
+}
+
 fn names_a_record(verb: &str, rest: &str) -> bool {
     if !ALSO_A_NOUN.contains(&verb) {
         return false;

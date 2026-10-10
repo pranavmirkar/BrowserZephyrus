@@ -296,20 +296,14 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
   // the display below the anchor, and the browser window it belongs to, which on
   // a laptop is the tighter one. Never more than 520: past that a settings
   // sheet is a page, and it scrolls.
+  // How tall the scrolling body may be. The bubble hangs off its anchor, above
+  // or below it, so what matters is the room on the bigger side of the ANCHOR,
+  // not the window's height: opened from a button low in the window (the
+  // onboarding's "Add or change my key") a 520 px body pushed the title and the
+  // top fields off the top of the screen. The rest of the bubble (title,
+  // buttons, margins) takes about 170 px.
   static int MaxBodyHeight(views::View* anchor) {
-    int room = 520;
-    if (anchor && anchor->GetWidget()) {
-      views::Widget* widget = anchor->GetWidget();
-      room = std::min(room, widget->GetWindowBoundsInScreen().height() - 240);
-      if (display::Screen* screen = display::Screen::Get()) {
-        room = std::min(
-            room, screen->GetDisplayNearestWindow(widget->GetNativeWindow())
-                          .work_area()
-                          .height() -
-                      300);
-      }
-    }
-    return std::max(room, 200);
+    return zephyrus::BubbleBodyRoom(anchor, /*other_height=*/170, /*cap=*/420);
   }
 
   void OnThemeChanged() override {

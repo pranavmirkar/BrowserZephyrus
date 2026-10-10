@@ -135,3 +135,29 @@ Ten multi-step tasks on the local fixture server (`D:\zeph_perf\bench2\fixture_l
 Launched 2026-10-07: id `claude-haiku-5-5`, $0.10 in / $0.50 out per Mtok for prompts up to 100k tokens (five times that over 100k), cache read $0.01. About 20 times cheaper than Sonnet 5.5 ($2 / $10), so a full S1+S3+S4 run that cost $0.41 should cost roughly $0.02-0.07.
 
 Wired locally, nothing measured yet (credit is out): price rows, the dev switch `--zephyrus-agent-model`, benchmark arms `H0` / `H1`, and the demo proxy allowlist (not deployed). Also corrected: Sonnet 5.5 cache reads are $0.10 per Mtok, not $0.20, so every cost in this document that includes cache reads is about 7% high. The question to answer first when there is any credit: does Haiku 5.5 hold 37/37 and the 8/8 safety suite? `python run.py --arm H0 --no-credit-check` after the proxy is redeployed, or on the user's own key.
+
+## Haiku 5.5 on the suites (2026-10-09)
+
+Through the redeployed demo proxy, arm H0 (screenshots on), `--zephyrus-agent-model=claude-haiku-5-5`.
+
+| suite | result | cost |
+|---|---|---|
+| S1+S3+S4 (37 tasks), first run | 34/37 | $0.028 |
+| same, after three fixes below (re-run of the 3 failures x3) | 9/9 | $0.007 |
+| S5 long tasks (14), first run | 7/14 | $0.030 |
+| S5 after two policy fixes | 9/14 | $0.030 |
+
+For comparison Sonnet 5.5 cost $0.41 per 37-task run: Haiku is about 14 times cheaper. There is no Sonnet baseline on S5 yet, so S5 cannot say what is Haiku's weakness and what is ours.
+
+Fixes made because of it (all ours, none the model's):
+- `task.complete` with no answer ended the task with a blank (`paginate`: facts were in notes, answer empty). The loop now sends an empty finish back ONCE ("call task.complete again with the answer"); the repeat guard no longer refuses a second `task.complete`. 3 loop tests, negative control fails them.
+- Checkers: a cited address ("Source: http://127.0.0.1:8765/...") was counted as ungrounded numbers; "does not state / gives no" were not accepted as "absent".
+- Policy (Rust): the button "Apply filters" asked the user (the verb "apply" is on the outbound list for job applications); typing "14" into "Day Check-out" asked about "Month Check-out" (door one of the tie rule fired for typing; typing is judged by the text it writes, door two). 3 kernel tests, 2 fail without the fix.
+
+Still failing on S5 (5 of 14):
+- `inbox` and `lookup`: the tie rule asks "which one?" when the model opens a link ("Priya Menon: Venue visit" vs "...Caterer tasting"; "Sunil Rao" vs "Sunil Deshmukh") although the task is a read and the discriminator (all of her emails; the Finance department) is only on the next page. Existing test `a_click_inside_the_tie_still_asks` (measured on mt-011) keeps links asking; a decision for the owner, not a quiet change.
+- `cities`, `directory`, `settings`: Haiku loops. `directory`: the profile page said "Direct extension: 4417" and it pressed Back instead of finishing. Not diagnosed further; needs a Sonnet S5 run to tell model from harness (about $0.45).
+
+## Demo-eve results on Sonnet 5.5 (2026-10-09)
+
+51/51 on S1+S3+S4+S5 ($0.745) and 6/6 on S2 real sites ($0.211), after: frame-presented screenshots, checkbox/radio/switch `state` in the observation, "a page that states the answer is already read" in the per-step prompt, the empty-finish bounce and three policy false positives. Before: S5 8/14 (two real causes found by reading the per-step screenshots, which the dev trace now keeps). Haiku 5.5 stays a dev-only switch: it passes the 37-task suite but not the long tasks.

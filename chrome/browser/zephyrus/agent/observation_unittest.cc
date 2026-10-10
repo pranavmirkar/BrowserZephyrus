@@ -92,6 +92,29 @@ TEST(ObservationTest, LeavesOutRolesThatAreNotControls) {
   EXPECT_EQ(observation.elements[0].name, "Buy now");
 }
 
+TEST(ObservationTest, ACheckboxSaysWhetherItIsOn) {
+  // The model cannot make something so by clicking a box if it cannot tell
+  // whether the box is already on.
+  ui::AXNodeData on = MakeNode(2, ax::mojom::Role::kCheckBox, "Email alerts");
+  on.SetCheckedState(ax::mojom::CheckedState::kTrue);
+  ui::AXNodeData off = MakeNode(3, ax::mojom::Role::kCheckBox, "SMS alerts");
+  off.SetCheckedState(ax::mojom::CheckedState::kFalse);
+  ui::AXNodeData some = MakeNode(4, ax::mojom::Role::kCheckBox, "Everything");
+  some.SetCheckedState(ax::mojom::CheckedState::kMixed);
+  ui::AXNodeData plain = MakeNode(5, ax::mojom::Role::kButton, "Save");
+  Observation observation = Build({on, off, some, plain});
+  ASSERT_EQ(observation.elements.size(), 4u);
+  EXPECT_EQ(observation.elements[0].state, "checked");
+  EXPECT_EQ(observation.elements[1].state, "unchecked");
+  EXPECT_EQ(observation.elements[2].state, "mixed");
+  EXPECT_TRUE(observation.elements[3].state.empty());
+  const std::string json = observation.ToJson(1);
+  EXPECT_NE(json.find(R"("state":"checked")"), std::string::npos) << json;
+  EXPECT_NE(json.find(R"("state":"unchecked")"), std::string::npos) << json;
+  // A button has no state to report, and the field is not written for it.
+  EXPECT_EQ(json.find(R"("state":"")"), std::string::npos) << json;
+}
+
 TEST(ObservationTest, AnEditableRegionIsOfferedAsATextbox) {
   // A contenteditable root -- how Notion and most rich editors are built. Its
   // role is a generic container, so before this it was never offered and a

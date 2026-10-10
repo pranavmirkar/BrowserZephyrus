@@ -956,6 +956,12 @@ constexpr int kMaxScreenshotWidth = 1024;
 // the bytes stay sane; screenshots compress well because they are mostly flat.
 constexpr int kScreenshotQuality = 72;
 
+struct BrowserToolSurface::PendingCapture {
+  Observation observation;
+  ObserveCallback callback;
+  bool done = false;
+};
+
 void BrowserToolSurface::CaptureScreenshot(Observation observation,
                                            ObserveCallback callback) {
   // Off unless asked for. When it is off this costs one flag read, and the
@@ -971,6 +977,49 @@ void BrowserToolSurface::CaptureScreenshot(Observation observation,
     return;
   }
 
+  // Wait for the frame. MEASURED (S5 `directory`, both Haiku 5.5 and Sonnet 5.5):
+  // after a click that opened a new page the surface still held the LAST frame of
+  // the old one, so the model was shown the old page with the new page's element
+  // outlines drawn over it, and answered "I didn't see what it said" and went
+  // back. The same task passed with screenshots off, and 0 of 2 with them on.
+  // InsertVisualStateCallback runs once the renderer's pending updates have been
+  // presented; a timer covers a page that never presents one (hidden, crashed).
+  content::WebContents* waiting = ActiveContents();
+  content::RenderFrameHost* main_frame =
+      waiting ? waiting->GetPrimaryMainFrame() : nullptr;
+  if (main_frame && main_frame->GetRenderWidgetHost()) {
+    auto pending = std::make_shared<PendingCapture>();
+    pending->observation = std::move(observation);
+    pending->callback = std::move(callback);
+    main_frame->GetRenderWidgetHost()->InsertVisualStateCallback(
+        base::BindOnce(
+            [](base::WeakPtr<BrowserToolSurface> self,
+               std::shared_ptr<PendingCapture> pending, bool) {
+              if (self) {
+                self->RunCapture(std::move(pending));
+              }
+            },
+            weak_factory_.GetWeakPtr(), pending));
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&BrowserToolSurface::RunCapture,
+                       weak_factory_.GetWeakPtr(), pending),
+        base::Seconds(1));
+    return;
+  }
+  CopyScreenshot(std::move(observation), std::move(callback));
+}
+
+void BrowserToolSurface::RunCapture(std::shared_ptr<PendingCapture> pending) {
+  if (pending->done) {
+    return;
+  }
+  pending->done = true;
+  CopyScreenshot(std::move(pending->observation), std::move(pending->callback));
+}
+
+void BrowserToolSurface::CopyScreenshot(Observation observation,
+                                        ObserveCallback callback) {
   content::WebContents* contents = ActiveContents();
   content::RenderWidgetHostView* view =
       contents ? contents->GetRenderWidgetHostView() : nullptr;
@@ -1111,9 +1160,13 @@ void BrowserToolSurface::OnScreenshot(
           *base::CommandLine::ForCurrentProcess();
       if (observation.send_screenshot && zephyrus::DevSwitchesEnabled() &&
           command_line.HasSwitch("zephyrus-agent-trace")) {
+        // One file per look (dev trace only): a single file overwritten each
+        // step hid what the model was shown on the step that went wrong.
+        static int look_number = 0;
         base::FilePath path =
             command_line.GetSwitchValuePath("zephyrus-agent-trace")
-                .AddExtensionASCII("screenshot.jpg");
+                .AddExtensionASCII(
+                    base::StringPrintf("screenshot%d.jpg", ++look_number));
         base::ThreadPool::PostTask(
             FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
             base::BindOnce(

@@ -45,7 +45,10 @@
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_setup.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/common/url_constants.h"
+#include "chrome/common/webui_url_constants.h"
 #include "components/bookmarks/browser/bookmark_model.h"
+#include "content/public/common/url_constants.h"
 #include "components/bookmarks/browser/bookmark_node.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/prefs/pref_service.h"
@@ -181,6 +184,16 @@ class ZephyrusControlRow : public views::View {
  public:
   ZephyrusControlRow() = default;
 
+  // Off: no tonal cell behind each control, only the hover and press wash, the
+  // same as the title bar's buttons with the containers setting off. It was
+  // ignored here: in compact mode the cells stayed on whatever the setting said.
+  void SetContained(bool contained) {
+    if (contained_ != contained) {
+      contained_ = contained;
+      SchedulePaint();
+    }
+  }
+
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override {
     if (VisibleChildren().empty()) {
@@ -238,14 +251,22 @@ class ZephyrusControlRow : public views::View {
     for (int i = 0; i < count; ++i) {
       const gfx::Rect& cell = rects[i];
       const auto* button = views::AsViewClass<views::Button>(cells[i]);
+      const bool pressed =
+          button && button->GetState() == views::Button::STATE_PRESSED;
+      const bool hovered =
+          button && button->GetState() == views::Button::STATE_HOVERED;
       SkColor color = container;
-      if (button && (button->GetState() == views::Button::STATE_PRESSED ||
-                     button->GetState() == views::Button::STATE_HOVERED)) {
+      if (!contained_) {
+        // No container: only a pointer over a control shows its cell.
+        if (!pressed && !hovered) {
+          continue;
+        }
+        color = zephyrus::m3::StateLayer(
+            ink, pressed ? zephyrus::m3::kPressed : zephyrus::m3::kHover);
+      } else if (pressed || hovered) {
         color = zephyrus::m3::WithStateLayer(
             container, ink,
-            button->GetState() == views::Button::STATE_PRESSED
-                ? zephyrus::m3::kPressed
-                : zephyrus::m3::kHover);
+            pressed ? zephyrus::m3::kPressed : zephyrus::m3::kHover);
       }
       fill.setColor(color);
       const SkScalar outer = cell.height() / 2.f;
@@ -273,6 +294,8 @@ class ZephyrusControlRow : public views::View {
   void OnMouseExited(const ui::MouseEvent& event) override { SchedulePaint(); }
 
  private:
+  bool contained_ = true;
+
   std::vector<views::View*> VisibleChildren() const {
     std::vector<views::View*> cells;
     for (views::View* child : children()) {
@@ -479,12 +502,34 @@ gfx::Transform TransformForReveal(double amount, int width) {
   return transform;
 }
 
+bool IsNewTabPage(content::WebContents* contents) {
+  const GURL& url = contents->GetVisibleURL();
+  return (url.SchemeIs(content::kChromeUIScheme) &&
+          (url.host() == chrome::kChromeUINewTabPageHost ||
+           url.host() == chrome::kChromeUINewTabHost ||
+           url.host() == chrome::kChromeUINewTabPageThirdPartyHost)) ||
+         url.SchemeIs(chrome::kChromeSearchScheme);
+}
+
 gfx::ImageSkia GetTabFavicon(content::WebContents* contents) {
+  // The new tab page's own favicon is a greyed browser logo that read as an
+  // unknown site. It shows the tinted search mark instead (GetTabFallbackIcon).
+  if (IsNewTabPage(contents)) {
+    return gfx::ImageSkia();
+  }
   if (auto* driver =
           favicon::ContentFaviconDriver::FromWebContents(contents)) {
     return driver->GetFavicon().AsImageSkia();
   }
   return gfx::ImageSkia();
+}
+
+// The tinted mark a row shows when the page has no favicon of its own. The new
+// tab page gets the search glyph, which is what the page is; anything else the
+// globe.
+const gfx::VectorIcon& GetTabFallbackIcon(content::WebContents* contents) {
+  return IsNewTabPage(contents) ? vector_icons::kSearchIcon
+                                : vector_icons::kGlobeIcon;
 }
 
 std::u16string GetTabTitle(content::WebContents* contents) {
@@ -511,6 +556,10 @@ struct ZephyrusRowColors {
   SkColor active_pressed_bg;  // Pressed, on the active row's own container.
   SkColor active_fg;   // Ink ON the active row -- it is inverted, so this is
                        // the ground colour, not the ink.
+  // Settings > Appearance > containers. Off: idle rows are bare and every
+  // fill (hover, press, the active row) is a whole pill of its own, an M3
+  // navigation-drawer item, since there is no run left to be a segment of.
+  bool contained = true;
 };
 
 // A quick-action / favorite row: monochrome icon + label, pill hover fill.
@@ -556,16 +605,37 @@ class ZephyrusActionRow : public views::LabelButton {
     SchedulePaint();
   }
 
+  // Follows the containers setting, as the tab rows do.
+  void SetContained(bool contained) {
+    if (contained_ != contained) {
+      contained_ = contained;
+      SchedulePaint();
+    }
+  }
+
   // A filled segment in every state, like the tab rows below it: two lists in
-  // one column must not use two different shapes.
+  // one column must not use two different shapes. With containers off, only
+  // hover and press fill, as a whole pill.
   void OnPaintBackground(gfx::Canvas* canvas) override {
+    const bool pressed = GetState() == views::Button::STATE_PRESSED;
+    const bool hovered = GetState() == views::Button::STATE_HOVERED;
+    if (!contained_) {
+      if (pressed || hovered) {
+        PaintSegment(canvas, GetLocalBounds(),
+                     zephyrus::m3::StateLayer(
+                         foreground_, pressed ? zephyrus::m3::kPressed
+                                              : zephyrus::m3::kHover),
+                     true, true);
+      }
+      return;
+    }
     const SkColor container =
         zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
     SkColor fill = container;
-    if (GetState() == views::Button::STATE_PRESSED) {
+    if (pressed) {
       fill = zephyrus::m3::WithStateLayer(container, foreground_,
                                           zephyrus::m3::kPressed);
-    } else if (GetState() == views::Button::STATE_HOVERED) {
+    } else if (hovered) {
       fill = zephyrus::m3::WithStateLayer(container, foreground_,
                                           zephyrus::m3::kHover);
     }
@@ -581,6 +651,7 @@ class ZephyrusActionRow : public views::LabelButton {
  private:
   const SkColor foreground_;
   const raw_ref<const gfx::VectorIcon> icon_;
+  bool contained_ = true;
   bool first_in_run_ = true;
   bool last_in_run_ = true;
 };
@@ -633,6 +704,15 @@ class ZephyrusNewTabButton : public views::LabelButton {
     SchedulePaint();
   }
 
+  // Settings > Appearance > containers. Off, it is a text button: bare at
+  // rest, a state layer under the pointer.
+  void SetContained(bool contained) {
+    if (contained_ != contained) {
+      contained_ = contained;
+      SchedulePaint();
+    }
+  }
+
   void OnPaintBackground(gfx::Canvas* canvas) override {
     // A NEUTRAL container with brand-coloured ink, not a brand-filled slab.
     // Filled with primary-container it was the loudest thing in the panel --
@@ -640,11 +720,19 @@ class ZephyrusNewTabButton : public views::LabelButton {
     const SkColor container =
         zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
     const SkColor ink = zephyrus::m3::Role(*this, kColorZephyrusPrimary);
+    const bool pressed = GetState() == views::Button::STATE_PRESSED;
+    const bool hovered = GetState() == views::Button::STATE_HOVERED;
     SkColor fill = container;
-    if (GetState() == views::Button::STATE_PRESSED) {
+    if (!contained_) {
+      if (!pressed && !hovered) {
+        return;
+      }
+      fill = zephyrus::m3::StateLayer(
+          ink, pressed ? zephyrus::m3::kPressed : zephyrus::m3::kHover);
+    } else if (pressed) {
       fill = zephyrus::m3::WithStateLayer(container, ink,
                                           zephyrus::m3::kPressed);
-    } else if (GetState() == views::Button::STATE_HOVERED) {
+    } else if (hovered) {
       fill = zephyrus::m3::WithStateLayer(container, ink, zephyrus::m3::kHover);
     }
     cc::PaintFlags flags;
@@ -654,6 +742,9 @@ class ZephyrusNewTabButton : public views::LabelButton {
     canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kSegmentEndRadius,
                           flags);
   }
+
+ private:
+  bool contained_ = true;
 };
 
 BEGIN_METADATA(ZephyrusNewTabButton)
@@ -1156,6 +1247,14 @@ class ZephyrusTabRow : public views::Button {
     layer()->SetOpacity(1.f);
   }
 
+  // Which tinted mark stands in for a missing favicon (GetTabFallbackIcon).
+  void SetFallbackIcon(const gfx::VectorIcon& icon) {
+    if (&*fallback_icon_ != &icon) {
+      fallback_icon_ = raw_ref(icon);
+      ApplyFallbackIconTint();
+    }
+  }
+
   // Updates the row's favicon/title/active state in place (without recreating
   // the view), preserving hover state.
   void UpdateContent(const gfx::ImageSkia& favicon,
@@ -1227,7 +1326,7 @@ class ZephyrusTabRow : public views::Button {
       return;
     }
     favicon_view_->SetImage(ui::ImageModel::FromVectorIcon(
-        vector_icons::kGlobeIcon,
+        *fallback_icon_,
         is_active_ ? colors_.active_fg : colors_.foreground, kFaviconSize));
   }
 
@@ -1263,6 +1362,14 @@ class ZephyrusTabRow : public views::Button {
     } else {
       fill = colors_.idle_bg;
     }
+    if (!colors_.contained) {
+      // No run to be a segment of: a bare row at rest, and any fill a whole
+      // pill. idle_bg is transparent here.
+      if (SkColorGetA(fill) != SK_AlphaTRANSPARENT) {
+        PaintSegment(canvas, GetLocalBounds(), fill, true, true);
+      }
+      return;
+    }
     PaintSegment(canvas, GetLocalBounds(), fill, first_in_run_, last_in_run_);
   }
 
@@ -1289,6 +1396,7 @@ class ZephyrusTabRow : public views::Button {
 
   bool is_active_;
   int model_index_;
+  raw_ref<const gfx::VectorIcon> fallback_icon_{vector_icons::kGlobeIcon};
   std::u16string full_title_;
   bool first_in_run_ = true;
   bool last_in_run_ = true;
@@ -1795,6 +1903,15 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   // information in half the space.
   compact_controls_row_ =
       compact_chrome_->AddChildView(std::make_unique<ZephyrusControlRow>());
+  containers_pref_.Init(browser_view_->browser()->profile()->GetPrefs());
+  containers_pref_.Add(
+      "zephyrus.appearance.m3_containers",
+      base::BindRepeating(&ZephyrusSidebarView::OnContainersChanged,
+                          base::Unretained(this)));
+  if (auto* row =
+          views::AsViewClass<ZephyrusControlRow>(compact_controls_row_.get())) {
+    row->SetContained(ContainersOn());
+  }
   compact_address_row_ =
       compact_chrome_->AddChildView(std::make_unique<views::View>());
   compact_address_row_->SetLayoutManager(
@@ -2356,9 +2473,11 @@ bool ZephyrusSidebarView::UpdateActiveRowsInPlace(
     return false;
   }
   if (old_row) {
+    old_row->SetFallbackIcon(GetTabFallbackIcon(old_contents));
     old_row->UpdateContent(GetTabFavicon(old_contents),
                            GetTabTitle(old_contents), /*is_active=*/false);
   }
+  new_row->SetFallbackIcon(GetTabFallbackIcon(new_contents));
   new_row->UpdateContent(GetTabFavicon(new_contents), GetTabTitle(new_contents),
                          /*is_active=*/true);
   return true;
@@ -2391,6 +2510,7 @@ void ZephyrusSidebarView::OnTabChangedAt(tabs::TabInterface* tab,
   for (views::View* child : tab_list_container_->children()) {
     auto* row = views::AsViewClass<ZephyrusTabRow>(child);
     if (row && row->model_index() == index) {
+      row->SetFallbackIcon(GetTabFallbackIcon(contents));
       row->UpdateContent(GetTabFavicon(contents), GetTabTitle(contents),
                          index == tab_strip_model_->active_index());
       row->SetAudioState(contents->IsCurrentlyAudible(),
@@ -2437,6 +2557,7 @@ void ZephyrusSidebarView::RebuildFavorites() {
   for (size_t i = 0; i < fav_rows.size(); ++i) {
     if (auto* fav = views::AsViewClass<ZephyrusActionRow>(fav_rows[i])) {
       fav->SetSegmentPosition(i == 0, i + 1 == fav_rows.size());
+      fav->SetContained(ContainersOn());
     }
   }
 
@@ -2632,6 +2753,22 @@ void ZephyrusSidebarView::OnCompactModeChanged() {
 // are hidden most of the time, and a hidden control must not hold a space in
 // the panel. Hidden ones go to a zero-size holder so they still have a parent
 // to be reclaimed from.
+bool ZephyrusSidebarView::ContainersOn() const {
+  return browser_view_->browser()->profile()->GetPrefs()->GetBoolean(
+      "zephyrus.appearance.m3_containers");
+}
+
+void ZephyrusSidebarView::OnContainersChanged() {
+  if (auto* row =
+          views::AsViewClass<ZephyrusControlRow>(compact_controls_row_.get())) {
+    row->SetContained(ContainersOn());
+  }
+  // The rows take the setting when they are built. Posted, as every rebuild
+  // of this list is: it deletes the rows.
+  ScheduleRebuildTabList();
+  RebuildFavorites();
+}
+
 void ZephyrusSidebarView::RebuildCompactChrome() {
   if (!compact_chrome_ || !browser_view_) {
     return;
@@ -3200,28 +3337,34 @@ void ZephyrusSidebarView::RebuildTabList() {
   // secondary-container, fully rounded. It replaced both the inversion and the
   // accent bar that briefly stood in for it -- a filled pill and a separate
   // marker were the same statement made twice.
+  const bool contained = ContainersOn();
+  const SkColor on_surface = zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
+  const SkColor row_container =
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
   const ZephyrusRowColors row_colors{
       .foreground = fg,
       // One step ABOVE the panel, which already paints surface-container:
       // a segment filled with its own background is an invisible segment
       // (measured -- rows and panel came out at exactly 31,32,32).
-      .idle_bg = zephyrus::m3::Role(*this,
-                                    kColorZephyrusSurfaceContainerHigh),
+      .idle_bg = contained ? row_container : SK_ColorTRANSPARENT,
       .active_bg = zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
-      .hover_bg = zephyrus::m3::WithStateLayer(
-          zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh),
-          zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
-          zephyrus::m3::kHover),
-      .pressed_bg = zephyrus::m3::WithStateLayer(
-          zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh),
-          zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
-          zephyrus::m3::kPressed),
+      .hover_bg = contained
+                      ? zephyrus::m3::WithStateLayer(row_container, on_surface,
+                                                     zephyrus::m3::kHover)
+                      : zephyrus::m3::StateLayer(on_surface,
+                                                 zephyrus::m3::kHover),
+      .pressed_bg = contained
+                        ? zephyrus::m3::WithStateLayer(
+                              row_container, on_surface, zephyrus::m3::kPressed)
+                        : zephyrus::m3::StateLayer(on_surface,
+                                                   zephyrus::m3::kPressed),
       .active_pressed_bg = zephyrus::m3::WithStateLayer(
           zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
           zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer),
           zephyrus::m3::kPressed),
       .active_fg =
           zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer),
+      .contained = contained,
   };
 
   ZephyrusWorkspaceManager* workspace_manager =
@@ -3250,6 +3393,7 @@ void ZephyrusSidebarView::RebuildTabList() {
             base::BindRepeating(&ZephyrusSidebarView::CloseTab,
                                 base::Unretained(this),
                                 contents->GetWeakPtr())));
+    row->SetFallbackIcon(GetTabFallbackIcon(contents));
     // Right-click a row -> "Pin tab" / "Move to workspace" / "Close tab".
     row->set_context_menu_controller(this);
     row->SetDragCallbacks(
@@ -3376,15 +3520,16 @@ void ZephyrusSidebarView::RebuildTabList() {
   // The New tab button is part of the LIST, not the panel: it sits directly
   // under the last tab and scrolls with it, rather than anchoring the bottom
   // edge of the sidebar where the workspace bar now lives.
-  tab_list_container_->AddChildView(
-      std::make_unique<ZephyrusNewTabButton>(base::BindRepeating(
+  tab_list_container_
+      ->AddChildView(std::make_unique<ZephyrusNewTabButton>(base::BindRepeating(
           [](ZephyrusSidebarView* self, const ui::Event&) {
             // kNewTabButton: this IS the new-tab button in Zephyrus -- the
             // horizontal strip that would otherwise carry one is hidden.
             chrome::NewTab(self->browser_view_->browser(),
                            NewTabTypes::kNewTabButton);
           },
-          base::Unretained(this))));
+          base::Unretained(this))))
+      ->SetContained(contained);
 
   // Same beats, same data: whatever moved the tab list (a switch, a
   // navigation, a workspace change) also moved the address, the back/forward

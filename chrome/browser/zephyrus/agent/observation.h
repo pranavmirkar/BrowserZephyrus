@@ -30,6 +30,12 @@ struct ObservedNode {
   std::string role;
   std::string name;
   std::string value;
+  // "checked", "unchecked" or "mixed" for a checkbox, radio button, switch or
+  // pressed-style toggle; empty for everything else. Without it the model cannot
+  // tell a box that is already on from one that is off, and clicking "the box" to
+  // make something so flips it the wrong way: MEASURED, S5 `settings`, "make the
+  // profile not public but keep it in search" came out public and not searchable.
+  std::string state;
 
   // What the field REALLY holds, kept only for a field whose `value` was
   // replaced by "[redacted]". It exists so the browser can check that text it

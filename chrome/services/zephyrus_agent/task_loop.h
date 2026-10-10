@@ -177,6 +177,8 @@ class TaskLoop {
   // Link clicks that have already been given their one retry on this page. See
   // the guard in OnProposed.
   std::set<std::string> retried_;
+  // An empty task.complete is sent back once, to ask for the answer.
+  bool asked_for_answer_ = false;
 
   std::string page_key_;
   std::string page_at_last_call_;

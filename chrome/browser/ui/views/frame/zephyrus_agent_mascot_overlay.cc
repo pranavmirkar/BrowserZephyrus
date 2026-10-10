@@ -118,7 +118,7 @@ void ZephyrusAgentMascotOverlay::RefreshPresence() {
       !browser_view_ || !browser_view_->browser() ||
       browser_view_->browser()->profile()->GetPrefs()->GetBoolean(
           zephyrus::agent::kMascotPref);
-  SetPresent(enabled);
+  SetPresent(enabled && !suppressed_);
 }
 
 ZephyrusAgentMascotOverlay::~ZephyrusAgentMascotOverlay() {
@@ -192,6 +192,14 @@ void ZephyrusAgentMascotOverlay::PlaceBubble() {
     }
     bubble_->PlaceNear(body, area);
   }
+}
+
+void ZephyrusAgentMascotOverlay::SetSuppressed(bool suppressed) {
+  if (suppressed == suppressed_) {
+    return;
+  }
+  suppressed_ = suppressed;
+  RefreshPresence();
 }
 
 void ZephyrusAgentMascotOverlay::SetPresent(bool present) {

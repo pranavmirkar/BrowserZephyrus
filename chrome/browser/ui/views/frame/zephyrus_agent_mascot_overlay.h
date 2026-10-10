@@ -78,6 +78,9 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
   // has an agent, and the person can turn it off (Model settings). Hidden, it
   // draws nothing and runs no timer.
   void SetPresent(bool present);
+  // While true the mascot is not shown whatever the setting says: onboarding
+  // flies its own Zep through its sky, and two would be one too many.
+  void SetSuppressed(bool suppressed);
   bool present() const { return present_; }
   // Follows the "Show the mascot" setting, and which character it is.
   void RefreshPresence();
@@ -267,6 +270,7 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
 
   MascotRig rig_;
   bool present_ = false;
+  bool suppressed_ = false;
   bool listening_ = false;
   base::RepeatingTimer timer_;
   base::TimeTicks last_tick_;

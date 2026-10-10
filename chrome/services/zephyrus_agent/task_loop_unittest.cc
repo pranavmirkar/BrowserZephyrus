@@ -116,8 +116,9 @@ class FakeToolRunner : public mojom::ToolRunner {
     outcome->message = next_message;
     // task.complete and task.ask carry their payload back this way, the same
     // as the real executor does.
-    outcome->value_json = next_value_json.empty() ? arguments_json
-                                                  : next_value_json;
+    outcome->value_json =
+        (next_value_json.empty() || tool == "task.complete") ? arguments_json
+                                                              : next_value_json;
     std::move(callback).Run(std::move(outcome));
   }
 
@@ -205,6 +206,41 @@ TEST_F(TaskLoopTest, EmptyModelAnswerFailsWithoutSpendingTheTaskBudget) {
   EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
   EXPECT_EQ(outcome->steps, 1u);
   EXPECT_TRUE(runner_.executed.empty());
+}
+
+// Haiku 5.5 collected a shop's prices in its notes and then ended with no answer:
+// the task counted as done and the person got a blank.
+TEST_F(TaskLoopTest, FinishingWithNoAnswerIsSentBackOnceToAskForIt) {
+  mojom::TaskOutcomePtr outcome = Run({
+      R"({"name":"task.complete","arguments":{}})",
+      R"({"name":"task.complete","arguments":{"answer":"Towel Rs 349"}})",
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted);
+  EXPECT_NE(outcome->message.find("Towel Rs 349"), std::string::npos)
+      << outcome->message;
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"task.complete", "task.complete"}));
+}
+
+TEST_F(TaskLoopTest, ABlankAnswerCountsAsNoAnswer) {
+  mojom::TaskOutcomePtr outcome = Run({
+      R"({"name":"task.complete","arguments":{"answer":"   "}})",
+      R"({"name":"task.complete","arguments":{"answer":"done"}})",
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted);
+  EXPECT_EQ(runner_.executed.size(), 2u);
+}
+
+TEST_F(TaskLoopTest, AskedOnceThenAModelThatHasNothingToSayMayFinishEmpty) {
+  mojom::TaskOutcomePtr outcome = Run({
+      R"({"name":"task.complete","arguments":{}})",
+      R"({"name":"task.complete","arguments":{}})",
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted);
+  EXPECT_EQ(runner_.executed.size(), 2u);
 }
 
 TEST_F(TaskLoopTest, LoadingRechecksDoNotSpendModelSteps) {

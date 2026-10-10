@@ -256,6 +256,11 @@ class BrowserToolSurface : public ToolSurface {
   // Takes a picture of the page, downscaled and JPEG-encoded, or nothing at
   // all when vision is switched off. Asynchronous: it goes to the compositor.
   void CaptureScreenshot(Observation observation, ObserveCallback callback);
+  // The picture is taken once the renderer's latest frame has been presented, so
+  // it shows the page the Observation describes and not the one before it.
+  struct PendingCapture;
+  void RunCapture(std::shared_ptr<PendingCapture> pending);
+  void CopyScreenshot(Observation observation, ObserveCallback callback);
   void OnScreenshot(Observation observation,
                     ObserveCallback callback,
                     const content::CopyFromSurfaceResult& result);

@@ -65,6 +65,19 @@ std::string ElementIdIn(std::string_view arguments_json) {
   return id ? *id : std::string();
 }
 
+// What a task.complete result says, or empty. The executor reports an answer the
+// model left out as an empty string.
+std::string AnswerIn(const std::string& value_json) {
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(value_json, base::JSON_PARSE_RFC);
+  if (!parsed || !parsed->is_dict()) {
+    return std::string();
+  }
+  const std::string* answer = parsed->GetDict().FindString("answer");
+  return answer ? std::string(base::TrimWhitespaceASCII(*answer, base::TRIM_ALL))
+                : std::string();
+}
+
 // The visible name of the element with `id` in the Observation the model chose
 // from, or empty. It goes into the history beside the id, because ids are only
 // meaningful against the page they came from: "page.click e1" says nothing once
@@ -796,7 +809,9 @@ void TaskLoop::OnProposed(const std::string& response) {
       ElementRoleIn(observation_json_, ElementIdIn(arguments)) == "link" &&
       retried_.insert(here).second;
 
-  if (!retry_a_link &&
+  // Finishing is never a circle: it is the one call that ends the loop, and an
+  // empty one sent back for its answer may be repeated as it was.
+  if (tool != "task.complete" && !retry_a_link &&
       (been_here || (call_key == last_call_ && page_key_ == page_at_last_call_))) {
     // The count is in the text, and it is not decoration.
     //
@@ -909,6 +924,23 @@ void TaskLoop::OnExecuted(std::string tool,
     Finish(mojom::TaskStatus::kNeedsApproval, outcome->message,
            std::move(pending));
     return;
+  }
+
+  // Finishing with nothing to say hands the person a blank. MEASURED (Haiku 5.5,
+  // `paginate`): it collected the facts in notes, then called task.complete with
+  // no answer, and the task "succeeded" with an empty reply. The model is told
+  // once, so a task that really has nothing to report (a click that was the whole
+  // job) loses one cheap step, and a model that forgot is given the chance to say
+  // what it found. Asked again, it is allowed to finish empty.
+  if (outcome->status == mojom::ToolStatus::kOk && tool == "task.complete" &&
+      !asked_for_answer_ && AnswerIn(outcome->value_json).empty()) {
+    asked_for_answer_ = true;
+    outcome->status = mojom::ToolStatus::kFailed;
+    outcome->message =
+        "You ended the task without an answer, so the person has been told "
+        "nothing. Call task.complete again with the answer: what you found, or "
+        "what you did, in a sentence or two, including any facts you wrote in "
+        "your notes.";
   }
 
   if (outcome->status == mojom::ToolStatus::kOk) {
@@ -1437,7 +1469,12 @@ std::string TaskLoop::UserPrompt() const {
        // stays for the small model it was measured on.
        cloud_ ? "If the page above already satisfies the TASK -- including how "
                 "many sources and how much depth it asks for -- reply with "
-                "task.complete. A search results page is a list of leads, not "
+                "task.complete. A page whose text states what the TASK asks for "
+                "is already READ: answer from it at once, with the figure or "
+                "name itself, and do not go back or open it again. (MEASURED, "
+                "a directory task: both models reached the page that said "
+                "\"Direct extension: 4417\", pressed Back, and never answered.) "
+                "A search results page is a list of leads, not "
                 "the sources themselves: when the TASK asks for research, "
                 "several sources, or facts to be checked, open the sources, "
                 "read them with page.read, write what you find with notes.add, "

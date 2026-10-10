@@ -75,10 +75,13 @@ test('changing the expiry invalidates the signature', async () => {
   assert.equal(r.status, 401);
 });
 
-test('Haiku 5.5 is allowed, and a model that merely looks like it is not', async () => {
-  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-haiku-5-5' }) })).status, 200);
-  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-haiku-5-6' }) })).status, 400);
-  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-haiku-5-5 ' }) })).status, 400);
+test('the demo runs Sonnet 5.5: Haiku 5.5 is not on the list, and look-alikes are not either', async () => {
+  // Haiku 5.5 was allowed on 2026-10-09 for benchmarking and passed the short
+  // suites but not the long tasks, so the product is Sonnet and the proxy says so.
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-sonnet-5-5' }) })).status, 200);
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-haiku-5-5' }) })).status, 400);
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-sonnet-5-5 ' }) })).status, 400);
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-sonnet-5-6' }) })).status, 400);
 });
 
 test('only allowed models, bounded output, no streaming', async () => {
