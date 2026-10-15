@@ -31,6 +31,22 @@ function mintToken(secret, expiresEpochSeconds) {
   return `${TOKEN_PREFIX}.${expiresEpochSeconds}.${sign(secret, expiresEpochSeconds)}`;
 }
 
+// DEMO_VALID_UNTIL (unix seconds) extends the demo for tokens already in people's
+// hands. The signing secret is write-only in Vercel, so new tokens cannot be
+// minted later, and every installer carries the token it was built with. The
+// signature is still checked first, so this only moves the date that decides
+// "ended": a token is good until the LATER of its own expiry and this date.
+// A mistyped far-future value cannot make the demo permanent: it is clamped to
+// MAX_EXTENSION_DAYS past the TOKEN'S OWN expiry (a fixed date; clamping to "now
+// plus N" would slide forward forever), and DEMO_DISABLED still wins.
+const MAX_EXTENSION_DAYS = 90;
+function effectiveExpiry(tokenExpiry, env) {
+  const raw = env.DEMO_VALID_UNTIL;
+  if (typeof raw !== 'string' || !/^\d{1,12}$/.test(raw)) return tokenExpiry;
+  const until = Math.min(Number(raw), tokenExpiry + MAX_EXTENSION_DAYS * 86400);
+  return Math.max(tokenExpiry, until);
+}
+
 // Returns null when the token is good, else a short reason (never the token).
 function checkToken(token, env, nowSeconds) {
   if (env.DEMO_DISABLED === '1') return 'the demo has been switched off';
@@ -45,7 +61,7 @@ function checkToken(token, env, nowSeconds) {
   const a = Buffer.from(parts[2]);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return 'bad token';
-  if (Number(parts[1]) < nowSeconds) return 'the demo has ended';
+  if (effectiveExpiry(Number(parts[1]), env) < nowSeconds) return 'the demo has ended';
   return null;
 }
 
