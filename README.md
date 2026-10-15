@@ -41,7 +41,19 @@ Unit tests: `zephyrus_agent_unittests` (247), `zephyrus_agent_service_unittests`
 
 ## Building
 1. Check out upstream Chromium at the base commit above (via `depot_tools`).
-2. Copy this overlay over the Chromium `src/` tree.
-3. `autoninja -C out/Release chrome`
+2. Copy this overlay over the Chromium `src/` tree, **except `LICENSE` and `README.md`**: Chromium has files of the same names and they must not be overwritten.
+3. Download the starter filter list (it is third-party data and is not kept in this repository): `python chrome/browser/zephyrus/adblock/tools/fetch_filter_seed.py`
+4. `autoninja -C out/Release chrome`
+
+## Licence
+The Zephyrus code in this repository is released under the **MIT licence**: see `LICENSE`. Copyright (c) 2026 Pranav Mirkar.
+
+Many Zephyrus source files carry a header copied from Chromium's template ("governed by a BSD-style license ... found in the LICENSE file"). For files written for Zephyrus, the licence that header points to is this repository's MIT `LICENSE`.
+
+This is an overlay on Chromium, and not everything in it is MIT:
+- **Chromium** files that this overlay modifies keep Chromium's own BSD-style licence (the headers in those files say so).
+- **EasyList and EasyPrivacy** (GPLv3 or CC BY-SA 3.0) are downloaded at build time and by the browser as data. They are not part of this repository and are not MIT. See `chrome/browser/zephyrus/adblock/lists/FILTER_LISTS_NOTICE.txt`.
+- **The Inter font** in the installer is under the SIL Open Font License (`chrome/installer/zephyrus_setup/fonts/OFL.txt`).
+- **The tracker-ownership dataset** (DuckDuckGo Tracker Radar, CC BY-NC-SA 4.0) is fetched at build time and never committed. See `chrome/browser/zephyrus/THIRD_PARTY_DATA.md`.
 
 Secrets policy: no API key is in this repository. Provider keys live only as environment variables on the demo proxy.

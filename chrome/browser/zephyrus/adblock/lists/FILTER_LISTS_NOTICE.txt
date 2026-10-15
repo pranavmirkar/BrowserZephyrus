@@ -11,7 +11,10 @@ EasyList (includes EasyPrivacy sections)
   Licence:  https://easylist.to/pages/licence.html
             (dual licensed: GNU General Public License v3, or
              Creative Commons Attribution-ShareAlike 3.0 Unported)
-  Shipped as: zephyrus_filters.txt
+  Shipped as: zephyrus_filters.txt (EasyList followed by EasyPrivacy)
+  In the source repository: NOT included. It is downloaded when the browser is
+  built, with chrome/browser/zephyrus/adblock/tools/fetch_filter_seed.py, and
+  is licensed under the terms above, not under the repository's MIT licence.
 
 The snapshot's exact version is recorded in the header of that file (the
 "! Version:" line).
