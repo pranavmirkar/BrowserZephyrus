@@ -125,6 +125,9 @@ TEST_F(ModelTransportTest, SendsTheKeyTheProviderWantsAndNoCredentials) {
   EXPECT_FALSE(seen_->headers.HasHeader("Authorization"));
   EXPECT_EQ(seen_->credentials_mode, network::mojom::CredentialsMode::kOmit);
   EXPECT_EQ(seen_->method, "POST");
+  // The key is not in `Authorization`, so Chromium would not strip it from a
+  // cross-origin redirect: redirects must not be followed at all.
+  EXPECT_EQ(seen_->redirect_mode, network::mojom::RedirectMode::kError);
 }
 
 TEST_F(ModelTransportTest, OpenAiCompatibleUsesBearerOnTheUsersBasePath) {

@@ -9,7 +9,9 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <iterator>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "chrome/installer/zephyrus_setup/setup_resource_ids.h"
@@ -242,14 +244,32 @@ bool InstallerRunner::ExtractPayload(HINSTANCE instance,
     Fail(L"Windows did not provide a temporary folder to unpack into.");
     return false;
   }
-  work_dir_ = std::wstring(temp) + L"zephyrus_setup_" +
-              std::to_wstring(::GetCurrentProcessId());
-  ::CreateDirectoryW(work_dir_.c_str(), nullptr);
+  // An unpredictable folder that this call created. The name used to be
+  // "zephyrus_setup_<pid>", which anyone can guess, and the result of creating
+  // it was ignored: a folder (or files) planted there beforehand were used as
+  // if they were ours, and the payload was written over them and then run by
+  // path. A random GUID cannot be planted in advance, and a folder that already
+  // exists is a refusal, never something to reuse.
+  GUID id = {};
+  wchar_t id_text[64] = {};
+  if (FAILED(::CoCreateGuid(&id)) ||
+      ::StringFromGUID2(id, id_text, static_cast<int>(std::size(id_text))) == 0) {
+    Fail(L"Windows did not provide a private name for the temporary folder.");
+    return false;
+  }
+  std::wstring candidate = std::wstring(temp) + L"zephyrus_setup_" + id_text;
+  if (!::CreateDirectoryW(candidate.c_str(), nullptr)) {
+    Fail(L"The installer could not create a temporary folder to unpack into.");
+    return false;
+  }
+  work_dir_ = std::move(candidate);
 
   *payload_path = work_dir_ + L"\\mini_installer.exe";
+  // CREATE_NEW: the folder is brand new, so a file already there means
+  // something else put it there.
   HANDLE file =
       ::CreateFileW(payload_path->c_str(), GENERIC_WRITE, 0, nullptr,
-                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     Fail(L"The installer could not write to the temporary folder.");
     return false;
@@ -298,7 +318,7 @@ bool InstallerRunner::WriteInitialPreferences(std::wstring* prefs_path) {
 
   *prefs_path = work_dir_ + L"\\initial_preferences";
   HANDLE file = ::CreateFileW(prefs_path->c_str(), GENERIC_WRITE, 0, nullptr,
-                              CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                              CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     return false;
   }
@@ -309,7 +329,30 @@ bool InstallerRunner::WriteInitialPreferences(std::wstring* prefs_path) {
   return ok && written == sizeof(kPrefs) - 1;
 }
 
+void InstallerRunner::CleanUpWorkDir() {
+  if (work_dir_.empty()) {
+    return;
+  }
+  // The unpacked payload is several hundred megabytes of temp file that nothing
+  // will ever clean up otherwise. Only the two files this class writes are
+  // removed by name, and the folder only if that leaves it empty.
+  ::DeleteFileW((work_dir_ + L"\\mini_installer.exe").c_str());
+  ::DeleteFileW((work_dir_ + L"\\initial_preferences").c_str());
+  ::RemoveDirectoryW(work_dir_.c_str());
+  work_dir_.clear();
+}
+
 void InstallerRunner::Run(HINSTANCE instance) {
+  // On EVERY way out. The cleanup used to sit at the end of the success path
+  // only, so each failed or abandoned install left the whole unpacked payload
+  // in the user's temp folder. By the time any return below is reached the
+  // child installer has exited or was never started, so nothing is using it.
+  struct CleanUpOnExit {
+    explicit CleanUpOnExit(InstallerRunner* runner) : runner_(runner) {}
+    ~CleanUpOnExit() { runner_->CleanUpWorkDir(); }
+    InstallerRunner* runner_;
+  } clean_up_on_exit(this);
+
   phase_.store(Phase::kExtracting, std::memory_order_relaxed);
 
   std::wstring payload;
@@ -410,12 +453,6 @@ void InstallerRunner::Run(HINSTANCE instance) {
 
   progress_.store(1.f, std::memory_order_relaxed);
   phase_.store(Phase::kDone, std::memory_order_relaxed);
-
-  // The unpacked payload is several hundred megabytes of temp file that nothing
-  // will ever clean up otherwise.
-  ::DeleteFileW(payload.c_str());
-  ::DeleteFileW(prefs.c_str());
-  ::RemoveDirectoryW(work_dir_.c_str());
 }
 
 // static

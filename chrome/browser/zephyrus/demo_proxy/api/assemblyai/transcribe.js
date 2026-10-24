@@ -28,19 +28,20 @@ async function handler(req, res) {
     headers['x-aai-model'] = model;
   }
 
-  let out;
+  let out, text;
   try {
     const base = g.upstream(process.env, 'UPSTREAM_ASSEMBLYAI', 'https://sync.assemblyai.com');
     out = await fetch(`${base}/transcribe`, {
       method: 'POST',
       headers,
       body: raw,
+      redirect: 'error',  // the key must never follow a redirect to another host
       signal: AbortSignal.timeout(55_000),
     });
+    text = await out.text();
   } catch {
     return g.reply(res, 502, 'could not reach the transcription provider');
   }
-  const text = await out.text();
   res.statusCode = out.status;
   res.setHeader('content-type', out.headers.get('content-type') || 'application/json');
   res.setHeader('cache-control', 'no-store');

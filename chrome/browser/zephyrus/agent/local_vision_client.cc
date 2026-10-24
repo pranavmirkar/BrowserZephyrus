@@ -162,6 +162,9 @@ void LocalVisionClient::Describe(const std::vector<uint8_t>& jpeg,
   request->method = "POST";
   request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   request->load_flags = net::LOAD_DISABLE_CACHE;
+  // This endpoint is checked to be this machine; a redirect would carry the
+  // page (or a screenshot of it) somewhere that check never saw.
+  request->redirect_mode = network::mojom::RedirectMode::kError;
 
   auto loader =
       network::SimpleURLLoader::Create(std::move(request), kTrafficAnnotation);

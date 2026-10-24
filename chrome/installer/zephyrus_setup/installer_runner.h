@@ -73,6 +73,8 @@ class InstallerRunner {
   bool ExtractPayload(HINSTANCE instance, std::wstring* payload_path);
   bool WriteInitialPreferences(std::wstring* prefs_path);
   void Fail(const wchar_t* message);
+  // Removes what ExtractPayload and WriteInitialPreferences wrote.
+  void CleanUpWorkDir();
 
   std::atomic<Phase> phase_{Phase::kIdle};
   std::atomic<float> progress_{0.f};

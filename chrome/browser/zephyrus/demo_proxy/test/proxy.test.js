@@ -161,3 +161,83 @@ test('one address is rate limited, another is not', () => {
   assert.ok(rateLimit('t', '2.2.2.2', 5, now));
   assert.ok(rateLimit('t', '1.1.1.1', 5, now + 61_000));
 });
+
+test('only the browser\'s own tools are forwarded: no server-side tools that bill the key', async () => {
+  const own = { name: 'page_click', description: 'x', input_schema: { type: 'object' } };
+  seen = null;
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ tools: [own] }) })).status, 200);
+  assert.ok(seen, 'a request with only custom tools must be forwarded');
+  for (const tool of [{ type: 'web_search_20250305', name: 'web_search' },
+                      { type: 'code_execution_20250522', name: 'code_execution' },
+                      { type: 'web_fetch_20250910', name: 'web_fetch' }]) {
+    seen = null;
+    const r = await call('/api/anthropic/v1/messages', { body: msg({ tools: [own, tool] }) });
+    assert.equal(r.status, 400, tool.type);
+    assert.equal(seen, null, 'a refused request must not reach the provider');
+  }
+  seen = null;
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ tools: 'web_search' }) })).status, 400);
+  assert.equal(seen, null);
+});
+
+test('a client cannot pick its own rate-limit bucket with X-Forwarded-For', () => {
+  const { clientIp } = require('../lib/guard');
+  const req = (headers, remoteAddress = '9.9.9.9') => ({ headers, socket: { remoteAddress } });
+  // The platform appends the real peer last; anything before it is the client's claim.
+  assert.equal(clientIp(req({ 'x-forwarded-for': '1.2.3.4, 5.6.7.8' })), '5.6.7.8');
+  assert.equal(clientIp(req({ 'x-forwarded-for': '5.6.7.8' })), '5.6.7.8');
+  // The platform's own header wins over anything the client can send.
+  assert.equal(clientIp(req({ 'x-vercel-forwarded-for': '7.7.7.7', 'x-forwarded-for': '1.1.1.1' })), '7.7.7.7');
+  assert.equal(clientIp(req({})), '9.9.9.9');
+  assert.equal(clientIp(req({ 'x-forwarded-for': ' , ' })), '9.9.9.9');
+});
+
+test('filling the rate-limit table does not hand everyone a fresh allowance', () => {
+  const { rateLimit } = require('../lib/guard');
+  const now = Date.now();
+  for (let i = 0; i < 3; i++) assert.ok(rateLimit('flood', '8.8.8.8', 3, now));
+  assert.equal(rateLimit('flood', '8.8.8.8', 3, now), false);
+  // An attacker with many addresses fills the table...
+  for (let i = 0; i < 6000; i++) rateLimit('noise', `10.0.${i >> 8}.${i & 255}`, 1, now);
+  // ...and the address that was already over its limit is still over it.
+  assert.equal(rateLimit('flood', '8.8.8.8', 3, now), false);
+});
+
+test('an upload that declares itself too large is refused without being read', async () => {
+  seen = null;
+  const r = await fetch(`${base}/api/assemblyai/transcribe`, {
+    method: 'POST',
+    headers: { authorization: good(), 'content-type': 'multipart/form-data; boundary=XX' },
+    body: Buffer.alloc(5 * 1024 * 1024, 1),
+  }).catch(() => ({ status: 'reset' }));
+  assert.ok(r.status === 413 || r.status === 'reset', `status ${r.status}`);
+  assert.equal(seen, null);
+});
+
+test('a provider that dies mid-reply is a 502, not a hung or crashed request', async () => {
+  const dying = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+      res.write('{"partial":');
+      setTimeout(() => res.destroy(), 20);
+    });
+  });
+  await new Promise((r) => dying.listen(0, '127.0.0.1', r));
+  const saved = process.env.UPSTREAM_ANTHROPIC;
+  process.env.UPSTREAM_ANTHROPIC = `http://127.0.0.1:${dying.address().port}`;
+  try {
+    const r = await call('/api/anthropic/v1/messages', { body: msg() });
+    assert.equal(r.status, 502);
+    assert.equal((await r.json()).error.type, 'demo_proxy');
+  } finally {
+    process.env.UPSTREAM_ANTHROPIC = saved;
+    dying.close();
+  }
+});
+
+test('refusals say which methods are allowed', async () => {
+  const r = await call('/api/anthropic/v1/messages', { method: 'GET' });
+  assert.equal(r.status, 405);
+  assert.equal(r.headers.get('allow'), 'POST');
+});
