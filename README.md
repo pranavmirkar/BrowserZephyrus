@@ -32,7 +32,7 @@ Workspaces with real storage isolation, a Private Workspace, built-in ad and tra
 
 Twelve real tasks through the shipped browser with a live model, checked against what the page actually received (a form by the POST the server got, a prompt injection by whether an address was ever requested), including a Hinglish command. **Claude Opus 5.5: 12 of 12, 14 s per task on average. Claude Sonnet 5.5 (the default in the demo build): 10 of 12**; its two misses are model quality, not harness faults. A Notion-style editor task (title and body are separate fields, focus moves after Enter) was added after a real failure and passes on Sonnet. The harness is in `chrome/browser/zephyrus/agent/benchmark/`. Running it found and fixed real bugs, each with a regression test.
 
-Unit tests: `zephyrus_agent_unittests` (247), `zephyrus_agent_service_unittests` (74), Rust `kernel_unittests` (141).
+Unit tests: `zephyrus_agent_unittests` (247), `zephyrus_agent_service_unittests` (74), Rust `kernel_unittests` (154).
 
 ## Honest limits
 - Voice Lock is a lightweight matcher, not biometric security. A replay or a close impersonator can pass it, which is why payments and sign-in never depend on it. It was first tuned on synthetic voices, then checked on real recordings from three microphones (built-in array, Bluetooth earbuds, a noise-cancelling virtual input); it needs more speakers and rooms.

@@ -275,32 +275,36 @@ fn candidates(response: &str) -> Vec<String> {
         }
     }
 
-    // Then any balanced brace run, outermost first. A cheap scan rather than a
-    // parser: model output is short, and this only has to be good enough to
-    // find something serde will then judge properly.
-    let bytes = response.as_bytes();
-    let mut depth = 0usize;
-    let mut start = None;
-    for (i, &byte) in bytes.iter().enumerate() {
-        match byte {
-            b'{' => {
-                if depth == 0 {
-                    start = Some(i);
-                }
-                depth += 1;
+    // Then every JSON object that starts at a `{`, outermost and earliest first.
+    //
+    // serde reads one value off the front of the text and says where it ended,
+    // which a brace counter cannot do: it does not know that the `{` in
+    // `"text": "if (x) {"` is data, so a valid call whose argument held an
+    // unbalanced brace was closed early (or never) and reported as "no tool
+    // call found". A start that does not parse -- a stray `{` in the model's
+    // prose -- is skipped, and the scan carries on from the next one. Bounded,
+    // because a reply made of nothing but braces would otherwise be parsed once
+    // per brace.
+    const MAX_STARTS: usize = 256;
+    let mut at = 0usize;
+    let mut starts = 0usize;
+    while let Some(offset) = response[at..].find('{') {
+        let from = at + offset;
+        starts += 1;
+        if starts > MAX_STARTS {
+            break;
+        }
+        let mut values = serde_json::Deserializer::from_str(&response[from..]).into_iter::<Value>();
+        match values.next() {
+            Some(Ok(_)) => {
+                // `{` is one byte, so `from` is a char boundary, and serde
+                // reports the end of the value as a byte offset into the text it
+                // was given.
+                let end = from + values.byte_offset();
+                found.push(response[from..end].to_string());
+                at = end;
             }
-            b'}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    if let Some(from) = start.take() {
-                        // Byte indices from an ASCII scan land on char
-                        // boundaries for `{` and `}`, so this cannot split a
-                        // multibyte character.
-                        found.push(response[from..=i].to_string());
-                    }
-                }
-            }
-            _ => {}
+            _ => at = from + 1,
         }
     }
 
@@ -394,6 +398,43 @@ mod tests {
         let response = "{\"thinking\": \"hmm\"} then \
                         {\"name\": \"browser.back\", \"arguments\": {}}";
         assert_eq!(extract_call(response), call("browser.back", "{}"));
+    }
+
+    #[test]
+    fn a_brace_inside_a_string_is_not_structure() {
+        // Valid JSON whose argument contains an unbalanced brace. A scan that
+        // counts braces without knowing about strings closes the object early
+        // (or never), and the whole call is reported as "no tool call found".
+        assert_eq!(
+            extract_call(r#"{"name":"page.type","arguments":{"text":"if (x) {"}}"#),
+            call("page.type", r#"{"text":"if (x) {"}"#)
+        );
+        assert_eq!(
+            extract_call(r#"{"name":"task.complete","arguments":{"answer":"a } b"}}"#),
+            call("task.complete", r#"{"answer":"a } b"}"#)
+        );
+        // An escaped quote does not end the string either.
+        assert_eq!(
+            extract_call(r#"{"name":"task.complete","arguments":{"answer":"say \"}\" now"}}"#),
+            call("task.complete", r#"{"answer":"say \"}\" now"}"#)
+        );
+    }
+
+    #[test]
+    fn prose_with_a_stray_quote_or_brace_does_not_hide_a_call() {
+        let response = r#"I'll say "hello {" first. {"name":"browser.back","arguments":{}}"#;
+        assert_eq!(extract_call(response), call("browser.back", "{}"));
+    }
+
+    #[test]
+    fn hostile_replies_are_read_in_bounded_time() {
+        // A reply of nothing but openers must cost a bounded number of parses,
+        // not one per brace, and deep nesting must fail instead of recursing.
+        let started = std::time::Instant::now();
+        assert_eq!(extract_call(&"{".repeat(200_000)), None);
+        assert_eq!(extract_call(&"{\"a\":".repeat(50_000)), None);
+        assert_eq!(extract_call(&"[".repeat(200_000)), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

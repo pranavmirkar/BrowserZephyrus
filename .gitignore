@@ -2,3 +2,16 @@ out/
 *.pdb
 *.ilk
 *.log
+
+# Python bytecode from the benchmark and tooling tests
+__pycache__/
+*.pyc
+
+# Never committed (see agent/tools/gen_bundled_keys.py and demo_proxy/): the
+# generated demo-token header, the JSON that feeds it, and deployment secrets.
+bundled_keys_data.h
+bundled_keys*.json
+.env
+.env.*
+.vercel/
+node_modules/
