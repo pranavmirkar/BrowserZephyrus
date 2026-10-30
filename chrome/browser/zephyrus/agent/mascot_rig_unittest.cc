@@ -113,6 +113,52 @@ TEST(MascotRigTest, APoseOvershootsAndSettlesInsteadOfArrivingDead) {
   EXPECT_NEAR(Torso(rig).h, rest, 1.0f) << "did not settle";
 }
 
+// Found by counting paints in the browser: a resting character repainted ten times a
+// second. Its breath is less than a device pixel, so each row of it crosses a pixel
+// edge at a different moment and the drawing really does change almost every tick.
+// Snapped to whole pixels the breath is a step up and a step down per breath.
+int PictureChangesAtRest(float snap) {
+  MascotRig rig;
+  rig.SetMood(MascotMood::kIdle);
+  rig.SetPixelSnap(snap);
+  for (int i = 0; i < 100; ++i) {
+    rig.Update(kFrame);  // settle out of the first pose
+  }
+  // Home size on a 150% screen, ten ticks a second for ten seconds.
+  constexpr float kScale = 0.42f * 1.5f;
+  int changes = 0;
+  std::vector<zephyrus_setup::Rect> last;
+  for (int tick = 0; tick < 100; ++tick) {
+    for (int step = 0; step < 6; ++step) {
+      rig.Update(base::Milliseconds(100) / 6);
+    }
+    std::vector<zephyrus_setup::Rect> now = rig.Draw();
+    QuantizeToDevicePixels(now, 500, 500, kScale);
+    bool same = now.size() == last.size();
+    for (size_t i = 0; same && i < now.size(); ++i) {
+      same = now[i].x == last[i].x && now[i].y == last[i].y &&
+             now[i].w == last[i].w && now[i].h == last[i].h &&
+             now[i].color == last[i].color;
+    }
+    changes += same ? 0 : 1;
+    last = std::move(now);
+  }
+  return changes;
+}
+
+TEST(MascotRigTest, ASnappedRestingBreathRepeatsThePixelsMostTicks) {
+  constexpr float kScale = 0.42f * 1.5f;
+  const int loose = PictureChangesAtRest(0);
+  const int snapped = PictureChangesAtRest(1.0f / kScale);
+  GTEST_LOG_(INFO) << "picture changes in 10 s at rest: loose " << loose
+                   << ", snapped " << snapped;
+  EXPECT_GT(loose, 70);     // unsnapped, almost every tick is a new picture
+  // Snapped, far fewer: what is left is the blinks and the small things it does
+  // on purpose (a stretch, a look round), which really are motion.
+  EXPECT_LT(snapped, loose * 0.6);
+  EXPECT_GT(snapped, 0);    // and the breath (and a blink) are still seen
+}
+
 TEST(MascotRigTest, ItBlinksOnItsOwn) {
   MascotRig rig;
   float shortest = 100;

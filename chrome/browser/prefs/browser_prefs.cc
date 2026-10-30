@@ -1779,6 +1779,10 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   // as the line above: one owner for the names.
   zephyrus::agent::RegisterProfilePrefs(registry);
   registry->RegisterBooleanPref("zephyrus.adblock.enabled", true);
+  // Glance: Alt+click a link to look at it in a card (see
+  // zephyrus/glance/glance_policy.h for the values).
+  registry->RegisterBooleanPref("zephyrus.glance.enabled", true);
+  registry->RegisterStringPref("zephyrus.glance.trigger", "alt");
   registry->RegisterBooleanPref("zephyrus.adblock.aggressive_popup", true);
   registry->RegisterListPref("zephyrus.adblock.allowlist");
   // Read-only stats surfaced to the settings page (lifetime blocked count and

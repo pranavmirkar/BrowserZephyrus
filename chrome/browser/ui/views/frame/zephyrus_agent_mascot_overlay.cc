@@ -13,6 +13,8 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_mascot_bubble.h"
+#include "chrome/browser/zephyrus/agent/lens_geometry.h"
+#include "chrome/browser/zephyrus/agent/lens_mood_map.h"
 #include "chrome/browser/zephyrus/agent/model_settings.h"
 #include "chrome/browser/zephyrus/agent/pointer_path.h"
 #include "components/prefs/pref_service.h"
@@ -20,6 +22,8 @@
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "cc/paint/paint_flags.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/gfx/image/image_skia.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -56,6 +60,18 @@ constexpr float kHomeScale = 0.42f;
 constexpr float kPageScale = 0.36f;
 constexpr float kChromeScale = 0.32f;
 
+// The lens is drawn into a square window of 240 units per unit of scale (at home
+// scale, 0.42, about 100 px); its body is the 251 x 251 lens inside the 311 x 316
+// artwork window, so about 81% of that wide and 80% tall. It stands on its lower
+// edge like Zep stands on his feet: 91% of the way down the window.
+constexpr float kLensWindowPerScale = 240.0f;
+constexpr float kLensBodyWidthPerScale = kLensWindowPerScale * 251.0f / 316.0f;
+constexpr float kLensBodyHeightPerScale = kLensWindowPerScale * 251.2f / 316.0f;
+constexpr float kLensBaselineInWindow = 0.91f;
+// Beside the target by this much, so the body never covers what it reaches for.
+constexpr float kLensReachGap = 12.0f;
+constexpr base::TimeDelta kPressRingFor = base::Milliseconds(650);
+
 constexpr base::TimeDelta kFallAsleepAfter = base::Seconds(60);
 constexpr base::TimeDelta kOutcomeShownFor = base::Seconds(9);
 
@@ -90,12 +106,19 @@ void ZephyrusAgentMascotOverlay::RefreshPresence() {
         zephyrus::agent::kMascotPref,
         base::BindRepeating(&ZephyrusAgentMascotOverlay::RefreshPresence,
                             base::Unretained(this)));
+    for (const char* pref : {zephyrus::agent::kMascotSkinPref,
+                             zephyrus::agent::kMascotLensFillPref}) {
+      pref_registrar_.Add(
+          pref, base::BindRepeating(&ZephyrusAgentMascotOverlay::RefreshLook,
+                                    base::Unretained(this)));
+    }
   }
+  RefreshLook();
   const bool enabled =
       !browser_view_ || !browser_view_->browser() ||
       browser_view_->browser()->profile()->GetPrefs()->GetBoolean(
           zephyrus::agent::kMascotPref);
-  SetPresent(enabled);
+  SetPresent(enabled && !suppressed_);
 }
 
 ZephyrusAgentMascotOverlay::~ZephyrusAgentMascotOverlay() {
@@ -131,8 +154,8 @@ void ZephyrusAgentMascotOverlay::FitToParent() {
 gfx::Rect ZephyrusAgentMascotOverlay::BodyBounds() const {
   const gfx::PointF feet = has_position_ ? feet_ : HomeFeet();
   const float scale = has_position_ ? scale_ : kHomeScale;
-  const int w = std::max(1, static_cast<int>(std::lround(110.0f * scale)));
-  const int h = std::max(1, static_cast<int>(std::lround(135.0f * scale)));
+  const int w = std::max(1, static_cast<int>(std::lround(BodyWidth() * scale)));
+  const int h = std::max(1, static_cast<int>(std::lround(BodyHeight() * scale)));
   return gfx::Rect(static_cast<int>(std::lround(feet.x())) - w / 2,
                    static_cast<int>(std::lround(feet.y())) - h, w, h);
 }
@@ -169,6 +192,14 @@ void ZephyrusAgentMascotOverlay::PlaceBubble() {
     }
     bubble_->PlaceNear(body, area);
   }
+}
+
+void ZephyrusAgentMascotOverlay::SetSuppressed(bool suppressed) {
+  if (suppressed == suppressed_) {
+    return;
+  }
+  suppressed_ = suppressed;
+  RefreshPresence();
 }
 
 void ZephyrusAgentMascotOverlay::SetPresent(bool present) {
@@ -294,12 +325,33 @@ gfx::PointF ZephyrusAgentMascotOverlay::FeetFor(Place place) const {
 }
 
 gfx::PointF ZephyrusAgentMascotOverlay::Tip() const {
+  if (lens()) {
+    // No hand: the point it reaches for is at the middle of the side it faces,
+    // or the top of the body while the person has it by the cursor.
+    const float w = BodyWidth() * scale_;
+    const float h = BodyHeight() * scale_;
+    if (held_) {
+      return feet_ - grab_offset_;
+    }
+    const float side = rig_.facing_left() ? -1.0f : 1.0f;
+    return gfx::PointF(feet_.x() + side * (w / 2 + kLensReachGap),
+                       feet_.y() - h / 2);
+  }
   const gfx::PointF tip = rig_.PointerTip();
   return gfx::PointF(feet_.x() + (tip.x() - kArtFeetX) * scale_,
                      feet_.y() + (tip.y() - kArtFeetY) * scale_);
 }
 
 gfx::PointF ZephyrusAgentMascotOverlay::FeetForTip(gfx::PointF tip) const {
+  if (lens()) {
+    const float w = BodyWidth() * scale_;
+    const float h = BodyHeight() * scale_;
+    if (held_) {
+      return tip + grab_offset_;
+    }
+    const float side = rig_.facing_left() ? -1.0f : 1.0f;
+    return gfx::PointF(tip.x() - side * (w / 2 + kLensReachGap), tip.y() + h / 2);
+  }
   const gfx::PointF art = rig_.PointerTip();
   return gfx::PointF(tip.x() - (art.x() - kArtFeetX) * scale_,
                      tip.y() - (art.y() - kArtFeetY) * scale_);
@@ -353,6 +405,12 @@ void ZephyrusAgentMascotOverlay::OnPointer(const PointerEvent& event) {
       }
       if (event.kind == Kind::kPress) {
         rig_.Kick(MascotKick::kPress);
+        if (lens_model_) {
+          // The lens flinches and the click is shown where the page got it.
+          lens_model_->Squash();
+          lens_model_->Press(kLensCenterX, 262);
+          press_ring_ = PressRing{pointer_, base::TimeTicks::Now()};
+        }
       }
       if (!gfx::Animation::ShouldRenderRichAnimation()) {
         feet_ = FeetForTip(pointer_);
@@ -400,12 +458,19 @@ void ZephyrusAgentMascotOverlay::UpdateTimer() {
   // slow motion is all that is on screen, and every frame is a wake-up for the
   // browser and a composite for the GPU.
   base::TimeDelta interval = base::Milliseconds(100);
+  if (lens()) {
+    // The lens's eyes drift and its body breathes continuously, so ten frames a
+    // second looks like stuttering; thirty is the spec's idle ceiling. Waiting
+    // (idle) is slow motion, and every frame is a composite of the whole window
+    // for the GPU, so it gets twenty; anything it is doing gets thirty.
+    interval = base::Milliseconds(rig_.mood() == MascotMood::kIdle ? 50 : 33);
+  }
   if (hidden) {
     interval = base::Seconds(1);
   } else if (moving) {
     interval = base::Milliseconds(16);
   } else if (rig_.mood() == MascotMood::kSleeping) {
-    interval = base::Milliseconds(250);
+    interval = base::Milliseconds(lens() ? 100 : 250);
   }
   if (timer_.IsRunning() && timer_.GetCurrentDelay() == interval) {
     return;
@@ -441,7 +506,28 @@ void ZephyrusAgentMascotOverlay::Tick() {
   // And not at all when the frame would come out the same. The art is drawn in
   // whole pixels, so a character standing still and breathing slowly repeats
   // the same picture for many ticks in a row.
+  SnapRestingBreathToPixels();
   std::vector<zephyrus_setup::Rect> frame = rig_.Draw();
+  if (lens()) {
+    // The lens never repeats a picture (its eyes drift, it breathes), and its
+    // quality follows how the machine is coping.
+    lens_quality_.OnFrame(dt.InSecondsF(),
+                          look_ == zephyrus::agent::MascotLook::kLensFluid);
+    if (press_ring_ && now - press_ring_->since > kPressRingFor) {
+      press_ring_.reset();
+    }
+    const gfx::Rect dirty = DirtyRect();
+    SchedulePaintInRect(
+        gfx::UnionRects(gfx::UnionRects(dirty, last_dirty_), painted_));
+    last_dirty_ = dirty;
+    UpdateTimer();
+    return;
+  }
+  // Compared as it will be DRAWN, in whole device pixels. The rig's rectangles
+  // move by fractions of a pixel while it breathes (a breath is less than one
+  // device pixel at home size), so comparing the floats called every tick a new
+  // picture and repainted ten times a second to draw the same pixels.
+  QuantizeToDevicePixels(frame);
   const bool same = feet_ == last_feet_ && scale_ == last_scale_ &&
                     SameFrame(frame, last_frame_);
   if (!same) {
@@ -460,6 +546,22 @@ void ZephyrusAgentMascotOverlay::Tick() {
   }
   // The pace depends on whether it is moving, which just changed.
   UpdateTimer();
+}
+
+void ZephyrusAgentMascotOverlay::SnapRestingBreathToPixels() {
+  // One device pixel in the art's units, so a resting breath moves in whole
+  // pixels (see MascotRig::SetPixelSnap).
+  const float dsf = layer() ? layer()->device_scale_factor() : 1.0f;
+  rig_.SetPixelSnap(1.0f / std::max(0.05f, scale_ * dsf));
+}
+
+void ZephyrusAgentMascotOverlay::QuantizeToDevicePixels(
+    std::vector<zephyrus_setup::Rect>& frame) const {
+  // The same arithmetic as OnPaint, so "same" here means "same pixels there".
+  const float dsf = layer() ? layer()->device_scale_factor() : 1.0f;
+  zephyrus::agent::QuantizeToDevicePixels(
+      frame, std::round((feet_.x() - kArtFeetX * scale_) * dsf),
+      std::round((feet_.y() - kArtFeetY * scale_) * dsf), scale_ * dsf);
 }
 
 bool ZephyrusAgentMascotOverlay::SameFrame(
@@ -487,6 +589,11 @@ gfx::Rect ZephyrusAgentMascotOverlay::DirtyRect() const {
   const gfx::PointF tip = Tip();
   rect.Union(gfx::Rect(static_cast<int>(tip.x()) - 48,
                        static_cast<int>(tip.y()) - 48, 96, 96));
+  if (lens() && press_ring_) {
+    // The ring where the page got the press.
+    rect.Union(gfx::Rect(static_cast<int>(press_ring_->at.x()) - 44,
+                         static_cast<int>(press_ring_->at.y()) - 44, 88, 88));
+  }
   return rect;
 }
 
@@ -512,7 +619,16 @@ void ZephyrusAgentMascotOverlay::Advance(base::TimeDelta dt) {
     // Hanging from the cursor. The body follows a hair behind it, which is what
     // makes it swing when the hand moves, and the sway is how hard it is being
     // dragged sideways.
-    const gfx::PointF want = FeetForTip(pointer_);
+    gfx::PointF want = FeetForTip(pointer_);
+    if (lens()) {
+      // Held by a point that can be anywhere on the body, so its feet could be
+      // asked to go below the window: keep the whole body on the window.
+      want.set_x(std::clamp(want.x(), 30.0f,
+                            std::max(30.0f, static_cast<float>(width()) - 30.0f)));
+      want.set_y(std::clamp(want.y(), BodyHeight() * scale_ + 4.0f,
+                            std::max(BodyHeight() * scale_ + 4.0f,
+                                     static_cast<float>(height()) - 2.0f)));
+    }
     gfx::Vector2dF step = want - feet_;
     step.Scale(std::min(1.0f, 22.0f * s));
     gfx::Vector2dF instant = step;
@@ -527,7 +643,9 @@ void ZephyrusAgentMascotOverlay::Advance(base::TimeDelta dt) {
     // The fist is the pointer. Which way it faces is chosen so the body is
     // never off the edge of the window: reaching for something near the left
     // edge, it turns around and reaches with its other arm.
-    const float reach = 145.0f * scale_;
+    const float reach = lens()
+                            ? (BodyWidth() / 2 + kLensReachGap + 20.0f) * scale_
+                            : 145.0f * scale_;
     const bool fits_left_of = pointer_.x() - reach >= 0;
     const bool fits_right_of = pointer_.x() + reach <= width();
     if (rig_.facing_left() && !fits_right_of && fits_left_of) {
@@ -582,6 +700,9 @@ void ZephyrusAgentMascotOverlay::Advance(base::TimeDelta dt) {
   was_travelling_ = art_speed > 60.0f;
 
   rig_.Update(dt);
+  if (lens_model_) {
+    AdvanceLens(dt);
+  }
 }
 
 void ZephyrusAgentMascotOverlay::LookAtCursor() {
@@ -596,12 +717,28 @@ void ZephyrusAgentMascotOverlay::LookAtCursor() {
   display::Screen* screen = display::Screen::Get();
   if (!attentive || !screen) {
     rig_.StopLooking();
+    if (lens_model_) {
+      lens_model_->ClearCursor();
+    }
     return;
   }
   gfx::Point cursor = screen->GetCursorScreenPoint();
   views::View::ConvertPointFromScreen(this, &cursor);
   if (!GetLocalBounds().Contains(cursor)) {
     rig_.StopLooking();
+    if (lens_model_) {
+      lens_model_->ClearCursor();
+    }
+    return;
+  }
+  if (lens_model_) {
+    // The eyes follow the person's pointer, relative to the middle of the body.
+    const gfx::PointF centre(feet_.x(),
+                             feet_.y() - BodyHeight() * scale_ / 2);
+    lens_model_->SetFollowCursor(true);
+    lens_model_->SetCursor(
+        std::clamp((cursor.x() - centre.x()) / 260.0f, -1.0f, 1.0f),
+        std::clamp((cursor.y() - centre.y()) / 260.0f, -1.0f, 1.0f));
     return;
   }
   const float eye_y = feet_.y() - 66.0f * scale_;
@@ -704,6 +841,9 @@ void ZephyrusAgentMascotOverlay::HandleMouse(ui::MouseEvent* event) {
 }
 
 void ZephyrusAgentMascotOverlay::BeginHold(gfx::PointF at) {
+  // The lens is taken by whatever part of the body was pressed, and stays where
+  // it is under the hand; Zep hangs from the cursor.
+  grab_offset_ = lens() ? feet_ - at : gfx::Vector2dF();
   held_ = true;
   driven_ = false;
   at_home_ = false;
@@ -721,7 +861,7 @@ void ZephyrusAgentMascotOverlay::BeginHold(gfx::PointF at) {
 void ZephyrusAgentMascotOverlay::EndHold() {
   held_ = false;
   // Put down inside the window, on its feet: the head has to fit above.
-  const float head = 135.0f * scale_target_;
+  const float head = BodyHeight() * scale_target_;
   const float max_x = std::max(30.0f, static_cast<float>(width()) - 30.0f);
   const float max_y =
       std::max(head + 4.0f, static_cast<float>(height()) - 2.0f);
@@ -780,6 +920,47 @@ void ZephyrusAgentMascotOverlay::StartDragDemoForTesting() {
           base::Unretained(this)));
 }
 
+void ZephyrusAgentMascotOverlay::StartClickDemoForTesting() {
+  demo_start_ = base::TimeTicks::Now();
+  demo_phase_ = 0;
+  demo_timer_.Start(
+      FROM_HERE, base::Milliseconds(16),
+      base::BindRepeating(
+          [](ZephyrusAgentMascotOverlay* self) {
+            if (!self->GetWidget() || !self->present_) {
+              self->demo_timer_.Stop();
+              return;
+            }
+            const double t = (base::TimeTicks::Now() - self->demo_start_).InSecondsF();
+            gfx::Point target(self->width() / 2, self->height() / 2);
+            views::View::ConvertPointToScreen(self, &target);
+            using Kind = PointerEvent::Kind;
+            const auto send = [&](Kind kind) {
+              PointerEvent event;
+              event.kind = kind;
+              event.position = target;
+              self->OnPointer(event);
+            };
+            if (t > 4.0 && t < 6.5) {
+              send(Kind::kMove);
+            } else if (self->demo_phase_ == 0 && t >= 6.5) {
+              self->demo_phase_ = 1;
+              send(Kind::kArrive);
+            } else if (self->demo_phase_ == 1 && t >= 7.0) {
+              self->demo_phase_ = 2;
+              send(Kind::kPress);
+            } else if (self->demo_phase_ == 2 && t >= 7.15) {
+              self->demo_phase_ = 3;
+              send(Kind::kRelease);
+            } else if (self->demo_phase_ == 3 && t >= 9.0) {
+              self->demo_phase_ = 4;
+              send(Kind::kIdle);
+              self->demo_timer_.Stop();
+            }
+          },
+          base::Unretained(this)));
+}
+
 bool ZephyrusAgentMascotOverlay::MoveTo(MascotSpot spot) {
   if (!present_ || held_ || width() <= 0 || height() <= 0) {
     return false;
@@ -797,7 +978,7 @@ bool ZephyrusAgentMascotOverlay::MoveTo(MascotSpot spot) {
     }
   }
   const float side = 52.0f;
-  const float head = 135.0f * kHomeScale + 12.0f;
+  const float head = BodyHeight() * kHomeScale + 12.0f;
   const float left = area.x() + side;
   const float right = area.right() - side;
   const float top = area.y() + head;
@@ -905,6 +1086,17 @@ void ZephyrusAgentMascotOverlay::OnPaint(gfx::Canvas* canvas) {
     }
     return;
   }
+  if (lens()) {
+    gfx::ScopedCanvas scoped_lens(canvas);
+    const float lens_dsf = canvas->UndoDeviceScaleFactor();
+    PaintLensBody(canvas, lens_dsf);
+    if (listening_) {
+      PaintListeningDot(canvas, lens_dsf);
+    }
+    painted_ = DirtyRect();
+    return;
+  }
+  SnapRestingBreathToPixels();
   const std::vector<zephyrus_setup::Rect> rects = rig_.Draw();
 
   // Painted in PHYSICAL pixels with every edge rounded to one, and the body's
@@ -951,6 +1143,128 @@ void ZephyrusAgentMascotOverlay::RemovedFromWidget() {
   }
   held_ = false;
   timer_.Stop();
+}
+
+// ---- The lens look ----------------------------------------------------------
+
+float ZephyrusAgentMascotOverlay::BodyWidth() const {
+  return lens() ? kLensBodyWidthPerScale : 110.0f;
+}
+
+float ZephyrusAgentMascotOverlay::BodyHeight() const {
+  return lens() ? kLensBodyHeightPerScale : 135.0f;
+}
+
+void ZephyrusAgentMascotOverlay::RefreshLook() {
+  const MascotLook want =
+      browser_view_ && browser_view_->browser()
+          ? zephyrus::agent::ReadMascotLook(
+                *browser_view_->browser()->profile()->GetPrefs())
+          : MascotLook::kZep;
+  const bool was_lens = lens();
+  const bool fill_changed = want != look_;
+  look_ = want;
+  if (lens()) {
+    if (!lens_model_) {
+      lens_rng_ = std::make_unique<SystemLensRandom>();
+      lens_model_ = std::make_unique<LensModel>(lens_rng_.get());
+      lens_model_->SetState(LensStateForMood(rig_.mood(), 10.0), /*force=*/true);
+    }
+    lens_model_->SetFill(want == MascotLook::kLensFluid ? LensFill::kFluid
+                                                        : LensFill::kStatic);
+    lens_model_->SetMotionScale(gfx::Animation::ShouldRenderRichAnimation() ? 1.0
+                                                                            : 0.35);
+    if (want != MascotLook::kLensFluid) {
+      lens_quality_.Reset();
+    }
+  } else {
+    lens_model_.reset();
+    lens_rng_.reset();
+    lens_quality_.Reset();
+    press_ring_.reset();
+  }
+  if (fill_changed || was_lens != lens()) {
+    // A different character is a different size and shape: forget where the old
+    // one was drawn, and draw the whole thing once.
+    last_frame_.clear();
+    painted_ = gfx::Rect();
+    last_dirty_ = gfx::Rect();
+    SchedulePaint();
+    UpdateTimer();
+    PlaceBubble();
+  }
+}
+
+void ZephyrusAgentMascotOverlay::AdvanceLens(base::TimeDelta dt) {
+  const double seconds = dt.InSecondsF();
+  const double in_mood = (base::TimeTicks::Now() - mood_since_).InSecondsF();
+  // Zep's mood is the one the rest of the browser sets; the lens shows it.
+  lens_model_->SetState(LensStateForMood(rig_.mood(), in_mood));
+
+  // Reaching for the page: look at where the agent is acting.
+  if (driven_) {
+    const gfx::PointF centre(feet_.x(), feet_.y() - BodyHeight() * scale_ / 2);
+    lens_model_->Look(
+        std::clamp((pointer_.x() - centre.x()) / 160.0f, -1.0f, 1.0f),
+        std::clamp((pointer_.y() - centre.y()) / 160.0f, -1.0f, 1.0f));
+  }
+  // Walking leans the body into the direction of travel.
+  if (std::abs(velocity_.x()) > 25.0f) {
+    lens_model_->SetManualSlant(
+        std::clamp(static_cast<double>(velocity_.x()) / 700.0, -0.8, 0.8));
+  } else {
+    lens_model_->SetManualSlant(std::nullopt);
+  }
+  lens_model_->Update(seconds);
+  lens_frame_ = lens_model_->ComputeFrame();
+}
+
+void ZephyrusAgentMascotOverlay::PaintLensBody(gfx::Canvas* canvas, float dsf) {
+  if (!lens_model_) {
+    return;
+  }
+  // The window is a square standing on its feet point: centred on x, with the
+  // body's lower edge at the baseline.
+  const float side = kLensWindowPerScale * scale_ * dsf;
+  const float top = std::round(feet_.y() * dsf - kLensBaselineInWindow * side);
+  LensPaintOptions options;
+  options.lite = lens_quality_.lite();
+  const float width = side * static_cast<float>(kLensViewWidth / kLensViewHeight);
+  const int w = std::max(1, static_cast<int>(std::lround(width)));
+  const int h = std::max(1, static_cast<int>(std::lround(side)));
+  // Painted into a small bitmap of its own and then drawn: the browser's canvas
+  // is a recording, and the lens (blurs, blend modes) is drawn straight with Skia.
+  const SkBitmap bitmap = RenderLensToBitmap(lens_frame_, w, h, options);
+  canvas->DrawImageInt(gfx::ImageSkia::CreateFrom1xBitmap(bitmap),
+                       static_cast<int>(std::lround(feet_.x() * dsf - w / 2.0f)),
+                       static_cast<int>(std::lround(top)));
+  PaintPressRing(canvas, dsf);
+}
+
+void ZephyrusAgentMascotOverlay::PaintPressRing(gfx::Canvas* canvas, float dsf) const {
+  if (!press_ring_) {
+    return;
+  }
+  const double age = (base::TimeTicks::Now() - press_ring_->since).InSecondsF() /
+                     kPressRingFor.InSecondsF();
+  if (age < 0 || age > 1) {
+    return;
+  }
+  const float p = static_cast<float>(1.0 - std::pow(1.0 - age, 3.0));  // ease out
+  // A white ring over a dark one: white alone vanishes on a light page, which is
+  // most pages, and dark alone vanishes on a dark one.
+  const gfx::PointF centre(press_ring_->at.x() * dsf, press_ring_->at.y() * dsf);
+  const float radius = (6.0f + 30.0f * p) * dsf;
+  const float fade = static_cast<float>(std::pow(1.0 - age, 1.5));
+  for (const bool dark : {true, false}) {
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setStyle(cc::PaintFlags::kStroke_Style);
+    flags.setStrokeWidth((3.0f - 2.0f * p + (dark ? 2.0f : 0.0f)) * dsf);
+    flags.setColor(dark ? SkColorSetRGB(20, 20, 30) : SK_ColorWHITE);
+    flags.setAlphaf((dark ? 0.55f : 0.95f) * fade);
+    canvas->DrawCircle(centre, radius, flags);
+  }
 }
 
 BEGIN_METADATA(ZephyrusAgentMascotOverlay)

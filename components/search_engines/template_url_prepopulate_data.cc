@@ -17,6 +17,7 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/not_fatal_until.h"
 #include "base/rand_util.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/country_codes/country_codes.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -28,12 +29,35 @@
 #include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_data_util.h"
 #include "third_party/search_engines_data/resources/definitions/prepopulated_engines.h"
+#include "url/gurl.h"
 
 namespace TemplateURLPrepopulateData {
 
 // Helpers --------------------------------------------------------------------
 
 namespace {
+
+// Zephyrus-owned provider data stays outside Chromium's separately maintained
+// search-engine definitions checkout. Keep this ID stable across releases.
+constexpr int kZepSearchPrepopulateId = 1000;
+std::unique_ptr<TemplateURLData> ZepSearchData() {
+  auto data = std::make_unique<TemplateURLData>();
+  data->SetShortName(u"Zep Search");
+  data->SetKeyword(u"zepsearch");
+  // Our hosted metasearch (SearxNG). The picker shows a bundled mark, so there
+  // is no favicon_url: an icon fetch would send a request to this host from
+  // every profile that merely lists the engine. chrome://zepsearch stays in the
+  // tree, but its own API backend is a development address, so it is not the
+  // engine people search with.
+  data->SetURL("https://atharva123.tail76dc89.ts.net/search?q={searchTerms}");
+  data->input_encodings.push_back("UTF-8");
+  data->safe_for_autoreplace = true;
+  data->date_created = base::Time();
+  data->last_modified = base::Time();
+  data->prepopulate_id = kZepSearchPrepopulateId;
+  data->GenerateSyncGUID();
+  return data;
+}
 
 inline std::unique_ptr<TemplateURLData> PrepopulatedEngineToTemplateURLData(
     const PrepopulatedEngine* engine) {
@@ -169,7 +193,11 @@ int GetDataVersion(PrefService* prefs) {
     return prefs->GetInteger(prefs::kSearchProviderOverridesVersion);
   }
 
-  return kCurrentDataVersion;
+  // Trigger one repair of existing profiles so the Zep Search entry is
+  // updated in place. A saved user-selected default remains
+  // user-selected. Raise this number when another engine is added, or profiles
+  // that already merged the list will never see it.
+  return kCurrentDataVersion + 4;
 }
 
 std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
@@ -180,12 +208,19 @@ std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
   // the built-in set.
   std::vector<std::unique_ptr<TemplateURLData>> t_urls =
       GetOverriddenTemplateURLData(prefs);
-  if (!t_urls.empty()) {
-    return t_urls;
+  if (t_urls.empty()) {
+    t_urls = base::ToVector(regional_prepopulated_engines,
+                            &PrepopulatedEngineToTemplateURLData);
   }
-
-  return base::ToVector(regional_prepopulated_engines,
-                        &PrepopulatedEngineToTemplateURLData);
+  // The browser-owned results page is offered in every region. Existing
+  // explicit defaults are retained by DefaultSearchManager; this only adds a
+  // provider to the list and supplies the fallback for new profiles.
+  if (std::ranges::none_of(t_urls, [](const auto& engine) {
+        return engine->prepopulate_id == kZepSearchPrepopulateId;
+      })) {
+    t_urls.insert(t_urls.begin(), ZepSearchData());
+  }
+  return t_urls;
 }
 
 std::unique_ptr<TemplateURLData> GetPrepopulatedEngine(
@@ -254,6 +289,9 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
     }
   }
 
+  if (prepopulated_id == kZepSearchPrepopulateId) {
+    return ZepSearchData();
+  }
   if (auto* matched_engine = GetPrepopulatedEngineFromBuiltInData(
           prepopulated_id, regional_prepopulated_engines);
       matched_engine) {
@@ -264,8 +302,9 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
 }
 
 void ClearPrepopulatedEnginesInPrefs(PrefService* prefs) {
-  if (!prefs)
+  if (!prefs) {
     return;
+  }
 
   prefs->ClearPref(prefs::kSearchProviderOverrides);
   prefs->ClearPref(prefs::kSearchProviderOverridesVersion);
@@ -275,10 +314,7 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedFallbackSearch(
     PrefService& prefs,
     const std::vector<const PrepopulatedEngine*>&
         regional_prepopulated_engines) {
-  // Zephyrus: DuckDuckGo is the default search engine everywhere, regardless
-  // of region (privacy-first, matching the browser's stance). Returned
-  // directly so it wins even where DuckDuckGo isn't in the regional set.
-  return TemplateURLDataFromPrepopulatedEngine(duckduckgo);
+  return ZepSearchData();
 }
 
 }  // namespace TemplateURLPrepopulateData

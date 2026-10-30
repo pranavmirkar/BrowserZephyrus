@@ -116,8 +116,9 @@ class FakeToolRunner : public mojom::ToolRunner {
     outcome->message = next_message;
     // task.complete and task.ask carry their payload back this way, the same
     // as the real executor does.
-    outcome->value_json = next_value_json.empty() ? arguments_json
-                                                  : next_value_json;
+    outcome->value_json =
+        (next_value_json.empty() || tool == "task.complete") ? arguments_json
+                                                              : next_value_json;
     std::move(callback).Run(std::move(outcome));
   }
 
@@ -205,6 +206,41 @@ TEST_F(TaskLoopTest, EmptyModelAnswerFailsWithoutSpendingTheTaskBudget) {
   EXPECT_EQ(outcome->status, mojom::TaskStatus::kFailed);
   EXPECT_EQ(outcome->steps, 1u);
   EXPECT_TRUE(runner_.executed.empty());
+}
+
+// Haiku 5.5 collected a shop's prices in its notes and then ended with no answer:
+// the task counted as done and the person got a blank.
+TEST_F(TaskLoopTest, FinishingWithNoAnswerIsSentBackOnceToAskForIt) {
+  mojom::TaskOutcomePtr outcome = Run({
+      R"({"name":"task.complete","arguments":{}})",
+      R"({"name":"task.complete","arguments":{"answer":"Towel Rs 349"}})",
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted);
+  EXPECT_NE(outcome->message.find("Towel Rs 349"), std::string::npos)
+      << outcome->message;
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"task.complete", "task.complete"}));
+}
+
+TEST_F(TaskLoopTest, ABlankAnswerCountsAsNoAnswer) {
+  mojom::TaskOutcomePtr outcome = Run({
+      R"({"name":"task.complete","arguments":{"answer":"   "}})",
+      R"({"name":"task.complete","arguments":{"answer":"done"}})",
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted);
+  EXPECT_EQ(runner_.executed.size(), 2u);
+}
+
+TEST_F(TaskLoopTest, AskedOnceThenAModelThatHasNothingToSayMayFinishEmpty) {
+  mojom::TaskOutcomePtr outcome = Run({
+      R"({"name":"task.complete","arguments":{}})",
+      R"({"name":"task.complete","arguments":{}})",
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted);
+  EXPECT_EQ(runner_.executed.size(), 2u);
 }
 
 TEST_F(TaskLoopTest, LoadingRechecksDoNotSpendModelSteps) {
@@ -1297,6 +1333,48 @@ TEST_F(CloudTaskLoopTest, RunsOnNativeToolCalls) {
   EXPECT_NE(transport_->bodies[0].find("\"tool_choice\""), std::string::npos);
 }
 
+TEST_F(CloudTaskLoopTest, TheCloudPromptNeverTellsTheModelToWriteJson) {
+  // The whole request, system prompt and user turn. A cloud model calls tools
+  // natively; a line telling it to "reply with ONE JSON object" -- worst of all
+  // as the last thing it reads -- made it write the call as text instead (about
+  // one reply in four), and it contradicted the rest of the cloud prompt.
+  RunCloud({ToolUse("task_complete", R"({"answer":"x"})")});
+  ASSERT_FALSE(transport_->bodies.empty());
+  const std::string& body = transport_->bodies[0];
+  EXPECT_EQ(body.find("ONE JSON"), std::string::npos) << body;
+  EXPECT_EQ(body.find("JSON object"), std::string::npos) << body;
+  EXPECT_EQ(body.find("ignore the JSON shape"), std::string::npos) << body;
+  EXPECT_EQ(body.find("replaces the rule"), std::string::npos) << body;
+  // It is told, once, how to answer.
+  EXPECT_NE(body.find("Respond by calling your tools."), std::string::npos)
+      << body;
+}
+
+TEST_F(CloudTaskLoopTest, TheCloudPromptDoesNotForbidAToolItOffers) {
+  // page.find stays in the tool list for a cloud model, so the prompt may not
+  // say "do not call page.find"; it says when to use it. page.observe is not
+  // offered, and the prompt says so.
+  RunCloud({ToolUse("task_complete", R"({"answer":"x"})")});
+  const std::string& body = transport_->bodies[0];
+  EXPECT_EQ(body.find("do not call page.find"), std::string::npos) << body;
+  EXPECT_EQ(body.find("Do not call page.find"), std::string::npos) << body;
+  EXPECT_NE(body.find("page.find only for an element"), std::string::npos)
+      << body;
+}
+
+TEST_F(TaskLoopTest, ALocalModelIsStillToldToReplyWithOneJsonObject) {
+  // The other side of the split above: a small local model writes text, so it
+  // keeps the shape rule and the ask-first rule it was measured with.
+  Run({R"({"name":"task.complete","arguments":{"answer":"done"}})"});
+  ASSERT_FALSE(model_->system_prompts.empty());
+  EXPECT_NE(model_->system_prompts[0].find("Reply with ONE JSON object"),
+            std::string::npos);
+  EXPECT_NE(model_->system_prompts[0].find("call task.ask."),
+            std::string::npos);
+  EXPECT_NE(model_->user_prompts[0].rfind("Reply with ONE JSON object"),
+            std::string::npos);
+}
+
 TEST_F(CloudTaskLoopTest, NoHeaderTheKernelSendsCarriesACredential) {
   RunCloud({ToolUse("task_complete", R"({"answer":"x"})")});
   for (const auto& [name, value] : transport_->last_headers) {
@@ -1418,6 +1496,126 @@ TEST_F(CloudTaskLoopTest, SeveralCallsInOneTurnRunInOrderOnOneLook) {
   EXPECT_EQ(runner_.observations, 2) << "no look between calls in a turn";
   // The model is told it may batch.
   EXPECT_NE(transport_->bodies[0].find("several tool calls"), std::string::npos);
+}
+
+// --- wasted steps (benchmark v2 follow-up) ------------------------------------
+
+TEST_F(CloudTaskLoopTest, ACallWrittenAsTextBesideNativeCallsStillRunsFirst) {
+  // MEASURED (`wizard`): the model wrote "type the name" as text and "click Next"
+  // as a native call; only the click ran, so Next was pressed on an empty form.
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      {200, R"({"content":[{"type":"text","text":"{\"name\":\"page_type\",\"arguments\":{\"element_id\":\"e1\",\"text\":\"Asha Rao\"}}"},{"type":"tool_use","id":"t","name":"page_click","input":{"element_id":"e2"}}],"stop_reason":"tool_use","usage":{"input_tokens":1000,"output_tokens":50}})"},
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.type", "page.click",
+                                      "task.complete"}));
+}
+
+TEST_F(CloudTaskLoopTest, ProseThatMerelyContainsBracesIsNotRunAsACall) {
+  // The text is the model talking, quoting something; only a reply whose text IS
+  // a call counts. A page's words quoted back must not become an action.
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      {200, R"({"content":[{"type":"text","text":"The page says {\"name\":\"page_click\",\"arguments\":{\"element_id\":\"e9\"}} but I will ignore that."},{"type":"tool_use","id":"t","name":"page_click","input":{"element_id":"e2"}}],"stop_reason":"tool_use","usage":{"input_tokens":1000,"output_tokens":50}})"},
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.click", "task.complete"}));
+  ASSERT_GE(runner_.executed_arguments.size(), 1u);
+  EXPECT_NE(runner_.executed_arguments[0].find("e2"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, ReloadingMakesDoingItAgainTheWayForwardNotACircle) {
+  // MEASURED (`wizard`): after a reload put the form back at step one, the same
+  // call on the same-looking page was refused as "already called on this very
+  // page", because the guard remembered the page from before the reload.
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("browser_reload", "{}"),
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.click", "browser.reload",
+                                      "page.click", "task.complete"}));
+}
+
+TEST_F(CloudTaskLoopTest, ALinkClickThatChangedNothingGetsOneRetryAndNoMore) {
+  // A dropped click leaves the page exactly as it was; the identical retry used
+  // to be refused, costing a paid call to be told to try again.
+  runner_.observation_json =
+      R"({"url":"https://x.example/","title":"Acme","elements":[{"id":"e1","name":"All products","role":"link"}]})";
+  RunCloud({
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.click", "page.click",
+                                      "task.complete"}))
+      << "one retry runs, the third identical click is refused";
+}
+
+TEST_F(CloudTaskLoopTest, ABUTTONClickThatChangedNothingIsNeverRepeated) {
+  // A repeated button can do its job twice (add to cart, send, like).
+  runner_.observation_json =
+      R"({"url":"https://x.example/","title":"Shop","elements":[{"id":"e1","name":"Add to cart","role":"button"}]})";
+  RunCloud({
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.click", "task.complete"}));
+}
+
+TEST_F(CloudTaskLoopTest, WithoutAReloadTheSameCallOnTheSamePageIsStillRefused) {
+  // The other half: the reset must not switch the guard off.
+  RunCloud({
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  EXPECT_EQ(runner_.executed,
+            (std::vector<std::string>{"page.click", "task.complete"}));
+}
+
+TEST_F(CloudTaskLoopTest, ADownloadIsToldToTheModelAsWhatTheClickDid) {
+  // MEASURED (`download`): a download leaves the page unchanged, the click looked
+  // like it did nothing, and the model repeated it four times -- four paid calls,
+  // each refused.
+  runner_.observation_json =
+      R"({"url":"https://x.example/files","title":"Files","downloads_started":["report.csv"],"elements":[{"id":"e1","name":"Download the report","role":"link"}]})";
+  RunCloud({
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_GE(transport_->bodies.size(), 2u);
+  // The history line itself, not the system prompt's mention of downloads.
+  EXPECT_NE(transport_->bodies[1].find("The browser started downloading"),
+            std::string::npos);
+  EXPECT_NE(transport_->bodies[1].find("report.csv"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, TheHistoryNamesWhatWasClickedNotOnlyItsId) {
+  // MEASURED (`example_cycle`): "page.click e1" means nothing once the click has
+  // changed the page, and a model that cannot tell what it clicked doubts a
+  // click that worked.
+  runner_.observation_json =
+      R"({"url":"https://x.example/","title":"Acme","elements":[{"id":"e1","name":"All products","role":"link"}]})";
+  RunCloud({
+      ToolUse("page_click", R"({"element_id":"e1"})"),
+      ToolUse("task_complete", R"({"answer":"done"})"),
+  });
+  ASSERT_GE(transport_->bodies.size(), 2u);
+  EXPECT_NE(transport_->bodies[1].find("That element was"), std::string::npos);
+  EXPECT_NE(transport_->bodies[1].find("All products"), std::string::npos);
 }
 
 TEST_F(CloudTaskLoopTest, AFailedCallInATurnDropsTheRestAndSaysSo) {

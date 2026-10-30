@@ -47,6 +47,7 @@
 #include "chrome/browser/ui/webui/omnibox/omnibox_ui.h"
 #include "chrome/browser/ui/webui/zephyrus/privacy_dashboard_ui.h"
 #include "chrome/browser/ui/webui/zephyrus/privacy_internals_ui.h"
+#include "chrome/browser/ui/webui/zephyrus/zepsearch_ui.h"
 #include "chrome/browser/ui/webui/personal_context_internals/personal_context_internals_ui.h"
 #include "chrome/browser/ui/webui/policy/policy_ui.h"
 #include "chrome/browser/ui/webui/predictors/predictors_ui.h"
@@ -298,6 +299,7 @@ void RegisterChromeWebUIConfigs() {
       std::make_unique<zephyrus_privacy::PrivacyInternalsUIConfig>());
   map.AddWebUIConfig(
       std::make_unique<zephyrus_privacy::PrivacyDashboardUIConfig>());
+  map.AddWebUIConfig(std::make_unique<zephyrus::search::ZepSearchUIConfig>());
   map.AddWebUIConfig(std::make_unique<OptimizationGuideInternalsUIConfig>());
   map.AddWebUIConfig(std::make_unique<PasswordManagerInternalsUIConfig>());
   map.AddWebUIConfig(std::make_unique<PersonalContextInternalsUIConfig>());

@@ -307,6 +307,8 @@ void VoiceInput::Transcribe(std::string pcm,
   request->method = "POST";
   request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   request->load_flags = net::LOAD_DISABLE_CACHE;
+  // A redirect would re-send the body (and the key) to wherever it points.
+  request->redirect_mode = network::mojom::RedirectMode::kError;
   // AssemblyAI takes the raw key, no "Bearer".
   request->headers.SetHeader("Authorization", api_key);
   request->headers.SetHeader("X-AAI-Model", "universal-3-5-pro");

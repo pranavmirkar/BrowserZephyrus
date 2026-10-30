@@ -91,9 +91,55 @@ const PAYMENT_VERBS: &[&str] = &[
     "pay",
     "purchase",
     "reserve",
-    "subscribe",
     "transfer",
+    // Money moving some other way. Phrases, not the bare nouns: "Payments",
+    // "Payment methods" and "Bid history" are places to look, and asking before
+    // every visit to one is how a user learns to click through the card.
+    "make payment",
+    "make a payment",
+    "proceed to payment",
+    "complete payment",
+    "confirm payment",
+    "place bid",
+    "place a bid",
+    "bid now",
+    // Wallets and prepaid plans, which is most of how people in India pay.
+    "recharge",
+    "add money",
+    "top up",
+    "top-up",
+    "renew",
+    "upgrade",
+    "withdraw",
+    // The same acts in Hindi, as the pages this browser is for print them.
+    // Phrases where the bare noun would also name a place ("भुगतान विधियाँ" is
+    // "payment methods"). Whole words, like every entry above: "मैदान" (a
+    // ground) ends in "दान" (a donation) and must not ask. Best effort -- a
+    // spelling not listed here is not caught, which is why the agent also never
+    // types card details and the last step of a payment is the user's.
+    "खरीदें",
+    "खरीदे",
+    "खरीदना",
+    "भुगतान करें",
+    "भुगतान करे",
+    "ऑर्डर करें",
+    "आर्डर करें",
+    "ऑर्डर दें",
+    "बुक करें",
+    "बुक करे",
+    "रिचार्ज",
+    "दान करें",
+    "दान करे",
+    "सब्सक्राइब",
+    "ट्रांसफर",
 ];
+
+// NOT in the list above: "subscribe". It is the label of a free newsletter box
+// and of a free follow button far more often than of a paid plan, and a card
+// for "Subscribe asha@example.com to the newsletter" -- which the user asked for
+// in those words -- stopped a benchmark task that has nothing to do with money.
+// It is a payment when money is in the picture (see `subscribe_costs_money`)
+// and an ordinary outbound action otherwise.
 
 /// Controls that send something out or destroy something, each with the words
 /// in a task that ask for it.
@@ -131,6 +177,7 @@ const OUTBOUND_VERBS: &[(&str, &[&str])] = &[
     ("delete", &["delet", "remov", "clear", "trash", "discard", "eras", "clean", "empty", "drop"]),
     ("remove", &["remov", "delet", "clear", "discard", "uninstall", "drop"]),
     ("unsubscribe", &["unsubscrib", "cancel", "stop", "opt"]),
+    ("subscribe", &["subscrib", "newsletter", "sign", "join", "follow", "email", "regist", "enrol", "updat", "notif", "alert", "mailing"]),
     ("invite", &["invit", "add", "shar"]),
 ];
 
@@ -336,7 +383,7 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
         if let Some(id) = request.arguments.get("element_id").and_then(Value::as_str) {
             if let Some(element) = request.elements.iter().find(|e| e.id == id) {
                 if let Some((verb, spends_money)) =
-                    consequential_verb(&element.name, request.task)
+                    consequential_verb(&element.name, request.task, request.page_url, request.elements)
                 {
                     // The role is named because the user is being asked to
                     // approve a specific control, and "the button Send" is a
@@ -444,6 +491,31 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
             if target == "about:blank" {
                 return (floor, String::new());
             }
+            // The executor treats an empty url and `about:newtab` as "a new
+            // blank tab" for tabs.open (and only for it). Say the same here, or
+            // the user is asked to approve what the executor calls no url.
+            if request.tool == "tabs.open" && (target.is_empty() || target == "about:newtab") {
+                return (floor, String::new());
+            }
+            // Only web addresses are destinations.
+            //
+            // The executor refuses anything else, but the kernel's answer is the
+            // one that is audited, and it used to say Allow to
+            // `file://localhost/etc/passwd` and `chrome://settings/passwords`
+            // because those parse to an origin that no rule objected to. Denied
+            // rather than asked: there is nothing the user could approve that
+            // would make the executor load it.
+            if let Some(scheme) = scheme_of(target) {
+                if scheme != "http" && scheme != "https" {
+                    return (
+                        Risk::R3,
+                        format!(
+                            "`{target}` is not a web address. The agent opens only \
+                             http:// and https:// addresses"
+                        ),
+                    );
+                }
+            }
             match origin_of(target) {
                 // Unparseable destination. We decline to reason about it rather
                 // than assume it is harmless.
@@ -454,10 +526,11 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
                     );
                 }
                 Some(destination) => {
-                    if carries_data(target)
+                    if (carries_data(target) || host_holds_data(&destination))
                         && !is_expected(&destination, request)
                         && !is_search_engine(&destination)
-                        && !is_search_for_the_task(target, request.task)
+                        && !(is_search_for_the_task(target, request.task)
+                            && !host_holds_data(&destination))
                     {
                         return (
                             floor.max(Risk::R2),
@@ -668,6 +741,15 @@ fn named_separately(targets: &[String], task: &str, a: &Element, b: &Element) ->
     has_own_word(&a_name, &b_name) && has_own_word(&b_name, &a_name)
 }
 
+/// Roles that hold text a person types. The same set the browser's executor
+/// accepts for `page.type`.
+fn is_text_entry_role(role: &str) -> bool {
+    matches!(
+        role,
+        "textbox" | "searchbox" | "combobox" | "password" | "spinbutton"
+    )
+}
+
 /// Two candidates this call would choose between without knowing which the
 /// user meant. None when the call commits to nothing in the tie.
 fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Element)> {
@@ -680,8 +762,38 @@ fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Elemen
         return None;
     }
 
-    // Door one: acting on a candidate.
-    if let Some(chosen) = target_element(request) {
+    // Door one: clicking a candidate.
+    //
+    // A click, not typing: typing into a FIELD that is named like the task says
+    // nothing about which candidate was chosen, the text written is what chooses,
+    // and door two judges that. MEASURED, S5 `enquiry`: typing "14" into the
+    // field "Day Check-out" stopped to ask about "Month Check-out", a different
+    // part of the same date.
+    //
+    // And not a click on a text FIELD either. Clicking one only puts the cursor
+    // in it, the very first step of typing into it, so it chooses nothing any
+    // more than the typing does. MEASURED, S5 `enquiry`: a model that clicked
+    // "Day Check-out" before typing the date was stopped with "Day Check-out
+    // and Month Check-out both match what you asked for" -- two parts of one
+    // date. What the field is then given is judged by door two.
+    let chosen_element = if request.tool == "page.click" {
+        target_element(request).filter(|element| !is_text_entry_role(&element.role))
+    } else {
+        None
+    };
+    if let Some(chosen) = chosen_element {
+        // "Open the FIRST result", "the cheapest": the task says how to choose, so
+        // choosing is doing what was asked and not guessing. Only for LINKS, whose
+        // worst case is a navigation the user can go back from; a recipient, a
+        // button that commits, or a field is still asked about, and a stray
+        // "first" in a task ("First open the inbox, then send to Alex") must not
+        // be able to switch that off.
+        if chosen.role == "link"
+            && (task_says_how_to_choose(request.task)
+                || (task_asks_for_information(request.task) && !task_commits(request.task)))
+        {
+            return None;
+        }
         if candidates.iter().any(|c| c.id == chosen.id) {
             let other = *candidates.iter().find(|c| {
                 c.id != chosen.id
@@ -738,7 +850,12 @@ fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Elemen
 /// The first consequential verb in an element's accessible name that should
 /// stop the agent, and whether it is a payment. None for a control that is
 /// harmless, or one the task asked for.
-fn consequential_verb(name: &str, task: &str) -> Option<(&'static str, bool)> {
+fn consequential_verb(
+    name: &str,
+    task: &str,
+    page_url: &str,
+    elements: &[Element],
+) -> Option<(&'static str, bool)> {
     // Only the beginning of the name, because only that part is a LABEL.
     //
     // An accessible name is often computed from everything inside the element,
@@ -762,19 +879,29 @@ fn consequential_verb(name: &str, task: &str) -> Option<(&'static str, bool)> {
     // Matched in the RAW label rather than a list of split words, because
     // whether a word names a record depends on the "#" after it, and splitting
     // on punctuation throws the "#" away.
-    let is_word_char = |c: char| c.is_ascii_alphanumeric();
+    // Any script: a word boundary in Devanagari or Tamil is a boundary too. With
+    // ASCII only, every non-ASCII neighbour counted as "not a word", so a verb
+    // glued to other letters in those scripts was matched in the middle.
+    let is_word_char = |c: char| c.is_alphanumeric();
     let names = |verb: &str| {
         lowered.match_indices(verb).any(|(at, _)| {
             let before = lowered[..at].chars().next_back();
             let rest = &lowered[at + verb.len()..];
             let whole_word = !before.is_some_and(is_word_char)
                 && !rest.chars().next().is_some_and(is_word_char);
-            whole_word && !names_a_record(verb, rest)
+            whole_word && !names_a_record(verb, rest) && !narrows_a_view(verb, rest)
         })
     };
 
     if let Some(verb) = PAYMENT_VERBS.iter().copied().find(|verb| names(verb)) {
         return Some((verb, true));
+    }
+    // "Subscribe" costs money only when something says so: a price in the label,
+    // on the page, or a pricing/checkout address. A free newsletter or follow
+    // button falls through to the outbound list below, which asks only when the
+    // task did not ask for it.
+    if names("subscribe") && subscribe_costs_money(&lowered, page_url, elements) {
+        return Some(("subscribe", true));
     }
 
     let task_words: Vec<String> = task
@@ -794,6 +921,123 @@ fn consequential_verb(name: &str, task: &str) -> Option<(&'static str, bool)> {
         .map(|(verb, _)| (*verb, false))
 }
 
+/// A price, in any of the usual ways a page shows one.
+fn shows_a_price(text: &str) -> bool {
+    text.contains(['\u{20b9}', '$', '\u{20ac}', '\u{a3}', '\u{a5}'])
+        || [
+            "/mo", "/month", "/yr", "/year", "per month", "per year", "per week", "a month",
+            "billed", "inr", "usd",
+        ]
+        .iter()
+        .any(|marker| text.contains(marker))
+}
+
+/// Words that, in the control's OWN label, mean a paid thing.
+const MONEY_LABEL_WORDS: &[&str] = &[
+    "premium", "membership", "trial", "plan", "pay", "price", "upgrade", "billing",
+    "monthly", "yearly", "annual",
+];
+
+/// Address words of pages whose business is money.
+const MONEY_PATHS: &[&str] = &[
+    "pricing", "plans", "checkout", "billing", "payment", "premium", "membership",
+    "upgrade", "cart",
+];
+
+/// Whether a "Subscribe" control spends money: a price or a paid word in the
+/// label itself, a price anywhere among the page's controls, or a pricing,
+/// checkout or billing address. Errs towards asking: a wrong "money" is one card,
+/// a wrong "free" is a charge. The card form behind a paid plan is a hand-off
+/// either way, so this only decides what the user is asked BEFORE it.
+fn subscribe_costs_money(label: &str, page_url: &str, elements: &[Element]) -> bool {
+    if shows_a_price(label) || MONEY_LABEL_WORDS.iter().any(|word| label.contains(word)) {
+        return true;
+    }
+    let after_scheme = page_url.split_once("://").map(|(_, rest)| rest).unwrap_or(page_url);
+    let path = after_scheme
+        .split_once('/')
+        .map(|(_, rest)| rest.split(['?', '#']).next().unwrap_or(""))
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if MONEY_PATHS.iter().any(|word| path.contains(word)) {
+        return true;
+    }
+    elements
+        .iter()
+        .any(|element| shows_a_price(&element.name.to_ascii_lowercase()))
+}
+
+/// Verbs that commit something whichever of several things they are aimed at,
+/// and that are not also everyday nouns.
+const COMMIT_VERBS: &[&str] = &[
+    "send", "forward", "reply", "respond", "pay", "buy", "purchase", "delete",
+    "remove", "cancel", "submit", "invite", "transfer", "assign", "approve",
+    "reject", "subscribe", "unsubscribe", "confirm", "register", "sign", "enrol",
+    "enroll", "publish",
+];
+
+/// Commit verbs that are just as often nouns ("every message from Priya", "the
+/// book"). They count only where a verb stands: starting the task, or after a word
+/// that starts a new instruction.
+const COMMIT_VERBS_AS_NOUNS: &[&str] = &[
+    "email", "mail", "message", "text", "call", "post", "order", "book", "share",
+    "add", "save", "update", "change", "set", "create", "upload", "write", "edit",
+    "apply", "fill", "enter", "type", "put",
+];
+
+/// Words of a task whose point is an ANSWER: what to find out, not which page to
+/// end up on. "Open the widget page" ends on the page it opens, so which link it
+/// is matters; "open every message and tell me the dates" ends on the dates, and
+/// the links are only the way to them.
+const INFORMATION_WORDS: &[&str] = &[
+    "tell", "what", "whats", "which", "who", "when", "where", "how", "list", "find",
+    "look", "check", "read", "summarise", "summarize", "compare", "count",
+];
+
+fn task_asks_for_information(task: &str) -> bool {
+    task.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| INFORMATION_WORDS.contains(&word))
+}
+
+/// Whether the task asks to DO something to what it names, rather than to look at
+/// it. Opening a link to read it is how the page's own details resolve a tie, and
+/// a wrong link is a navigation that can be undone; it is the commit that cannot
+/// be: a message sent, an order placed, a record changed. MEASURED, S5 `inbox`
+/// and `lookup` (Haiku 5.5): "Open every message from Priya Menon and tell me the
+/// dates" and "look up Sunil from the Finance department" stopped to ask "which
+/// one?", when the answer was one click away on the next page.
+fn task_commits(task: &str) -> bool {
+    let lowered = task.to_ascii_lowercase();
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.iter().enumerate().any(|(at, word)| {
+        COMMIT_VERBS.contains(word)
+            || (COMMIT_VERBS_AS_NOUNS.contains(word)
+                && (at == 0
+                    || matches!(
+                        words[at - 1],
+                        "and" | "then" | "also" | "please" | "first" | "next" | "to" | "now"
+                    )))
+    })
+}
+
+/// Words that tell the agent HOW to choose among look-alikes, so that choosing
+/// is following the task and not guessing: "the first result", "the cheapest".
+const CHOOSING_WORDS: &[&str] = &[
+    "first", "second", "third", "fourth", "fifth", "top", "last", "final", "1st", "2nd",
+    "3rd", "cheapest", "lowest", "highest", "best", "latest", "newest", "oldest", "earliest",
+    "biggest", "smallest", "closest", "nearest",
+];
+
+fn task_says_how_to_choose(task: &str) -> bool {
+    task.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|word| CHOOSING_WORDS.contains(&word))
+}
+
 /// Words on the list that are just as often NOUNS naming a thing that exists.
 ///
 /// MEASURED on benchmark mt-010: the link "Order #4417 -- Pixel 11 case" stopped
@@ -809,6 +1053,17 @@ const ALSO_A_NOUN: &[&str] = &["order", "transfer", "book"];
 /// or a quantity as an id -- "Book 18:30", "Order 2 pizzas" -- and those are
 /// the verb doing exactly what the list exists to catch. MEASURED: a first
 /// version accepted a bare number, and "Book 18:30" stopped asking.
+/// "Apply filters", "Apply sort": the verb of the OUTBOUND list is a job or a
+/// course application, and here it narrows the list on screen. MEASURED, S5
+/// `finder`: the button "Apply filters" stopped the task to ask the user, with
+/// "the task did not ask for that".
+fn narrows_a_view(verb: &str, rest: &str) -> bool {
+    verb == "apply"
+        && ["filter", "sort", "search"]
+            .iter()
+            .any(|object| rest.trim_start().starts_with(object))
+}
+
 fn names_a_record(verb: &str, rest: &str) -> bool {
     if !ALSO_A_NOUN.contains(&verb) {
         return false;
@@ -1038,8 +1293,14 @@ fn task_names_host(task: &str, host: &str) -> bool {
     // a task mentioning "google" would treat google.evil.com as expected, which
     // is precisely the shape an exfiltration takes. Getting this wrong in the
     // other direction only costs a prompt.
+    //
+    // An IP address has no registrable label: split on dots, `10.0.3.4` offers
+    // `3`, and a task about "3 laptops" would read as permission to visit it.
+    // Those are matched whole or not at all.
+    let is_ip_literal =
+        host.starts_with('[') || host.chars().all(|c| c.is_ascii_digit() || c == '.');
     let labels: Vec<&str> = host.split('.').collect();
-    let registrable = if labels.len() >= 2 {
+    let registrable = if labels.len() >= 2 && !is_ip_literal {
         labels[labels.len() - 2]
     } else {
         host
@@ -1070,7 +1331,23 @@ fn origin_of(url: &str) -> Option<String> {
         return None;
     }
 
-    let authority = rest.split(['/', '?', '#']).next()?;
+    // `\` ends the authority exactly as `/` does: Chromium follows the WHATWG
+    // URL standard for http(s), so `https://attacker.example\@www.google.com/`
+    // is a request to attacker.example. Read as a plain string it is userinfo
+    // followed by www.google.com, which is on the search-engine allowance --
+    // the kernel and the browser must not disagree about where a request goes.
+    let authority = rest.split(['/', '\\', '?', '#']).next()?;
+    // The browser's parser drops tabs and newlines from anywhere in a URL and
+    // rejects most other control characters, so an authority containing any of
+    // them can be a different host from the one this function would name.
+    // `%` in an authority is a host the browser decodes and this does not.
+    // Decline to name an origin at all; every caller treats None as "ask".
+    if authority
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '%')
+    {
+        return None;
+    }
     // Strip userinfo. `https://trusted.example@attacker.example/` is served by
     // attacker.example, and reading the left side is a classic way to be fooled
     // about where a request is going.
@@ -1095,6 +1372,39 @@ fn origin_of(url: &str) -> Option<String> {
         scheme.to_ascii_lowercase(),
         host.to_ascii_lowercase()
     ))
+}
+
+/// The scheme of `url`, lowercased, if it starts with one.
+///
+/// Looser than `origin_of` on purpose: `javascript:` and `data:` have no `//`,
+/// and still have to be recognised as not being web addresses.
+fn scheme_of(url: &str) -> Option<String> {
+    let (scheme, _) = url.split_once(':')?;
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic()
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
+        return None;
+    }
+    Some(scheme.to_ascii_lowercase())
+}
+
+/// Whether a destination's HOST is long enough to be carrying something.
+///
+/// A DNS label is up to 63 bytes and a name up to 253, and the resolver of the
+/// zone sees every one, whether or not a request is ever made. So
+/// `<base64 of the user's mail>.attacker.example` is the same exfiltration as a
+/// query string, and one the path-length check cannot see. Real hosts are far
+/// shorter than this: the longest label on the web's top sites is under 20.
+fn host_holds_data(destination: &str) -> bool {
+    const LABEL_ROOM_FOR_DATA: usize = 32;
+    const HOST_ROOM_FOR_DATA: usize = 64;
+    let host = destination
+        .split_once("://")
+        .map(|(_, host)| host)
+        .unwrap_or(destination);
+    host.len() > HOST_ROOM_FOR_DATA || host.split('.').any(|label| label.len() > LABEL_ROOM_FOR_DATA)
 }
 
 /// True if the URL hands anything to the destination beyond the path.

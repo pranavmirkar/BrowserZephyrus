@@ -174,9 +174,19 @@ class TaskLoop {
   // Every (call, page) pair this task has already tried, so a loop that
   // walks in a circle is caught as well as one that stands still.
   std::set<std::string> seen_here_;
+  // Link clicks that have already been given their one retry on this page. See
+  // the guard in OnProposed.
+  std::set<std::string> retried_;
+  // An empty task.complete is sent back once, to ask for the answer.
+  bool asked_for_answer_ = false;
 
   std::string page_key_;
   std::string page_at_last_call_;
+
+  // Files the browser started downloading since the model was last told. Kept
+  // across the re-looks a click on a link triggers, because only the first look
+  // after the download carries the news and a re-look would throw it away.
+  std::vector<std::string> new_downloads_;
 
   // The page as it was one step ago, and how many steps have not moved it.
   //

@@ -22,6 +22,8 @@
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
+#include "ui/display/screen.h"
+#include "ui/gfx/geometry/rect.h"
 
 namespace zephyrus {
 namespace {
@@ -323,6 +325,24 @@ bool ConsumeReopenSuppression(const views::View* anchor) {
   // so a stale stamp can never swallow a later, genuine click.
   closes.erase(it);
   return within_click;
+}
+
+int BubbleBodyRoom(views::View* anchor, int other_height, int cap,
+                   int floor) {
+  int room = cap;
+  if (anchor && anchor->GetWidget()) {
+    views::Widget* widget = anchor->GetWidget();
+    const gfx::Rect at = anchor->GetBoundsInScreen();
+    gfx::Rect area = widget->GetWindowBoundsInScreen();
+    if (display::Screen* screen = display::Screen::Get()) {
+      area.Intersect(screen->GetDisplayNearestWindow(widget->GetNativeWindow())
+                         .work_area());
+    }
+    const int above = at.y() - area.y();
+    const int below = area.bottom() - at.bottom();
+    room = std::min(room, std::max(above, below) - other_height);
+  }
+  return std::max(room, floor);
 }
 
 }  // namespace zephyrus

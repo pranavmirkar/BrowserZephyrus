@@ -56,6 +56,7 @@
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/focus_ring.h"
+#include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/textfield/textfield.h"
@@ -599,36 +600,22 @@ using zephyrus::m3::SwitchRow;
 
 }  // namespace
 
-// At global scope, not in a namespace: BubbleDialogDelegateView's constructor
-// is private and its friend list names this class as ::ZephyrusWorkspaceSetup.
-class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
-                               public views::TextfieldController {
-  METADATA_HEADER(ZephyrusWorkspaceSetup, views::BubbleDialogDelegateView)
+// The workspace editor: the live preview (the hero), name, icon, colour, light
+// or dark, and the options. Hosted by the setup bubble below, and inline as the
+// whole of the onboarding's Workspaces screen, so the two can never drift.
+class ZephyrusWorkspaceEditor : public views::View,
+                                public views::TextfieldController {
+  METADATA_HEADER(ZephyrusWorkspaceEditor, views::View)
 
  public:
-  ZephyrusWorkspaceSetup(BrowserView* browser_view,
-                         views::View* anchor,
-                         int workspace_id)
-      : views::BubbleDialogDelegateView(anchor,
-                                        views::BubbleBorder::TOP_CENTER),
-        browser_view_(browser_view),
-        workspace_id_(workspace_id) {
-    zephyrus::ConfigureBubble(this);
-    // The hero's inset; the body adds its own padding on top (see kHeroInset).
-    set_margins(gfx::Insets(kHeroInset));
-    set_fixed_width(kCardWidth + 2 * kBodyInset);
-    SetBackgroundColor(m3::Role(*anchor, kColorZephyrusSurfaceContainer));
+  // `max_body_height` > 0 puts everything under the hero in a scroller that
+  // tall (the bubble, which must fit around its anchor); 0 lets it be as tall as
+  // it is (a host that scrolls already).
+  ZephyrusWorkspaceEditor(BrowserView* browser_view,
+                          int workspace_id,
+                          int max_body_height)
+      : browser_view_(browser_view), workspace_id_(workspace_id) {
     const bool creating = workspace_id_ == 0;
-    // The hero IS the header. The title is kept for the window's accessible
-    // name and not drawn a second time.
-    SetTitle(creating ? u"New workspace" : u"Edit workspace");
-    SetShowTitle(false);
-    SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
-               static_cast<int>(ui::mojom::DialogButton::kCancel));
-    SetButtonLabel(ui::mojom::DialogButton::kOk,
-                   creating ? u"Create" : u"Save");
-    SetAcceptCallback(base::BindOnce(&ZephyrusWorkspaceSetup::Commit,
-                                     base::Unretained(this)));
 
     LoadInitialState();
 
@@ -639,7 +626,22 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
     hero_ = AddChildView(std::make_unique<HeroPreview>(
         creating ? u"New workspace" : u"Edit workspace"));
 
-    views::View* body = AddChildView(std::make_unique<views::View>());
+    // In the bubble the body scrolls, so the card is never taller than the room
+    // around the button that opened it; the hero stays on top and the buttons
+    // at the foot.
+    views::View* body = nullptr;
+    if (max_body_height > 0) {
+      auto* scroll = AddChildView(std::make_unique<views::ScrollView>(
+          views::ScrollView::ScrollWithLayers::kEnabled));
+      scroll->SetBackgroundColor(std::nullopt);
+      scroll->SetDrawOverflowIndicator(false);
+      scroll->SetHorizontalScrollBarMode(
+          views::ScrollView::ScrollBarMode::kDisabled);
+      scroll->ClipHeightTo(0, max_body_height);
+      body = scroll->SetContents(std::make_unique<views::View>());
+    } else {
+      body = AddChildView(std::make_unique<views::View>());
+    }
     body->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical,
         gfx::Insets::TLBR(0, kBodyInset - kHeroInset, 0,
@@ -674,7 +676,7 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
       };
       ShapeChoice* number = add(std::make_unique<ShapeChoice>(
           ShapeChoice::Kind::kNumber, u"Number", Shape::kCookie, kCell,
-          base::BindRepeating(&ZephyrusWorkspaceSetup::PickGlyph,
+          base::BindRepeating(&ZephyrusWorkspaceEditor::PickGlyph,
                               base::Unretained(this), std::u16string())));
       number->set_numeral(number_);
       glyph_choices_.emplace_back(std::u16string(), number);
@@ -683,7 +685,7 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
         ShapeChoice* choice = add(std::make_unique<ShapeChoice>(
             ShapeChoice::Kind::kIcon, std::u16string(icon.label), icon.shape,
             kCell,
-            base::BindRepeating(&ZephyrusWorkspaceSetup::PickGlyph,
+            base::BindRepeating(&ZephyrusWorkspaceEditor::PickGlyph,
                                 base::Unretained(this), key)));
         choice->set_icon(&icon);
         glyph_choices_.emplace_back(key, choice);
@@ -701,7 +703,7 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
                           const std::u16string& name) {
         auto* chip = row->AddChildView(std::make_unique<ShapeChoice>(
             ShapeChoice::Kind::kColor, name, Shape::kCookie, kChip,
-            base::BindRepeating(&ZephyrusWorkspaceSetup::PickSeed,
+            base::BindRepeating(&ZephyrusWorkspaceEditor::PickSeed,
                                 base::Unretained(this), seed)));
         // Two tones: the colour's primary as it will be in light mode and in
         // dark, so the chip shows the range rather than one flat swatch.
@@ -723,11 +725,11 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
           views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 2));
       dark_segment_ = group->AddChildView(std::make_unique<Segment>(
           u"Dark", Segment::Glyph::kMoon, /*leading=*/true,
-          base::BindRepeating(&ZephyrusWorkspaceSetup::PickDark,
+          base::BindRepeating(&ZephyrusWorkspaceEditor::PickDark,
                               base::Unretained(this), true)));
       light_segment_ = group->AddChildView(std::make_unique<Segment>(
           u"Light", Segment::Glyph::kSun, /*leading=*/false,
-          base::BindRepeating(&ZephyrusWorkspaceSetup::PickDark,
+          base::BindRepeating(&ZephyrusWorkspaceEditor::PickDark,
                               base::Unretained(this), false)));
     }
 
@@ -740,13 +742,13 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
           u"Its own cookies and logins. Off shares the first workspace's.",
           /*on=*/true));
       separate_->set_on_change(base::BindRepeating(
-          &ZephyrusWorkspaceSetup::Refresh, base::Unretained(this), false));
+          &ZephyrusWorkspaceEditor::Refresh, base::Unretained(this), false));
       wallpaper_next_ = card->AddChildView(std::make_unique<SwitchRow>(
           u"Choose a wallpaper next", u"Opens Customize once it's created.",
           /*on=*/false));
     } else {
       auto* photo = body->AddChildView(std::make_unique<views::MdTextButton>(
-          base::BindRepeating(&ZephyrusWorkspaceSetup::ChoosePhoto,
+          base::BindRepeating(&ZephyrusWorkspaceEditor::ChoosePhoto,
                               base::Unretained(this)),
           has_photo_ ? u"Change photo…" : u"Use a photo instead…"));
       photo->SetStyle(ui::ButtonStyle::kTonal);
@@ -757,26 +759,7 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
     Refresh(/*animate=*/false);
   }
 
-  views::View* GetInitiallyFocusedView() override {
-    return name_field_->field();
-  }
-
-  // Styles the dialog's own buttons once they exist. Theirs rather than
-  // hand-built ones, because they bring Enter-to-create and Esc-to-cancel.
-  void OnWidgetInitialized() override {
-    views::BubbleDialogDelegateView::OnWidgetInitialized();
-    if (auto* ok = views::AsViewClass<views::MdTextButton>(GetOkButton())) {
-      ok->SetStyle(ui::ButtonStyle::kProminent);
-      ok->SetCornerRadius(20);
-      ok->SetCustomPadding(gfx::Insets::VH(10, 24));
-    }
-    if (auto* cancel =
-            views::AsViewClass<views::MdTextButton>(GetCancelButton())) {
-      cancel->SetStyle(ui::ButtonStyle::kText);
-      cancel->SetCornerRadius(20);
-      cancel->SetCustomPadding(gfx::Insets::VH(10, 16));
-    }
-  }
+  views::View* InitialFocus() { return name_field_->field(); }
 
   // views::TextfieldController:
   void ContentsChanged(views::Textfield* sender,
@@ -784,7 +767,8 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
     Refresh(/*animate=*/false);
   }
 
- private:
+  // What follows is used by the hosts too (Commit), so it is all public; the
+  // class lives only in this file.
   ZephyrusWorkspaceManager* Manager() const {
     return browser_view_ ? browser_view_->zephyrus_workspace_manager()
                          : nullptr;
@@ -954,6 +938,68 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView,
       seed_choices_;
 };
 
+BEGIN_METADATA(ZephyrusWorkspaceEditor)
+END_METADATA
+
+// At global scope, not in a namespace: BubbleDialogDelegateView's constructor
+// is private and its friend list names this class as ::ZephyrusWorkspaceSetup.
+class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView {
+  METADATA_HEADER(ZephyrusWorkspaceSetup, views::BubbleDialogDelegateView)
+
+ public:
+  ZephyrusWorkspaceSetup(BrowserView* browser_view,
+                         views::View* anchor,
+                         int workspace_id)
+      : views::BubbleDialogDelegateView(anchor,
+                                        views::BubbleBorder::TOP_CENTER) {
+    zephyrus::ConfigureBubble(this);
+    // The hero's inset; the body adds its own padding on top (see kHeroInset).
+    set_margins(gfx::Insets(kHeroInset));
+    set_fixed_width(kCardWidth + 2 * kBodyInset);
+    SetBackgroundColor(m3::Role(*anchor, kColorZephyrusSurfaceContainer));
+    const bool creating = workspace_id == 0;
+    // The hero IS the header. The title is kept for the window's accessible
+    // name and not drawn a second time.
+    SetTitle(creating ? u"New workspace" : u"Edit workspace");
+    SetShowTitle(false);
+    SetButtons(static_cast<int>(ui::mojom::DialogButton::kOk) |
+               static_cast<int>(ui::mojom::DialogButton::kCancel));
+    SetButtonLabel(ui::mojom::DialogButton::kOk,
+                   creating ? u"Create" : u"Save");
+    SetLayoutManager(std::make_unique<views::FillLayout>());
+    // Header (the hero, about 150) and buttons and margins (about 110).
+    editor_ = AddChildView(std::make_unique<ZephyrusWorkspaceEditor>(
+        browser_view, workspace_id,
+        zephyrus::BubbleBodyRoom(anchor, 260, 640)));
+    SetAcceptCallback(base::BindOnce(&ZephyrusWorkspaceEditor::Commit,
+                                     base::Unretained(editor_.get())));
+  }
+
+  views::View* GetInitiallyFocusedView() override {
+    return editor_->InitialFocus();
+  }
+
+  // Styles the dialog's own buttons once they exist. Theirs rather than
+  // hand-built ones, because they bring Enter-to-create and Esc-to-cancel.
+  void OnWidgetInitialized() override {
+    views::BubbleDialogDelegateView::OnWidgetInitialized();
+    if (auto* ok = views::AsViewClass<views::MdTextButton>(GetOkButton())) {
+      ok->SetStyle(ui::ButtonStyle::kProminent);
+      ok->SetCornerRadius(20);
+      ok->SetCustomPadding(gfx::Insets::VH(10, 24));
+    }
+    if (auto* cancel =
+            views::AsViewClass<views::MdTextButton>(GetCancelButton())) {
+      cancel->SetStyle(ui::ButtonStyle::kText);
+      cancel->SetCornerRadius(20);
+      cancel->SetCustomPadding(gfx::Insets::VH(10, 16));
+    }
+  }
+
+ private:
+  raw_ptr<ZephyrusWorkspaceEditor> editor_ = nullptr;
+};
+
 BEGIN_METADATA(ZephyrusWorkspaceSetup)
 END_METADATA
 
@@ -970,6 +1016,21 @@ void ShowWorkspaceSetup(BrowserView* browser_view,
       std::make_unique<ZephyrusWorkspaceSetup>(browser_view, anchor,
                                                workspace_id))
       ->Show();
+}
+
+std::unique_ptr<views::View> CreateWorkspaceEditor(BrowserView* browser_view) {
+  if (!browser_view || !browser_view->zephyrus_workspace_manager()) {
+    return nullptr;
+  }
+  return std::make_unique<ZephyrusWorkspaceEditor>(browser_view,
+                                                   /*workspace_id=*/0,
+                                                   /*max_body_height=*/0);
+}
+
+void CommitWorkspaceEditor(views::View* editor) {
+  if (auto* ours = views::AsViewClass<ZephyrusWorkspaceEditor>(editor)) {
+    ours->Commit();
+  }
 }
 
 }  // namespace zephyrus

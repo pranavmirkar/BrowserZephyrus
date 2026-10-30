@@ -30,12 +30,18 @@ async function handler(req, res) {
     return g.reply(res, 400, `max_tokens must be 1 to ${g.MAX_OUTPUT_TOKENS}`);
   }
   if (body.stream) return g.reply(res, 400, 'streaming is not available in the demo');
+  if (!g.onlyCustomTools(body.tools)) {
+    return g.reply(res, 400, 'only the browser\'s own tools are available in the demo');
+  }
 
   const version = typeof req.headers['anthropic-version'] === 'string'
       ? req.headers['anthropic-version'] : '2023-06-01';
   if (!/^[0-9-]{1,20}$/.test(version)) return g.reply(res, 400, 'bad version');
 
-  let out;
+  // The reply is read inside the same try as the request: the timeout signal
+  // also covers the body, and a provider that stops mid-reply throws from
+  // text(), which used to escape as an unhandled rejection and a bare 500.
+  let out, text;
   try {
     const base = g.upstream(process.env, 'UPSTREAM_ANTHROPIC', 'https://api.anthropic.com');
     out = await fetch(`${base}/v1/messages`, {
@@ -43,12 +49,13 @@ async function handler(req, res) {
       headers: { 'content-type': 'application/json', 'x-api-key': key,
                  'anthropic-version': version },
       body: JSON.stringify(body),
+      redirect: 'error',  // the key must never follow a redirect to another host
       signal: AbortSignal.timeout(55_000),
     });
+    text = await out.text();
   } catch {
     return g.reply(res, 502, 'could not reach the model provider');
   }
-  const text = await out.text();
   res.statusCode = out.status;
   res.setHeader('content-type', out.headers.get('content-type') || 'application/json');
   res.setHeader('cache-control', 'no-store');

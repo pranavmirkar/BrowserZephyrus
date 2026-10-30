@@ -176,8 +176,11 @@
 #include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
 // ZEPHYRUS PROFILES FRONTEND - DISABLED.
 // #include "chrome/browser/ui/views/frame/zephyrus_profile_switcher.h"
+#include "chrome/browser/ui/views/frame/zephyrus_glance_controller.h"
+#include "chrome/browser/ui/views/frame/zephyrus_glance_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_mascot_overlay.h"
+#include "chrome/browser/ui/views/frame/zephyrus_onboarding.h"
 #include "chrome/browser/ui/views/frame/zephyrus_hands_free.h"
 #include "chrome/browser/ui/views/frame/zephyrus_mascot_bubble.h"
 #include "chrome/browser/ui/views/frame/zephyrus_voice_setup.h"
@@ -1019,6 +1022,11 @@ BrowserView::BrowserView(Browser* browser)
     zephyrus_agent_panel_ = AddChildView(
         std::make_unique<zephyrus::agent::ZephyrusAgentPanel>(this));
 
+    // The first-run screens. Added BEFORE the mascot so the mascot, which
+    // FitToParent keeps last, is drawn over them and can react to each step.
+    zephyrus_onboarding_ = AddChildView(
+        std::make_unique<zephyrus::ZephyrusOnboarding>(this));
+
     // The agent's mascot: a transparent layer over the whole window that is
     // also the agent's pointer. Kept on top by FitToParent, which the layout
     // calls, so it stays above anything added after it.
@@ -1087,6 +1095,12 @@ BrowserView::BrowserView(Browser* browser)
         AddChildView(std::make_unique<ZephyrusSearchOverlay>(this));
     zephyrus_tab_switcher_ =
         AddChildView(std::make_unique<ZephyrusTabSwitcher>(this));
+    // Glance: the card that previews an Alt+clicked link. Hidden until one is
+    // opened; it sizes itself to the page area (see Layout()).
+    zephyrus_glance_ =
+        AddChildView(std::make_unique<ZephyrusGlanceView>(this));
+    zephyrus_glance_controller_ =
+        std::make_unique<ZephyrusGlanceController>(this, zephyrus_glance_);
   }
 
   // InfoBarContainer needs to be added as a child here for drop-shadow, but
@@ -3657,6 +3671,13 @@ void BrowserView::OnZephyrusCompactOmniboxFocusChanged() {
   }
 }
 
+void BrowserView::OnZephyrusTargetURL(content::WebContents* source,
+                                      const GURL& url) {
+  if (zephyrus_glance_controller_) {
+    zephyrus_glance_controller_->OnTargetUrl(source, url);
+  }
+}
+
 void BrowserView::ToggleZephyrusTitlebarPinned() {
   zephyrus_titlebar_pinned_ = !zephyrus_titlebar_pinned_;
   // The title bar hides and reveals exactly as it always did -- the reveal
@@ -5000,6 +5021,13 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
   if (active) {
     zephyrus::m3::AuditConcentricity(*this);
   }
+  // The first-run screens decide once, at the first activation, because only now
+  // does the window have its browser and profile.
+  if (active && zephyrus_onboarding_ && !zephyrus_onboarding_checked_) {
+    zephyrus_onboarding_checked_ = true;
+    zephyrus_onboarding_->ShowIfDue();
+    InvalidateLayout();
+  }
   // Dev only: --zephyrus-test-compact starts the window in compact mode with
   // the sidebar pinned out, so the panel's chrome can be inspected without
   // hovering for it. Any value also focuses the address bar after 2s,
@@ -5106,6 +5134,17 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
                     if (auto* overlay = view->zephyrus_agent_mascot()) {
                       overlay->SetPresent(true);
                       overlay->StartDragDemoForTesting();
+                    }
+                    return;
+                  }
+                  // =mascot-click plays an agent click (see
+                  // StartClickDemoForTesting).
+                  if (base::CommandLine::ForCurrentProcess()
+                          ->GetSwitchValueASCII("zephyrus-test-compact") ==
+                      "mascot-click") {
+                    if (auto* overlay = view->zephyrus_agent_mascot()) {
+                      overlay->SetPresent(true);
+                      overlay->StartClickDemoForTesting();
                     }
                     return;
                   }
@@ -5879,6 +5918,12 @@ void BrowserView::Layout(PassKey) {
   UpdateZephyrusSidebarBounds();
   UpdateZephyrusTabStripBounds();
   UpdateZephyrusAgentPanelBounds();
+  if (zephyrus_onboarding_ && zephyrus_onboarding_->showing()) {
+    zephyrus_onboarding_->FitToParent();
+  }
+  if (zephyrus_glance_ && zephyrus_glance_->showing()) {
+    zephyrus_glance_->FitToContents();
+  }
   if (zephyrus_agent_mascot_) {
     zephyrus_agent_mascot_->FitToParent();
   }

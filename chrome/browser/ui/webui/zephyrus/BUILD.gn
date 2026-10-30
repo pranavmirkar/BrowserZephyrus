@@ -12,6 +12,11 @@ source_set("zephyrus") {
     "privacy_dashboard_ui.h",
     "privacy_internals_ui.cc",
     "privacy_internals_ui.h",
+    "zepsearch_config.cc",
+    "zepsearch_config.h",
+    "zepsearch_resources.h",
+    "zepsearch_ui.cc",
+    "zepsearch_ui.h",
   ]
   public_deps = [ "//content/public/browser" ]
   deps = [
@@ -21,6 +26,10 @@ source_set("zephyrus") {
     "//chrome/browser/ui/webui:theme_source",
     "//chrome/browser/zephyrus/privacy",
     "//chrome/common",
+    "//net",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
+    "//url",
   ]
 }
 

@@ -115,8 +115,21 @@ impl ToolTable {
             .map(|t| t.name.as_str())
     }
 
+    #[cfg(test)]
     pub fn tools(&self) -> &[WireTool] {
         &self.tools
+    }
+
+    /// The tools a model is SHOWN. `page.observe` stays in the table, so a reply
+    /// that names it still maps back to the contract, but it is not offered: the
+    /// loop looks at the page before every turn and puts the result in the
+    /// prompt, so asking for it buys nothing and costs a whole paid model call.
+    /// MEASURED across the benchmark runs, fourteen such calls returned "not
+    /// needed -- the page is already shown", and the system prompt telling the
+    /// model not to call it did not stop it. A tool it is never shown cannot be
+    /// called. (The text listing for local models already leaves it out.)
+    pub fn offered(&self) -> impl Iterator<Item = &WireTool> {
+        self.tools.iter().filter(|t| t.name != "page.observe")
     }
 }
 
@@ -182,8 +195,7 @@ pub fn build(table: &ToolTable, turn: &Turn) -> Result<HttpRequest, String> {
         Kind::Anthropic => {
             headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
             let tools: Vec<Value> = table
-                .tools()
-                .iter()
+                .offered()
                 .map(|t| {
                     json!({
                         "name": t.wire,
@@ -233,8 +245,7 @@ pub fn build(table: &ToolTable, turn: &Turn) -> Result<HttpRequest, String> {
         }
         Kind::OpenAiCompatible => {
             let tools: Vec<Value> = table
-                .tools()
-                .iter()
+                .offered()
                 .map(|t| {
                     json!({
                         "type": "function",
@@ -278,8 +289,7 @@ pub fn build(table: &ToolTable, turn: &Turn) -> Result<HttpRequest, String> {
                 return Err(format!("`{}` is not a model name", turn.model));
             }
             let declarations: Vec<Value> = table
-                .tools()
-                .iter()
+                .offered()
                 .map(|t| {
                     json!({
                         "name": t.wire,
@@ -423,7 +433,9 @@ fn provider_error(status: u16, root: &Value) -> String {
         || lowered.contains("exceeded your current quota")
         || lowered.contains("billing")
     {
-        return "the AI service has run out of credit, so this task could not run. Nothing is wrong                 with your task. Add your own API key in the agent settings (the gear), or try again                 once the credit is topped up"
+        return "the AI service has run out of credit, so this task could not run. Nothing is \
+             wrong with your task. Add your own API key in the agent settings (the \
+             gear), or try again once the credit is topped up"
             .to_string();
     }
     if message.is_empty() {
@@ -632,6 +644,21 @@ mod tests {
     }
 
     #[test]
+    fn running_out_of_credit_reads_as_one_clean_sentence() {
+        // The message is shown to the user as written. It once carried two
+        // 17-space gaps where a line continuation had been lost.
+        for (kind, status, body) in [
+            (Kind::Anthropic, 400, r#"{"error":{"message":"Your credit balance is too low"}}"#),
+            (Kind::OpenAiCompatible, 429, r#"{"error":{"message":"You exceeded your current quota"}}"#),
+            (Kind::Gemini, 402, "{}"),
+        ] {
+            let error = parse(&table(), kind, status, body).error.expect("an error");
+            assert!(error.starts_with("the AI service has run out of credit"), "{error}");
+            assert!(!error.contains("  "), "runs of spaces in: {error}");
+        }
+    }
+
+    #[test]
     fn effort_is_sent_only_when_asked_for_and_only_to_anthropic() {
         let mut low = turn(Kind::Anthropic);
         low.effort = "low";
@@ -684,6 +711,25 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_that_only_wastes_a_paid_call_is_not_offered_but_still_maps() {
+        let table = table();
+        assert!(table.offered().all(|t| t.name != "page.observe"));
+        assert_eq!(table.offered().count(), table.tools().len() - 1);
+        // A reply that names it anyway still reads as that tool, so the executor
+        // answers it and policy can see it, rather than it vanishing.
+        assert_eq!(table.contract_name("page_observe"), Some("page.observe"));
+        // And what goes on the wire does not list it.
+        for kind in [Kind::Anthropic, Kind::OpenAiCompatible, Kind::Gemini] {
+            let request = build(&table, &turn(kind)).unwrap();
+            assert!(
+                !request.body.contains("page_observe"),
+                "{kind:?} offered page.observe"
+            );
+            assert!(request.body.contains("page_click"));
+        }
+    }
+
+    #[test]
     fn anthropic_request_never_forces_a_tool_and_caches_the_rules() {
         let request = build(&table(), &turn(Kind::Anthropic)).unwrap();
         assert_eq!(request.path, "/v1/messages");
@@ -695,7 +741,7 @@ mod tests {
         assert_eq!(body["system"][0]["text"], "RULES");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["messages"][0]["content"], "PAGE AND TASK");
-        assert_eq!(body["tools"].as_array().unwrap().len(), 26);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 25);
         assert!(body["tools"][0]["input_schema"].is_object());
     }
 
@@ -738,7 +784,7 @@ mod tests {
         let body: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
         let declarations = body["tools"][0]["functionDeclarations"].as_array().unwrap();
-        assert_eq!(declarations.len(), 26);
+        assert_eq!(declarations.len(), 25);
     }
 
     #[test]

@@ -5,14 +5,20 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_AGENT_MASCOT_OVERLAY_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_AGENT_MASCOT_OVERLAY_H_
 
+#include <memory>
 #include <optional>
 
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "chrome/browser/zephyrus/agent/lens_model.h"
+#include "chrome/browser/zephyrus/agent/lens_painter.h"
+#include "chrome/browser/zephyrus/agent/lens_quality.h"
+#include "chrome/browser/zephyrus/agent/lens_random.h"
 #include "chrome/browser/zephyrus/agent/mascot_commands.h"
 #include "chrome/browser/zephyrus/agent/mascot_rig.h"
+#include "chrome/browser/zephyrus/agent/model_settings.h"
 #include "chrome/browser/zephyrus/agent/pointer_events.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/events/event_handler.h"
@@ -72,9 +78,16 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
   // has an agent, and the person can turn it off (Model settings). Hidden, it
   // draws nothing and runs no timer.
   void SetPresent(bool present);
+  // While true the mascot is not shown whatever the setting says: onboarding
+  // flies its own Zep through its sky, and two would be one too many.
+  void SetSuppressed(bool suppressed);
   bool present() const { return present_; }
-  // Follows the "Show the mascot" setting.
+  // Follows the "Show the mascot" setting, and which character it is.
   void RefreshPresence();
+  // Which character is drawn (Settings: "Mascot look"). The mood, the walking,
+  // the bubble and the pointer are the same for both: only the drawing and the
+  // way a mood looks differ. Test-facing.
+  zephyrus::agent::MascotLook look_for_testing() const { return look_; }
 
   void SetMood(MascotMood mood);
   MascotMood mood() const { return rig_.mood(); }
@@ -124,6 +137,9 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
   // the window's real mouse path, drags it round for a few seconds and puts it
   // down, so the hold and the relief can be looked at.
   void StartDragDemoForTesting();
+  // Plays an agent click: the pointer goes to the middle of the window, arrives,
+  // presses and lets go, then the agent is done (see StartDragDemoForTesting).
+  void StartClickDemoForTesting();
 
   // Covers the whole parent and stays on top of it. Called from the parent's
   // layout, so it keeps up with resizes and with views added after it.
@@ -150,6 +166,35 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
   void Tick();
   void Advance(base::TimeDelta dt);
 
+  // ---- The lens look ----
+  // Reads the look prefs and builds or drops the lens model to match.
+  void RefreshLook();
+  bool lens() const { return look_ != zephyrus::agent::MascotLook::kZep; }
+  // The body's size, per unit of scale, for whichever character is drawn.
+  float BodyWidth() const;
+  float BodyHeight() const;
+  // Moves the lens model one step: maps the mood Zep is in to a lens state,
+  // points the eyes where they should look, and takes the frame to paint.
+  void AdvanceLens(base::TimeDelta dt);
+  void PaintLensBody(gfx::Canvas* canvas, float dsf);
+  void PaintPressRing(gfx::Canvas* canvas, float dsf) const;
+
+  // Where on the body the person took hold of the lens, as feet minus cursor, so
+  // picking it up does not make it jump to hang from the cursor by its top.
+  gfx::Vector2dF grab_offset_;
+  zephyrus::agent::MascotLook look_ = zephyrus::agent::MascotLook::kZep;
+  std::unique_ptr<LensRandom> lens_rng_;
+  std::unique_ptr<LensModel> lens_model_;
+  LensQualityGovernor lens_quality_;
+  LensFrame lens_frame_;
+  // Where the agent last pressed on the page, drawn as a ring that fades: the
+  // lens has no hand, so the click is shown where it lands.
+  struct PressRing {
+    gfx::PointF at;
+    base::TimeTicks since;
+  };
+  std::optional<PressRing> press_ring_;
+
   // What a frame may have changed: the character and the reach of its arm.
   gfx::Rect DirtyRect() const;
   // Where it was last painted, so that a move also erases the old place.
@@ -160,6 +205,11 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
   std::vector<zephyrus_setup::Rect> last_frame_;
   gfx::PointF last_feet_;
   float last_scale_ = 0.0f;
+  // Tells the rig how big a device pixel is, so a resting breath steps by whole
+  // pixels instead of changing the picture on nearly every frame.
+  void SnapRestingBreathToPixels();
+  // Rounds the rig's rectangles to the device pixels they will be drawn on.
+  void QuantizeToDevicePixels(std::vector<zephyrus_setup::Rect>& frame) const;
   static bool SameFrame(const std::vector<zephyrus_setup::Rect>& a,
                         const std::vector<zephyrus_setup::Rect>& b);
   // The microphone light. `canvas` is in physical pixels.
@@ -220,6 +270,7 @@ class ZephyrusAgentMascotOverlay : public views::View, public PointerObserver {
 
   MascotRig rig_;
   bool present_ = false;
+  bool suppressed_ = false;
   bool listening_ = false;
   base::RepeatingTimer timer_;
   base::TimeTicks last_tick_;

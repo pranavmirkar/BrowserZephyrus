@@ -30,6 +30,12 @@ struct ObservedNode {
   std::string role;
   std::string name;
   std::string value;
+  // "checked", "unchecked" or "mixed" for a checkbox, radio button, switch or
+  // pressed-style toggle; empty for everything else. Without it the model cannot
+  // tell a box that is already on from one that is off, and clicking "the box" to
+  // make something so flips it the wrong way: MEASURED, S5 `settings`, "make the
+  // profile not public but keep it in search" came out public and not searchable.
+  std::string state;
 
   // What the field REALLY holds, kept only for a field whose `value` was
   // replaced by "[redacted]". It exists so the browser can check that text it
@@ -197,6 +203,17 @@ struct Observation {
   // button's shape, which is exactly the kind of inference being inside the
   // browser lets us replace with a fact.
   bool media_playing = false;
+
+  // Files the browser began downloading since the agent last looked, named the
+  // way a person would read them off the downloads shelf (see SafeFileName).
+  //
+  // The other half of "did that click work". A download leaves the page exactly
+  // as it was, so the click looked like it did nothing: MEASURED in benchmark
+  // v2 (`download`), the model clicked the link, saw an unchanged page, and
+  // proposed the same click four more times -- four model calls, each refused,
+  // each paid for -- before giving up and telling the user to check their
+  // downloads. The browser knows a download started; the model had no way to.
+  std::vector<std::string> downloads_started;
   // The address of the DOCUMENT that was last actually loaded, which is not
   // always the address the page is currently showing.
   //

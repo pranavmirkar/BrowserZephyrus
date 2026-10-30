@@ -105,6 +105,12 @@ class ZephyrusSidebarResizeHandle;
 class ZephyrusSidebarView;
 class ZephyrusTabStrip;
 class ZephyrusSearchOverlay;
+class ZephyrusGlanceView;
+class ZephyrusGlanceController;
+namespace zephyrus {
+class ZephyrusOnboarding;
+}  // namespace zephyrus
+
 namespace zephyrus::agent {
 class ZephyrusAgentMascotOverlay;
 class ZephyrusMascotBubble;
@@ -311,6 +317,9 @@ class BrowserView : public BrowserWindow,
 
   // The agent's mascot, over the whole window. Null in windows without an
   // agent panel.
+  zephyrus::ZephyrusOnboarding* zephyrus_onboarding() {
+    return zephyrus_onboarding_;
+  }
   zephyrus::agent::ZephyrusAgentMascotOverlay* zephyrus_agent_mascot() {
     return zephyrus_agent_mascot_;
   }
@@ -337,6 +346,11 @@ class BrowserView : public BrowserWindow,
   ZephyrusSearchOverlay* zephyrus_search_overlay() {
     return zephyrus_search_overlay_;
   }
+  // The card that previews a link (Alt+click). Null outside the Zephyrus
+  // layout.
+  ZephyrusGlanceView* zephyrus_glance() { return zephyrus_glance_; }
+  // Browser::UpdateTargetURL forwards the link under the pointer here.
+  void OnZephyrusTargetURL(content::WebContents* source, const GURL& url);
   ZephyrusTabSwitcher* zephyrus_tab_switcher() {
     return zephyrus_tab_switcher_;
   }
@@ -1448,12 +1462,20 @@ class BrowserView : public BrowserWindow,
   // Ctrl+T search card. A view rather than a bubble so its backdrop blur has
   // the web contents to sample; see zephyrus_search_overlay.h.
   raw_ptr<ZephyrusSearchOverlay> zephyrus_search_overlay_ = nullptr;
+  // Glance (see zephyrus_glance_view.h). The view is a child; the controller is
+  // declared AFTER nothing it points at, and never touches the view when it is
+  // destroyed.
+  raw_ptr<ZephyrusGlanceView> zephyrus_glance_ = nullptr;
+  std::unique_ptr<ZephyrusGlanceController> zephyrus_glance_controller_;
   raw_ptr<zephyrus::ZephyrusCustomizePanel> zephyrus_customize_panel_ =
       nullptr;
   raw_ptr<zephyrus::agent::ZephyrusAgentPanel> zephyrus_agent_panel_ =
       nullptr;
   raw_ptr<zephyrus::agent::ZephyrusAgentMascotOverlay> zephyrus_agent_mascot_ =
       nullptr;
+  // The first-run screens, over the whole window and under the mascot.
+  raw_ptr<zephyrus::ZephyrusOnboarding> zephyrus_onboarding_ = nullptr;
+  bool zephyrus_onboarding_checked_ = false;
   raw_ptr<zephyrus::agent::ZephyrusMascotBubble> zephyrus_mascot_bubble_ =
       nullptr;
   // Ctrl+Tab switcher. Also a view rather than a bubble, for the blur.
