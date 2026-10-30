@@ -105,3 +105,17 @@ The Agent model dialog was too tall when opened from a button low in the window 
 - Chromium's importer cannot read Chrome (Firefox, Edge and bookmarks.html only), so `agent/chrome_bookmarks_reader.{h,cc}` reads Chrome's JSON itself: http and https only (no javascript: bookmarklets, no file: or chrome:), at most 32 folders deep, 20,000 bookmarks, 512-character titles, 32 MB file; read off the UI thread; added into one "From Chrome" folder on the bookmarks bar so nothing existing is touched; the button works once. 4 tests. Checked live: it brought over the one bookmark this computer's Chrome has.
 - Zep flies in the right-hand margin when there is room beside the card (a tall loop), and round the card only when there is not, so it is never parked behind the controls.
 - Slip worth remembering: a text replacement whose end marker sat far below its start deleted three screen builders between them; caught by the compiler, restored from an earlier read.
+
+## Installer integration (2026-10-10)
+
+Automatic onboarding is now enabled by `kOnboardingEnabled`. The installer already launches the installed `chrome.exe` normally, and `BrowserView::OnWidgetActivationChanged` already calls `ZephyrusOnboarding::ShowIfDue`. The missing connection was the disabled shipping gate, not a missing installer command-line flag.
+
+Both the installer's Launch button and a later shortcut launch use the same per-profile decision. Finishing or skipping saves `zephyrus.onboarding.done`; an interrupted flow remains due. Automatic onboarding is excluded from private and guest sessions. Do not add `--zephyrus-test-onboarding` to installer launches or shortcuts: it is a developer-only override and ignores completion.
+
+Regression coverage: `OnboardingPrefTest.InstalledBrowserShowsOnboardingWithoutDevSwitches` uses the actual shipping gate, rather than passing `enabled=true` as the older tests did. Before the fix it failed with `Actual: false; Expected: true`. Run the onboarding tests with:
+
+```powershell
+out/Release/zephyrus_agent_unittests.exe --gtest_filter=Onboarding* --test-launcher-jobs=1 --test-launcher-retry-limit=0
+```
+
+Rebuild `chrome`, `mini_installer`, and `zephyrus_setup` before running `chrome/installer/zephyrus_setup/tools/package_installer.py`; changing the browser source does not update an already packaged setup file.

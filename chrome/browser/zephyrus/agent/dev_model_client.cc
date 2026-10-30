@@ -337,6 +337,9 @@ void DevModelClient::WarmUp(
   request->method = "POST";
   request->load_flags = net::LOAD_DISABLE_CACHE;
   request->credentials_mode = network::mojom::CredentialsMode::kOmit;
+  // This endpoint is checked to be this machine; a redirect would carry the
+  // page (or a screenshot of it) somewhere that check never saw.
+  request->redirect_mode = network::mojom::RedirectMode::kError;
 
   auto loader = network::SimpleURLLoader::Create(std::move(request),
                                                  kTrafficAnnotation);
@@ -472,6 +475,9 @@ void DevModelClient::Propose(const std::string& system_prompt,
   // carry cookies for a site the user happens to be logged into.
   request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   request->load_flags = net::LOAD_DISABLE_CACHE;
+  // This endpoint is checked to be this machine; a redirect would carry the
+  // page (or a screenshot of it) somewhere that check never saw.
+  request->redirect_mode = network::mojom::RedirectMode::kError;
 
   auto loader =
       network::SimpleURLLoader::Create(std::move(request), kTrafficAnnotation);

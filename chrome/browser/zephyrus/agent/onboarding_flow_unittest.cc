@@ -160,6 +160,14 @@ TEST_F(OnboardingPrefTest, ShowsUntilItIsDoneThenNeverAgain) {
       ShouldShowOnboarding(prefs_, /*forced=*/false, /*enabled=*/true));
 }
 
+TEST_F(OnboardingPrefTest, InstalledBrowserShowsOnboardingWithoutDevSwitches) {
+  EXPECT_TRUE(ShouldShowOnboarding(prefs_, /*forced=*/false,
+                                 kOnboardingEnabled));
+  MarkOnboardingDone(prefs_);
+  EXPECT_FALSE(ShouldShowOnboarding(prefs_, /*forced=*/false,
+                                  kOnboardingEnabled));
+}
+
 TEST_F(OnboardingPrefTest, TheDevSwitchShowsItAgainWhateverTheProfileSays) {
   MarkOnboardingDone(prefs_);
   EXPECT_TRUE(ShouldShowOnboarding(prefs_, /*forced=*/true, /*enabled=*/true));
@@ -169,15 +177,14 @@ TEST_F(OnboardingPrefTest, TheDevSwitchShowsItAgainWhateverTheProfileSays) {
 TEST_F(OnboardingPrefTest, RunSetupAgainBringsItBack) {
   MarkOnboardingDone(prefs_);
   ResetOnboarding(prefs_);
-  EXPECT_TRUE(ShouldShowOnboarding(prefs_, /*forced=*/false, /*enabled=*/true));
+  EXPECT_TRUE(ShouldShowOnboarding(prefs_, /*forced=*/false,
+                                 kOnboardingEnabled));
 }
 
 TEST_F(OnboardingPrefTest, SwitchedOffItNeverShowsByItself) {
-  // Every profile starts "not done", so the feature being off is the only thing
-  // standing between an existing user and a half-built flow.
+  // Retain coverage for explicitly disabling the automatic flow.
   EXPECT_FALSE(
       ShouldShowOnboarding(prefs_, /*forced=*/false, /*enabled=*/false));
-  EXPECT_FALSE(kOnboardingEnabled) << "flip this only when the screens are done";
 }
 
 }  // namespace

@@ -109,11 +109,10 @@ FlightPoint FlightPathAt(double seconds);
 FlightPoint FlightPathAt(double seconds, double cx, double cy, double rx,
                          double ry);
 
-// Whether onboarding ships switched on. FALSE while the screens are being built:
-// with the pref defaulting to "not done", every existing profile would otherwise
-// meet half a flow on its next launch. Flip it when the four screens are finished
-// and checked; until then only the dev switch shows them.
-inline constexpr bool kOnboardingEnabled = false;
+// The five first-run screens ship enabled. Both the installer's Launch button
+// and a later shortcut launch use this gate; no developer switch is needed.
+// The per-profile done pref prevents completed or skipped setup from repeating.
+inline constexpr bool kOnboardingEnabled = true;
 
 // Whether the first-run screens should show: forced by the dev switch, or the
 // feature is on and they have not been seen. `forced` is computed by the caller

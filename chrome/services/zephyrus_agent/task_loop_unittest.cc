@@ -1333,6 +1333,48 @@ TEST_F(CloudTaskLoopTest, RunsOnNativeToolCalls) {
   EXPECT_NE(transport_->bodies[0].find("\"tool_choice\""), std::string::npos);
 }
 
+TEST_F(CloudTaskLoopTest, TheCloudPromptNeverTellsTheModelToWriteJson) {
+  // The whole request, system prompt and user turn. A cloud model calls tools
+  // natively; a line telling it to "reply with ONE JSON object" -- worst of all
+  // as the last thing it reads -- made it write the call as text instead (about
+  // one reply in four), and it contradicted the rest of the cloud prompt.
+  RunCloud({ToolUse("task_complete", R"({"answer":"x"})")});
+  ASSERT_FALSE(transport_->bodies.empty());
+  const std::string& body = transport_->bodies[0];
+  EXPECT_EQ(body.find("ONE JSON"), std::string::npos) << body;
+  EXPECT_EQ(body.find("JSON object"), std::string::npos) << body;
+  EXPECT_EQ(body.find("ignore the JSON shape"), std::string::npos) << body;
+  EXPECT_EQ(body.find("replaces the rule"), std::string::npos) << body;
+  // It is told, once, how to answer.
+  EXPECT_NE(body.find("Respond by calling your tools."), std::string::npos)
+      << body;
+}
+
+TEST_F(CloudTaskLoopTest, TheCloudPromptDoesNotForbidAToolItOffers) {
+  // page.find stays in the tool list for a cloud model, so the prompt may not
+  // say "do not call page.find"; it says when to use it. page.observe is not
+  // offered, and the prompt says so.
+  RunCloud({ToolUse("task_complete", R"({"answer":"x"})")});
+  const std::string& body = transport_->bodies[0];
+  EXPECT_EQ(body.find("do not call page.find"), std::string::npos) << body;
+  EXPECT_EQ(body.find("Do not call page.find"), std::string::npos) << body;
+  EXPECT_NE(body.find("page.find only for an element"), std::string::npos)
+      << body;
+}
+
+TEST_F(TaskLoopTest, ALocalModelIsStillToldToReplyWithOneJsonObject) {
+  // The other side of the split above: a small local model writes text, so it
+  // keeps the shape rule and the ask-first rule it was measured with.
+  Run({R"({"name":"task.complete","arguments":{"answer":"done"}})"});
+  ASSERT_FALSE(model_->system_prompts.empty());
+  EXPECT_NE(model_->system_prompts[0].find("Reply with ONE JSON object"),
+            std::string::npos);
+  EXPECT_NE(model_->system_prompts[0].find("call task.ask."),
+            std::string::npos);
+  EXPECT_NE(model_->user_prompts[0].rfind("Reply with ONE JSON object"),
+            std::string::npos);
+}
+
 TEST_F(CloudTaskLoopTest, NoHeaderTheKernelSendsCarriesACredential) {
   RunCloud({ToolUse("task_complete", R"({"answer":"x"})")});
   for (const auto& [name, value] : transport_->last_headers) {

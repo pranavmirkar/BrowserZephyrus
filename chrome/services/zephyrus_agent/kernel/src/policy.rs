@@ -92,6 +92,46 @@ const PAYMENT_VERBS: &[&str] = &[
     "purchase",
     "reserve",
     "transfer",
+    // Money moving some other way. Phrases, not the bare nouns: "Payments",
+    // "Payment methods" and "Bid history" are places to look, and asking before
+    // every visit to one is how a user learns to click through the card.
+    "make payment",
+    "make a payment",
+    "proceed to payment",
+    "complete payment",
+    "confirm payment",
+    "place bid",
+    "place a bid",
+    "bid now",
+    // Wallets and prepaid plans, which is most of how people in India pay.
+    "recharge",
+    "add money",
+    "top up",
+    "top-up",
+    "renew",
+    "upgrade",
+    "withdraw",
+    // The same acts in Hindi, as the pages this browser is for print them.
+    // Phrases where the bare noun would also name a place ("भुगतान विधियाँ" is
+    // "payment methods"). Whole words, like every entry above: "मैदान" (a
+    // ground) ends in "दान" (a donation) and must not ask. Best effort -- a
+    // spelling not listed here is not caught, which is why the agent also never
+    // types card details and the last step of a payment is the user's.
+    "खरीदें",
+    "खरीदे",
+    "खरीदना",
+    "भुगतान करें",
+    "भुगतान करे",
+    "ऑर्डर करें",
+    "आर्डर करें",
+    "ऑर्डर दें",
+    "बुक करें",
+    "बुक करे",
+    "रिचार्ज",
+    "दान करें",
+    "दान करे",
+    "सब्सक्राइब",
+    "ट्रांसफर",
 ];
 
 // NOT in the list above: "subscribe". It is the label of a free newsletter box
@@ -451,6 +491,31 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
             if target == "about:blank" {
                 return (floor, String::new());
             }
+            // The executor treats an empty url and `about:newtab` as "a new
+            // blank tab" for tabs.open (and only for it). Say the same here, or
+            // the user is asked to approve what the executor calls no url.
+            if request.tool == "tabs.open" && (target.is_empty() || target == "about:newtab") {
+                return (floor, String::new());
+            }
+            // Only web addresses are destinations.
+            //
+            // The executor refuses anything else, but the kernel's answer is the
+            // one that is audited, and it used to say Allow to
+            // `file://localhost/etc/passwd` and `chrome://settings/passwords`
+            // because those parse to an origin that no rule objected to. Denied
+            // rather than asked: there is nothing the user could approve that
+            // would make the executor load it.
+            if let Some(scheme) = scheme_of(target) {
+                if scheme != "http" && scheme != "https" {
+                    return (
+                        Risk::R3,
+                        format!(
+                            "`{target}` is not a web address. The agent opens only \
+                             http:// and https:// addresses"
+                        ),
+                    );
+                }
+            }
             match origin_of(target) {
                 // Unparseable destination. We decline to reason about it rather
                 // than assume it is harmless.
@@ -461,10 +526,11 @@ fn escalate(floor: Risk, request: &Request) -> (Risk, String) {
                     );
                 }
                 Some(destination) => {
-                    if carries_data(target)
+                    if (carries_data(target) || host_holds_data(&destination))
                         && !is_expected(&destination, request)
                         && !is_search_engine(&destination)
-                        && !is_search_for_the_task(target, request.task)
+                        && !(is_search_for_the_task(target, request.task)
+                            && !host_holds_data(&destination))
                     {
                         return (
                             floor.max(Risk::R2),
@@ -675,6 +741,15 @@ fn named_separately(targets: &[String], task: &str, a: &Element, b: &Element) ->
     has_own_word(&a_name, &b_name) && has_own_word(&b_name, &a_name)
 }
 
+/// Roles that hold text a person types. The same set the browser's executor
+/// accepts for `page.type`.
+fn is_text_entry_role(role: &str) -> bool {
+    matches!(
+        role,
+        "textbox" | "searchbox" | "combobox" | "password" | "spinbutton"
+    )
+}
+
 /// Two candidates this call would choose between without knowing which the
 /// user meant. None when the call commits to nothing in the tie.
 fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Element)> {
@@ -694,8 +769,15 @@ fn ambiguous_choice<'a>(request: &'a Request) -> Option<(&'a Element, &'a Elemen
     // and door two judges that. MEASURED, S5 `enquiry`: typing "14" into the
     // field "Day Check-out" stopped to ask about "Month Check-out", a different
     // part of the same date.
+    //
+    // And not a click on a text FIELD either. Clicking one only puts the cursor
+    // in it, the very first step of typing into it, so it chooses nothing any
+    // more than the typing does. MEASURED, S5 `enquiry`: a model that clicked
+    // "Day Check-out" before typing the date was stopped with "Day Check-out
+    // and Month Check-out both match what you asked for" -- two parts of one
+    // date. What the field is then given is judged by door two.
     let chosen_element = if request.tool == "page.click" {
-        target_element(request)
+        target_element(request).filter(|element| !is_text_entry_role(&element.role))
     } else {
         None
     };
@@ -797,7 +879,10 @@ fn consequential_verb(
     // Matched in the RAW label rather than a list of split words, because
     // whether a word names a record depends on the "#" after it, and splitting
     // on punctuation throws the "#" away.
-    let is_word_char = |c: char| c.is_ascii_alphanumeric();
+    // Any script: a word boundary in Devanagari or Tamil is a boundary too. With
+    // ASCII only, every non-ASCII neighbour counted as "not a word", so a verb
+    // glued to other letters in those scripts was matched in the middle.
+    let is_word_char = |c: char| c.is_alphanumeric();
     let names = |verb: &str| {
         lowered.match_indices(verb).any(|(at, _)| {
             let before = lowered[..at].chars().next_back();
@@ -1208,8 +1293,14 @@ fn task_names_host(task: &str, host: &str) -> bool {
     // a task mentioning "google" would treat google.evil.com as expected, which
     // is precisely the shape an exfiltration takes. Getting this wrong in the
     // other direction only costs a prompt.
+    //
+    // An IP address has no registrable label: split on dots, `10.0.3.4` offers
+    // `3`, and a task about "3 laptops" would read as permission to visit it.
+    // Those are matched whole or not at all.
+    let is_ip_literal =
+        host.starts_with('[') || host.chars().all(|c| c.is_ascii_digit() || c == '.');
     let labels: Vec<&str> = host.split('.').collect();
-    let registrable = if labels.len() >= 2 {
+    let registrable = if labels.len() >= 2 && !is_ip_literal {
         labels[labels.len() - 2]
     } else {
         host
@@ -1240,7 +1331,23 @@ fn origin_of(url: &str) -> Option<String> {
         return None;
     }
 
-    let authority = rest.split(['/', '?', '#']).next()?;
+    // `\` ends the authority exactly as `/` does: Chromium follows the WHATWG
+    // URL standard for http(s), so `https://attacker.example\@www.google.com/`
+    // is a request to attacker.example. Read as a plain string it is userinfo
+    // followed by www.google.com, which is on the search-engine allowance --
+    // the kernel and the browser must not disagree about where a request goes.
+    let authority = rest.split(['/', '\\', '?', '#']).next()?;
+    // The browser's parser drops tabs and newlines from anywhere in a URL and
+    // rejects most other control characters, so an authority containing any of
+    // them can be a different host from the one this function would name.
+    // `%` in an authority is a host the browser decodes and this does not.
+    // Decline to name an origin at all; every caller treats None as "ask".
+    if authority
+        .chars()
+        .any(|c| c.is_control() || c.is_whitespace() || c == '%')
+    {
+        return None;
+    }
     // Strip userinfo. `https://trusted.example@attacker.example/` is served by
     // attacker.example, and reading the left side is a classic way to be fooled
     // about where a request is going.
@@ -1265,6 +1372,39 @@ fn origin_of(url: &str) -> Option<String> {
         scheme.to_ascii_lowercase(),
         host.to_ascii_lowercase()
     ))
+}
+
+/// The scheme of `url`, lowercased, if it starts with one.
+///
+/// Looser than `origin_of` on purpose: `javascript:` and `data:` have no `//`,
+/// and still have to be recognised as not being web addresses.
+fn scheme_of(url: &str) -> Option<String> {
+    let (scheme, _) = url.split_once(':')?;
+    let mut chars = scheme.chars();
+    let first = chars.next()?;
+    if !first.is_ascii_alphabetic()
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.')
+    {
+        return None;
+    }
+    Some(scheme.to_ascii_lowercase())
+}
+
+/// Whether a destination's HOST is long enough to be carrying something.
+///
+/// A DNS label is up to 63 bytes and a name up to 253, and the resolver of the
+/// zone sees every one, whether or not a request is ever made. So
+/// `<base64 of the user's mail>.attacker.example` is the same exfiltration as a
+/// query string, and one the path-length check cannot see. Real hosts are far
+/// shorter than this: the longest label on the web's top sites is under 20.
+fn host_holds_data(destination: &str) -> bool {
+    const LABEL_ROOM_FOR_DATA: usize = 32;
+    const HOST_ROOM_FOR_DATA: usize = 64;
+    let host = destination
+        .split_once("://")
+        .map(|(_, host)| host)
+        .unwrap_or(destination);
+    host.len() > HOST_ROOM_FOR_DATA || host.split('.').any(|label| label.len() > LABEL_ROOM_FOR_DATA)
 }
 
 /// True if the URL hands anything to the destination beyond the path.

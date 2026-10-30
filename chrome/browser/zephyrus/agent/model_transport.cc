@@ -245,6 +245,12 @@ void ModelTransport::Send(
   request->method = "POST";
   request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   request->load_flags = net::LOAD_DISABLE_CACHE;
+  // Never follow a redirect. The key is a custom header (x-api-key,
+  // x-goog-api-key) and Chromium strips only `Authorization` when a redirect
+  // leaves the origin, so a provider endpoint that answered 307 to another host
+  // would be handed the key and the page content in the body. No provider
+  // redirects an API call; an error here is the right answer.
+  request->redirect_mode = network::mojom::RedirectMode::kError;
 
   for (const auto& [name, value] : headers) {
     if (!IsAllowedHeader(name) ||

@@ -1176,11 +1176,16 @@ void ZephyrusOnboarding::ShowIfDue() {
   if (!browser_view_ || !browser_view_->browser()) {
     return;
   }
+  // Setup belongs to the persistent profile, not a temporary private session.
+  Profile* profile = browser_view_->browser()->profile();
+  if (profile->IsOffTheRecord() || profile->IsGuestSession()) {
+    return;
+  }
   const bool forced =
       zephyrus::DevSwitchesEnabled() &&
       base::CommandLine::ForCurrentProcess()->HasSwitch(
           agent::kOnboardingForceSwitch);
-  PrefService* prefs = browser_view_->browser()->profile()->GetPrefs();
+  PrefService* prefs = profile->GetPrefs();
   if (agent::ShouldShowOnboarding(*prefs, forced, agent::kOnboardingEnabled)) {
     Start();
   }

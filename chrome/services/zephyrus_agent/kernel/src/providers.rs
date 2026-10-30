@@ -433,7 +433,9 @@ fn provider_error(status: u16, root: &Value) -> String {
         || lowered.contains("exceeded your current quota")
         || lowered.contains("billing")
     {
-        return "the AI service has run out of credit, so this task could not run. Nothing is wrong                 with your task. Add your own API key in the agent settings (the gear), or try again                 once the credit is topped up"
+        return "the AI service has run out of credit, so this task could not run. Nothing is \
+             wrong with your task. Add your own API key in the agent settings (the \
+             gear), or try again once the credit is topped up"
             .to_string();
     }
     if message.is_empty() {
@@ -638,6 +640,21 @@ mod tests {
             image_jpeg_base64: "",
             force_tool: true,
             effort: "",
+        }
+    }
+
+    #[test]
+    fn running_out_of_credit_reads_as_one_clean_sentence() {
+        // The message is shown to the user as written. It once carried two
+        // 17-space gaps where a line continuation had been lost.
+        for (kind, status, body) in [
+            (Kind::Anthropic, 400, r#"{"error":{"message":"Your credit balance is too low"}}"#),
+            (Kind::OpenAiCompatible, 429, r#"{"error":{"message":"You exceeded your current quota"}}"#),
+            (Kind::Gemini, 402, "{}"),
+        ] {
+            let error = parse(&table(), kind, status, body).error.expect("an error");
+            assert!(error.starts_with("the AI service has run out of credit"), "{error}");
+            assert!(!error.contains("  "), "runs of spaces in: {error}");
         }
     }
 

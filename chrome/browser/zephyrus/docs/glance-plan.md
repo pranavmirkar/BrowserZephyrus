@@ -74,3 +74,24 @@ glances opened from inside a glance. Each is small once the rest stands.
 5. **Settings, context menu, dev switch (`--zephyrus-test-glance=URL`)**, docs.
 
 Security/bug pass after each, per the standing rule.
+
+## Status (2026-10-10)
+
+Milestones 1 to 4 are built and checked with a real Alt+click (driver:
+`D:\zeph_perf\glance_drive.py`). Seen working: the card grows from the click,
+the page loads inside it (logged-in jar via the workspace partition), the
+buttons slide in, Escape / Close / click-outside close it, Expand makes the
+same page a tab, Split puts it beside the parent. A `javascript:` link and
+Ctrl+click do nothing. No CHECK or crash in the log.
+
+One bug found by running it: a click on the dimmed area reached the page behind
+(it followed a link). The page is a native window and can take events without
+the overlay view seeing them. Fixed by also swallowing every mouse event on the
+parent page's widget while a card is up (a press there closes the card).
+
+**Not done:** settings UI (the prefs exist and are read on every click), the
+"Open link in Glance" context menu item, auto-glance for pinned tabs,
+bookmarks trigger, links inside iframes (the click point is relative to the
+frame), a status line for the hovered link inside the card.
+
+Unit tests: `autoninja -C out/Release zephyrus_glance_unittests` (27 pass).
