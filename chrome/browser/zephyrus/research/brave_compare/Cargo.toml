@@ -1,0 +1,15 @@
+[package]
+name = "brave_compare"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[dependencies]
+adblock = "0.13"        # Brave's engine (adblock-rust); crates.io
+[[bin]]
+name = "brave_cmp"
+path = "src/main.rs"
+[[bin]]
+name = "cross"
+path = "src/bin_cross.rs"
+[profile.release]
+opt-level = 3
