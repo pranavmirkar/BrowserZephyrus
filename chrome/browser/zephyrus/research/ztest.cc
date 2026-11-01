@@ -35,7 +35,7 @@ int main(int argc,char**argv){
   // corrupt blob must be rejected, not crash
   { std::vector<uint8_t> bad=blob; int rej=0,tot=0; std::mt19937 rng(7); for(int i=0;i<300;++i){ auto c=bad; for(int k=0;k<8;++k) c[rng()%c.size()]^=1<<(rng()%8); zidx::Index t; ++tot; rej+=!t.Load(c.data(),c.size()); } printf("          fuzzed blobs (8 flipped bits): %d/%d rejected at load, 0 crashes (the rest only altered data bytes, never an offset)\n", rej,tot); }
   // ---- differential test
-  auto corpus=MakeCorpus(text,20000); size_t mism=0, checked=0, blocked_agree=0;
+  auto corpus=MakeCorpus(text,20000); size_t mism=0, checked=0, blocked_agree=0, longs=0;
   auto cmp=[&](const std::string& u,const std::string& i,int ty){ GURL gu(u),gi(i); bool a=base->ShouldBlock(gu,gi,(ResourceType)ty), b=idx.ShouldBlock(gu,gi,(ResourceType)ty); ++checked; blocked_agree+=a; if(a!=b){ if(++mism<=10) printf("  MISMATCH base=%d new=%d type=%d url=%s ini=%s\n",a,b,ty,u.c_str(),i.c_str()); } };
   for(auto&r:corpus) cmp(r.url,r.initiator,r.type);
   size_t after_corpus=checked;
@@ -44,8 +44,10 @@ int main(int argc,char**argv){
     cmp(u,Ini(r,u,0),ty); cmp(u,Ini(r,u,3),ty);                       // exact; and first-party initiator
     cmp(u,Ini(r,u,0),types[rng()%5]);                                  // other resource type
     std::string m=u; if(m.size()>12){ size_t k=8+rng()%(m.size()-8); m[k]= m[k]=='a'?'b':'a'; } cmp(m,Ini(r,u,0),ty); // one-char mutation
-    std::string v=u+"?q=1&utm=2"; cmp(v,Ini(r,u,0),ty); }
-  printf("DIFFERENTIAL  %zu probes (%zu realistic-corpus + %zu derived from every rule), %zu of them blocked by the baseline: %zu mismatches\n", checked, after_corpus, checked-after_corpus, blocked_agree, mism);
+    std::string v=u+"?q=1&utm=2"; cmp(v,Ini(r,u,0),ty);
+    // The rule's match placed after 150 other tokens: guards against any fixed cap on tokens per URL.
+    if(r.anchor==FilterRule::kAnchorNone){ std::string junk; for(int k=0;k<150;++k){ char b[16]; snprintf(b,sizeof b,"abc%03d/",k); junk+=b; } std::string body=u.substr(std::string("https://site.example/").size()); cmp("https://site.example/"+junk+body,Ini(r,u,0),ty); ++longs; } }
+  printf("DIFFERENTIAL  %zu probes (%zu realistic-corpus + %zu derived from every rule, %zu of those with the match after 150 other tokens), %zu of them blocked by the baseline: %zu mismatches\n", checked, after_corpus, checked-after_corpus, longs, blocked_agree, mism);
   size_t dm=0, dc=0; for(auto& [g,rp]: all){ if(g!=zidx::kDocument) continue; std::string u=Synth(*rp); GURL gu(u); uint32_t a=base->GetDocumentExceptions(gu), b=idx.DocumentExceptions(gu); ++dc; dm+=a!=b; } printf("DOC-EXCEPTIONS %zu probes, %zu mismatches\n", dc, dm);
   // ---- benchmark both on the same corpus
   std::vector<GURL> U,I; for(auto&r:corpus){U.emplace_back(r.url); I.emplace_back(r.initiator);} 

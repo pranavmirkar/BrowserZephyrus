@@ -3,13 +3,25 @@ name = "brave_compare"
 version = "0.0.0"
 edition = "2021"
 publish = false
+
 [dependencies]
 adblock = "0.13"        # Brave's engine (adblock-rust); crates.io
+
 [[bin]]
-name = "brave_cmp"
+name = "brave_cmp"      # speed and memory on the 20,000-request synthetic corpus
 path = "src/main.rs"
+
 [[bin]]
-name = "cross"
+name = "cross"          # decisions that differ across probes derived from every rule
 path = "src/bin_cross.rs"
+
+[[bin]]
+name = "real"           # speed and verdicts on recorded page traffic
+path = "src/bin_real.rs"
+
+[[bin]]
+name = "parity"         # which rule lines Brave's parser keeps
+path = "src/bin_parity.rs"
+
 [profile.release]
 opt-level = 3

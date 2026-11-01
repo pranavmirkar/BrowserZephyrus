@@ -1,12 +1,16 @@
-// ZIndex prototype: a compact, immutable, memory-mappable index of network filter rules.
+// ZIndex prototype: a compact, immutable, memory-mappable index of network filter rules. Format version 2.
 //
 // Same semantics as AdblockFilterEngine::ShouldBlock; different storage and candidate selection:
-//   * rules are 24-byte POD records, patterns live in one string arena (no per-rule heap objects)
-//   * tokenised rules are found through an open-addressing table keyed by a 32-bit token hash
-//     (a hash collision only adds a candidate; the pattern match stays authoritative)
-//   * rules without a bounded keyword are indexed by their rarest literal 3/4/5-gram instead of
-//     being scanned linearly on every request
-//   * the whole thing is one byte blob: build once when a list updates, mmap everywhere
+//   * rules are 28-byte POD records, patterns live in one string arena (no per-rule heap objects)
+//   * each rule is filed once: under its rarest whole token (never a ubiquitous one such as "com"), else its
+//     rarest literal 3/4/5-gram, else its initiator domain (`domain=` rules), else a residual list
+//   * tables are open addressing over 32-bit keys; a collision only adds a candidate, the pattern match stays
+//     authoritative
+//   * union bitmaps over every token and n-gram reject most positions of a URL before any table is read
+//   * Load() checks every offset, alignment and that each table has an empty slot, so a corrupt blob cannot
+//     crash or hang a lookup (see zfuzz.cc)
+//   * the whole thing is one byte blob: build once when a list updates, mmap everywhere. Little-endian only.
+// Version 1 kept at most 96 tokens of a URL and could miss a rule keyed after the 96th; ztest.cc now probes that.
 #pragma once
 #include <cstdint>
 #include <cstdio>
@@ -19,6 +23,7 @@
 #include <vector>
 #include <algorithm>
 #include <map>
+#include <atomic>
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
@@ -37,7 +42,7 @@ using zephyrus_adblock::ResourceType;
 
 enum Group { kBlock = 0, kException = 1, kImportant = 2, kDocument = 3, kGroups = 4 };
 constexpr uint32_t kMagic = 0x58444955;  // "UIDX"
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;
 
 
 struct Rule {            // 28 bytes, naturally aligned
@@ -56,20 +61,28 @@ struct GroupHdr {
   uint32_t tok_off, tok_log2;          // Slot[1<<tok_log2]
   uint32_t gram_off[3], gram_log2[3];  // n-gram tables for n=3,4,5
   uint32_t ids_off, ids_n;             // shared u32 rule-id pool
-  uint32_t bm_off;                     // 3 bitmaps of 65536 bits, one per n-gram length, in front of the gram tables
   uint32_t dom_tab_off, dom_tab_log2;  // initiator-domain table (rules like `*$script,3p,domain=a.com`)
   uint32_t resid_off, resid_n;         // rules with no usable key: scanned every request
 };
 struct Header {
   uint32_t magic, version, n_rules;
   uint32_t rules_off, doms_off, doms_n, str_off, str_n;
+  // One bitmap of 65536 bits per n-gram length (3,4,5) and one for whole tokens, each the UNION over all four groups.
+  // A request position whose key misses the bitmap cannot be looked up anywhere, so it is rejected once, not once per group.
+  uint32_t ugram_off;   // 3 x 8 KB
+  uint32_t utok_off;    // 8 KB
   GroupHdr g[kGroups];
 };
 
 static_assert(sizeof(Rule) == 28 && sizeof(Slot) == 12 && alignof(Rule) == 4);
 
 inline uint32_t Fnv(const char* p, size_t n) { uint32_t h = 2166136261u; for (size_t i = 0; i < n; ++i) { h ^= (uint8_t)p[i]; h *= 16777619u; } return h ? h : 1; }
-inline uint32_t Gram(const char* p, int n) { uint32_t k = n; for (int i = 0; i < n; ++i) k = k * 257u + (uint8_t)p[i]; return k | 1u; }   // never 0
+// n-gram key: the n bytes read as one little-endian integer, then mixed. The matcher loads 8 bytes at a time from a
+// zero-padded copy of the URL; the builder packs exactly n bytes. Both give the same integer.
+constexpr uint64_t kGramMask[6] = {0, 0, 0, 0xffffffull, 0xffffffffull, 0xffffffffffull};
+inline uint32_t GramKey(uint64_t v) { return (uint32_t)((v * 0x9E3779B97F4A7C15ull) >> 32) | 1u; }   // never 0
+inline uint32_t Gram(const char* p, int n) { uint64_t v = 0; memcpy(&v, p, n); return GramKey(v); }  // builder side
+inline uint32_t BitOf(uint32_t key) { return (key * 2654435761u) >> 16; }
 inline uint32_t Probe(uint32_t key, uint32_t log2) { return (key * 2654435761u) >> (32 - log2); }
 
 // ------------------------------------------------------------------------------------------------
@@ -130,6 +143,7 @@ class Builder {
     h.rules_off = put(rules.data(), rules.size() * sizeof(Rule));
     h.doms_off = put(doms.data(), doms.size() * 4); h.doms_n = (uint32_t)doms.size();
     h.str_off = put(arena.data(), arena.size()); h.str_n = (uint32_t)arena.size();
+    std::vector<uint8_t> ugram(3 * 8192, 0), utok(8192, 0);
     for (int gi = 0; gi < kGroups; ++gi) {
       std::vector<uint32_t> ids; GroupHdr& gh = h.g[gi];
       auto table = [&](std::unordered_map<uint32_t, std::vector<uint32_t>>& m, uint32_t* off, uint32_t* lg) {
@@ -140,12 +154,14 @@ class Builder {
       table(pg[gi].tok, &gh.tok_off, &gh.tok_log2);
       for (int n = 0; n < 3; ++n) table(pg[gi].gram[n], &gh.gram_off[n], &gh.gram_log2[n]);
       table(pg[gi].dom, &gh.dom_tab_off, &gh.dom_tab_log2);
-      { std::vector<uint8_t> bm(3 * 8192, 0); for (int n = 0; n < 3; ++n) for (auto& kv : pg[gi].gram[n]) { uint32_t b = (kv.first * 2654435761u) >> 16; bm[n * 8192 + (b >> 3)] |= 1u << (b & 7); } gh.bm_off = put(bm.data(), bm.size()); }
+      for (int n = 0; n < 3; ++n) for (auto& kv : pg[gi].gram[n]) { uint32_t b = BitOf(kv.first); ugram[n * 8192 + (b >> 3)] |= 1u << (b & 7); }
+      for (auto& kv : pg[gi].tok) { uint32_t b = BitOf(kv.first); utok[b >> 3] |= 1u << (b & 7); }
       gh.resid_off = put(pg[gi].resid.data(), pg[gi].resid.size() * 4); gh.resid_n = (uint32_t)pg[gi].resid.size();
       gh.ids_off = put(ids.data(), ids.size() * 4); gh.ids_n = (uint32_t)ids.size();
       stats_resid[gi] = pg[gi].resid.size();
       for (int n = 0; n < 3; ++n) { size_t c = 0; for (auto& kv : pg[gi].gram[n]) c += kv.second.size(); stats_gram[n] += c; }
     }
+    h.ugram_off = put(ugram.data(), ugram.size()); h.utok_off = put(utok.data(), utok.size());
     memcpy(out.data(), &h, sizeof h);
     return out;
   }
@@ -156,7 +172,8 @@ class Builder {
   // Tokens so common in URLs that keying on them just recreates a linear scan (uBlock calls these "bad tokens").
   static bool Ubiquitous(const std::string& t) {
     static const char* kBad[] = {"com","www","http","https","org","net","html","htm","php","asp","aspx","json","css","img","image","images","static","assets","media","cdn","api","app","apps","page","pages","content","files","file","data","ajax","main","index","lib","libs","min","icon","icons","news","site","web","online","global","public","default","share","cdnjs","edu","gov","info","biz","xyz","top","dev","src","res","resources","common","core","base","system","user","users","home","login","mobile","video","videos","font","fonts","script","scripts","style","styles","text","name","type","version","download","downloads","search","url","link","links","id","get","set","html5","embed","player","track","tracking","event","events","pixel","tag","tags","stats","analytics","log","logs","collect","metrics","beacon"};
-    for (const char* b : kBad) if (t == b) return true; return false; }
+    for (const char* b : kBad) if (t == b) return true;
+    return false; }
   static void BoundedTokens(const FilterRule& r, std::vector<std::string>* out) {
     const std::string& p = r.pattern; const bool sa = r.anchor != FilterRule::kAnchorNone; size_t n = p.size(), i = 0;
     while (i < n) { if (!base::IsAsciiAlphaNumeric(p[i])) { ++i; continue; } size_t j = i; while (j < n && base::IsAsciiAlphaNumeric(p[j])) ++j;
@@ -205,6 +222,9 @@ class Index {
     if (!in(h_.rules_off, (uint64_t)h_.n_rules * sizeof(Rule)) || !in(h_.doms_off, (uint64_t)h_.doms_n * 4) || !in(h_.str_off, h_.str_n)) return false;
     if ((h_.rules_off | h_.doms_off | h_.str_off) & 3 || ((uintptr_t)data & 3)) return false;
     rules_ = (const Rule*)(base_ + h_.rules_off); doms_ = (const uint32_t*)(base_ + h_.doms_off); str_ = (const char*)(base_ + h_.str_off);
+    if (!in(h_.ugram_off, 3 * 8192) || !in(h_.utok_off, 8192)) return false;
+    ugram_ = base_ + h_.ugram_off; utok_ = base_ + h_.utok_off;
+    for (int n = 0; n < 3; ++n) { ugram_used_[n] = false; for (uint32_t i = 0; i < 8192; ++i) if (ugram_[n * 8192 + i]) { ugram_used_[n] = true; break; } }
     for (uint32_t i = 0; i < h_.n_rules; ++i) {
       const Rule& r = rules_[i];
       if ((uint64_t)r.pat_off + r.pat_len > h_.str_n) return false;
@@ -217,7 +237,7 @@ class Index {
     }
     for (int g = 0; g < kGroups; ++g) {
       const GroupHdr& gh = h_.g[g];
-      if (!in(gh.ids_off, (uint64_t)gh.ids_n * 4) || !in(gh.resid_off, (uint64_t)gh.resid_n * 4) || ((gh.ids_off | gh.resid_off | gh.bm_off | gh.dom_tab_off) & 3)) return false;
+      if (!in(gh.ids_off, (uint64_t)gh.ids_n * 4) || !in(gh.resid_off, (uint64_t)gh.resid_n * 4) || ((gh.ids_off | gh.resid_off | gh.dom_tab_off) & 3)) return false;
       const uint32_t* ids = (const uint32_t*)(base_ + gh.ids_off);
       for (uint32_t i = 0; i < gh.ids_n; ++i) if (ids[i] >= h_.n_rules) return false;
       const uint32_t* rs = (const uint32_t*)(base_ + gh.resid_off);
@@ -227,48 +247,73 @@ class Index {
         return used < (1u << lg); /* probing needs at least one empty slot or a lookup could loop forever */ };
       if (!chk(gh.tok_off, gh.tok_log2)) return false;
       for (int n = 0; n < 3; ++n) { if (!chk(gh.gram_off[n], gh.gram_log2[n])) return false; gram_empty_[g][n] = Empty(gh, n); }
-      if (!in(gh.bm_off, 3 * 8192)) return false;
       if (!chk(gh.dom_tab_off, gh.dom_tab_log2)) return false;
       { const Slot* t = (const Slot*)(base_ + gh.dom_tab_off); domtab_empty_[g] = true; for (uint32_t i = 0; i < (1u << gh.dom_tab_log2); ++i) if (t[i].count) { domtab_empty_[g] = false; break; } }
     }
+    gen_ = ++NextGeneration();
     return true;
   }
   size_t bytes() const { return size_; }
 
   bool ShouldBlock(const GURL& url, const GURL& initiator, ResourceType type) const {
     if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) return false;
-    thread_local std::string lower;
-    Lower(url.spec(), &lower);
     bool third_party = false; std::string_view ini_host;
     if (initiator.is_valid() && !initiator.host().empty()) {
       ini_host = initiator.host();
       third_party = !net::registry_controlled_domains::SameDomainOrHost(url, initiator, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
     }
-    Ctx c = MakeCtx(lower, ini_host, third_party, type);
+    Ctx c = MakeCtx(Tls(0), url.spec(), ini_host, third_party, type);
     if (Any(kImportant, c, nullptr)) return true;
     if (!Any(kBlock, c, nullptr)) return false;
     if (Any(kException, c, nullptr)) return false;
+    // `c` is finished with: the document lookup below reuses a different scratch buffer anyway.
     if (initiator.is_valid() && (DocumentExceptions(initiator) & zephyrus_adblock::kExceptDocument)) return false;
     return true;
   }
+  // The same page asks about itself for every blocked request it makes, so the answer for the last page is kept.
+  // Keyed by this index's generation, so a new index (a list update) can never be answered from an old one.
   uint32_t DocumentExceptions(const GURL& doc) const {
     if (!doc.is_valid() || !doc.SchemeIsHTTPOrHTTPS()) return 0;
     const GroupHdr& gh = h_.g[kDocument];
     if (gh.ids_n == 0 && gh.resid_n == 0) return 0;
-    thread_local std::string lower2; Lower(doc.spec(), &lower2);
-    Ctx c = MakeCtx(lower2, doc.host(), false, zephyrus_adblock::kTypeDocument);
-    uint32_t ex = 0; Any(kDocument, c, &ex); return ex;
+    thread_local struct { uint64_t gen = 0; std::string url; uint32_t value = 0; } cache;
+    if (cache.gen == gen_ && cache.url == doc.spec()) return cache.value;
+    Ctx c = MakeCtx(Tls(1), doc.spec(), doc.host(), false, zephyrus_adblock::kTypeDocument);
+    uint32_t ex = 0; Any(kDocument, c, &ex);
+    cache.gen = gen_; cache.url = doc.spec(); cache.value = ex; return ex;
   }
 
  private:
-  struct Ctx { std::string_view url, req_host, ini_host; size_t host_start, host_end; bool third_party; ResourceType type; uint64_t sig; uint32_t ntok; uint32_t tok[96]; };
-  static void Lower(const std::string& s, std::string* out) { out->resize(s.size()); for (size_t i = 0; i < s.size(); ++i) { char c = s[i]; (*out)[i] = (c >= 'A' && c <= 'Z') ? c + 32 : c; } }
-  static Ctx MakeCtx(const std::string& lower, std::string_view ini_host, bool tp, ResourceType type) {
-    size_t hs = lower.find("://"); hs = (hs == std::string::npos) ? 0 : hs + 3;
-    size_t he = lower.find_first_of("/:?", hs); if (he == std::string::npos) he = lower.size();
-    Ctx c{lower, std::string_view(lower).substr(hs, he - hs), ini_host, hs, he, tp, type, 0, 0, {}};
-    size_t s = 0; for (size_t i = 0; i <= lower.size(); ++i) { if (i < lower.size() && base::IsAsciiAlphaNumeric(lower[i])) continue;
-      if (i - s >= 3) { uint32_t h = Fnv(lower.data() + s, i - s); c.sig |= 1ull << (h & 63); if (c.ntok < 96) c.tok[c.ntok++] = h; } s = i + 1; }
+  // Per-thread scratch, reused for every request: no allocation once warm, and no cap on how many tokens a URL may have.
+  struct Scratch { std::string buf; std::vector<uint32_t> tok, gram[3]; };
+  static Scratch& Tls(int which) { thread_local Scratch s[2]; return s[which]; }
+  static std::atomic<uint64_t>& NextGeneration() { static std::atomic<uint64_t> g{0}; return g; }
+  struct Ctx { std::string_view url, req_host, ini_host; size_t host_start, host_end; bool third_party; ResourceType type; uint64_t sig; const std::vector<uint32_t>* tok; const std::vector<uint32_t>* gram; };
+  Ctx MakeCtx(Scratch& sc, const std::string& spec, std::string_view ini_host, bool tp, ResourceType type) const {
+    const size_t n = spec.size();
+    sc.buf.assign(n + 8, '\0');                                   // 8 zero bytes of padding so a gram can be read as one 64-bit load
+    for (size_t i = 0; i < n; ++i) { char ch = spec[i]; sc.buf[i] = (ch >= 'A' && ch <= 'Z') ? ch + 32 : ch; }
+    const std::string_view url(sc.buf.data(), n);
+    size_t hs = url.find("://"); hs = (hs == std::string_view::npos) ? 0 : hs + 3;
+    size_t he = url.find_first_of("/:?", hs); if (he == std::string_view::npos) he = n;
+    Ctx c{url, url.substr(hs, he - hs), ini_host, hs, he, tp, type, 0, &sc.tok, sc.gram};
+    sc.tok.clear();
+    size_t s0 = 0;
+    for (size_t i = 0; i <= n; ++i) {
+      if (i < n && base::IsAsciiAlphaNumeric(url[i])) continue;
+      if (i - s0 >= 3) { const uint32_t h = Fnv(url.data() + s0, i - s0); c.sig |= 1ull << (h & 63);
+        const uint32_t b = BitOf(h); if (utok_[b >> 3] & (1u << (b & 7))) sc.tok.push_back(h); }
+      s0 = i + 1;
+    }
+    for (int g = 0; g < 3; ++g) {
+      sc.gram[g].clear(); if (!ugram_used_[g]) continue;
+      const int len = g + 3; const uint8_t* bm = ugram_ + g * 8192;
+      for (size_t i = 0; i + len <= n; ++i) {
+        uint64_t v; memcpy(&v, url.data() + i, 8);
+        const uint32_t key = GramKey(v & kGramMask[len]), b = BitOf(key);
+        if (bm[b >> 3] & (1u << (b & 7))) sc.gram[g].push_back(key);   // almost every position stops here, one L1 load
+      }
+    }
     return c;
   }
   // Verbatim port of the baseline's wildcard matcher, over string_views.
@@ -329,7 +374,8 @@ class Index {
         if (first == '*') return MatchAt(pat, 0, c.url, 0, anchor_end, budget);
         const bool literal = first != '^';
         for (size_t pos = literal ? c.url.find(first) : 0; pos != std::string_view::npos && pos <= c.url.size(); pos = literal ? c.url.find(first, pos + 1) : pos + 1) {
-          if (MatchAt(pat, 0, c.url, pos, anchor_end, budget)) return true; if (budget < 0) return false; }
+          if (MatchAt(pat, 0, c.url, pos, anchor_end, budget)) return true;
+          if (budget < 0) return false; }
         return false; }
     }
   }
@@ -341,18 +387,12 @@ class Index {
   bool Any(Group g, const Ctx& c, uint32_t* collect) const {
     const GroupHdr& gh = h_.g[g]; const uint32_t* ids = (const uint32_t*)(base_ + gh.ids_off); bool matched = false;
     auto visit = [&](uint32_t id) { const Rule& r = rules_[id]; if (RuleMatches(r, c)) { matched = true; if (collect) *collect |= r.doc_exc; return !collect; } return false; };
-    // 1. whole-token keys (hashes were computed once per request, for all four groups)
-    for (uint32_t t = 0; t < c.ntok; ++t) if (const Slot* sl = Find(gh.tok_off, gh.tok_log2, c.tok[t])) for (uint32_t k = 0; k < sl->count; ++k) if (visit(ids[sl->start + k])) return true;
-    const std::string_view u = c.url;
-    // 2. literal n-gram keys for rules that have no bounded keyword
-    for (int n = 3; n <= 5; ++n) {
-      if (gram_empty_[g][n - 3]) continue;
-      const uint8_t* bm = base_ + gh.bm_off + (n - 3) * 8192;
-      for (size_t i = 0; i + n <= u.size(); ++i) {
-        const uint32_t key = Gram(u.data() + i, n), b = (key * 2654435761u) >> 16;
-        if (!(bm[b >> 3] & (1u << (b & 7)))) continue;                       // one L1 load rejects almost every position
-        if (const Slot* sl = Find(gh.gram_off[n - 3], gh.gram_log2[n - 3], key)) for (uint32_t k = 0; k < sl->count; ++k) if (visit(ids[sl->start + k])) return true;
-      }
+    // 1. whole-token keys that survived the union bitmap
+    for (const uint32_t t : *c.tok) if (const Slot* sl = Find(gh.tok_off, gh.tok_log2, t)) for (uint32_t k = 0; k < sl->count; ++k) if (visit(ids[sl->start + k])) return true;
+    // 2. literal n-gram keys (rules with no bounded keyword), likewise pre-filtered once per request
+    for (int g3 = 0; g3 < 3; ++g3) {
+      if (gram_empty_[g][g3]) continue;
+      for (const uint32_t key : c.gram[g3]) if (const Slot* sl = Find(gh.gram_off[g3], gh.gram_log2[g3], key)) for (uint32_t k = 0; k < sl->count; ++k) if (visit(ids[sl->start + k])) return true;
     }
     // 2b. rules scoped to initiator domains: look up the initiator host and each parent domain
     if (!c.ini_host.empty() && !domtab_empty_[g]) {
@@ -379,6 +419,6 @@ class Index {
   }
   bool Empty(const GroupHdr& gh, int t) const { const Slot* sl = (const Slot*)(base_ + gh.gram_off[t]); for (uint32_t i = 0; i < (1u << gh.gram_log2[t]); ++i) if (sl[i].count) return false; return true; }
 
-  bool gram_empty_[kGroups][3] = {}; bool domtab_empty_[kGroups] = {}; const uint8_t* base_ = nullptr; size_t size_ = 0; Header h_{}; const Rule* rules_ = nullptr; const uint32_t* doms_ = nullptr; const char* str_ = nullptr;
+  bool gram_empty_[kGroups][3] = {}; bool ugram_used_[3] = {}; const uint8_t* ugram_ = nullptr; const uint8_t* utok_ = nullptr; uint64_t gen_ = 0; bool domtab_empty_[kGroups] = {}; const uint8_t* base_ = nullptr; size_t size_ = 0; Header h_{}; const Rule* rules_ = nullptr; const uint32_t* doms_ = nullptr; const char* str_ = nullptr;
 };
 }  // namespace zidx

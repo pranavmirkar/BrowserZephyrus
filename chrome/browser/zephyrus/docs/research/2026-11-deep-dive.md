@@ -8,22 +8,48 @@ Evidence labels: **[measured]** I ran it on the real sources, **[repo]** read in
 this repository, **[sourced]** from the linked source, **[memory]** from my
 own knowledge and not re-checked here, **[unverified]**.
 
+## Corrections to the first version of this note
+
+Made the same day, after measuring real pages. The measurement is in
+`2026-11-beating-brave.md`. The text below is already corrected. This list says
+what changed and why.
+
+- **ZIndex speed.** The note said 2.4 µs and "about 3.8× faster than Brave's
+  engine". The synthetic request mix flattered it. On 10,787 requests from 32
+  real pages, ZIndex takes 4.2 to 4.8 µs, the shipped engine 17.8 to 20.8 µs and
+  Brave's engine 7.4 to 9.0 µs. That is about 4× and about 1.8×.
+- **A bug in the first ZIndex.** It kept at most 96 tokens per URL, so a rule whose
+  key sat after the 96th token was missed and the index said "allow" where the
+  shipped engine blocks. The original probes had no URL that long. A new
+  long-URL differential found it, and the restructured index has no cap. The
+  version pushed in commit 4039652 had the bug.
+- **Why the synthetic mix misled.** Its URLs average 51 characters and 11% match a
+  rule. Real URLs average 171 characters and 58% match. Treat the synthetic
+  figures as a unit-test workload, not a benchmark.
+- **Probe counts and fuzz results** are from the restructured index: 660,219
+  probes, and 2,500 mutated blobs with 1,990 rejected and 510 used.
+- **Memory.** ZIndex replaces the network index only (33.0 MB per profile becomes
+  one 10.5 MB mapping). The cosmetic and scriptlet engines, 19 MB per profile,
+  are not covered yet. The note's "52 MB to 10.6 MB" overstated the saving.
+
 ## The short version
 
 1. **The Shield matcher is the weakest part of Shield, and it is measurably
-   behind Brave's.** On identical lists and identical requests, the shipped
-   engine costs about 20 µs per request, Brave's open-source engine about 9 µs.
+   behind Brave's.** On identical lists and identical requests (10,787 from 32
+   real pages), the shipped engine costs about 19 µs per request, Brave's
+   open-source engine about 8 µs.
    The shipped engine also holds 52 MB of heap, builds a complete copy for
    every profile (the Private Workspace and Guest included), parses 224,000
    lines on every start, and frees it all on the UI thread at every list update.
    [measured, [repo]]
-2. **A compiled, memory-mapped index fixes all of that.** My prototype
-   (`ZIndex`) matches in **2.4 µs**, loads in **1.8 ms** with no heap, is one
-   10.6 MB file mapping that every profile shares, and returned **0 mismatches
-   in 652,640 differential probes** against the shipped engine. A blob that
-   `Load()` accepts after random corruption cannot crash it, under ASan and
-   UBSan. It is about 3.8× faster than Brave's engine on this corpus.
-   [measured]
+2. **A compiled, memory-mapped index fixes most of that.** My prototype
+   (`ZIndex`) matches in **4.2 to 4.8 µs** on real page traffic (1.9 µs on the
+   synthetic mix), loads in **1.9 ms** with no heap, is one 10.5 MB file mapping
+   that every profile shares, and returned **0 mismatches in 660,219
+   differential probes** and on all 10,787 real requests. A blob that `Load()`
+   accepts after random corruption cannot crash it, under ASan and UBSan. On real
+   pages it is about 4× faster than the shipped engine and about 1.8× faster than
+   Brave's. It covers network rules only. [measured]
 3. **The same shape fixes a trust problem.** The browser downloads the rules
    from four third-party hosts and runs the JavaScript they contain on web pages.
    A Zephyrus-built, signed bundle replaces that with one trust root. [repo]
@@ -48,10 +74,14 @@ small stand-ins for `base::`, `GURL` and the public-suffix helpers
 files, Fanboy's cookie list and IndianList. That is 224,366 lines (8.2 MB) of which the
 Zephyrus parser accepts 126,520 network rules.
 
-Requests are a deterministic synthetic corpus of 20,000: about 90% ordinary
-subresources, 10% shaped like blocked ones. That exercises the code paths; it is
-not recorded traffic. Correctness probes are different: 632,640 URLs *derived
-from every accepted rule* so that the rule is expected to fire, plus mutations.
+Requests come in two kinds. A deterministic synthetic corpus of 20,000 (about
+90% ordinary subresources, 10% shaped like blocked ones, URLs averaging 51
+characters) exercises the code paths. It is a unit-test workload, not a
+benchmark. The benchmark is recorded traffic: 10,787 requests from 32 real pages,
+with URLs averaging 171 characters and 58% matching a rule. It is described in
+`2026-11-beating-brave.md`. Correctness probes are different: 640,219 URLs
+*derived from every accepted rule* so that the rule is expected to fire, plus
+mutations and long-URL variants.
 
 Everything is Linux, g++ 13, one machine. Ratios inside one process on one
 corpus carry over; absolute microseconds do not.
@@ -62,7 +92,7 @@ corpus carry over; absolute microseconds do not.
 |---|---|---|
 | Parse, network / cosmetic / scriptlet | 183 / 100 / 65 ms | pool thread, every start and every list update |
 | Heap per engine instance | 33.0 / 9.7 / 9.1 MB = **51.8 MB** | plus 8 MB of list text in flight |
-| Per request, clean traffic | **20 to 23 µs** mean, 69 to 79 µs p99 | browser process, UI thread |
+| Per request | **18 to 21 µs** mean on real pages (20 to 23 on the synthetic mix), p99 85 to 107 µs | browser process, UI thread |
 | Destroy on hot-swap | 60 + 20 + 14 ms | UI thread, at each list update |
 
 Facts from the code, not the benchmark **[repo]**:
@@ -91,14 +121,16 @@ every request. `www`, `static`, `images` and `api` do the same.
 ## 3. Against Brave's engine, on the same input
 
 Brave's `adblock-rust` 0.13.5 (crates.io) built from the same text and run on
-the same 20,000 requests **[measured]**:
+the same requests **[measured]**:
 
 | | Zephyrus as shipped | Brave adblock-rust | ZIndex prototype |
 |---|---|---|---|
-| Mean per request | 20 to 23 µs | 8.9 µs | **2.4 µs** |
-| p99 | 69 to 79 µs | 31.7 µs | **5.7 µs** |
-| Memory | 52 MB heap (33 MB network only) | +13.5 MB built; 10.2 MB serialised; +9.7 MB after loading it | **10.6 MB mapped, 0 heap** |
-| Start-up | 348 ms parse | 195 ms build, 8.7 ms deserialise | **1.8 ms** |
+| Mean per request, real pages | 17.8 to 20.8 µs | 7.4 to 9.0 µs | **4.2 to 4.8 µs** |
+| p99, real pages | 85 to 107 µs | 33 to 48 µs | **29 to 35 µs** |
+| Mean per request, synthetic mix | 20.3 µs | 7.5 to 8.9 µs | 1.9 µs |
+| p99, synthetic mix | 68 µs | 24 to 32 µs | 5.0 µs |
+| Memory | 52 MB heap (33 MB network only) | +13.5 MB built; 10.2 MB serialised; +9.7 MB after loading it | **10.5 MB mapped, 0 heap; network only** |
+| Start-up | 348 ms parse | 195 to 229 ms build, 8.3 ms deserialise | **1.9 ms** |
 
 Reading it fairly:
 
@@ -114,9 +146,10 @@ Reading it fairly:
   the file as out of scope **[sourced]**. ZIndex validates every offset on every
   load and was fuzzed (section 4), which suits a browser whose profile
   directory other software can write to.
-- **The two engines agree.** All 20,000 corpus decisions match. Across 246,912
-  rule-derived probes they agree on 99.87%; 255 are blocked only by Zephyrus and
-  78 only by Brave **[measured]**.
+- **The two engines agree.** All 20,000 corpus decisions match, and so do all
+  10,787 decisions on real pages. Across 246,912 rule-derived probes they agree
+  on 99.87%; 255 are blocked only by Zephyrus and 78 only by Brave
+  **[measured]**.
 
 What the 333 disagreements were, from reading rule text:
 
@@ -152,20 +185,29 @@ What the 333 disagreements were, from reading rule text:
 
 Shipped 29 → n-gram index for untokenized rules 19 → initiator-domain index and
 signatures 12 → rarest-token keys 6.9 → entity domains and bitmap 2.4.
-Those figures are from development runs on the earlier list set; the final
-head-to-head is 19.7 µs against 2.4 µs in one process **[measured]**.
+Those figures are from development runs on the synthetic mix and an earlier list
+set. The first design then met real traffic and managed only 2.5× over the
+shipped engine (9.9 µs). Profiling put three quarters of the instructions in the
+per-position bitmap test. A union token bitmap, union n-gram bitmaps and a scratch
+buffer padded for 8-byte loads brought it to 4.2 to 4.8 µs. The final synthetic
+head-to-head is 20.3 µs against 1.9 µs in one process **[measured]**.
 
 ### Evidence it is correct
 
-- **652,640 probes, 0 mismatches**, against the real engine: 20,000 from the
-  corpus and 632,640 derived from every accepted rule (exact, first-party
-  initiator, other resource type, one-character mutation, added query), 483,415
-  of them blocked. Document-exception lookups: 623 probes, 0 mismatches.
+- **660,219 probes, 0 mismatches**, against the real engine: 20,000 from the
+  corpus and 640,219 derived from every accepted rule (exact, first-party
+  initiator, other resource type, one-character mutation, added query, and 7,579
+  with the match after 150 other tokens), 490,805 of them blocked.
+  Document-exception lookups: 623 probes, 0 mismatches. On the 10,787 real
+  requests: 0 differences.
+- **A bug the first version had, now fixed.** It kept at most 96 tokens per URL
+  and missed rules keyed after the 96th. The long-URL probes above exist because
+  of it.
 - **Hostile input.** `Load()` checks every offset a record or table can reach,
   alignment, and that each probing table has an empty slot (without that check a
   corrupt table makes a lookup loop forever; I found and fixed this while
   writing the fuzzer). 2,500 mutated blobs, covering bit flips, header flips,
-  garbage runs and truncation: 1,860 rejected, 640 accepted and then *used* for
+  garbage runs and truncation: 1,990 rejected, 510 accepted and then *used* for
   400 matches each. No crash, no undefined behaviour, no hang, under ASan and
   UBSan.
 - A request cannot influence the index, so hash flooding is not a concern.
@@ -189,7 +231,7 @@ head-to-head is 19.7 µs against 2.4 µs in one process **[measured]**.
    copies.
 4. Keep the old engine behind a flag for one release and run the differential
    test in CI forever.
-5. Gate: `adblock_matcher_perftest.cc` at least 5× faster and probe parity.
+5. Gate: `adblock_matcher_perftest.cc` mean at least 3× lower on the real-traffic corpus, and probe parity.
 
 ## 5. Trust: stop running other people's JavaScript
 
@@ -311,7 +353,7 @@ A claim that holds up is one anyone can rerun:
 
 | # | Item | Size | Gate |
 |---|---|---|---|
-| 1 | Port ZIndex; one shared index per process | L | perftest ≥5× faster, probe parity |
+| 1 | Port ZIndex; one shared index per process | L | mean ≥3× lower on real traffic, probe parity |
 | 2 | Scriptlets per document, with code cache | S | compile cost per document under 0.2 ms |
 | 3 | `removeparam`, `urlskip`, RE2 regex, redirect surrogates, procedural cosmetics | L | usable-rule share in `privacy.txt` above 95% |
 | 4 | Signed bundle pipeline | M | browser accepts only signed, newer bundles |
@@ -325,8 +367,8 @@ users.
 
 ## 11. What I did not do
 
-- Run anything inside Chromium, or measure real traffic, real `GURL` or the real
-  public-suffix list.
+- Run anything inside Chromium, or use the real `GURL` or public-suffix list. Real
+  traffic is now measured, on 32 pages (see `2026-11-beating-brave.md`).
 - Evaluate Chromium's own `url_pattern_index` as an alternative matcher.
 - Read the 2025 canvas-fingerprinting paper in full, or benchmark against uBlock
   Origin. Brave's engine was the only other engine tested.
