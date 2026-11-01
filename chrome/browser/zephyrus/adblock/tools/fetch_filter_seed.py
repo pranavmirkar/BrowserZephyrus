@@ -1,4 +1,4 @@
-# Copyright 2026 Pranav Mirkar. MIT licence (see the repository's LICENSE).
+# Copyright 2026 Pranav Mirkar. PolyForm Strict 1.0.0 (see the repository's LICENSE).
 """Downloads the bundled starter filter list: EasyList followed by EasyPrivacy.
 
 The list is third-party data (GPLv3 or CC BY-SA 3.0, dual licensed), so it is NOT

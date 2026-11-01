@@ -14,7 +14,7 @@ EasyList (includes EasyPrivacy sections)
   Shipped as: zephyrus_filters.txt (EasyList followed by EasyPrivacy)
   In the source repository: NOT included. It is downloaded when the browser is
   built, with chrome/browser/zephyrus/adblock/tools/fetch_filter_seed.py, and
-  is licensed under the terms above, not under the repository's MIT licence.
+  is licensed under the terms above, not under the repository's own licence (PolyForm Strict).
 
 The snapshot's exact version is recorded in the header of that file (the
 "! Version:" line).

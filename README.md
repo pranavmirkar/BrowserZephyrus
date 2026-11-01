@@ -6,7 +6,7 @@
 
 Say "Hey Zep" and a task. Zep opens the pages, fills the forms and clicks the buttons. It asks you before spending money and when you need to sign in, and at no other time.
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: PolyForm Strict](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-blueviolet.svg)](LICENSE)
 [![Chromium](https://img.shields.io/badge/Chromium-151.0.7922.171-4285F4?logo=googlechrome&logoColor=white)](#building)
 [![Agent kernel: Rust](https://img.shields.io/badge/agent%20kernel-Rust-DEA584?logo=rust&logoColor=black)](chrome/services/zephyrus_agent/)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white)](#install)
@@ -175,7 +175,7 @@ Harness and results: [`chrome/browser/zephyrus/agent/benchmark/`](chrome/browser
 
 ## Install
 
-> **Windows 10 or 11, 64-bit.** Download the installer from [**Releases**](https://github.com/pranavmirkar/BrowserZephyrus/releases).
+> **Windows 10 or 11, 64-bit.** Download the installer from [**Releases**](https://github.com/pranavmirkar/BrowserZephyrus/releases). Free for personal and other noncommercial use; see [License](#license).
 
 - The installer is **not code-signed yet**, so Windows SmartScreen shows "Unknown publisher". Choose *More info*, then *Run anyway*.
 - The agent needs a model key. Open the agent panel's settings and add your own API key; it is stored encrypted with the OS keystore.
@@ -183,7 +183,7 @@ Harness and results: [`chrome/browser/zephyrus/agent/benchmark/`](chrome/browser
 
 ## Building
 
-This repository is an **overlay**: only the files changed or added on top of upstream Chromium, not the full Chromium tree (which cannot be hosted on GitHub).
+This repository is an **overlay**: only the files changed or added on top of upstream Chromium, not the full Chromium tree (which cannot be hosted on GitHub). Building it yourself is covered by the [licence](#license): noncommercial use only, and no modified or redistributed builds.
 
 **Requirements:** Windows 10/11, Visual Studio 2022 with the C++ workload, [`depot_tools`](https://commondatastorage.googleapis.com/chrome-infra-docs/flat/depot_tools/docs/html/depot_tools_tutorial.html), and roughly 150 GB of disk and 16 GB of RAM. A full official build takes many hours; incremental builds take minutes.
 
@@ -249,11 +249,15 @@ Zephyrus is a **pre-release**. It was built for the AssemblyAI Voice Agent Hacka
 
 ## License
 
-The Zephyrus code in this repository is released under the **MIT licence**: see [`LICENSE`](LICENSE). Copyright (c) 2026 Pranav Mirkar.
+**Source-available, not open source.** The Zephyrus code in this repository is licensed under the [PolyForm Strict License 1.0.0](LICENSE). Copyright (c) 2026 Pranav Mirkar.
 
-Not everything here is MIT:
+In short: you may read the code, and you may use it for **noncommercial purposes**: personal use, study, research, hobby projects, and use by charities, schools, public research bodies and government institutions. You may **not** use it commercially, change it, or redistribute it. This summary is not the licence; the text in [`LICENSE`](LICENSE) is what binds. The compiled browser is a copy of the same software, so the installer is free for personal and other noncommercial use on the same terms. For anything else, such as commercial use, contact the author through GitHub ([@pranavmirkar](https://github.com/pranavmirkar)).
 
-- **Chromium** files that this overlay modifies keep Chromium's BSD-style licence, as their headers say. Files written for Zephyrus that carry the same header are covered by this repository's MIT `LICENSE`.
+**Licence history.** Versions up to and including commit `96f086b` (release v0.1.1, 30 October 2026) were published under the MIT licence. Anyone who obtained those versions keeps the rights MIT gave them for those versions; the text is in [`LICENSE-MIT-legacy.txt`](LICENSE-MIT-legacy.txt). Everything after that commit is under PolyForm Strict.
+
+Not everything here is covered by that licence:
+
+- **Chromium** files that this overlay modifies keep Chromium's BSD-style licence, as their headers say. Many Zephyrus files carry a header copied from Chromium's template; for files written for Zephyrus, the licence that header points to is this repository's `LICENSE`.
 - **EasyList and EasyPrivacy** (GPLv3 or CC BY-SA 3.0) are downloaded as data at build time and are not part of this repository. See [`FILTER_LISTS_NOTICE.txt`](chrome/browser/zephyrus/adblock/lists/FILTER_LISTS_NOTICE.txt).
 - **Inter**, the installer font, is under the SIL Open Font License ([`OFL.txt`](chrome/installer/zephyrus_setup/fonts/OFL.txt)).
 - **DuckDuckGo Tracker Radar** (CC BY-NC-SA 4.0) is fetched at build time and never committed. See [`THIRD_PARTY_DATA.md`](chrome/browser/zephyrus/THIRD_PARTY_DATA.md).
