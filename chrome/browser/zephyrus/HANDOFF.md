@@ -1,147 +1,178 @@
-# Zephyrus — session handoff (written 2026-09-30)
+# Zephyrus — session handoff (updated 2026-10-01)
 
 Read this first if you are a new Claude session picking the project up. It is the
 state of the world at the moment it was written; where it disagrees with the code
 or a newer note, the code wins. No secrets are in this file and none should be
-added: keys live only where section 9 says.
+added: keys live only where section 10 says.
+
+**Right now:** the hackathon is SUBMITTED and the project is under a **freeze until
+the results are out (~2026-10-14): no GitHub pushes, no new installers, ask before
+any publish (including `vercel --prod`)**. Local edits and local builds are fine.
+The next body of work is **Agent v2** (section 8).
 
 ## 0. How to get the rest of the context
 
 | What | Where |
 |---|---|
-| Persistent memory (~100 notes, indexed) | `C:\Users\prana\.claude\projects\D--chromium\memory\MEMORY.md` — read the index, then the notes you need |
-| Full transcript of the last long session | `C:\Users\prana\.claude\projects\D--chromium\9ed02d5e-f664-4c2f-b662-e2e988ed6674.jsonl` |
+| Persistent memory (~100 notes, indexed) | `C:\Users\prana\.claude\projects\D--chromium\memory\MEMORY.md` — read the index, then the notes you need. Start with `zephyrus-hackathon-freeze`, `zephyrus-voice-handsfree-state`. |
+| Transcript of the 2026-09-30 sessions | `C:\Users\prana\.claude\projects\D--chromium\bb6effea-3782-416f-8f39-bca80601935a.jsonl` |
+| Older transcript | `C:\Users\prana\.claude\projects\D--chromium\9ed02d5e-f664-4c2f-b662-e2e988ed6674.jsonl` |
 | Design docs | `chrome/browser/zephyrus/docs/` — `agentic-harness-v2.md`, ADRs `0001`–`0006` |
 | Vocabulary | `chrome/browser/zephyrus/CONTEXT.md` (terms only) |
 | Security triage / production audit | `SECURITY_TRIAGE.md`, `PRODUCTION_AUDIT_2026-09.md` (same folder) |
-| Scratch, test scripts, traces | `D:\zeph_perf\` (capture scripts, replay files, fixtures, logs) |
+| Scratch, test scripts, traces | `D:\zeph_perf\` (capture scripts, benchmark, recordings, submission assets) |
 
 ## 1. Who and what
 
-- **User:** Pranav (`pranavmirkar@gmail.com`). Solo founder-engineer. Windows 11, AMD Ryzen 9 6900HS, 16 threads, ~23 GB RAM.
-- **Product:** **Zephyrus** browser (company **Lazarus**, not yet registered as of July 2026). A **Chromium 151 fork** at `D:\chromium\src`, India-first.
-- **Differentiator being built:** an **agentic browser** — an in-browser agent that operates real web pages, with a mascot that is its visible cursor, plus push-to-talk **voice** commands. Ambition stated by the user: "more powerful than Claude Code and Codex" for the browser, fast, accurate, wide task coverage, and **asking permission only for payments and sign-in**.
-- **Role the user asked me to play:** Senior Agent/Harness Developer and startup founder; "this being your own product". Treat it as a real product, not a demo hack.
+- **User:** Pranav. Solo founder-engineer. Windows 11, AMD Ryzen 9 6900HS, ~23 GB RAM. **Screen 2560x1440 at 150% (144 dpi), taskbar auto-hidden at the bottom.**
+- **Product:** **Zephyrus** browser (company **Lazarus**). A **Chromium 151 fork** at `D:\chromium\src`, India-first.
+- **Differentiator:** an **agentic browser**: an in-browser agent that operates real pages, a mascot (**Zep**) that is its visible cursor, and voice ("Hey Zep", hold-to-talk). Asks permission only for payments and sign-in.
+- **Role the user wants:** Senior Agent/Harness Developer and co-founder; treat it as a real product.
 
-## 2. The hackathon (goal and seriousness)
+## 2. The hackathon — SUBMITTED
 
-- The user has a hackathon **imminent** (notes of 2026-09-28 said "in 2 days", so it is on or about **2026-09-30 to 2026-10-01** — confirm).
-- **Deliverable:** browser + agentic harness + mascot + voice, working out of the box for **judges**.
-- **Judges must be able to start using the agent and voice commands immediately, with nothing to configure.** That drove the "demo proxy" work (section 5).
-- **Seriousness:** very high. The user repeatedly asked for production-class quality ("be a bit more serious and ambitious"), and a passing demo is not the bar: correctness, speed and safety are.
-- **Event (confirmed 2026-09-30 from the page):** **AssemblyAI - Voice Agent Hackathon** on lablab.ai, https://lablab.ai/ai-hackathons/assemblyai-voice-agent-hackathon
-  - Runs **September 1-30, 2026**, fully online, so **the deadline is the day this handoff was written**. The exact cutoff time and timezone are NOT on the page: ask the user / check the page's countdown.
-  - Theme: "the fastest path to a working voice agent". **Everything must be built with AssemblyAI** (our voice input uses its sync API, model `universal-3-5-pro`).
-  - Prizes: $10,000 ($5,000 cash + $5,000 AssemblyAI credits). Judging criteria are not published on the page; the lablab rule book is at https://lablab.ai/hackathon-rules.
-  - **lablab submission package (from lablab's own guidelines; verify on the submit form):** project title (max 50 chars); short description (max 255); long description (min 100 words); cover image PNG/JPG 16:9; **video presentation MP4, max 5 min, under 300 MB**; **slide deck PDF**; **public GitHub repository**; **demo application URL** (Streamlit / Replit / Vercel) that judges can use online.
-  - **Consequence:** judges evaluate online. A Windows installer is not a demo they can open, so we need (a) a demo video, (b) a hosted page they can open, and (c) a public repo. The Vercel proxy project is already a place to host a page.
-  - Drafts of the text fields are in `SUBMISSION_DRAFT.md` (same folder).
+- **Event:** AssemblyAI Voice Agent Hackathon on lablab.ai (Sep 1–30, 2026). Submitted 2026-09-30 ~20:15 IST.
+- **What judges see (do not change until results):**
+  - Repo: https://github.com/pranavmirkar/BrowserZephyrus at **`86b278d`** (overlay; previous `479e6f0`, `6aec336`).
+  - Release: **v0.1.0-hackathon** (pre-release), asset `Zephyrus-Setup-hackathon.exe`, 125,235,200 bytes, SHA-256 `DE19732C691BDFCB4102B38B4786F80EADA31A403FC3AEEBD8FF02B6E8C3DEB2`. Same file on the user's Google Drive (link on the demo page).
+  - Demo page + key proxy: https://zephyrus-demo-proxy.vercel.app (Download button → Drive, GitHub release as alternate; plays the user's real 3:52 recording).
+  - Video, deck (`Zephyrus_deck_v2.pdf`, 8 slides, M3 style), cover, form texts: `D:\zeph_perf\submission\FINAL\` and `D:\zeph_perf\submission\{form_text.md, additional_info.md, lablab_text.md}`.
+- **Numbers we claimed (keep claims honest):** benchmark of 12 real tasks — Claude Opus 5.5 12/12 (14 s/task avg), Claude Sonnet 5.5 (demo default) 10/12; unit tests 247 / 74 / Rust 141.
+- **After the results:** `demo_proxy/scripts/kill_demo.ps1`, then revoke both provider keys; the demo token expires ~14 days from setup anyway.
 
 ## 3. Environment and build rules (hard-won)
 
-- Repo: `D:\chromium\src`. Build dir for shipping: **`out\Release`** (official, non-component). `out\Default` is the older dev build. **Test performance on `out\Release`.**
-- Every build command must be `cd /d/chromium/src && autoninja -C out/Release <targets>` — the Bash tool's cwd silently resets to `D:\chromium`. **`autoninja` can exit 0 on failure; check the log for "finished successfully" and compare binary vs source timestamps** (stale-binary false pass has happened).
-- Targets: `chrome`, `mini_installer`, `zephyrus_agent_unittests`, `zephyrus_privacy_unittests`. Installer packaging: `chrome/installer/zephyrus_setup/tools/package_installer.py` (refuses a build with `zephyrus_dev_switches = true` unless `--allow-dev-switches`; the user wants that switch kept `true` for the tester build).
-- Never kill Chrome broadly; kill only PIDs you started (the user's real Chrome is in use). No full-screen captures — use PrintWindow scripts (`D:\zeph_perf\still_capture.ps1`, `popup_capture.ps1`, `agent_task_capture.ps1`).
-- The agent's shell is MSIX-redirected for AppData: **never verify an install from it**; the user must launch. Its login state (e.g. `vercel whoami`) is NOT the user's terminal state.
-- Bash-tool traps: heredocs with quotes/`\n`/`\0` mangle (use the Write tool or python scripts; a real NUL byte in C++ broke a build); recursive grep over `chrome/` times out (use the Grep tool on a narrow path); `sleep` polling is blocked (use Monitor).
-- Dev/verification switches in the browser: `--zephyrus-test-compact=<mode>`, `--zephyrus-test-agent-task="<task>"` (`a|||b` sends messages in sequence), `--zephyrus-agent-trace=<file>`.
+- Repo: `D:\chromium\src`. Shipping build dir: **`out\Release`** (official, non-component, DCHECKs OFF). Test performance there.
+- Build: `cd /d/chromium/src && autoninja -C out/Release <targets>`; the Bash tool's cwd resets to `D:\chromium`. **autoninja can exit 0 on failure**: check the log and binary timestamps. A negative-control mutation that fails to COMPILE leaves the OLD test exe behind and gives a false pass: keep every variable used in a mutation.
+- Targets: `chrome`, `mini_installer`, `chrome/installer/zephyrus_setup:zephyrus_setup`, `zephyrus_agent_unittests`, `zephyrus_agent_service_unittests`, `zephyrus_agent_kernel_unittests`, `kernel_unittests` (Rust).
+- Installer: `python chrome/installer/zephyrus_setup/tools/package_installer.py --out-dir out/Release --output D:/<name>.exe --allow-dev-switches` (refuses to overwrite; move the old one aside). **Frozen until results.**
+- Keep `zephyrus_dev_switches = true` in `out/Release/args.gn`.
+- Never kill Chrome broadly; only PIDs you started. A stray test chrome holding a profile makes a benchmark "fail" in 22 s with calls=0.
+- **Screen captures:** the screen is 2560x1440; size capture bitmaps from the screen (a 1920x1200 bitmap silently captured only the top-left for hours).
+- The agent's shell is MSIX-redirected for AppData: never verify an install from it.
+- **Bash-tool trap (hit many times):** `\n` and backslashes inside heredocs / inline python arrive mangled (a `\n` in a C++ string literal becomes a real newline). Write patch scripts with the Write tool, or build escapes from `chr(92)`.
+- Dev switches: `--zephyrus-test-compact=<mode>` (`panel`, `mascot-drag`, `voice-setup`, `voice-hands-free`, `voice-light`, `task`), `--zephyrus-test-agent-task="<task>"`, `--zephyrus-test-voice-dir=<dir>`, `--zephyrus-agent-trace=<file>`.
+- **Real-input test scripts (use after touching overlay / hit-testing / keys):** `D:\zeph_perf\realclick.ps1` (OS clicks must reach the page: pixel (900,600) white afterwards), `realdrag.ps1` (OS drag picks Zep up), `realptt.ps1` (OS key hold/tap), `winrect.ps1` (window vs client rects), `edgecheck.ps1`.
+- Benchmark: `D:\zeph_perf\bench\run_bench.py --model claude-sonnet-5-5 [--only a,b]` (fixture site `site.py`, real chrome, live proxy; costs credits — budget runs).
+- Real-voice diagnostic: `ZEPH_REAL_DIR=D:\zeph_perf\real ZEPH_REAL_SKIP=1 ./out/Release/zephyrus_agent_unittests.exe --single-process-tests --gtest_filter=VoiceReal.* --enable-logging=stderr` (recordings of the user on 3 mics; `D:\zeph_perf\rec3.py` records new ones).
 
 ## 4. Architecture in one page
 
-- **Agent kernel:** Rust (`chrome/services/zephyrus_agent/kernel`, cxx bridge) running in its own sandboxed utility process (ADR 0001). C++ `TaskLoop` drives it; mojom `AgentKernel`. Contract: `chrome/browser/zephyrus/agent/schemas/tools.v1.json` (v1.4.0, 26 tools).
-- **Providers** (ADR 0004): Anthropic / OpenAI-compatible / Gemini adapters live in the **kernel**; the browser is an authenticated pipe (`agent/model_transport.cc`) that adds the key last, fixes the host, allowlists paths/headers, uses the system network context.
-- **Policy** (`kernel/src/policy.rs`, ADR 0005): the agent **asks only for payments and sign-in**. Payment verbs always Ask; outbound verbs Ask only if the task did not request them; password/card typing is Deny and points to `task.handoff` (user does it). Approval lifts an Ask, **never a Deny**.
-- **Acting on pages:** observe with accessibility (never act with it), act with a synthesized input pipeline: an ordered input queue in `BrowserToolSurface` (`ui/views/frame/zephyrus_agent_tool_surface.*`), human-paced pointer paths (Bezier + min-jerk, Fitts timing), scroll via wheel events, page-identity guards.
-- **Mascot:** `MascotRig` (implicit-Euler springs) + `ZephyrusAgentMascotOverlay`, a click-through layer. Home = bottom-right of the page card. It only travels where it can arrive in time; otherwise the action happens from home.
-- **Memory** (ADR 0006): working (kernel) / conversation (RAM, per workspace) / long-term (profile file "Zephyrus Agent Memory", per workspace, none for Private). `memory.remember` is judged by provenance in Rust. A reply to the agent's question continues the task instead of starting a new one.
-- **Voice:** `agent/voice_input.*`, Windows waveIn 16 kHz mono, AssemblyAI sync API, mic button in the agent panel.
-- **Privacy/adblock/workspaces:** separate large subsystems (Privacy Intelligence phases 1–4, cosmetic + network adblock, workspaces as StoragePartitions, Private Workspace as OTR). See the memory index.
-- **UI:** Material 3 Expressive overhaul (Nothing OS look retired). Tonal containers behind toolbar buttons are drawn by `ZephyrusGlassPill` in `toolbar_view.cc`.
+- **Agent kernel:** Rust (`chrome/services/zephyrus_agent/kernel`, cxx bridge) in a sandboxed utility process (ADR 0001). C++ `TaskLoop` (`task_loop.cc`) drives it. Tool contract `agent/schemas/tools.v1.json` (26 tools).
+- **Providers** (ADR 0004): adapters in the kernel; the browser is an authenticated pipe (`model_transport.cc`). Cloud turns batch up to 8 tool calls, each policy-judged. Effort `low`, escalates to `medium` after a refused call or step 8.
+- **Policy** (`policy.rs`, ADR 0005): asks only for payments and sign-in; password/card typing is Deny → `task.handoff`. Approval lifts an Ask, never a Deny. An invented tool name is refused with the list of real tools.
+- **Observation:** accessibility tree + labelled screenshot (redacted: phone/email/card numbers masked in text AND pixels; `raw_value` stays in the browser for typing verification). Act through a synthesized input pipeline (`zephyrus_agent_tool_surface.*`), never through accessibility actions. Multi-line typing goes line by line with a pause after each Enter (rich editors move focus asynchronously).
+- **Mascot (Zep):** `MascotRig` springs + `ZephyrusAgentMascotOverlay` (pass-through layer). Grabbing it uses an **aura pre-target mouse handler** (`MouseWatcher`); a view targeter on the full-window overlay made the WHOLE page unclickable once — never again. Moods include `kHeld` (hangs from the cursor) and `kRelieved`. Where it is dropped becomes home (`parked_`). Typed/spoken "move to the left / get out of the way / come back" → `agent/mascot_commands.cc`.
+- **Voice:** `voice_input.*` (waveIn 16 kHz, mic chosen by pref `zephyrus.voice.mic`, list from `audio_devices.cc`), AssemblyAI sync API via the proxy. **Hold Ctrl+Shift+Space to talk** (`ZephyrusAgentPanel::KeyWatcher`, aura pre-target key handler, timed by event timestamps, taps <350 ms cancelled). "Hey Zep": `hands_free.*`, `voice_dsp.*` (shared `HopVad`, noise-aware `SpeechSpan`), `voice_lock.*`, `phrase_recorder.*`; enrolment = **3 takes** in the popup anchored to the mic-and-gear header button (`zephyrus_voice_setup.cc`).
+- **Memory** (ADR 0006): working / conversation / long-term.
+- **Demo key proxy:** `chrome/browser/zephyrus/demo_proxy/` (Vercel). Browser holds no provider key, only `{proxy_url, expiring token}`.
+- Other subsystems (privacy intelligence, adblock, workspaces, M3 UI): see the memory index.
 
-## 5. What was done in the last session (2026-09-29 → 09-30)
+## 5. What was done on 2026-09-30 (three sessions)
 
-All built and verified unless noted.
+All built, unit-tested and checked on the real build unless noted.
 
-1. **Mascot as the agent's cursor** (browser-wide overlay), smaller, default at page-card bottom, richer expressions.
-2. **Speed:** ~12.2s → ~4.6s per 5 actions (settle constants, `ObserveQuick`, effort=low, batching up to 8 cloud tool calls, each still policy-judged). Model latency (2–7 s per reply) now dominates.
-3. **Permissions** reduced to payment + sign-in, with `task.handoff`; broader tools; starter chips; cost footnote.
-4. **Memory architecture** (see ADR 0006) — fixed "agent forgets the previous message".
-5. **Settings bubble** shrunk to fit small screens (scrolls).
-6. **Appearance toggle:** Settings → Appearance → "Tonal containers behind toolbar buttons" (pref `zephyrus.appearance.m3_containers`, default on, live repaint). Both states captured and checked. The toggle click itself was not driven; the pref was seeded.
-7. **Hackathon keys — the demo proxy.** A key inside a binary is always extractable, so the browser holds **no provider key**:
-   - `chrome/browser/zephyrus/demo_proxy/` is a small **Vercel** project holding the Anthropic and AssemblyAI keys as sensitive env vars. It only accepts an expiring HMAC token (`zd1.<expiry>.<sig>`), allows a model allowlist, `max_tokens` ≤ 16000, no streaming, 3 MB / 4 MB body caps, ~30 req/min/IP per instance (best effort), fixed upstream hosts.
-   - The build embeds only `{proxy_url, demo_token}` from `D:\zephyrus-keys\demo_keys.json` via GN arg `zephyrus_bundled_keys_file` (line is in `out/Release/args.gn`). `agent/tools/gen_bundled_keys.py` refuses provider-key-shaped values.
-   - Client: `agent/bundled_keys.*`; `model_settings.cc` (`UsesBundledKey` decides proxy vs provider from where the key came from; a saved key is never sent to the proxy and a failed-to-decrypt saved key never becomes the token); `VoiceInput::StopAndTranscribe(key, endpoint, done)`.
-   - Cloud consent is allowed by default in demo builds until the user touches the per-workspace switch; Private stays off.
-   - **Deployed:** `https://zephyrus-demo-proxy.vercel.app` (Vercel project under `pranavmirkars-projects`). Live checks passed: no token → 401 from our own function; health 200 with both keys present; a real Claude call returned "proxy ok"; the voice route accepted a synthetic WAV.
-   - Setup/teardown scripts: `demo_proxy/scripts/setup_demo.ps1` (asks for both keys hidden, deploys, mints a 14-day token, writes config) and `kill_demo.ps1` (removes the project; then revoke provider keys).
-   - Proxy tests: `node --test test/proxy.test.js` in `demo_proxy/` (14 pass).
-   - Bugs found and fixed on the way: proxy `max_tokens` cap was 4096 (browser sends 16000); PowerShell 5.1 treated Vercel CLI stderr as an error; the setup script wrote the JSON with a BOM (generator now reads `utf-8-sig`, script writes without BOM).
+1. **Voice M1–M4:** mascot bubble, "Hey Zep" on-device wake, Voice Lock, setup UI. Proven end to end with SAPI speech + live proxy; negative control (another voice) refused.
+2. **Default model** Claude Sonnet 5.5 for the bundled demo keys (forced while bundled keys are in use).
+3. **Final audit fixes:** page text / `<select>` options / screenshot text were unredacted; glued numbers missed; typing into a redacted field could never verify; mascot repainted the whole window (24% → 2% idle CPU); mic light hidden with the mascot off; a "two mascots on startup" regression.
+4. **Voice setup popup** rewritten small and friendly; microphone selector; "not hearing anything" hint; **3 takes**.
+5. **Real-microphone enrolment:** gates were tuned on clean synthetic voices; real takes sit 0.33–0.40 apart. Loosened, plus a length gate. **Laptop array mic** (constant −25 dB hiss): new shared `HopVad` (smoothing, adaptive margin, re-anchors a floor poisoned by the device's leading digital silence), noise-aware `SpeechSpan`. Real takes: 3/3 accepted, wake 4/4, no false wakes. Two regression tests, each proven to fail without its fix.
+6. **Hold-to-talk** (replaces the old press/press toggle). Proven with real OS keys; speech-through-mic to transcript NOT proven by me (TTS wasn't picked up) — the user's own recording shows it working.
+7. **Zep can be picked up and moved** (hold + relief animation; move by voice/chat). Proven with a real OS drag.
+8. **Agent complex-task fixes:** Notion essay landing in the title (line-paced typing), WRITING IN EDITORS + PERSISTENCE prompt sections, invented-tool refusal names real tools, effort escalation, Notion-like `essay` task in the benchmark. Sonnet 4/4 on essay/contact/form/compare.
+9. **Submission package** (section 2), including the GitHub release made via the API with the cached git login.
+10. **After submission (LOCAL ONLY, unpushed):** maximised window showed 2 px of desktop above the title bar. Cause: Windows 11 answers `ABM_GETAUTOHIDEBAR` with the bottom taskbar for the TOP edge too. Fix in `chrome/browser/ui/views/chrome_views_delegate_win.cc` (trust it only for the taskbar's real edge via `ABM_GETTASKBARPOS`). The bottom 2 px is by design (lets the auto-hide taskbar pop).
 
 ## 6. Where things stand right now
 
-- **Final build done (2026-09-30 01:53 IST):** `chrome` + `mini_installer` built with the demo config; `chrome.dll` holds the proxy URL but neither the token nor any `sk-ant-` string in plaintext.
-- **Verified on it:** a fresh profile with nothing entered ran "Open the More information link" through the LIVE proxy to real Claude: it clicked and finished in 2 steps / 13 s / 19k tokens (one step was "wasted" because the model chose no action). Capture: `D:\zeph_perfinal.png`.
-- `out/Release/args.gn` has `zephyrus_bundled_keys_file = "D:/zephyrus-keys/demo_keys.json"` and `zephyrus_dev_switches = true`.
-- The provider keys were created in dedicated workspaces with spend caps (verify they exist).
-- **Not yet verified:** a real SPOKEN command (only a synthetic WAV reached AssemblyAI), the packaged installer and a clean install by the user, the lablab submission assets (repo, video, slides, cover, demo URL).
+- `out/Release` contains everything above including the unpushed taskbar fix. The shipped installer does NOT have the taskbar fix.
+- Unpushed local changes: the taskbar fix; `demo_proxy/public/demo.mp4` (the user's real recording, deployed but not in the repo).
+- Tests: `zephyrus_agent_unittests` 247, `zephyrus_agent_service_unittests` 74, Rust `kernel_unittests` 141 — all pass.
+- Known model-quality misses on Sonnet: the example.com "Learn more" loop; an off-by-one year on the Hinglish Taj Mahal task.
 
-## 7. Next steps, in order
+## 7. Known gaps and risks
 
-**DONE and verified in `out/Release` (2026-09-30, second session): the three voice features.**
-- M1 mascot bubble: the agent's status, answer and Allow/Deny question sit above the mascot (`zephyrus_mascot_bubble.*`, wired from the panel). Verified: a spoken task's answer appeared in the bubble.
-- M2/M3 "Hey Zep": opt-in, only while the window is active (`zephyrus_hands_free.*`, engine in `agent/hands_free.*`, `voice_dsp.*`, `voice_lock.*`). On-device MFCC + DTW against the user's own enrolled recordings; nothing goes to AssemblyAI until the phrase matches. A small red light on the mascot while the microphone is open. "Hey Zep, stop" cancels a running task. Ctrl+Shift+Space = talk (press again to send), Ctrl+Shift+Comma = mute.
-- M4 Voice Lock: named voices (record / rename / delete / test) in "Hey Zep and voices" (`zephyrus_voice_setup.cc`, opened from the agent settings or a chip in the panel's empty state), strictness setting. Voiceprints are features only, OSCrypt-encrypted in `<profile>/Zephyrus Voices`, never uploaded. It is a lightweight matcher, NOT biometric-grade: replay or a close impersonator can pass. Payments/sign-in stay click-only regardless.
-- Proved end to end with Windows-SAPI speech through the REAL engine + live proxy: enrolled voice -> wake -> command -> AssemblyAI text -> task ran -> answer in the bubble. Negative control: another voice is refused and nothing is transcribed. Dev hooks: `--zephyrus-test-compact=voice-hands-free|voice-setup --zephyrus-test-voice-dir=<dir>` (see the memory note `zephyrus-voice-handsfree-state`). NOT yet tested with a real microphone and a real human voice: that needs the user.
-- Agent benchmark harness: `D:\zeph_perfench\` (local fixture site + request log, real chrome.exe, live proxy). Found and fixed on the way: (1) kernel policy stalled "open A and B" on an ambiguity question (`named_separately`, policy.rs); (2) a `<select>`'s choices were invisible so the model guessed values (observation now carries `options`); (3) a click on a link whose page had not started opening yet was reported as "nothing changed" and the model gave up (the loop now re-looks up to 4 times for free, task_loop.cc). Each has a regression test with a negative control.
-- Caveat learned the hard way: a LOCKED or idle display makes the browser stop painting and produces fake agent failures. Benchmarks keep the display awake (SetThreadExecutionState).
+- Model latency (2–7 s per reply) dominates task time; every step is a full round trip.
+- The laptop mic recorder still misses ~1 in 6 phrases; Voice Lock is a convenience lock, not biometric.
+- Canvas apps (Figma-like) and image-only buttons are weak; login walls and CAPTCHAs on real sites need the user.
+- Not production-ready (base out of support window, no updater, unsigned, Safe Browsing dead).
+- Prompt-injection posture: policy sits outside the model. Keep it that way.
 
-**URGENT, deadline is 2026-09-30 (see section 2): the submission package matters more than any further feature work.**
+## 8. THE NEW PLAN — Agent v2 (decided direction, not started)
 
-0. Submission package, in this order: (1) public GitHub repo (the overlay repo; **ask the user before any push**, never publish secrets: `demo_keys.json`, `.vercel`, generated headers are excluded), (2) 60-90 s screen recording of the voice-driven agent doing 3 tasks, MP4, under 5 min, (3) 8-10 slide PDF, (4) 16:9 cover image, (5) hosted demo page URL, (6) paste the text from `SUBMISSION_DRAFT.md`.
-1. Confirm the build finished; run `zephyrus_agent_unittests`.
-2. **Fresh-profile end-to-end on the live proxy:** `powershell -File D:\zeph_perf\agent_task_capture.ps1 -Profile D:\zeph_perf\fresh1 -Out D:\zeph_perf\final.png -Wait 40` (default task: open the "More information" link on example.com). Expect real agent actions, not an error. Then a real multi-step task.
-3. **Voice with a real mic** (the user must speak; `mcp` cannot).
-4. Package the installer (`package_installer.py --out-dir out/Release --output <path> --allow-dev-switches`), and have the **user** install and launch it (never verify installs from the agent shell). Test as a judge would: first run, no settings.
-5. Ask the user for the **hackathon page link**; record deadline, judging criteria and format in section 2; tailor the demo script to the criteria.
-6. Prepare a short **demo script** (3–5 tasks that reliably work: search+open, fill a form up to the login/payment handoff, multi-tab research, voice command) and rehearse it on the shipping build. Have a fallback if the network or model is slow.
-7. Set/verify **spend caps** on both provider workspaces; note the token expiry date (14 days from setup).
-8. After the event: `demo_proxy/scripts/kill_demo.ps1`, then revoke both provider keys.
-9. Nothing has been pushed since commit `d9ab5e1`; **ask the user before pushing** (see the GitHub overlay note in memory).
+Goal: a more general, more accurate, cheaper and faster agent; Claude as strategist, the agent as a capable tactician, the Rust kernel as the safety layer.
 
-## 8. Known gaps and risks (be honest about these in a demo)
+### 8.1 What the numbers say today (measured on our benchmark, Sonnet 5.5)
 
-- Model latency (2–7 s/reply) dominates task time.
-- Figma-style canvas apps: the agent can flail with repeated clicks. Ambiguity questions render as an approval card.
-- Long-term recall is keyword overlap, facts are plaintext in the profile dir; chats are not restored after restart.
-- Rate limiting in the proxy is per serverless instance, so the provider-side spend caps are the real ceiling.
-- The Phase-1 12-task benchmark gate through all three adapters with the user's keys has not been run.
-- Production audit (2026-09) said **not production-ready**: base out of support window, no updater, unsigned, Safe Browsing dead. Fine for a hackathon; do not claim otherwise.
-- Prompt-injection posture: policy sits outside the model (measured: model size does not buy injection resistance). Keep it that way.
+- A 5-step compare task costs about **$0.045**: fresh input 9.3k tokens, cache reads 38k (the ~7.6k-token system prompt + tool list is already cached each call), output 390.
+- Fresh input per call is ~1.8k tokens: observation (100–600 tokens), screenshot (~700 tokens, estimated from a 692x792 JPEG), history.
+- So dropping screenshots alone saves ~20%. The big levers are **fewer model calls per task** and **cheaper models for easy steps**.
 
-## 9. Secrets policy (standing)
+### 8.2 Seven components
 
-- **Never** ask the user to paste an API key into chat, and never type one into a field. The user enters keys only in their own terminal (setup script) or dashboards.
+1. **Skills, not thousands of tools.** ~25 primitives always on (cached). App knowledge lives in **skills**: signed data files, a typed verb with args, preconditions, steps addressed by role+name, a postcondition, and a risk class the kernel enforces (a skill cannot raise its own risk). The **browser** loads the skill pack for the current site from the URL (10–20 verbs), so the model never sees thousands. Sources: hand-written for ~50 India-first apps (IRCTC, Flipkart, Swiggy, Zomato, UPI apps, WhatsApp Web, Gmail, Notion, YouTube, Amazon…); distilled from successful traces; replayed nightly, broken ones flagged.
+2. **Page Card (text-first perception).** A compact text rendering, 1–2k tokens: regions, interactive elements with stable ids, role/name/state, repeated lists collapsed ("12 products: name, price, rating + first 5"), a small layout sketch. Vision only on demand, as a cropped region, when the card is unsure (canvas, charts, CAPTCHA, icon-only buttons). Text redacts more cleanly than pixels.
+3. **A new exchange protocol with Claude.**
+   - **Append-only conversation** so the prompt cache covers the whole history, not just the prefix (today parts of the history are rewritten, which breaks caching).
+   - **Deltas, not snapshots** after the first card ("cart 0→1, toast appeared, URL changed").
+   - **Plans with expectations:** Claude sends a short program, each step with an expected outcome; the agent runs it locally and reports once, or only when an expectation fails (with the closest alternatives).
+   - **Cheap queries:** Claude asks the agent ("list prices", "does Checkout exist?") and gets a few tokens back.
+   - **Streaming execution** (start the first action while Claude is still writing) and **prefetch** (build the next card while Claude thinks).
+4. **Reflexes** handled locally without Claude: cookie banners/pop-ups, SPA settling, scroll into view, "load more", retry a missed click with another method. (The existing link-click and loading rechecks become a system.)
+5. **Self-verification and confidence.** Every action is checked by its effect; the agent reports done / failed-with-reason, never a bare "ok". A confidence score decides: act, ask Claude, escalate to a bigger model, or hand to the user (money and sign-in always the user).
+6. **Memory that compounds:** what worked per site becomes skills; user preferences carry over.
+7. **Model routing:** Haiku for skill-covered steps, Sonnet for planning, Opus only to repair a broken skill. Optional small on-device model for page-type classification and routing.
+
+### 8.3 Targets (measured, published as an ablation)
+
+- ≥90% success, ≤$0.02 and ≤8 s median per task; 1–2 Claude calls where today it takes ~5.
+- Same model, three arms: screenshots (today) vs text-only vs text + skills + plans. Extend the 12-task harness toward ~200 tasks on ~40 real sites, including injection and approval checks.
+
+### 8.4 Order of work (local only while the freeze holds)
+
+1. **Baseline + Page Card v1 + append-only history + deltas.** Measure the cost breakdown per step; run the text-only vs screenshot ablation. (~2–3 days.) ← recommended first step, awaiting the user's go-ahead.
+2. **Reflexes and self-checking.**
+3. **Skill format, URL loader, first 10 skills,** kernel risk mapping.
+4. **Plans with expectations + cheap queries + streaming execution.**
+5. **Confidence-based escalation, skill distiller + nightly replay, model routing.**
+
+Open decisions for the user: which 10 apps first; whether an on-device model is worth its install size; whether skills ship inside the build or as a signed downloadable pack (the latter needs an update channel, which the browser does not have yet).
+
+## 8b. Agent v2 Phase 0 DONE (2026-10-06): see docs/agent-v2-baseline.md
+
+Benchmark v2 is in `D:\zeph_perfench2\` (43 tasks in 4 suites, per-call telemetry, report with intervals). Baseline on Sonnet 5.5: A0 (screenshots on) and A1 (off) both 32/37, safety 8/8, general 10/10, $0.012 vs $0.009 per task, ~6 s median. The failures are our bugs (policy treats "Subscribe" as a payment; ambiguity guard false positive; iframe typing; date inputs), not model quality. Plan docs: `docs/agent-v2-plan.md` (phases, general intelligence), `docs/site-tool-packs.md` (site packs + WebMCP), `docs/agent-v2-baseline.md` (numbers and findings). Reliability fixes now come first.
+
+**Bug fixes after Phase 0 (same day):** policy F1/F2, iframe bounds, spinbutton typing, segmented-field typing check; A0 now 34/37, S3 8/8. Left: sort, wizard/g_clarify variance, and replies with text and no tool call (Phase 1). Unpushed, local only. See the end of docs/agent-v2-baseline.md.
+
+**Wasted steps now 0 of 69 (37/37, S3 8/8):** reload resets the repeat guard, text-form call beside native runs first, download + click-effect reporting, page.observe not offered, clickable table headers offered. Single runs; repeats still pending.
+
+## 9. Next steps, in order
+
+1. Wait for the user's go-ahead on Agent v2 step 1 (8.4). Work locally; do not push or package.
+2. When the freeze lifts: rebuild the installer with the taskbar fix, push the overlay (ask first), consider pushing the real demo video, run `kill_demo.ps1` and revoke keys if the proxy is no longer needed.
+
+## 10. Secrets policy (standing)
+
+- **Never** ask the user to paste an API key into chat, and never type one into a field.
 - Provider keys exist only as sensitive env vars on the Vercel project. `D:\zephyrus-keys\demo_keys.json` holds only the proxy URL and a demo token. `D:\zephyrus-keys\entity_signing_key.pem` is the privacy-dataset signing key (not in the repo).
-- Do not commit the generated `bundled_keys_data.h` (it lives in `out/`) or any key file.
+- Do not commit the generated `bundled_keys_data.h` (in `out/`) or any key file. Run `D:\zeph_perf\secret_scan.py` and `crlf_scan.py` before any push (procedure: memory note `zephyrus-github-overlay`).
 
-## 10. Standing working rules from the user
+## 11. Standing working rules from the user
 
-- **Security/bug pass after every code change** (bug, error, security, attack surface) — see the ritual note.
+- **Freeze until hackathon results:** no pushes, no installers, ask before any publish.
+- **Security/bug pass after every code change.**
 - **Same bug twice ⇒ widen:** find the class, prove the test fails first.
 - **Do not restructure what wasn't asked;** one structural change per build.
 - Keep `zephyrus_dev_switches = true` in `out/Release`.
 - **Ask before pushing** to any remote.
-- Explain decisions simply: plain words, real numbers, a recommendation, one clear question.
-- No AI-writing tells in chat; concise output style is active in this environment.
-- Don't stop early over low context; judge by the shape of the remaining work.
+- Explain decisions simply: plain words, real numbers, a recommendation, one clear question. Concise output, no AI-writing tells.
+- Verify UI changes with REAL OS input (click/drag/keys), not only the agent's input path.
 
-## 11. Key files
+## 12. Key files
 
-- Agent (browser side): `chrome/browser/zephyrus/agent/` — `model_settings.*`, `bundled_keys.*`, `model_transport.*`, `tool_executor.*`, `agent_memory.*`, `voice_input.*`, `pointer_path.*`, `mascot_rig.*`, `schemas/tools.v1.json`
-- Agent (UI): `chrome/browser/ui/views/frame/` — `zephyrus_agent_panel.*`, `zephyrus_agent_task_controller.*`, `zephyrus_agent_tool_surface.*`, `zephyrus_agent_mascot_overlay.*`, `zephyrus_agent_settings.cc`, `browser_view.cc`
-- Kernel: `chrome/services/zephyrus_agent/` — `task_loop.cc`, `public/mojom/agent_kernel.mojom`, `kernel/src/{lib,policy,providers,tests}.rs`
-- Toolbar/containers: `chrome/browser/ui/views/toolbar/toolbar_view.cc` (`ZephyrusGlassPill`)
-- Demo proxy: `chrome/browser/zephyrus/demo_proxy/`
-- Prefs: `chrome/browser/prefs/browser_prefs.cc`; settings allowlist `chrome/browser/extensions/api/settings_private/prefs_util.cc`; Appearance page `chrome/browser/resources/settings/appearance_page/`
+- Agent (browser side): `chrome/browser/zephyrus/agent/` — `tool_executor.*`, `observation.*`, `sanitizer.*`, `model_settings.*`, `bundled_keys.*`, `model_transport.*`, `agent_memory.*`, `voice_input.*`, `audio_devices.*`, `hands_free.*`, `voice_dsp.*`, `voice_lock.*`, `phrase_recorder.*`, `voice_library.*`, `mascot_rig.*`, `mascot_commands.*`, `pointer_path.*`, `schemas/tools.v1.json`
+- Agent (UI): `chrome/browser/ui/views/frame/` — `zephyrus_agent_panel.*`, `zephyrus_agent_task_controller.*`, `zephyrus_agent_tool_surface.*`, `zephyrus_agent_mascot_overlay.*`, `zephyrus_mascot_bubble.*`, `zephyrus_hands_free.*`, `zephyrus_voice_setup.*`, `zephyrus_agent_settings.cc`, `browser_view.cc` (dev hooks)
+- Kernel: `chrome/services/zephyrus_agent/` — `task_loop.cc`, `public/mojom/agent_kernel.mojom`, `kernel/src/{lib,policy,providers,extraction,tests}.rs`
+- Windows frame: `chrome/browser/ui/views/frame/browser_desktop_window_tree_host_win.cc`, `chrome/browser/ui/views/chrome_views_delegate_win.cc`
+- Demo proxy + hosted page: `chrome/browser/zephyrus/demo_proxy/`
+- Benchmark: `D:\zeph_perf\bench\` (`site.py`, `run_bench.py`, `traces/`)

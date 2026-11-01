@@ -463,6 +463,32 @@ impl Kernel {
             out.more_arguments_json.push(arguments_json);
         }
         out.text = reply.text;
+        // A call the model wrote as TEXT beside its native ones is still a call it
+        // chose, and it comes first (text precedes tool blocks). MEASURED
+        // (`wizard`): it wrote the type-the-name call as text and a click on Next
+        // natively; only the click ran, so Next was pressed on an empty form.
+        // Only a reply whose text IS a call -- it starts with `{` or a code
+        // fence -- counts, so a page's words quoted back inside prose cannot
+        // become an action. It is judged by policy like any other call. This is
+        // here, with the other readers of model output, so the loop and the
+        // recorded-reply corpus in tests.rs cannot read a reply differently.
+        if out.found {
+            let lead = out.text.trim_start();
+            if lead.starts_with('{') || lead.starts_with("```") {
+                let extra = extract_call_with(self.contract.as_ref(), &out.text);
+                if extra.found
+                    && (extra.tool != out.tool || extra.arguments_json != out.arguments_json)
+                {
+                    out.more_tools.insert(0, std::mem::replace(&mut out.tool, extra.tool));
+                    out.more_arguments_json.insert(
+                        0,
+                        std::mem::replace(&mut out.arguments_json, extra.arguments_json),
+                    );
+                    out.more_tools.truncate(providers::MAX_CALLS - 1);
+                    out.more_arguments_json.truncate(providers::MAX_CALLS - 1);
+                }
+            }
+        }
         out.input_tokens = reply.usage.input;
         out.output_tokens = reply.usage.output;
         out.cache_read_tokens = reply.usage.cache_read;

@@ -5,6 +5,8 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_WORKSPACE_SETUP_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_WORKSPACE_SETUP_H_
 
+#include <memory>
+
 class BrowserView;
 
 namespace views {
@@ -26,6 +28,14 @@ namespace zephyrus {
 void ShowWorkspaceSetup(BrowserView* browser_view,
                         views::View* anchor,
                         int workspace_id);
+
+// The same editor as that card (preview, name, icon, colour, light or dark,
+// options), for creating a workspace, to host inline: the onboarding's
+// Workspaces screen IS this editor. Null in a window without workspaces.
+std::unique_ptr<views::View> CreateWorkspaceEditor(BrowserView* browser_view);
+
+// Creates the workspace an editor from CreateWorkspaceEditor describes.
+void CommitWorkspaceEditor(views::View* editor);
 
 }  // namespace zephyrus
 

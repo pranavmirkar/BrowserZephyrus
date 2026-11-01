@@ -223,6 +223,9 @@ gfx::ImageSkia GetBundledEngineIcon(const TemplateURL* engine) {
     case 109:
       resource = IDR_ZEPHYRUS_ENGINE_BRAVE;
       break;
+    case 1000:  // Zep Search (ours; see template_url_prepopulate_data.cc).
+      resource = IDR_ZEPHYRUS_ENGINE_ZEP;
+      break;
     default:
       return gfx::ImageSkia();
   }

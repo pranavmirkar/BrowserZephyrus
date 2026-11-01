@@ -79,6 +79,39 @@ class ProviderModel : public ui::ComboboxModel {
   }
 };
 
+// The mascot's character: today's pixel Zep (the default) or the lens, with the
+// lens's plain or flowing colour. Index order is the order shown.
+constexpr std::array<zephyrus::agent::MascotLook, 3> kLooks = {
+    zephyrus::agent::MascotLook::kZep,
+    zephyrus::agent::MascotLook::kLensStatic,
+    zephyrus::agent::MascotLook::kLensFluid,
+};
+
+class LookModel : public ui::ComboboxModel {
+ public:
+  size_t GetItemCount() const override { return kLooks.size(); }
+  std::u16string GetItemAt(size_t index) const override {
+    switch (kLooks[index]) {
+      case zephyrus::agent::MascotLook::kZep:
+        return u"Zep (pixel character)";
+      case zephyrus::agent::MascotLook::kLensStatic:
+        return u"Lens";
+      case zephyrus::agent::MascotLook::kLensFluid:
+        return u"Lens with flowing colour";
+    }
+    return std::u16string();
+  }
+};
+
+size_t IndexOfLook(zephyrus::agent::MascotLook look) {
+  for (size_t i = 0; i < kLooks.size(); ++i) {
+    if (kLooks[i] == look) {
+      return i;
+    }
+  }
+  return 0;
+}
+
 size_t IndexOf(const std::string& kind) {
   for (size_t i = 0; i < kProviders.size(); ++i) {
     if (kind == kProviders[i].kind) {
@@ -225,6 +258,12 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
     memory_ = card->AddChildView(std::make_unique<m3::SwitchRow>(
         u"Remember what I tell it, across chats", std::u16string(),
         prefs_->GetBoolean(zephyrus::agent::kMemoryPref)));
+    body->AddChildView(std::make_unique<m3::SectionLabel>(u"Mascot look"));
+    look_ = body->AddChildView(std::make_unique<views::Combobox>(
+        std::make_unique<LookModel>()));
+    look_->GetViewAccessibility().SetName(u"Mascot look");
+    look_->SetSelectedIndex(
+        IndexOfLook(zephyrus::agent::ReadMascotLook(*prefs_)));
     // One row for both what is remembered and how to forget it, at the size of
     // the other actions, rather than a paragraph and a button of its own.
     forget_memory_ = body->AddChildView(std::make_unique<views::MdTextButton>(
@@ -257,20 +296,14 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
   // the display below the anchor, and the browser window it belongs to, which on
   // a laptop is the tighter one. Never more than 520: past that a settings
   // sheet is a page, and it scrolls.
+  // How tall the scrolling body may be. The bubble hangs off its anchor, above
+  // or below it, so what matters is the room on the bigger side of the ANCHOR,
+  // not the window's height: opened from a button low in the window (the
+  // onboarding's "Add or change my key") a 520 px body pushed the title and the
+  // top fields off the top of the screen. The rest of the bubble (title,
+  // buttons, margins) takes about 170 px.
   static int MaxBodyHeight(views::View* anchor) {
-    int room = 520;
-    if (anchor && anchor->GetWidget()) {
-      views::Widget* widget = anchor->GetWidget();
-      room = std::min(room, widget->GetWindowBoundsInScreen().height() - 240);
-      if (display::Screen* screen = display::Screen::Get()) {
-        room = std::min(
-            room, screen->GetDisplayNearestWindow(widget->GetNativeWindow())
-                          .work_area()
-                          .height() -
-                      300);
-      }
-    }
-    return std::max(room, 200);
+    return zephyrus::BubbleBodyRoom(anchor, /*other_height=*/170, /*cap=*/420);
   }
 
   void OnThemeChanged() override {
@@ -447,6 +480,9 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
                          provided_->is_on());
     }
     prefs_->SetBoolean(zephyrus::agent::kMascotPref, mascot_->is_on());
+    zephyrus::agent::WriteMascotLook(
+        *prefs_, kLooks[std::min(look_->GetSelectedIndex().value_or(0),
+                                 kLooks.size() - 1)]);
     prefs_->SetBoolean(zephyrus::agent::kMemoryPref, memory_->is_on());
 
     const std::string key = base::UTF16ToUTF8(
@@ -503,6 +539,7 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
   raw_ptr<m3::SwitchRow> allow_here_ = nullptr;
   raw_ptr<m3::SwitchRow> screenshots_ = nullptr;
   raw_ptr<m3::SwitchRow> mascot_ = nullptr;
+  raw_ptr<views::Combobox> look_ = nullptr;
   raw_ptr<m3::SwitchRow> memory_ = nullptr;
   raw_ptr<views::MdTextButton> forget_memory_ = nullptr;
   raw_ptr<views::Label> privacy_ = nullptr;

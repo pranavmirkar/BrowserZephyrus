@@ -212,6 +212,17 @@ Palette PaletteFrom(const ui::ColorProvider& provider);
 // Must not be called before `view` is in a Widget. See above.
 Palette PaletteFor(const views::View& view);
 
+// How tall a bubble's scrolling body may be when it hangs off `anchor`.
+//
+// A bubble opens above or below its anchor, so the room that matters is on the
+// bigger side of the ANCHOR, inside the window and the screen's work area, less
+// `other_height` for the bubble's own header, buttons and margins. Capped at
+// `cap`, never under `floor`. MEASURED twice, from buttons low in the onboarding:
+// the Agent model dialog and then the workspace card each ran off the top of
+// the screen because their height came from the window, not the anchor.
+int BubbleBodyRoom(views::View* anchor, int other_height, int cap,
+                   int floor = 160);
+
 inline SkColor Ground() { return Current().ground; }
 inline SkColor Surface() { return Current().surface; }
 inline SkColor Rule() { return Current().rule; }

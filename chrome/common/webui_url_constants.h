@@ -256,6 +256,8 @@ inline constexpr char kChromeUIZephyrusPrivacyInternalsHost[] =
 // host from the diagnostics page above BECAUSE this one names sites and
 // companies and that one must never do so (spec 13.4).
 inline constexpr char kChromeUIZephyrusPrivacyHost[] = "privacy";
+inline constexpr char kChromeUIZepSearchHost[] = "zepsearch";
+inline constexpr char kChromeUIZepSearchURL[] = "chrome://zepsearch/";
 inline constexpr char kChromeUIOmniboxPopupHost[] = "omnibox-popup.top-chrome";
 inline constexpr char kChromeUIOmniboxEverywhereHost[] =
     "omnibox-everywhere.top-chrome";

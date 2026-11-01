@@ -1752,6 +1752,11 @@ void Browser::SetContentsBounds(WebContents* source, const gfx::Rect& bounds) {
 }
 
 void Browser::UpdateTargetURL(WebContents* source, const GURL& url) {
+  // Zephyrus Glance needs to know which link the pointer is over: that is what
+  // an Alt+click opens.
+  if (BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(this)) {
+    browser_view->OnZephyrusTargetURL(source, url);
+  }
   std::vector<StatusBubble*> status_bubbles = GetStatusBubbles();
   for (StatusBubble* status_bubble : status_bubbles) {
     StatusBubbleViews* status_bubble_views =

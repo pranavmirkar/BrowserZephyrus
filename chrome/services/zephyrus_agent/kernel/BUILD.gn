@@ -39,6 +39,7 @@ rust_static_library("kernel") {
 
     # Read by tests.rs with include_str!, for the same reason.
     "testdata/extraction_corpus.json",
+    "testdata/recorded_replies.json",
   ]
 
   deps = [ "//third_party/rust/serde_json/v1:lib" ]

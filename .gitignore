@@ -15,3 +15,6 @@ bundled_keys*.json
 .env.*
 .vercel/
 node_modules/
+
+# Third-party data that is fetched at build time and never committed
+chrome/browser/zephyrus/adblock/lists/zephyrus_filters.txt

@@ -137,6 +137,7 @@ class BrowserToolSurface : public ToolSurface {
   // loosening the rule that caught it.
   class LoadWaiter;
   class FetchWatcher;
+  class DownloadWatcher;
 
   void TakeSnapshot(ObserveCallback callback);
 
@@ -255,6 +256,11 @@ class BrowserToolSurface : public ToolSurface {
   // Takes a picture of the page, downscaled and JPEG-encoded, or nothing at
   // all when vision is switched off. Asynchronous: it goes to the compositor.
   void CaptureScreenshot(Observation observation, ObserveCallback callback);
+  // The picture is taken once the renderer's latest frame has been presented, so
+  // it shows the page the Observation describes and not the one before it.
+  struct PendingCapture;
+  void RunCapture(std::shared_ptr<PendingCapture> pending);
+  void CopyScreenshot(Observation observation, ObserveCallback callback);
   void OnScreenshot(Observation observation,
                     ObserveCallback callback,
                     const content::CopyFromSurfaceResult& result);
@@ -295,6 +301,10 @@ class BrowserToolSurface : public ToolSurface {
   bool vision_checked_ = false;
 
   std::unique_ptr<FetchWatcher> fetch_watcher_;
+  // Names of files that began downloading since the last look. See
+  // Observation::downloads_started. Written by DownloadWatcher.
+  std::unique_ptr<DownloadWatcher> download_watcher_;
+  std::vector<std::string> pending_downloads_;
   // The last Observation handed out, kept only so the next one can say what
   // changed. Structured rather than re-parsed from JSON, because this is the
   // one place that has the real thing.

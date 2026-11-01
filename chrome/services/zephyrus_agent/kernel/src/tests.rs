@@ -1198,8 +1198,55 @@ fn a_click_outside_the_tie_is_not_ambiguous() {
 
 #[test]
 fn a_click_inside_the_tie_still_asks() {
-    // The narrowing must not open the door it was guarding.
+    // The narrowing must not open the door it was guarding. "Open the invoice from
+    // March 2026" ends ON the invoice it opens, so which link is the point; and a
+    // task that pays one is a commit.
     assert_asks(&invoices_page("page.click", r#"{"element_id":"aug"}"#));
+    let mut request = invoices_page("page.click", r#"{"element_id":"aug"}"#);
+    request.task = "Find the invoice from March 2026 and pay it".to_string();
+    assert_asks(&request);
+}
+
+#[test]
+fn opening_a_link_to_read_is_not_a_choice() {
+    // S5 `inbox` and `lookup`, measured on Haiku 5.5: the answer was one click
+    // away on the next page and the agent stopped to ask "which one?".
+    for (task, first, second) in [
+        (
+            "Open every message from Priya Menon and tell me the three dates she mentions.",
+            "Priya Menon: Venue visit",
+            "Priya Menon: Caterer tasting",
+        ),
+        (
+            "In this people directory, look up Sunil from the Finance department and tell me his desk number.",
+            "Sunil Rao",
+            "Sunil Deshmukh",
+        ),
+    ] {
+        let request = ffi::PolicyRequest {
+            tool: "page.click".to_string(),
+            arguments_json: r#"{"element_id":"a"}"#.to_string(),
+            task: task.to_string(),
+            url: "https://intranet.example/people".to_string(),
+            elements: vec![element("a", "link", first), element("b", "link", second)],
+        };
+        assert_allowed(&request);
+    }
+}
+
+#[test]
+fn a_link_that_is_a_recipient_still_asks() {
+    // The same two Alexes as links: the task SENDS something to one of them.
+    for task in ["Send the report to Alex", "Open the inbox and then forward it to Alex", "Email Alex the report"] {
+        let request = ffi::PolicyRequest {
+            tool: "page.click".to_string(),
+            arguments_json: r#"{"element_id":"a"}"#.to_string(),
+            task: task.to_string(),
+            url: "https://mail.example/contacts".to_string(),
+            elements: vec![element("a", "link", "Alex Chen"), element("b", "link", "Alex Morgan")],
+        };
+        assert_asks(&request);
+    }
 }
 
 #[test]
@@ -1210,6 +1257,90 @@ fn typing_a_word_none_of_the_tie_has_is_not_ambiguous() {
         "page.type",
         r#"{"element_id":"find","text":"March 2026"}"#,
     ));
+}
+
+// Two false positives found by the long-task suite on Haiku 5.5 (S5), both of which
+// stopped a task to ask the user about something that was not a choice.
+
+#[test]
+fn applying_filters_narrows_a_list_and_does_not_ask() {
+    // S5 `finder`: "Using the filters on this page, find the cheapest backpack".
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"go"}"#.to_string(),
+        task: "Using the filters on this page, find the cheapest backpack under Rs 2000".to_string(),
+        url: "https://shop.example/backpacks".to_string(),
+        elements: vec![element("go", "button", "Apply filters"), element("rst", "button", "Reset")],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn applying_for_something_still_asks() {
+    // The narrowing must not open the door the verb was on the list for.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"go"}"#.to_string(),
+        task: "Read the job description".to_string(),
+        url: "https://jobs.example/role/12".to_string(),
+        elements: vec![element("go", "button", "Apply for this job")],
+    };
+    assert_asks(&request);
+}
+
+#[test]
+fn typing_into_one_part_of_a_date_is_not_choosing_between_the_parts() {
+    // S5 `enquiry`: "check-out 14 January 2027". The fields Day, Month and Year
+    // Check-out all match the task's words equally; writing "14" into the first
+    // picks none of them over the others, because it is not a name of any.
+    let request = ffi::PolicyRequest {
+        tool: "page.type".to_string(),
+        arguments_json: r#"{"element_id":"d","text":"14"}"#.to_string(),
+        task: "Send an enquiry, check-in 10 January 2027, check-out 14 January 2027".to_string(),
+        url: "https://stay.example/enquiry".to_string(),
+        elements: vec![
+            element("d", "spinbutton", "Day Check-out"),
+            element("m", "spinbutton", "Month Check-out"),
+            element("y", "spinbutton", "Year Check-out"),
+        ],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn clicking_into_one_part_of_a_date_is_not_choosing_between_the_parts() {
+    // The click that comes before the typing above. It only puts the cursor in
+    // the field, so it chooses nothing either; a model that batches "click Day
+    // Check-out, type 14012027" was stopped at the click.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"d"}"#.to_string(),
+        task: "Send an enquiry, check-in 10 January 2027, check-out 14 January 2027".to_string(),
+        url: "https://stay.example/enquiry".to_string(),
+        elements: vec![
+            element("d", "spinbutton", "Day Check-out"),
+            element("m", "spinbutton", "Month Check-out"),
+            element("y", "spinbutton", "Year Check-out"),
+        ],
+    };
+    assert_allowed(&request);
+}
+
+#[test]
+fn clicking_one_of_two_same_named_buttons_still_asks() {
+    // The limit of the rule above: it is about FIELDS. Two buttons the task
+    // names equally are still a choice the user has to make.
+    let request = ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: r#"{"element_id":"a"}"#.to_string(),
+        task: "Reserve the deluxe room".to_string(),
+        url: "https://stay.example/rooms".to_string(),
+        elements: vec![
+            element("a", "button", "Reserve deluxe room garden"),
+            element("b", "button", "Reserve deluxe room street"),
+        ],
+    };
+    assert_asks(&request);
 }
 
 #[test]
@@ -1707,6 +1838,178 @@ fn a_shared_word_alone_does_not_name_two_things_separately() {
         ],
     };
     assert_asks(&request);
+}
+
+
+// --- Agent v2 baseline findings F1 and F2 (2026-10-06) -----------------------
+//
+// Found by benchmark v2, on shapes every real site is made of. Each test here
+// failed on the policy as it was.
+
+fn click_on(task: &str, url: &str, elements: Vec<ffi::ObservedElement>, id: &str) -> ffi::PolicyRequest {
+    ffi::PolicyRequest {
+        tool: "page.click".to_string(),
+        arguments_json: format!(r#"{{"element_id":"{id}"}}"#),
+        task: task.to_string(),
+        url: url.to_string(),
+        elements,
+    }
+}
+
+#[test]
+fn a_free_newsletter_subscribe_the_user_asked_for_is_not_a_payment() {
+    // F1: "Subscribe asha@example.com to the newsletter" stopped to ask, as if it
+    // cost money, because "subscribe" was on the payment list.
+    let request = click_on(
+        "Subscribe asha@example.com to the newsletter.",
+        "https://shop.example.com/newsletter",
+        vec![element("e1", "textbox", "Email"), element("e2", "button", "Subscribe")],
+        "e2",
+    );
+    assert_allowed(&request);
+}
+
+#[test]
+fn a_subscribe_with_a_price_is_still_a_payment() {
+    for label in ["Subscribe \u{20b9}199/month", "Subscribe for $4.99", "Subscribe to Premium", "Start free trial and subscribe"] {
+        let request = click_on(
+            "Subscribe me.",
+            "https://news.example.com/",
+            vec![element("e1", "button", label)],
+            "e1",
+        );
+        let decision = assert_asks(&request);
+        assert!(decision.reason.contains("costs money"), "{label}: {}", decision.reason);
+    }
+}
+
+#[test]
+fn a_subscribe_on_a_pricing_or_checkout_page_is_a_payment() {
+    for url in ["https://app.example.com/pricing", "https://app.example.com/checkout/plan", "https://app.example.com/account/billing?x=1"] {
+        let request = click_on("Subscribe me.", url, vec![element("e1", "button", "Subscribe")], "e1");
+        let decision = assert_asks(&request);
+        assert!(decision.reason.contains("costs money"), "{url}: {}", decision.reason);
+    }
+}
+
+#[test]
+fn a_price_among_the_pages_controls_makes_subscribe_a_payment() {
+    let request = click_on(
+        "Subscribe me.",
+        "https://news.example.com/",
+        vec![element("e1", "button", "Subscribe"), element("e2", "link", "Go Pro: $9 per month")],
+        "e1",
+    );
+    assert_asks(&request);
+}
+
+#[test]
+fn a_subscribe_the_task_never_asked_for_still_asks() {
+    // The outbound rule: a free subscribe is fine when the user said so, and a
+    // question when nobody did (a page nudging the agent to sign up).
+    let request = click_on(
+        "Find the opening hours.",
+        "https://shop.example.com/",
+        vec![element("e1", "button", "Subscribe")],
+        "e1",
+    );
+    let decision = assert_asks(&request);
+    assert!(!decision.reason.contains("costs money"), "{}", decision.reason);
+}
+
+#[test]
+fn a_task_that_says_how_to_choose_picks_between_look_alike_links() {
+    // F2: "open the first result" beside two skates links asked "Rocket Skates or
+    // Roller Skates Deluxe?" -- the task had said how to choose.
+    let request = click_on(
+        "Use the search box to look for skates, open the first result and tell me its colour.",
+        "https://shop.example.com/results?q=skates",
+        vec![
+            element("e1", "link", "Rocket Skates"),
+            element("e2", "link", "Roller Skates Deluxe"),
+        ],
+        "e1",
+    );
+    assert_allowed(&request);
+    for word in ["cheapest", "latest", "top"] {
+        let r = click_on(
+            &format!("Open the {word} skates listing."),
+            "https://shop.example.com/results?q=skates",
+            vec![
+                element("e1", "link", "Rocket Skates"),
+                element("e2", "link", "Roller Skates Deluxe"),
+            ],
+            "e1",
+        );
+        assert_allowed(&r);
+    }
+}
+
+#[test]
+fn look_alike_links_with_no_way_to_choose_still_ask() {
+    let request = click_on(
+        "Open the skates page.",
+        "https://shop.example.com/results?q=skates",
+        vec![
+            element("e1", "link", "Rocket Skates"),
+            element("e2", "link", "Roller Skates Deluxe"),
+        ],
+        "e1",
+    );
+    assert_asks(&request);
+}
+
+#[test]
+fn a_stray_first_cannot_switch_off_the_question_about_people() {
+    // The exception is for LINKS only. "First open the inbox, then send the report
+    // to Alex" beside two Alexes is still a question about WHICH Alex.
+    let request = click_on(
+        "First open the contact list, then send the report to Alex.",
+        "https://mail.example.com/contacts",
+        vec![element("e1", "button", "Alex Chen"), element("e2", "button", "Alex Morgan")],
+        "e1",
+    );
+    assert_asks(&request);
+}
+
+/// REAL provider response bodies recorded by benchmark v2, each with the first
+/// tool the live agent ran after it (`testdata/recorded_replies.json`, made by
+/// `make_replay_corpus.py` from the benchmark traces). Every body goes through the
+/// same two readers the loop uses: `parse_provider_reply` for native tool calls,
+/// then `extract_call` on the text when there is none. A reply the kernel reads
+/// differently from the way the live agent acted on it is a regression in the
+/// code that has misread the model before (text-form calls, mixed calls, wire
+/// names).
+#[test]
+fn recorded_provider_replies() {
+    let corpus: serde_json::Value =
+        serde_json::from_str(include_str!("../testdata/recorded_replies.json"))
+            .expect("the corpus must parse");
+    let cases = corpus["cases"].as_array().expect("the corpus has cases");
+    assert!(cases.len() >= 60, "the corpus lost cases: {}", cases.len());
+
+    let kernel = crate::load_kernel();
+    let mut failures = Vec::new();
+    for case in cases {
+        let body = case["body"].as_str().expect("every case has a body");
+        let want = case["first"].as_str().expect("every case has a first tool");
+        let reply = kernel.parse_provider_reply("anthropic", 200, body);
+        let got = if reply.found {
+            reply.tool.to_string()
+        } else {
+            let call = kernel.extract_call(&reply.text);
+            if call.found { call.tool.to_string() } else { String::new() }
+        };
+        if got != want {
+            failures.push(format!("expected {want:?}, read {got:?}: {}", &body[..body.len().min(160)]));
+        }
+    }
+    println!("{} failures
+{}", failures.len(), failures.join("
+"));
+    assert!(failures.is_empty(), "
+{}", failures.join("
+"));
 }
 
 // --- security audit, 2026-10: the kernel must read a URL the way the browser does

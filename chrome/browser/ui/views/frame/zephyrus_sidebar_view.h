@@ -15,6 +15,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "components/prefs/pref_change_registrar.h"
 #include "components/split_tabs/split_tab_id.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/cursor/cursor.h"
@@ -358,6 +359,12 @@ class ZephyrusSidebarView : public views::View,
   raw_ptr<views::View> compact_chrome_ = nullptr;
   raw_ptr<views::View> compact_address_row_ = nullptr;
   raw_ptr<views::View> compact_controls_row_ = nullptr;
+  // Settings > Appearance > "containers" (zephyrus.appearance.m3_containers):
+  // the compact control row, the tab and favourite rows and the New tab button
+  // follow it as the title bar does.
+  PrefChangeRegistrar containers_pref_;
+  bool ContainersOn() const;
+  void OnContainersChanged();
   raw_ptr<views::View> compact_hidden_ = nullptr;
   // The workspace switcher's place at the foot of the panel.
   raw_ptr<views::View> compact_workspaces_ = nullptr;

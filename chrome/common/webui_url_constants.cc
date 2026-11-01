@@ -161,6 +161,7 @@ base::span<const base::cstring_view> ChromeURLHosts() {
       kChromeUIOmniboxHost,
       kChromeUIZephyrusPrivacyInternalsHost,
       kChromeUIZephyrusPrivacyHost,
+      kChromeUIZepSearchHost,
 #if !BUILDFLAG(IS_ANDROID)
       kChromeUIOnDeviceInternalsHost,
 #endif

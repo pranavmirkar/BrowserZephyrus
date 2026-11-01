@@ -433,6 +433,7 @@
       <structure type="chrome_scaled_image" name="IDR_ZEPHYRUS_ENGINE_DUCKDUCKGO" file="common/zephyrus_engine_duckduckgo.png" />
       <structure type="chrome_scaled_image" name="IDR_ZEPHYRUS_ENGINE_GOOGLE" file="common/zephyrus_engine_google.png" />
       <structure type="chrome_scaled_image" name="IDR_ZEPHYRUS_ENGINE_YAHOO" file="common/zephyrus_engine_yahoo_in.png" />
+      <structure type="chrome_scaled_image" name="IDR_ZEPHYRUS_ENGINE_ZEP" file="common/zephyrus_engine_zep.png" />
     </structures>
   </release>
 </grit>

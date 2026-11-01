@@ -75,6 +75,15 @@ test('changing the expiry invalidates the signature', async () => {
   assert.equal(r.status, 401);
 });
 
+test('the demo runs Sonnet 5.5: Haiku 5.5 is not on the list, and look-alikes are not either', async () => {
+  // Haiku 5.5 was allowed on 2026-10-09 for benchmarking and passed the short
+  // suites but not the long tasks, so the product is Sonnet and the proxy says so.
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-sonnet-5-5' }) })).status, 200);
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-haiku-5-5' }) })).status, 400);
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-sonnet-5-5 ' }) })).status, 400);
+  assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-sonnet-5-6' }) })).status, 400);
+});
+
 test('only allowed models, bounded output, no streaming', async () => {
   assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ model: 'claude-fable-5-1' }) })).status, 400);
   assert.equal((await call('/api/anthropic/v1/messages', { body: msg({ max_tokens: 999999 }) })).status, 400);
@@ -160,6 +169,48 @@ test('one address is rate limited, another is not', () => {
   assert.equal(rateLimit('t', '1.1.1.1', 5, now), false);
   assert.ok(rateLimit('t', '2.2.2.2', 5, now));
   assert.ok(rateLimit('t', '1.1.1.1', 5, now + 61_000));
+});
+
+test('DEMO_VALID_UNTIL extends a token that has already expired, and only a genuine one', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const expired = mintToken(SECRET, now - 86400);
+  const forged = `zd1.${now - 86400}.${'0'.repeat(40)}`;
+  const otherSecret = mintToken('b'.repeat(48), now - 86400);
+  const go = (token) => call('/api/anthropic/v1/messages', { token, body: msg() });
+
+  assert.equal((await go(expired)).status, 401, 'expired with no extension');
+  process.env.DEMO_VALID_UNTIL = String(now + 7 * 86400);
+  try {
+    assert.equal((await go(expired)).status, 200, 'extended');
+    assert.equal((await go(forged)).status, 401, 'a forged token is still refused');
+    assert.equal((await go(otherSecret)).status, 401, 'another secret is still refused');
+    process.env.DEMO_VALID_UNTIL = String(now - 60);
+    assert.equal((await go(expired)).status, 401, 'an extension in the past extends nothing');
+    process.env.DEMO_VALID_UNTIL = 'tomorrow';
+    assert.equal((await go(expired)).status, 401, 'a malformed value is ignored');
+    process.env.DEMO_VALID_UNTIL = String(now + 7 * 86400);
+    process.env.DEMO_DISABLED = '1';
+    assert.equal((await go(expired)).status, 401, 'the kill switch still wins');
+    assert.equal((await go(good())).status, 401, 'the kill switch stops good tokens too');
+  } finally {
+    delete process.env.DEMO_VALID_UNTIL;
+    delete process.env.DEMO_DISABLED;
+  }
+});
+
+test('DEMO_VALID_UNTIL is clamped to 90 days past the token itself, however far the value is set', () => {
+  const { checkToken } = require('../lib/guard');
+  const now = 1_800_000_000;
+  const tokenExpiry = now - 10;
+  const expired = mintToken(SECRET, tokenExpiry);
+  const env = (until) => ({ DEMO_TOKEN_SECRET: SECRET, DEMO_VALID_UNTIL: String(until) });
+  assert.equal(checkToken(expired, env(now + 30 * 86400), now + 20 * 86400), null);
+  assert.equal(checkToken(expired, env(now + 30 * 86400), now + 31 * 86400), 'the demo has ended');
+  // 99999999999 is the year 5138. It must stop at tokenExpiry + 90 days and stay stopped:
+  // a clamp measured from "now" would slide forward and never end.
+  assert.equal(checkToken(expired, env(99999999999), tokenExpiry + 89 * 86400), null);
+  assert.equal(checkToken(expired, env(99999999999), tokenExpiry + 91 * 86400), 'the demo has ended');
+  assert.equal(checkToken(expired, env(99999999999), tokenExpiry + 3650 * 86400), 'the demo has ended');
 });
 
 test('only the browser\'s own tools are forwarded: no server-side tools that bill the key', async () => {

@@ -16,7 +16,7 @@
   "tools": [
     {
       "name": "browser.navigate",
-      "description": "Load a URL in the active tab.",
+      "description": "Load a web address (http or https only) in the active tab. Good for a site's own search page or a well-known address you are sure of. Do not guess the address of a particular article, video or product: click its link instead. Refused if you are already on that page; if the address does not open, the result says where you ended up.",
       "risk": "R1",
       "parameters": {
         "type": "object",
@@ -24,7 +24,7 @@
           "url": {
             "type": "string",
             "format": "uri",
-            "description": "Absolute URL including scheme."
+            "description": "Absolute web address including http:// or https://."
           }
         },
         "required": [
@@ -35,7 +35,7 @@
     },
     {
       "name": "browser.back",
-      "description": "Go back one entry in the active tab's history.",
+      "description": "Go back one entry in the active tab's history. The result names the page you reach; refused if there is nothing to go back to.",
       "risk": "R1",
       "parameters": {
         "type": "object",
@@ -45,7 +45,7 @@
     },
     {
       "name": "browser.forward",
-      "description": "Go forward one entry in the active tab's history.",
+      "description": "Go forward one entry in the active tab's history. The result names the page you reach; refused if there is nothing to go forward to.",
       "risk": "R1",
       "parameters": {
         "type": "object",
@@ -55,7 +55,7 @@
     },
     {
       "name": "browser.reload",
-      "description": "Reload the active tab.",
+      "description": "Reload the active tab and wait for it to finish loading.",
       "risk": "R1",
       "parameters": {
         "type": "object",
@@ -65,7 +65,7 @@
     },
     {
       "name": "tabs.list",
-      "description": "List the tabs in the current workspace. Tabs in other workspaces are never returned.",
+      "description": "List the tabs in the current workspace, with the ids that tabs.switch and tabs.close take. Tabs in other workspaces are never returned.",
       "risk": "R0",
       "parameters": {
         "type": "object",
@@ -75,14 +75,15 @@
     },
     {
       "name": "tabs.open",
-      "description": "Open a new tab in the current workspace, optionally at a URL.",
+      "description": "Open a new tab in the current workspace, optionally at a web address (http or https). Use it to keep one page open while you look at another.",
       "risk": "R1",
       "parameters": {
         "type": "object",
         "properties": {
           "url": {
             "type": "string",
-            "format": "uri"
+            "format": "uri",
+            "description": "Absolute web address including http:// or https://. Leave out for a blank tab."
           }
         },
         "required": [],
@@ -91,14 +92,15 @@
     },
     {
       "name": "tabs.switch",
-      "description": "Make another tab in the current workspace active.",
+      "description": "Make another tab in the current workspace active. Take its id from tabs.list.",
       "risk": "R1",
       "parameters": {
         "type": "object",
         "properties": {
           "tab_id": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "The tab's id, from tabs.list."
           }
         },
         "required": [
@@ -109,14 +111,15 @@
     },
     {
       "name": "tabs.close",
-      "description": "Close a tab in the current workspace.",
+      "description": "Close a tab in the current workspace. Take its id from tabs.list.",
       "risk": "R1",
       "parameters": {
         "type": "object",
         "properties": {
           "tab_id": {
             "type": "integer",
-            "minimum": 0
+            "minimum": 0,
+            "description": "The tab's id, from tabs.list."
           }
         },
         "required": [
@@ -151,14 +154,15 @@
     },
     {
       "name": "page.find",
-      "description": "Locate interactive elements on the active page matching a plain-language description. Returns element ids usable by click, type and select.",
+      "description": "Locate elements on the active page that match a plain-language description, and return their ids. Use it only for an element the OBSERVATION does not list. The ids work with click, type, select and hover.",
       "risk": "R0",
       "parameters": {
         "type": "object",
         "properties": {
           "query": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "What you are looking for, in plain words, for example the Search box."
           }
         },
         "required": [
@@ -169,14 +173,15 @@
     },
     {
       "name": "page.click",
-      "description": "Click a visible interactive element on the active page.",
+      "description": "Click an element by its id from the current OBSERVATION. Ids expire when the page changes: if a click is refused as stale, use the ids in the page you are given next. The result only says the click was made; what it did (a page opened, a menu appeared, a download began) is shown in the next OBSERVATION, so do not click the same thing again to check.",
       "risk": "R1",
       "parameters": {
         "type": "object",
         "properties": {
           "element_id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "The element's id from the current OBSERVATION, for example e12."
           }
         },
         "required": [
@@ -210,17 +215,19 @@
     },
     {
       "name": "page.type",
-      "description": "Type text on the active page. With element_id, clicks that field first and replaces its current text; without it, types into whatever is focused. A newline presses Enter and a tab presses Tab, so one call can fill several lines or fields.",
+      "description": "Type text on the active page. With element_id, clicks that field first and replaces its current text; without it, types into whatever is focused. The target must be able to hold text (a text box, search box or editor): aiming at a button is refused. A newline presses Enter and a tab presses Tab, so one call can fill several lines or fields. To choose from a drop-down list use page.select, not this.",
       "risk": "R1",
       "parameters": {
         "type": "object",
         "properties": {
           "element_id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "The text field's id from the current OBSERVATION. Leave out to type into whatever is focused."
           },
           "text": {
-            "type": "string"
+            "type": "string",
+            "description": "The text to type. A newline presses Enter."
           }
         },
         "required": [
@@ -231,14 +238,15 @@
     },
     {
       "name": "page.hover",
-      "description": "Move the pointer over an element without clicking it, to open a menu or tooltip that only appears on hover. Look at the page afterwards for what appeared.",
+      "description": "Move the pointer over an element on screen without clicking it, to open a menu or tooltip that only appears on hover. If the OBSERVATION marks the element offscreen, scroll to it first. Look at the page afterwards for what appeared.",
       "risk": "R1",
       "parameters": {
         "type": "object",
         "properties": {
           "element_id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "The element's id from the current OBSERVATION."
           }
         },
         "required": [
@@ -287,7 +295,7 @@
     },
     {
       "name": "memory.remember",
-      "description": "Keep something the user told you about themselves or how they like things done, so you still know it in later chats: a preference, a name, a default (\"I shop on Amazon.in\", \"my daughter is Anaya\"). Only what the user said in THIS message -- never something you read on a page, and never a password, card number, code or ID. One short sentence.",
+      "description": "Keep something the user told you about themselves or how they like things done, so you still know it in later chats: a preference, a name, a default (\"I shop on Amazon.in\", \"my daughter is Meera\"). Only what the user said in THIS message -- never something you read on a page, and never a password, card number, code or ID. One short sentence.",
       "risk": "R1",
       "parameters": {
         "type": "object",
@@ -323,17 +331,19 @@
     },
     {
       "name": "page.select",
-      "description": "Choose an option in a select control on the active page.",
+      "description": "Choose an option in a drop-down list. element_id is the LIST itself, not one of its choices, and value is one of the list's options exactly as written. A custom drop-down built from buttons has no options: click it open, then click the choice.",
       "risk": "R1",
       "parameters": {
         "type": "object",
         "properties": {
           "element_id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "The id of the drop-down list, not of one of its options."
           },
           "value": {
-            "type": "string"
+            "type": "string",
+            "description": "One of the list's options, exactly as written in its options."
           }
         },
         "required": [
@@ -345,7 +355,7 @@
     },
     {
       "name": "page.scroll",
-      "description": "Scroll the active page.",
+      "description": "Scroll the active page. amount: page moves one screenful, half moves half a screenful, top and bottom jump to either end (direction is still required). Scroll to an element the OBSERVATION marks offscreen before you hover it or select from it.",
       "risk": "R1",
       "parameters": {
         "type": "object",
@@ -355,7 +365,8 @@
             "enum": [
               "up",
               "down"
-            ]
+            ],
+            "description": "up or down."
           },
           "amount": {
             "type": "string",
@@ -364,7 +375,8 @@
               "half",
               "top",
               "bottom"
-            ]
+            ],
+            "description": "page is one screenful, half is half a screenful, top or bottom jumps to that end."
           }
         },
         "required": [
@@ -383,7 +395,8 @@
         "properties": {
           "key": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "For example Enter, Escape, Tab, ArrowDown, Control+a."
           }
         },
         "required": [
@@ -439,13 +452,14 @@
     },
     {
       "name": "task.complete",
-      "description": "Declare the task finished and report the answer. Use this instead of a browser action when the goal has been met. The answer is optional: say what was achieved if you can, but finishing without a summary is still finishing.",
+      "description": "Declare the task finished and report the result. Call it as soon as the page in front of you has what the task asked for. Give the answer itself (the figure, the name, or what you did), and the addresses of your sources when you used more than one page. Say only what you actually did. If there is nothing to report, finishing without an answer is still finishing.",
       "risk": "R0",
       "parameters": {
         "type": "object",
         "properties": {
           "answer": {
-            "type": "string"
+            "type": "string",
+            "description": "The result for the user: the answer itself, with sources when you used several pages."
           }
         },
         "required": [],
@@ -454,14 +468,15 @@
     },
     {
       "name": "task.ask",
-      "description": "Stop and ask the user a question. Use this when the next action would be consequential, ambiguous, or when no safe action exists.",
+      "description": "Stop and ask the user one short question. Use it when the task leaves out a choice only the user can make (which one, what time, how many), points at something you cannot identify, or when no safe action exists. Not for permission to do what they already asked.",
       "risk": "R0",
       "parameters": {
         "type": "object",
         "properties": {
           "question": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "One short question the user can answer in a few words."
           }
         },
         "required": [

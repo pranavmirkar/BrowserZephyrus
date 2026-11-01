@@ -93,6 +93,13 @@ class MascotRig {
   // While held: how hard the body is being swung sideways, in [-1, 1]. The
   // overlay derives it from how fast the cursor is moving.
   void SetSway(float sway) { sway_ = sway; }
+  // How big one device pixel is, in the art's own units (0 = do not snap). While
+  // the character only rests (idle, asleep) its breath is less than a pixel, so
+  // each row of it crosses a pixel edge at a different moment and the picture
+  // changes almost every frame, which is a repaint and a composite every frame
+  // for motion nobody can see. Snapped to whole pixels the breath is one step up
+  // and one step down per breath, and the frames in between are the same.
+  void SetPixelSnap(float art_per_pixel) { pixel_snap_ = art_per_pixel; }
 
   void Update(base::TimeDelta dt);
 
@@ -178,6 +185,7 @@ class MascotRig {
   double gait_ = 0;
   int scroll_direction_ = 1;
   float sway_ = 0;
+  float pixel_snap_ = 0;
 
   // Small things it does when left alone: a stretch, a hop, a look round.
   // Only while idle, on a slow schedule, so waiting reads as being alive and
@@ -195,6 +203,16 @@ class MascotRig {
 
   uint32_t rng_ = 0x9E3779B9u;
 };
+
+// Rounds a drawing to the device pixels it will land on: `ox`, `oy` is where the
+// art's origin is in device pixels and `scale` is device pixels per art unit.
+// The same arithmetic as the overlay's painter, so two drawings that come out
+// equal here are the same picture on screen. The rig moves by fractions of a
+// pixel while it breathes, and comparing the raw numbers calls every tick new.
+void QuantizeToDevicePixels(std::vector<zephyrus_setup::Rect>& frame,
+                            float ox,
+                            float oy,
+                            float scale);
 
 }  // namespace zephyrus::agent
 
