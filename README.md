@@ -1,7 +1,7 @@
 <div align="center">
 
 # Zephyrus
-
+**Website and download: [thelazarus.in/zephyrus](https://thelazarus.in/zephyrus)**
 **A Chromium browser with an agent that does web tasks for you, on the real page in front of you.**
 
 Say "Hey Zep" and a task. Zep opens the pages, fills the forms and clicks the buttons. It asks you before spending money and when you need to sign in, and at no other time.
