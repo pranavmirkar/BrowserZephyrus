@@ -119,6 +119,34 @@ std::string FindKeyword(const std::string& pattern,
   return best;
 }
 
+// Whether `line` is a cosmetic, procedural or scriptlet filter rather than a
+// network rule. Those join their domain list to their body with `#`, an
+// optional `@` (an exception), an optional run of `?`, `$` or `%`, and `#`:
+//
+//   ##   #@#   #?#   #@?#   #$#   #@$#   #$?#   #@$?#   #%#   #@%#
+//
+// This used to test four of the ten spellings. The other six were admitted as
+// network rules with a pattern like `filecrypt.co#@?#form > .protection`, which
+// no request can match: dead weight in the index, and the real filter they
+// carried was never applied by anything.
+bool HasCosmeticSeparator(std::string_view line) {
+  for (size_t at = line.find('#'); at != std::string_view::npos;
+       at = line.find('#', at + 1)) {
+    size_t i = at + 1;
+    if (i < line.size() && line[i] == '@') {
+      ++i;
+    }
+    while (i < line.size() &&
+           (line[i] == '?' || line[i] == '$' || line[i] == '%')) {
+      ++i;
+    }
+    if (i < line.size() && line[i] == '#') {
+      return true;
+    }
+  }
+  return false;
+}
+
 // All [a-z0-9] runs of length >= 3 in `url_lower`, as views into it: the
 // bucket maps take a string_view key directly, so a request no longer copies
 // every token it looks up.
@@ -243,11 +271,9 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
     if (!badfilters_.empty() && badfilters_.contains(line)) {
       continue;
     }
-    // Cosmetic filters (## #@# #?# #$#) are handled by a later phase.
-    if (line.find("##") != std::string::npos ||
-        line.find("#@#") != std::string::npos ||
-        line.find("#?#") != std::string::npos ||
-        line.find("#$#") != std::string::npos) {
+    // Cosmetic, procedural and scriptlet filters are handled by their own
+    // engines; none of them is a network rule.
+    if (HasCosmeticSeparator(line)) {
       continue;
     }
     // Regex rules (/.../) are not supported yet.

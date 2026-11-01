@@ -26,6 +26,32 @@ bool Blocks(const std::string& rules,
   return engine.ShouldBlock(GURL(url), GURL(kPage), type);
 }
 
+// --- Lines that are not network rules ------------------------------------
+
+TEST(AdblockFilterEngineTest, EveryCosmeticSpellingIsKeptOutOfTheNetworkIndex) {
+  // All ten separators. Six of them used to be admitted as network rules.
+  for (const char* line : {"site.example##.ad", "site.example#@#.ad",
+                           "site.example#?#div:has-text(Ad)",
+                           "site.example#@?#div:has-text(Ad)",
+                           "site.example#$#body { overflow: auto }",
+                           "site.example#@$#body { overflow: auto }",
+                           "site.example#$?#div:has(a) { display: none }",
+                           "site.example#@$?#div:has(a) { display: none }",
+                           "site.example#%#//scriptlet('abort-on-property-read', 'x')",
+                           "site.example#@%#//scriptlet('abort-on-property-read', 'x')"}) {
+    AdblockFilterEngine engine;
+    EXPECT_EQ(engine.AddRules(line), 0u) << line;
+    EXPECT_EQ(engine.block_rule_count() + engine.exception_rule_count(), 0u)
+        << line;
+  }
+}
+
+TEST(AdblockFilterEngineTest, AHashInAnOrdinaryNetworkRuleIsStillANetworkRule) {
+  // A `#` that does not form a separator belongs to the pattern.
+  AdblockFilterEngine engine;
+  EXPECT_EQ(engine.AddRules("||tracker.example/#pixel\n||x.example/a#b"), 2u);
+}
+
 // --- Keyword choice -------------------------------------------------------
 //
 // A rule is filed under one keyword and looked at only for a URL containing
