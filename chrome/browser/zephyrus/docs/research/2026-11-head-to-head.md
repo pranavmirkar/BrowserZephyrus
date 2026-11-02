@@ -447,3 +447,54 @@ Reading it honestly:
 - What this does not show: Brave's panic is a bounded failure (Rust bounds-checks slices), not
   memory corruption, so this is a robustness difference, not a code-execution one. It also covers
   one file format each; I did not fuzz Brave's list parser.
+
+## Addendum: Safe Browsing, and where open data does not catch up
+
+Audit item Z-05: this build has no Google API key, so Chromium's Safe Browsing does nothing.
+Brave (desktop) uses Google's lists, kept locally as sorted 4-byte SHA-256 prefixes, and asks
+Google (through a Brave-operated proxy, which hides the IP address but not the prefix) for
+the full hash whenever a prefix matches. This addendum measures what a replacement built from
+open feeds would hold, against what Brave holds, without loading a single bad page. The method:
+read the prefix files in Brave's profile (`User Data/Safe Browsing/*.store.4_*`; refreshed the
+moment I launched it, 4,384,053 distinct prefixes, 4.22 million of them in the phishing list),
+hash each test URL's Safe Browsing expressions (host suffixes times path prefixes, at most 30)
+and look them up. A URL that is not listed still hits by chance: measured on 7,512 real benign
+URLs, **2.90%** of them match a prefix (the open index: 0.01%), and results below are corrected
+for that. Scripts: `research/sb_coverage.py`, `sb_leave_one_out.py`, `sb_heuristics.py`.
+
+Test sets are held out from the index being tested: PhishTank's verified, still-online phishing,
+and OpenPhish's community feed (a few hundred URLs from the last hours). The open index is
+Phishing.Database (789,057 URLs) plus its domain list and the Blocklist Project phishing list
+(582,396 domains between them), 1,340,066 distinct entries.
+
+| Fresh phishing | URLs | Brave (Google lists) | open-feed index | either |
+|---|---|---|---|---|
+| PhishTank, submitted < 30 days ago | 2,339 | **53.8%** | about 1% | about 54.5% |
+| PhishTank, < 7 days | 729 | **50.6%** | 1.1% to 2.6% | 51.4% |
+| OpenPhish, last hours | 300 | **59.0%** | 6.7% to 13.3% | 63.7% |
+
+(The other 95% of PhishTank's "online" file is more than 30 days old and mostly dead links; there
+the open feeds hold 26% and Google 11.6%, which says little about protection today.)
+
+**Result: open data alone does not match Google's coverage. Brave holds 4 to 50 times more of
+fresh phishing than an index built from the free feeds I could use.** The feeds mostly report
+different URLs, so adding more of them helps little: all of them together hold 13% of OpenPhish's
+fresh URLs and 3% of PhishTank's. Brave-or-ours is only 1 to 5 points above Brave alone.
+
+A purely local check of the hostname (it borrows a well-known brand's name but is not that
+brand's site) was tried as a way to catch what the lists lag on. It adds 15 points over Google
+on the 30-day PhishTank sample, but 560 of its 650 hits are one campaign (look-alikes of
+a Polish marketplace), and it flags 418 of 900,000 mid-tail domains (0.046%) and 4 of 888 hosts
+of real browsing. That is too many false alarms to put behind a blocking warning; it is a lead,
+not a feature.
+
+**Where a local index does win, by construction:** it sends nothing. Brave sent a hash prefix to
+Google (through its proxy) for about 3 in every 100 URLs it checked, and waits for the answer
+before showing the page; the local index answers in about 3 microseconds (the prototype's
+figure, outside the browser) and never leaves the machine. That is a real privacy and latency lead and a coverage loss of the size above. Neither
+a tie nor a win overall.
+
+**Using Google's data is possible but not free.** The Safe Browsing API v4 is licensed for
+non-commercial use only (commercial use goes through the paid Web Risk API), requires clear
+attribution to Google and only trusts a listing if the client updated within the last 30
+minutes. Brave presumably has its own agreement with Google; I did not verify that.
