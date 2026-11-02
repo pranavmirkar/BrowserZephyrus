@@ -33,6 +33,11 @@ namespace zephyrus_adblock {
 
 namespace {
 
+// How many redirects the blocker itself may put one request through (tracking
+// parameters removed, links skipped to their destination, in any order). A list
+// that sends A to B and B back to A stops here.
+constexpr int kMaxRedirectHops = 8;
+
 ResourceType MapDestination(network::mojom::RequestDestination destination) {
   using RD = network::mojom::RequestDestination;
   switch (destination) {
@@ -147,14 +152,16 @@ void ZephyrusAdblockProxyingURLLoaderFactory::CreateLoaderAndStart(
     service_->RunWhenNetworkRulesReady(base::BindOnce(
         &ZephyrusAdblockProxyingURLLoaderFactory::StartLoader,
         weak_factory_.GetWeakPtr(), std::move(loader_receiver), request_id,
-        options, request, std::move(client), traffic_annotation));
+        options, request, std::move(client), traffic_annotation,
+        /*redirect_hops=*/0));
     return;
   }
   StartLoader(std::move(loader_receiver), request_id, options, request,
-              std::move(client), traffic_annotation);
+              std::move(client), traffic_annotation, /*redirect_hops=*/0);
 }
 
-void ZephyrusAdblockProxyingURLLoaderFactory::RestartAfterParamStrip(
+void ZephyrusAdblockProxyingURLLoaderFactory::RestartAfterRedirect(
+    int redirect_hops,
     mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver,
     int32_t request_id,
     uint32_t options,
@@ -162,7 +169,7 @@ void ZephyrusAdblockProxyingURLLoaderFactory::RestartAfterParamStrip(
     mojo::PendingRemote<network::mojom::URLLoaderClient> client,
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
   StartLoader(std::move(loader_receiver), request_id, options, request,
-              std::move(client), traffic_annotation);
+              std::move(client), traffic_annotation, redirect_hops);
 }
 
 void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
@@ -171,12 +178,36 @@ void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
     uint32_t options,
     const network::ResourceRequest& request,
     mojo::PendingRemote<network::mojom::URLLoaderClient> client,
-    const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
+    const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
+    int redirect_hops) {
   const GURL initiator =
       request.request_initiator ? request.request_initiator->GetURL() : GURL();
-  if (service_ &&
-      service_->ShouldBlockRequest(request.url, initiator,
-                                   MapDestination(request.destination))) {
+  const ResourceType type = MapDestination(request.destination);
+  const bool blocked =
+      service_ && service_->WouldBlockRequest(request.url, initiator, type);
+
+  // A link that only bounces you through a tracker ($urlskip): hand the
+  // navigation back as a redirect to the address the link points at, so the
+  // tracker never hears of the click. Page loads only -- a subresource is not a
+  // link anyone follows -- and only GETs. The destination comes back through
+  // here, so the block lists judge IT, and the hop count stops a loop.
+  if (service_ && request.mode == network::mojom::RequestMode::kNavigate &&
+      request.method == "GET" && request.url.SchemeIsHTTPOrHTTPS() &&
+      redirect_hops < kMaxRedirectHops) {
+    if (std::optional<GURL> target =
+            service_->SkipUrl(request.url, initiator, type, blocked)) {
+      ZephyrusAdblockParamRedirect::Start(
+          std::move(loader_receiver), request_id, options, request,
+          std::move(client), traffic_annotation, *target,
+          base::BindOnce(
+              &ZephyrusAdblockProxyingURLLoaderFactory::RestartAfterRedirect,
+              weak_factory_.GetWeakPtr(), redirect_hops + 1));
+      return;
+    }
+  }
+
+  if (blocked) {
+    service_->NoteRequestBlocked();
     // Attribute the block to the originating tab for the per-page counter.
     if (content::RenderFrameHost* rfh =
             content::RenderFrameHost::FromID(frame_id_)) {
@@ -205,15 +236,17 @@ void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
       request.url.SchemeIsHTTPOrHTTPS() &&
       (request.mode == network::mojom::RequestMode::kNavigate ||
        request.redirect_mode == network::mojom::RedirectMode::kFollow)) {
-    if (std::optional<GURL> cleaned = service_->StripTrackingParams(
-            request.url, initiator, MapDestination(request.destination))) {
-      ZephyrusAdblockParamRedirect::Start(
-          std::move(loader_receiver), request_id, options, request,
-          std::move(client), traffic_annotation, *cleaned,
-          base::BindOnce(
-              &ZephyrusAdblockProxyingURLLoaderFactory::RestartAfterParamStrip,
-              weak_factory_.GetWeakPtr()));
-      return;
+    if (redirect_hops < kMaxRedirectHops) {
+      if (std::optional<GURL> cleaned =
+              service_->StripTrackingParams(request.url, initiator, type)) {
+        ZephyrusAdblockParamRedirect::Start(
+            std::move(loader_receiver), request_id, options, request,
+            std::move(client), traffic_annotation, *cleaned,
+            base::BindOnce(
+                &ZephyrusAdblockProxyingURLLoaderFactory::RestartAfterRedirect,
+                weak_factory_.GetWeakPtr(), redirect_hops + 1));
+        return;
+      }
     }
   }
 

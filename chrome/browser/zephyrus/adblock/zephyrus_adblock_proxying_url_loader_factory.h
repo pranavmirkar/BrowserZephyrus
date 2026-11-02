@@ -77,8 +77,11 @@ class ZephyrusAdblockProxyingURLLoaderFactory
 
   void OnTargetFactoryError();
 
-  // Starts the real request for a redirect that removed tracking parameters.
-  void RestartAfterParamStrip(
+  // Starts the real request for a redirect the blocker made itself (a link
+  // stripped of tracking parameters, or one skipped to its destination).
+  // `redirect_hops` counts the redirects this request has had so far.
+  void RestartAfterRedirect(
+      int redirect_hops,
       mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver,
       int32_t request_id,
       uint32_t options,
@@ -95,7 +98,8 @@ class ZephyrusAdblockProxyingURLLoaderFactory
       uint32_t options,
       const network::ResourceRequest& request,
       mojo::PendingRemote<network::mojom::URLLoaderClient> client,
-      const net::MutableNetworkTrafficAnnotationTag& traffic_annotation);
+      const net::MutableNetworkTrafficAnnotationTag& traffic_annotation,
+      int redirect_hops);
 
   // Feeds the Privacy Intelligence pipeline. No-op when the sink is null,
   // which is the case whenever the feature is off or the profile is

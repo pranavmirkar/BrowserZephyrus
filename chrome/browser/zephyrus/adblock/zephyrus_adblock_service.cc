@@ -419,7 +419,13 @@ ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
   if (read) {
     params->AddRules(contents);
   }
+  auto urlskip = std::make_unique<AdblockUrlSkipFilter>();
+  if (read) {
+    // Only uBlock Origin's own sections may redirect; see AdblockUrlSkipFilter.
+    urlskip->AddRules(contents, /*trust_unsectioned=*/false);
+  }
   ZephyrusAdblockService::BuiltEngines built;
+  built.urlskip = std::move(urlskip);
   built.params = std::move(params);
   built.network = std::move(network);
   built.cosmetic = std::move(cosmetic);
@@ -815,6 +821,13 @@ void ZephyrusAdblockService::OnFullFilterListLoaded(BuiltEngines built) {
                          weak_factory_.GetWeakPtr(), built.list_key));
     }
   }
+  if (built.urlskip) {
+    VLOG(1) << "[Zephyrus] adblock: urlskip rules: "
+            << built.urlskip->rule_count() << " ("
+            << built.urlskip->skipped_count() << " skipped, "
+            << built.urlskip->untrusted_count() << " from untrusted lists)";
+    urlskip_ = std::move(built.urlskip);
+  }
   if (built.params) {
     VLOG(1) << "[Zephyrus] adblock: tracking-parameter rules: "
             << built.params->rule_count() << " ("
@@ -1038,9 +1051,9 @@ std::string ZephyrusAdblockService::GetScriptletInjection(
   return scriptlet_engine_->BuildInjectionScriptForUrl(url);
 }
 
-bool ZephyrusAdblockService::ShouldBlockRequest(const GURL& url,
-                                                const GURL& initiator,
-                                                ResourceType type) {
+bool ZephyrusAdblockService::WouldBlockRequest(const GURL& url,
+                                               const GURL& initiator,
+                                               ResourceType type) const {
   if (!enabled_ || !(index_ || engine_) || IsAllowlisted(initiator)) {
     return false;
   }
@@ -1048,12 +1061,38 @@ bool ZephyrusAdblockService::ShouldBlockRequest(const GURL& url,
   if (regex_) {
     regex_hits = regex_->Match(url, initiator, type);
   }
-  if (index_ ? index_->ShouldBlock(url, initiator, type, &regex_hits)
-             : engine_->ShouldBlock(url, initiator, type, &regex_hits)) {
+  return index_ ? index_->ShouldBlock(url, initiator, type, &regex_hits)
+                : engine_->ShouldBlock(url, initiator, type, &regex_hits);
+}
+
+bool ZephyrusAdblockService::ShouldBlockRequest(const GURL& url,
+                                                const GURL& initiator,
+                                                ResourceType type) {
+  if (WouldBlockRequest(url, initiator, type)) {
     ++total_blocked_;
     return true;
   }
   return false;
+}
+
+std::optional<GURL> ZephyrusAdblockService::SkipUrl(const GURL& url,
+                                                    const GURL& initiator,
+                                                    ResourceType type,
+                                                    bool blocked) {
+  if (!enabled_ || !urlskip_ ||
+      !base::FeatureList::IsEnabled(kZephyrusAdblockUrlSkip)) {
+    return std::nullopt;
+  }
+  // As for tracking parameters: a page load is judged by the site being opened,
+  // anything else by the page that asked for it.
+  if (IsAllowlisted(type == kTypeDocument ? url : initiator)) {
+    return std::nullopt;
+  }
+  std::optional<GURL> target = urlskip_->Skip(url, initiator, type, blocked);
+  if (target) {
+    ++total_urls_skipped_;
+  }
+  return target;
 }
 
 bool ZephyrusAdblockService::ShouldBlockPopup(const GURL& url,

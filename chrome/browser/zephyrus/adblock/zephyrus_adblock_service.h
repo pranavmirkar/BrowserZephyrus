@@ -25,6 +25,7 @@
 #include "chrome/browser/zephyrus/adblock/adblock_scriptlet_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_shared_index.h"
 #include "chrome/browser/zephyrus/adblock/adblock_startup_gate.h"
+#include "chrome/browser/zephyrus/adblock/adblock_urlskip_filter.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_updater.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -95,6 +96,14 @@ class ZephyrusAdblockService : public KeyedService {
                           const GURL& initiator,
                           ResourceType type);
 
+  // The same verdict without counting it, for a caller that has more to decide
+  // before it knows the request really is blocked (a $urlskip rule may send a
+  // blocked request elsewhere). Count it with NoteRequestBlocked().
+  bool WouldBlockRequest(const GURL& url,
+                         const GURL& initiator,
+                         ResourceType type) const;
+  void NoteRequestBlocked() { ++total_blocked_; }
+
   // Returns true if a pop-up/pop-under to `url` opened from `opener` should be
   // blocked (matched against $popup and general block rules).
   bool ShouldBlockPopup(const GURL& url, const GURL& opener);
@@ -147,6 +156,16 @@ class ZephyrusAdblockService : public KeyedService {
                                           ResourceType type);
   int total_params_stripped() const { return total_params_stripped_; }
 
+  // Link-redirector bypass (see AdblockUrlSkipFilter): the address a navigation
+  // to `url` should go to instead, or nullopt (almost always), the feature or
+  // the blocker is off, or the site is on the allowlist. `blocked`: whether the
+  // lists would block the request.
+  std::optional<GURL> SkipUrl(const GURL& url,
+                              const GURL& initiator,
+                              ResourceType type,
+                              bool blocked);
+  int total_urls_skipped() const { return total_urls_skipped_; }
+
   int total_blocked() const { return total_blocked_; }
   size_t rule_count() const { return rule_count_; }
 
@@ -165,6 +184,7 @@ class ZephyrusAdblockService : public KeyedService {
     // The `/regex/` rules, which neither `network` nor `shared_index` holds.
     scoped_refptr<const AdblockRegexMatcher> regex;
     std::unique_ptr<AdblockParamFilter> params;
+    std::unique_ptr<AdblockUrlSkipFilter> urlskip;
     // Identifies the network rules' list text; 0 when the compiled index is
     // off or no list could be read.
     uint64_t list_key = 0;
@@ -222,6 +242,9 @@ class ZephyrusAdblockService : public KeyedService {
   // built-ins alone, so even the first page load of a session is cleaned.
   std::unique_ptr<const AdblockParamFilter> param_filter_;
   int total_params_stripped_ = 0;
+  // `$urlskip=` rules; built with the lists and replaced with them.
+  std::unique_ptr<const AdblockUrlSkipFilter> urlskip_;
+  int total_urls_skipped_ = 0;
 
   // Shared with the thread that is building the index from it.
   std::shared_ptr<AdblockFilterEngine> engine_;

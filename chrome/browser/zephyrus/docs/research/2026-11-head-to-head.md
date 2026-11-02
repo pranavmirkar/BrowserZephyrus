@@ -220,3 +220,53 @@ Cost: 393 rules compile in ~50 ms (39 of them also in ICU); 82 are tried for eve
 request (70 before). The regex step is about 3.0 us mean on real traffic (2.7 before), so
 index + regex is ~6.9 us against Brave's 6.5 us match-only (8.7-9.6 us with its Request
 object).
+
+## Addendum: `$urlskip=` (link-redirector bypass), a rule type Brave's engine does not read
+
+A link like `https://safelinks.protection.outlook.com/?url=https%3A%2F%2Fnews.example`
+asks a tracking service to log the click and send you on. The destination is in the
+link, so the detour can be skipped. uBlock Origin has 242 such rules in the lists used
+here (217 in its privacy list, 25 in its main list); the string `urlskip` does not appear
+anywhere in adblock-rust 0.13.5's source, so Brave's engine cannot apply them.
+
+How: `AdblockUrlSkipFilter` reads each rule's steps (`?name`, `&N`, `#`, `/regex/`,
+`+https`, `-base64`, `-safebase64`, `-uricomponent`, `-blocked`) and matches its request
+pattern with the same engine as `$removeparam`. A page load that matches is answered with
+a redirect to the destination before the network is touched, by the same mechanism as
+tracking-parameter removal, which now also does what a real redirect does to a request
+(cookie site, referrer, isolation info) because a skip crosses sites. The destination
+comes back through the block lists, and at most 8 redirects of this kind can chain.
+
+Safe by construction: only rules from uBlock Origin's own list sections are read (the
+test used for trusted scriptlets), because a redirect the list author controls sends you
+somewhere; the result must be an http(s) address other than the one asked for, with no
+credentials and no control characters; any step that cannot be done means no skip; a
+request the block lists block is blocked, not skipped, unless the rule says `-blocked`;
+only GET page loads are considered; the allowlist and a kill switch
+(`--disable-features=ZephyrusAdblockUrlSkip`) apply.
+
+What was checked, and how each check was shown able to fail:
+
+- All 242 `urlskip` lines of the list load (0 unusable, 0 from untrusted sections).
+- 23 unit tests (one runs the whole shipped list): every step, failure modes, trust, options before and after the value,
+  regex patterns, `-blocked`, earliest rule wins. With the credentials check and the
+  `-blocked` guard removed, exactly the two tests about them fail.
+- Independent corpus (`research/h2h_urlskip_corpus.py`): addresses built in Python from
+  the real rules by running their steps backwards, with the destination each must skip
+  to, plus the same addresses with the parameter missing and on another host. 524 URLs:
+  179 skip to exactly the expected destination (166 plain-step rules, 13 regex-step
+  rules), 345 are correctly left alone, 0 wrong. Not covered by the generator: 18
+  rules whose pattern is a regex and 32 whose regex step it cannot invert (the unit
+  tests cover both kinds).
+- Real traffic, 9,591 recorded URLs offered as page loads: none skipped (a crawl of home
+  pages has no tracker links), at 3.6 us per call, and only page loads ask.
+- Live, in the browser (`research/ab_urlskip.py`, a local server records the headers of
+  every request): a typed navigation to a real tracker URL, a base64 tracker (storz.ma)
+  and a clicked tracker link all reach the destination, the tracker host is never asked,
+  and history grows by one entry. The request the server gets has the same Sec-Fetch-*,
+  Referer and Cookie as a direct navigation, including a click to a different site
+  (`cross-site`, origin-only referrer). For a same-site destination the referrer is the
+  origin only, where a direct click sends the full URL: the redirect applies the page's
+  referrer policy as it would have to the tracker, so it is never fuller. The kill switch
+  restores the plain navigation. Tracking-parameter removal was re-run after the redirect
+  change and still passes all 8 of its checks.

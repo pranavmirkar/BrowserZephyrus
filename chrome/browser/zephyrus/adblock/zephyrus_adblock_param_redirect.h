@@ -12,15 +12,16 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
+#include "net/url_request/redirect_info.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "url/gurl.h"
 
 namespace zephyrus_adblock {
 
-// Answers a request with a redirect to the same address minus its tracking
-// parameters, without contacting the network, and then starts the real request
-// for the cleaned address.
+// Answers a request with a redirect to another address -- the same one minus its
+// tracking parameters, or the destination a tracking link points at -- without
+// contacting the network, and then starts the real request for that address.
 //
 // To everything above it this is an ordinary 307: the page's history keeps one
 // entry, the referrer and cookie rules are recomputed for the new URL, and a
@@ -83,6 +84,9 @@ class ZephyrusAdblockParamRedirect : public network::mojom::URLLoader {
   net::MutableNetworkTrafficAnnotationTag traffic_annotation_;
   RestartCallback restart_;
   GURL cleaned_url_;
+  // What a server's own redirect to `cleaned_url_` would have changed about the
+  // request (cookie site, referrer, isolation info); applied when it is followed.
+  net::RedirectInfo redirect_info_;
 };
 
 }  // namespace zephyrus_adblock

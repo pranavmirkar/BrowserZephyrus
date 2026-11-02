@@ -90,6 +90,7 @@ void ZephyrusAdblockParamRedirect::SendRedirect(const GURL& cleaned_url) {
   // The redirect comes from the browser itself, not from the site, so the
   // renderer's checks on a server's redirect do not apply.
   head->bypass_redirect_checks = true;
+  redirect_info_ = redirect_info;
   client_->OnReceiveRedirect(redirect_info, std::move(head));
 }
 
@@ -98,7 +99,15 @@ void ZephyrusAdblockParamRedirect::FollowRedirect(
     const std::optional<GURL>& new_url) {
   // The cleaned address is what was asked for; the real request for it starts
   // now. Whatever the client asked to change about the headers is applied.
-  request_.url = new_url.value_or(cleaned_url_);
+  // Everything a redirect changes about a request, as the network stack would
+  // have done it: the address, the cookie site, the referrer and, for a page
+  // load, the isolation info. For a link that skips to another site this is
+  // what keeps the destination's cookies and cache its own and the referrer
+  // sanitised; for a same-site rewrite it changes nothing.
+  request_.UpdateOnRedirect(redirect_info_);
+  if (new_url) {
+    request_.url = *new_url;
+  }
   for (const std::string& header : headers_update_params.removed_headers) {
     request_.headers.RemoveHeader(header);
   }
