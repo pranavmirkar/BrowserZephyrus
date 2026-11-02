@@ -3,6 +3,8 @@
 
 #include "chrome/browser/zephyrus/adblock/adblock_shared_index.h"
 
+#include <array>
+#include <bit>
 #include <optional>
 #include <string_view>
 #include <utility>
@@ -12,6 +14,7 @@
 #include "base/files/important_file_writer.h"
 #include "base/hash/hash.h"
 #include "base/logging.h"
+#include "base/numerics/byte_conversions.h"
 #include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
@@ -25,7 +28,7 @@ BASE_FEATURE(kZephyrusAdblockCompiledIndex,
 namespace {
 
 constexpr uint32_t kCacheMagic = 0x31435A58;  // "XZC1"
-constexpr uint32_t kCacheVersion = 1;
+constexpr uint32_t kCacheVersion = 2;  // 2: 64-bit word-wise checksum, no blob_size
 // An index for any list we would load is a few megabytes; a file past this is
 // not one of ours.
 constexpr int64_t kMaxCacheFileBytes = 128 * 1024 * 1024;
@@ -38,23 +41,64 @@ struct CacheHeader {
   uint64_t list_key;
   uint32_t block_rule_count;
   uint32_t exception_rule_count;
-  uint32_t blob_size;
-  uint32_t checksum;  // over the other header fields and the whole blob
+  uint64_t checksum;  // over the other header fields and the whole blob
 };
 static_assert(sizeof(CacheHeader) == 32);
+
+// A stable 64-bit hash of a buffer, eight bytes at a time over four independent
+// lanes (the lanes are what let it run near memory speed). Stable on purpose: the
+// value is stored in the cache file and compared by a later process, so it cannot
+// be base::FastHash(), which is free to change between builds. Not cryptographic;
+// it detects damage, it does not stop an adversary (see ChecksumOf()).
+uint64_t Hash64(base::span<const uint8_t> data) {
+  constexpr uint64_t kPrimeA = 0x9E3779B185EBCA87ull;
+  constexpr uint64_t kPrimeB = 0xC2B2AE3D27D4EB4Full;
+  constexpr uint64_t kPrimeC = 0x165667B19E3779F9ull;
+  const auto word = [](base::span<const uint8_t> bytes) {
+    return base::U64FromLittleEndian(bytes.first<8u>());
+  };
+  const uint64_t size = data.size();
+  std::array<uint64_t, 4> lane = {kPrimeA, kPrimeB, kPrimeA ^ kPrimeB, size};
+  base::span<const uint8_t> rest = data;
+  while (rest.size() >= 32) {
+    for (size_t i = 0; i < 4; ++i) {
+      lane[i] = std::rotl(lane[i] + word(rest.subspan(i * 8, 8u)) * kPrimeB, 31) *
+                kPrimeA;
+    }
+    rest = rest.subspan(32u);
+  }
+  uint64_t h = std::rotl(lane[0], 1) + std::rotl(lane[1], 7) +
+               std::rotl(lane[2], 12) + std::rotl(lane[3], 18) + size;
+  for (const uint64_t l : lane) {
+    h = (h ^ (std::rotl(l * kPrimeB, 31) * kPrimeA)) * kPrimeA + kPrimeC;
+  }
+  while (rest.size() >= 8) {
+    h ^= std::rotl(word(rest) * kPrimeB, 31) * kPrimeA;
+    h = std::rotl(h, 27) * kPrimeA + kPrimeC;
+    rest = rest.subspan(8u);
+  }
+  for (const uint8_t byte : rest) {
+    h ^= byte * kPrimeC;
+    h = std::rotl(h, 11) * kPrimeA;
+  }
+  h ^= h >> 33;
+  h *= kPrimeB;
+  h ^= h >> 29;
+  h *= kPrimeC;
+  h ^= h >> 32;
+  return h;
+}
 
 // Catches a file that is truncated, bit-rotted or half-written by something
 // other than us (ours are written atomically). It is an integrity check, not a
 // defence against someone with write access to the profile, who could as well
 // edit the filter list itself; Load() separately keeps even a hostile blob from
-// reading out of bounds.
-uint32_t ChecksumOf(const CacheHeader& header,
+// reading out of bounds (measured: research/hostile_driver.py).
+uint64_t ChecksumOf(const CacheHeader& header,
                     base::span<const uint8_t> blob) {
   CacheHeader copy = header;
-  copy.checksum = 0;
-  const uint32_t h1 = base::PersistentHash(base::byte_span_from_ref(copy));
-  const uint32_t h2 = base::PersistentHash(blob);
-  return h1 ^ (h2 * 16777619u);
+  copy.checksum = Hash64(blob);
+  return Hash64(base::byte_span_from_ref(copy));
 }
 
 // The process's current index, and the lock that serialises building it. The
@@ -197,7 +241,25 @@ void AdblockSharedIndex::ResetForTesting() {
 }
 
 // static
+std::vector<uint8_t> AdblockSharedIndex::FileImageForTesting(
+    uint64_t list_key,
+    const AdblockFilterEngine& engine) {
+  return MakeFileImage(list_key, engine);
+}
+
+// static
 scoped_refptr<const AdblockSharedIndex> AdblockSharedIndex::Build(
+    uint64_t list_key,
+    const AdblockFilterEngine& engine) {
+  std::vector<uint8_t> file = MakeFileImage(list_key, engine);
+  if (file.empty()) {
+    return nullptr;
+  }
+  return FromFile(list_key, std::move(file));
+}
+
+// static
+std::vector<uint8_t> AdblockSharedIndex::MakeFileImage(
     uint64_t list_key,
     const AdblockFilterEngine& engine) {
   AdblockZIndexBuilder builder;
@@ -207,7 +269,7 @@ scoped_refptr<const AdblockSharedIndex> AdblockSharedIndex::Build(
   });
   std::optional<std::vector<uint8_t>> blob = builder.Finish();
   if (!blob) {
-    return nullptr;
+    return {};
   }
   CacheHeader header = {};
   header.magic = kCacheMagic;
@@ -216,13 +278,12 @@ scoped_refptr<const AdblockSharedIndex> AdblockSharedIndex::Build(
   header.block_rule_count = static_cast<uint32_t>(engine.block_rule_count());
   header.exception_rule_count =
       static_cast<uint32_t>(engine.exception_rule_count());
-  header.blob_size = static_cast<uint32_t>(blob->size());
   header.checksum = ChecksumOf(header, *blob);
   std::vector<uint8_t> file(sizeof(CacheHeader) + blob->size());
   base::span(file).first(sizeof(CacheHeader))
       .copy_from(base::byte_span_from_ref(header));
   base::span(file).subspan(sizeof(CacheHeader)).copy_from(*blob);
-  return FromFile(list_key, std::move(file));
+  return file;
 }
 
 // static
@@ -237,7 +298,6 @@ scoped_refptr<const AdblockSharedIndex> AdblockSharedIndex::FromFile(
       .copy_from(base::span(file).first(sizeof(CacheHeader)));
   if (header.magic != kCacheMagic || header.version != kCacheVersion ||
       header.list_key != list_key ||
-      header.blob_size != file.size() - sizeof(CacheHeader) ||
       header.checksum !=
           ChecksumOf(header, base::span(file).subspan(sizeof(CacheHeader)))) {
     return nullptr;

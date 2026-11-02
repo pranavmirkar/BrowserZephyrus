@@ -363,7 +363,12 @@ How it was run:
   tokens. Two rounds, all eight in parallel: 5 minutes, then 10 minutes on the grown corpora.
   About 4.4 million executions in the second round, most of them the cheap helper target; the
   parser-heavy targets run at 25 to 85 inputs a second under ASAN, so those got 15 to 50
-  thousand each. That is a modest amount of fuzzing, not a lot.
+  thousand each. That is a modest amount of fuzzing, not a lot. A third round, after the
+  index fix, ran 30 minutes per target with windows of the real shipped list as extra seeds
+  (the first two used only hand-written seeds): 11.6 million executions, no findings, and
+  coverage grew on every parser target (list parser 3,619 to 4,455 edges, regex 7,807 to 9,039,
+  `removeparam` 5,091 to 5,773, `urlskip` 5,644 to 7,008). The heavy targets still run at 14 to
+  71 inputs a second under ASAN, so depth on them is limited by speed, not by time.
 
 Do the checks work? Each invariant was handed known-bad values and refuses them (4 tests), and a
 bug planted in the compiled index (ignore `$important`) was caught by the engine-against-index
@@ -374,17 +379,71 @@ nothing here.
 zeros) was accepted by `Load()`, and the first lookup stopped the browser on an out-of-range
 array index. The cause: slot lookup hashes with `key >> (32 - log2)`, which for `log2 == 0` is a
 shift by the word size, and `Load()` allowed it although the writer never makes a table smaller
-than 16 slots. The index is a file in the profile, so a damaged or tampered cache file could have
-crashed the browser on every start. `Load()` now refuses tables outside 16 slots to 2^24; this
-rejects only blobs the writer could never have produced. The test fails without the fix and
+than 16 slots. The index is a file in the profile. Random damage to it was always caught by the
+cache file's checksum before `Load()` ran, so this could only be reached by a file someone wrote
+by hand with a valid checksum (an earlier version of this note said a damaged file could crash the
+browser on every start; that was wrong, the checksum stops damage). `Load()` is the second line of
+defence for exactly that case, and it had a hole. It now refuses tables outside 16 slots to 2^24;
+this rejects only blobs the writer could never have produced. The test fails without the fix and
 passes with it. Nothing else was found by either method. The standing result is therefore one
 denial-of-service, bounded by the hardened `span` check, not memory corruption.
 
-**Against Brave.** Not better. Brave's engine is Rust, so this whole class is a safe panic or a
-rejected input by construction; ours reads a binary file in place from C++ and had to be checked.
-This closes the gap in the one place where our design is riskier than theirs; it does not put us
-ahead. I did not run their fuzzers.
+**Against Brave, on the parsers.** Not better, only closer. Brave's engine is Rust, so this whole
+class is a safe panic or a rejected input by construction; ours reads a binary file in place from
+C++ and had to be checked. Their repository has fuzz targets for filter parsing and request
+parsing (at least `parse_filter`, `parse_filter_hosts` and `parse_request`; the listing I could
+read may be partial); I did not run them. The next
+addendum measures the stored-engine file, where the two designs differ most.
 
 Found along the way: the sanitizer and plugin build refuses a raw `span` or pointer member, which
 the Release build never checks. The index's view members are now marked as deliberate exclusions
 (they are hot, read-only views into the index's own blob), so the fuzz and ASAN builds compile.
+
+## Addendum: a damaged or rewritten engine file, Brave against Zephyrus
+
+Both engines can store their compiled rules in a file and reload it at the next start. What each
+does with a file that has been damaged is a hard, countable test, so I ran the same one against
+both (`research/hostile_driver.py`; Brave's side is `research/brave_compare/src/bin_corrupt.rs`,
+Zephyrus's is `AdblockZIndexTest.HostileBlobCampaign`). Each case takes the engine's stored file
+for the shipped list (about 10.9 MB for both), mutates one copy (a bit flip, one to three aligned
+32-bit overwrites with 0, 1, 0xFFFFFFFF, 0x7FFFFFFF, 0x80000000 or sizes, half of them in the first
+1% where the directories live, or a zeroed run of 16 to 4,096 bytes), reloads it, and puts 300
+recorded requests through it. 50,000 cases per engine and mode. A mutation that rewrites a byte
+with the value already there is counted as a no-op and left out.
+
+Two modes:
+
+- **Damage**: anywhere in the file, the checksum not repaired. This is bit rot or a half-written
+  file.
+- **Rewrite**: the payload only, with the checksum repaired so it passes. This is somebody who can
+  write the profile directory. Brave's own documentation puts this outside its threat model and
+  skips verification for speed when the file's version matches, so this is not a fault in what they
+  promise; it is measured because the compiled index defends against it.
+
+| 50,000 cases each | Brave (adblock-rust 0.13.5) | Zephyrus |
+|---|---|---|
+| **Damage:** refused at load | 49,987 of 49,988 (the other changed a byte of the crate-version field, which the checksum does not cover; it loaded and behaved the same) | **49,539 of 49,539** |
+| **Damage:** loaded and used | 1 | 0 |
+| **Rewrite:** refused at load | 0 (0.00%) | 11,698 (23.61%) |
+| **Rewrite:** loaded, same decisions | 47,353 (94.73%) | 37,576 (75.85%) |
+| **Rewrite:** loaded, decisions silently changed | 121 (0.24%) | 267 (0.54%) |
+| **Rewrite:** Rust panic / crash / hang | **2,512 panics (5.03%)**, 0 crashes, 0 hangs | **0 / 0 / 0** |
+| Load of the intact file | 3.0 to 3.2 ms | **2.0 to 2.4 ms** |
+
+Reading it honestly:
+
+- **Damage is a tie.** Both reject essentially all of it. Zephyrus's cache checksum was 32-bit; it
+  is now 64-bit and read eight bytes at a time over four lanes, which is stronger and faster than
+  what it replaced (4.5 ms to 2.0 ms for the whole load), and the cache version was bumped so old
+  files rebuild once.
+- **Rewrite is where Brave is behind.** It trusts a same-version file without verifying it, and
+  5% of rewritten files made it panic. In a Chromium build a Rust panic ends the process, so each
+  of those is a browser that fails to start on a bad file. Zephyrus validates every offset before
+  trusting a file and had no panic, crash or hang in 49,541 cases. Neither engine can tell a
+  malicious rewrite that changes what is blocked from the real thing without a signature; the
+  0.2% and 0.5% "changed" rows are exactly that, and are the same on both sides in kind.
+- **Loading is also faster, with more checking**, because the checksum no longer reads the file a
+  byte at a time.
+- What this does not show: Brave's panic is a bounded failure (Rust bounds-checks slices), not
+  memory corruption, so this is a robustness difference, not a code-execution one. It also covers
+  one file format each; I did not fuzz Brave's list parser.

@@ -154,6 +154,51 @@ TEST_F(AdblockSharedIndexTest, ADamagedCacheFileIsAMissAndNeverCrashes) {
   EXPECT_EQ(accepted, 0) << "a damaged file must be rebuilt, not trusted";
 }
 
+// The checksum is the defence against damage (bit rot, a half-written file), the
+// validation in Load() the defence against a rewrite that repairs it; this is the
+// first. Every kind of single-place damage must be a miss, none trusted.
+TEST_F(AdblockSharedIndexTest, NoSinglePlaceDamageToTheFileIsTrusted) {
+  const std::string list =
+      "||ads.example^\n||tracker.example/pixel^$script\n/banner[0-9]+/\n"
+      "||cdn.example^$domain=a.example|b.example\n@@||ads.example/ok^\n";
+  const uint64_t key = AdblockSharedIndex::KeyFor(list);
+  auto engine = EngineFor(list);
+  const std::vector<uint8_t> good =
+      AdblockSharedIndex::FileImageForTesting(key, *engine);
+  ASSERT_FALSE(good.empty());
+  ASSERT_TRUE(AdblockSharedIndex::FromFileForTesting(key, good));
+
+  int accepted = 0;
+  const auto check = [&](std::vector<uint8_t> file) {
+    if (file != good && AdblockSharedIndex::FromFileForTesting(key, std::move(file))) {
+      ++accepted;
+    }
+  };
+  // Every byte of the file, changed one at a time (flipped, zeroed, set to ones).
+  for (size_t i = 0; i < good.size(); i += 1 + good.size() / 3000) {
+    for (const uint8_t change : {uint8_t{0x01}, uint8_t{0x80}, uint8_t{0xFF}}) {
+      std::vector<uint8_t> file = good;
+      file[i] ^= change;
+      check(std::move(file));
+    }
+    std::vector<uint8_t> zeroed = good;
+    zeroed[i] = 0;
+    check(std::move(zeroed));
+  }
+  // Truncated at any length, and with bytes added.
+  for (size_t cut = 1; cut <= 64 && cut < good.size(); ++cut) {
+    check(std::vector<uint8_t>(good.begin(), good.end() - cut));
+  }
+  for (size_t extra = 1; extra <= 16; ++extra) {
+    std::vector<uint8_t> longer = good;
+    longer.insert(longer.end(), extra, 0);
+    check(std::move(longer));
+  }
+  // The file for a different list is not this list's.
+  EXPECT_FALSE(AdblockSharedIndex::FromFileForTesting(key + 1, good));
+  EXPECT_EQ(accepted, 0);
+}
+
 TEST_F(AdblockSharedIndexTest, ProfilesAskingAtOnceShareOneIndex) {
   const std::string list = "||ads.example^\n||tracker.example^\n";
   const uint64_t key = AdblockSharedIndex::KeyFor(list);

@@ -72,6 +72,17 @@ class AdblockSharedIndex
 
   // For tests: forget the process's cached index.
   static void ResetForTesting();
+  // For tests: the cache file (header, checksum, blob) for `engine`, and a load
+  // from such a file, to damage one and see what the loader does with it. An
+  // empty vector when no index can be built.
+  static std::vector<uint8_t> FileImageForTesting(
+      uint64_t list_key,
+      const AdblockFilterEngine& engine);
+  static scoped_refptr<const AdblockSharedIndex> FromFileForTesting(
+      uint64_t list_key,
+      std::vector<uint8_t> file) {
+    return FromFile(list_key, std::move(file));
+  }
 
   bool ShouldBlock(const GURL& url,
                    const GURL& initiator,
@@ -101,6 +112,9 @@ class AdblockSharedIndex
   static scoped_refptr<const AdblockSharedIndex> Build(
       uint64_t list_key,
       const AdblockFilterEngine& engine);
+  // The whole cache file for `engine`; empty if no index can be built.
+  static std::vector<uint8_t> MakeFileImage(uint64_t list_key,
+                                            const AdblockFilterEngine& engine);
   // Takes a whole cache file (header + blob); null if it is not a valid index
   // for `list_key`.
   static scoped_refptr<const AdblockSharedIndex> FromFile(

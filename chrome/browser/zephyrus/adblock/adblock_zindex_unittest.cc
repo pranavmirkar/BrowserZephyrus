@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <map>
 #include <cstdio>
+#include <iostream>
 #include <memory>
 #include <random>
 #include <string>
@@ -23,6 +24,8 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/environment.h"
+#include "base/strings/cstring_view.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/path_service.h"
 #include "base/time/time.h"
@@ -30,6 +33,7 @@
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "chrome/browser/zephyrus/adblock/adblock_param_filter.h"
 #include "chrome/browser/zephyrus/adblock/adblock_regex_matcher.h"
+#include "chrome/browser/zephyrus/adblock/adblock_shared_index.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -831,6 +835,227 @@ TEST(AdblockZIndexTest, ACorruptedBlobIsRejectedOrHarmless) {
   EXPECT_GT(rejected, 0);
   std::printf("  corrupted blobs: %d rejected, %d loaded and used safely\n",
               rejected, used);
+}
+
+// --- A damaged or rewritten engine, against another engine's ------------------
+//
+// Not a unit test: a campaign, driven by research/hostile_driver.py (which
+// survives and counts the crashes), run the same way against Brave's engine
+// (research/brave_compare/src/bin_corrupt.rs). Each case mutates one copy of the
+// serialised engine for the shipped list, reloads it and puts 300 recorded
+// requests through it.
+//   damage   anywhere in the cache file, checksum NOT repaired: what bit rot or a
+//            half-written file looks like, so the checksum is what is tested.
+//   hostile  the blob only, as a file whose checksum was repaired: somebody who can
+//            write the profile. Only Load()'s own validation stands in the way.
+// ZEPHYRUS_H2H_LIST / _CORPUS as for the head-to-head test, and
+// ZEPHYRUS_HOSTILE_MODE / _FIRST / _END / _SEED. Skipped otherwise.
+
+class CampaignRng {
+ public:
+  CampaignRng(uint64_t seed, uint64_t case_number)
+      : state_(seed * 0x9E3779B97F4A7C15ull ^ case_number * 0xD6E8FEB86659FD93ull ^
+               0x12345678ull) {
+    for (int i = 0; i < 4; ++i) {
+      Next();
+    }
+  }
+  uint64_t Next() {
+    state_ ^= state_ >> 12;
+    state_ ^= state_ << 25;
+    state_ ^= state_ >> 27;
+    return state_ * 0x2545F4914F6CDD1Dull;
+  }
+  size_t Below(size_t n) { return n ? static_cast<size_t>(Next() % n) : 0; }
+
+ private:
+  uint64_t state_;
+};
+
+// The same recipe as bin_corrupt.rs, over bytes [lo, hi).
+void MutateRange(base::span<uint8_t> file,
+                 size_t lo,
+                 size_t hi,
+                 CampaignRng& rng) {
+  const size_t span = hi - lo;
+  switch (rng.Below(4)) {
+    case 0:
+      file[lo + rng.Below(span)] ^= static_cast<uint8_t>(1u << rng.Below(8));
+      break;
+    case 1:
+    case 2: {
+      const size_t window =
+          rng.Below(2) == 0 ? span
+                            : std::min(std::max<size_t>(span / 100, 64), span);
+      for (size_t n = 1 + rng.Below(3); n; --n) {
+        const size_t at = (lo + rng.Below(window)) & ~size_t{3};
+        if (at + 4 > hi || at < lo) {
+          continue;
+        }
+        uint32_t value = 0;
+        switch (rng.Below(8)) {
+          case 0:
+            value = 0;
+            break;
+          case 1:
+            value = 1;
+            break;
+          case 2:
+            value = 0xFFFFFFFFu;
+            break;
+          case 3:
+            value = 0x7FFFFFFFu;
+            break;
+          case 4:
+            value = 0x80000000u;
+            break;
+          case 5:
+            value = static_cast<uint32_t>(span);
+            break;
+          case 6:
+            value = static_cast<uint32_t>(span) - 1;
+            break;
+          default:
+            value = static_cast<uint32_t>(rng.Next());
+            break;
+        }
+        file.subspan(at, 4u).copy_from(base::byte_span_from_ref(value));
+      }
+      break;
+    }
+    default: {
+      const size_t at = lo + rng.Below(span);
+      const size_t end = std::min(at + 16 + rng.Below(4081), hi);
+      std::ranges::fill(file.subspan(at, end - at), uint8_t{0});
+      break;
+    }
+  }
+}
+
+TEST(AdblockZIndexTest, HostileBlobCampaign) {
+  std::unique_ptr<base::Environment> env = base::Environment::Create();
+  const std::optional<std::string> list_path = env->GetVar("ZEPHYRUS_H2H_LIST");
+  const std::optional<std::string> corpus_path =
+      env->GetVar("ZEPHYRUS_H2H_CORPUS");
+  const std::optional<std::string> mode = env->GetVar("ZEPHYRUS_HOSTILE_MODE");
+  if (!list_path || !corpus_path || !mode) {
+    GTEST_SKIP() << "set ZEPHYRUS_H2H_LIST, _CORPUS and ZEPHYRUS_HOSTILE_MODE";
+  }
+  const auto number = [&](base::cstring_view name) {
+    uint64_t value = 0;
+    if (const std::optional<std::string> text = env->GetVar(name)) {
+      base::StringToUint64(*text, &value);
+    }
+    return value;
+  };
+  const uint64_t first = number("ZEPHYRUS_HOSTILE_FIRST");
+  const uint64_t end = number("ZEPHYRUS_HOSTILE_END");
+  const uint64_t seed = number("ZEPHYRUS_HOSTILE_SEED");
+  const bool hostile = *mode == "hostile";
+
+  std::string list;
+  ASSERT_TRUE(
+      base::ReadFileToString(base::FilePath::FromUTF8Unsafe(*list_path), &list));
+  list = PreprocessFilterList(list);
+  std::string corpus_text;
+  ASSERT_TRUE(base::ReadFileToString(base::FilePath::FromUTF8Unsafe(*corpus_path),
+                                     &corpus_text));
+  struct Row {
+    GURL url;
+    GURL page;
+    ResourceType type;
+  };
+  std::vector<Row> rows;
+  for (const std::string_view line : base::SplitStringPiece(
+           corpus_text, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    const std::vector<std::string_view> cols = base::SplitStringPiece(
+        line, "\t", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+    if (cols.size() >= 3 && rows.size() < 300) {
+      rows.push_back({GURL(cols[0]), GURL(cols[1]), TypeFromName(cols[2])});
+    }
+  }
+  ASSERT_GT(rows.size(), 100u);
+
+  AdblockFilterEngine engine;
+  engine.AddRules(list);
+  constexpr uint64_t kKey = 1;
+  const std::vector<uint8_t> image =
+      AdblockSharedIndex::FileImageForTesting(kKey, engine);
+  ASSERT_FALSE(image.empty());
+  constexpr size_t kCacheHeaderBytes = 32;  // see adblock_shared_index.cc
+  std::vector<bool> baseline;
+  {
+    const scoped_refptr<const AdblockSharedIndex> whole =
+        AdblockSharedIndex::FromFileForTesting(kKey, image);
+    ASSERT_TRUE(whole);
+    for (const Row& r : rows) {
+      baseline.push_back(whole->ShouldBlock(r.url, r.page, r.type));
+    }
+  }
+  std::cout << "BASE size " << image.size() << " probes " << rows.size()
+            << std::endl;
+  {
+    // Load time of the intact file (checksum and full validation).
+    std::vector<std::vector<uint8_t>> copies(20, image);
+    const base::TimeTicks t0 = base::TimeTicks::Now();
+    for (std::vector<uint8_t>& file : copies) {
+      CHECK(AdblockSharedIndex::FromFileForTesting(kKey, std::move(file)));
+    }
+    std::cout << "LOAD_MS "
+              << (base::TimeTicks::Now() - t0).InMillisecondsF() / copies.size()
+              << std::endl;
+  }
+
+  for (uint64_t n = first; n < end; ++n) {
+    std::cout << "CASE " << n << std::endl;
+    CampaignRng rng(seed, n);
+    std::vector<uint8_t> copy = image;
+    const char* outcome = "rejected";
+    bool changed = false;
+    const auto compare = [&](auto&& decide) {
+      for (size_t i = 0; i < rows.size(); ++i) {
+        if (decide(rows[i]) != baseline[i]) {
+          changed = true;
+        }
+      }
+    };
+    if (hostile) {
+      MutateRange(copy, kCacheHeaderBytes, copy.size(), rng);
+      if (copy == image) {
+        // The mutation wrote the bytes that were already there.
+        std::cout << "OUT " << n << " noop" << std::endl;
+        continue;
+      }
+      // Aligned storage for the blob, as a mapped file or a vector gives it.
+      const size_t blob_size = copy.size() - kCacheHeaderBytes;
+      std::vector<uint32_t> storage((blob_size + 3) / 4);
+      base::as_writable_byte_span(storage)
+          .first(blob_size)
+          .copy_from(base::span(copy).subspan(kCacheHeaderBytes));
+      AdblockZIndex index;
+      if (index.Load(base::as_byte_span(storage).first(blob_size))) {
+        compare([&](const Row& r) {
+          return index.ShouldBlock(r.url, r.page, r.type);
+        });
+        outcome = changed ? "changed" : "same";
+      }
+    } else {
+      MutateRange(copy, 0, copy.size(), rng);
+      if (copy == image) {
+        std::cout << "OUT " << n << " noop" << std::endl;
+        continue;
+      }
+      if (const scoped_refptr<const AdblockSharedIndex> shared =
+              AdblockSharedIndex::FromFileForTesting(kKey, std::move(copy))) {
+        compare([&](const Row& r) {
+          return shared->ShouldBlock(r.url, r.page, r.type);
+        });
+        outcome = changed ? "changed" : "same";
+      }
+    }
+    std::cout << "OUT " << n << " " << outcome << std::endl;
+  }
+  std::cout << "DONE" << std::endl;
 }
 
 }  // namespace

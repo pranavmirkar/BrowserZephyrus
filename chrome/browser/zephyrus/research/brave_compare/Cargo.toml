@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 adblock = "0.13"        # Brave's engine (adblock-rust); crates.io
 memory-stats = "1"      # working set, for the head-to-head
+seahash = "4.1.0"        # to repair the checksum of a rewritten engine blob (bin corrupt)
 
 [[bin]]
 name = "brave_cmp"      # speed and memory on the 20,000-request synthetic corpus
@@ -23,6 +24,10 @@ path = "src/bin_real.rs"
 [[bin]]
 name = "h2h"             # Brave vs Zephyrus on one list and one recorded corpus, same machine
 path = "src/bin_h2h.rs"
+
+[[bin]]
+name = "corrupt"        # what a damaged or rewritten engine blob does to Brave (see research/hostile_driver.py)
+path = "src/bin_corrupt.rs"
 
 [[bin]]
 name = "parity"         # which rule lines Brave's parser keeps
