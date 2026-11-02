@@ -29,6 +29,7 @@
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "chrome/browser/zephyrus/adblock/adblock_param_filter.h"
+#include "chrome/browser/zephyrus/adblock/adblock_regex_matcher.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -507,6 +508,10 @@ ResourceType TypeFromName(std::string_view name) {
   if (name == "xhr") return kTypeXhr;
   if (name == "document") return kTypeDocument;
   if (name == "subdocument") return kTypeSubdocument;
+  if (name == "popup") return kTypePopup;
+  if (name == "ping") return kTypePing;
+  if (name == "websocket") return kTypeWebsocket;
+  if (name == "object") return kTypeObject;
   return kTypeOther;
 }
 
@@ -597,6 +602,35 @@ TEST(AdblockZIndexTest, HeadToHeadCorpus) {
           [&](const Row& r) { return index.ShouldBlock(r.url, r.page, r.type); },
           "zeph_index.txt");
   std::printf("  index blob %.2f MB\n\n", blob->size() / 1e6);
+
+  // The /regex/ rules: compile cost, then what they add to every request.
+  const base::TimeTicks r0 = base::TimeTicks::Now();
+  scoped_refptr<const AdblockRegexMatcher> regex =
+      AdblockRegexMatcher::Build(engine);
+  const base::TimeDelta regex_build = base::TimeTicks::Now() - r0;
+  std::printf(
+      "  regex rules: %zu compiled, %zu skipped (RE2 cannot), %zu without a "
+      "prefilter | built in %.1f ms\n",
+      regex->rule_count(), regex->skipped_count(), regex->unfiltered_count(),
+      regex_build.InMillisecondsF());
+  measure("regex step alone",
+          [&](const Row& r) {
+            const RegexHits h = regex->Match(r.url, r.page, r.type);
+            return h.block || h.important;
+          },
+          "zeph_regex_only.txt");
+  measure("Zephyrus index + regex",
+          [&](const Row& r) {
+            const RegexHits h = regex->Match(r.url, r.page, r.type);
+            return index.ShouldBlock(r.url, r.page, r.type, &h);
+          },
+          "zeph_index_regex.txt");
+  measure("Zephyrus engine + regex",
+          [&](const Row& r) {
+            const RegexHits h = regex->Match(r.url, r.page, r.type);
+            return engine.ShouldBlock(r.url, r.page, r.type, &h);
+          },
+          "zeph_engine_regex.txt");
 
   // Tracking-parameter removal on the same requests: what it costs, and what it
   // would take off these real pages.

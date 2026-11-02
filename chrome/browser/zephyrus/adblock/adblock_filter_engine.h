@@ -79,11 +79,44 @@ struct FilterRule {
   // subdomain of) one of the first, and not one of the second.
   std::vector<std::string> to_included;
   std::vector<std::string> to_excluded;
+  // The parser sorts each of the five domain lists above (plain domains first,
+  // then `name.*` entities) and sets this, so that a long list -- some rules
+  // name a hundred sites -- is searched by host suffix instead of end to end.
+  // A rule built any other way leaves it false and is searched linearly.
+  bool domain_lists_sorted = false;
   // An opaque number the caller attached with AddTaggedRule (0 = none). Used by
   // AdblockParamFilter to find which `$removeparam` spec a matching rule stands
   // for. Never read by the matcher, and not part of the compiled index.
   uint32_t tag = 0;
+  // A `/regex/` rule: `pattern` is the regex source (original case), not a
+  // pattern for MatchAt. These never enter the keyword buckets or the compiled
+  // index; AdblockRegexMatcher matches them.
+  bool is_regex = false;
+  // `$match-case`: the regex is case-sensitive. Only a regex rule may have it;
+  // on any other rule the line is dropped, because the engine lowercases both
+  // the URL and the pattern.
+  bool match_case = false;
 };
+
+// The answer a set of regex rules gives for one request. The regex rules are
+// matched apart from the keyword buckets / compiled index (RE2, not MatchAt),
+// and the three flags are ORed into the verdict of whichever of those is in
+// use, in the same order: important, then block, then exception.
+struct RegexHits {
+  bool important = false;
+  bool block = false;
+  bool exception = false;
+};
+
+// Whether a rule's OPTIONS admit this request: resource type, first/third
+// party, $domain=, $denyallow=, $to=. Everything but the pattern. Shared by the
+// engine and the regex matcher so the two cannot read an option differently.
+// `request_host` and `initiator_host` are lowercase.
+bool RuleOptionsMatch(const FilterRule& rule,
+                      ResourceType type,
+                      bool third_party,
+                      std::string_view initiator_host,
+                      std::string_view request_host);
 
 // A compiled set of network filter rules with fast request matching.
 //
@@ -118,7 +151,12 @@ class AdblockFilterEngine {
   // `type` is the resource type. Exception (@@) rules override block rules.
   bool ShouldBlock(const GURL& url,
                    const GURL& initiator,
-                   ResourceType type) const;
+                   ResourceType type,
+                   const RegexHits* regex = nullptr) const;
+
+  // The `/regex/` rules the lists hold, in list order. The engine only parses
+  // them; AdblockRegexMatcher::Build() compiles them.
+  const std::vector<FilterRule>& regex_rules() const { return regex_rules_; }
 
   // The DocumentException bits the lists grant a page at `document_url`
   // (`@@||site^$generichide` and friends). 0 for nearly every page.
@@ -168,6 +206,9 @@ class AdblockFilterEngine {
   // Rules granting page-level exceptions, matched against the document URL.
   RuleBuckets document_buckets_;
   std::vector<FilterRule> untokenized_document_;
+
+  // `/regex/` rules (block, exception and $important alike; each says which).
+  std::vector<FilterRule> regex_rules_;
 
   // Rule texts cancelled by a `$badfilter` twin, normalised without it.
   std::unordered_set<std::string> badfilters_;

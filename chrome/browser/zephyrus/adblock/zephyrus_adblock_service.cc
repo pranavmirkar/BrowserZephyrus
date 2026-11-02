@@ -377,6 +377,7 @@ ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
   std::string contents;
   bool read = false;
   scoped_refptr<const AdblockSharedIndex> shared_index;
+  scoped_refptr<const AdblockRegexMatcher> regex;
   uint64_t list_key = 0;
   base::FilePath downloaded = DownloadedListPath();
   if (!downloaded.empty()) {
@@ -400,6 +401,9 @@ ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
     } else {
       network->AddRules(contents);
     }
+    // The regex rules are matched apart from both of the above, so they are
+    // compiled whether or not the index came from the cache.
+    regex = AdblockRegexMatcher::GetOrBuild(list_key, contents);
     cosmetic->AddRules(contents);
     // Per-section trust (Z-04): third-party lists in the combined file may not
     // use trusted-* scriptlets; only uBO's own sections may.
@@ -421,6 +425,7 @@ ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
   built.cosmetic = std::move(cosmetic);
   built.scriptlet = std::move(scriptlet);
   built.shared_index = std::move(shared_index);
+  built.regex = std::move(regex);
   built.list_key = list_key;
   return built;
 }
@@ -779,11 +784,18 @@ void ZephyrusAdblockService::LoadFullFilterListAsync() {
 
 void ZephyrusAdblockService::OnFullFilterListLoaded(BuiltEngines built) {
   current_list_key_ = built.list_key;
+  if (built.regex) {
+    VLOG(1) << "[Zephyrus] adblock: regex rules: " << built.regex->rule_count()
+            << " (" << built.regex->skipped_count() << " skipped, "
+            << built.regex->unfiltered_count() << " without a prefilter)";
+    regex_ = std::move(built.regex);
+  }
   if (built.shared_index) {
     UseSharedIndex(std::move(built.shared_index));
   } else if (built.network) {
     rule_count_ = built.network->block_rule_count() +
-                  built.network->exception_rule_count();
+                  built.network->exception_rule_count() +
+                  (regex_ ? regex_->rule_count() : 0);
     engine_ = std::move(built.network);
     index_.reset();
     VLOG(1) << "[Zephyrus] adblock: network rules matched by a per-profile "
@@ -835,8 +847,9 @@ void ZephyrusAdblockService::OnIndexBuilt(
 
 void ZephyrusAdblockService::UseSharedIndex(
     scoped_refptr<const AdblockSharedIndex> shared_index) {
-  rule_count_ =
-      shared_index->block_rule_count() + shared_index->exception_rule_count();
+  rule_count_ = shared_index->block_rule_count() +
+                shared_index->exception_rule_count() +
+                (regex_ ? regex_->rule_count() : 0);
   index_ = std::move(shared_index);
   engine_.reset();  // the index replaces it
   VLOG(1) << "[Zephyrus] adblock: network rules matched by the shared "
@@ -1031,8 +1044,12 @@ bool ZephyrusAdblockService::ShouldBlockRequest(const GURL& url,
   if (!enabled_ || !(index_ || engine_) || IsAllowlisted(initiator)) {
     return false;
   }
-  if (index_ ? index_->ShouldBlock(url, initiator, type)
-             : engine_->ShouldBlock(url, initiator, type)) {
+  RegexHits regex_hits;
+  if (regex_) {
+    regex_hits = regex_->Match(url, initiator, type);
+  }
+  if (index_ ? index_->ShouldBlock(url, initiator, type, &regex_hits)
+             : engine_->ShouldBlock(url, initiator, type, &regex_hits)) {
     ++total_blocked_;
     return true;
   }
@@ -1044,8 +1061,12 @@ bool ZephyrusAdblockService::ShouldBlockPopup(const GURL& url,
   if (!enabled_ || !(index_ || engine_) || IsAllowlisted(opener)) {
     return false;
   }
-  if (index_ ? index_->ShouldBlock(url, opener, kTypePopup)
-             : engine_->ShouldBlock(url, opener, kTypePopup)) {
+  RegexHits regex_hits;
+  if (regex_) {
+    regex_hits = regex_->Match(url, opener, kTypePopup);
+  }
+  if (index_ ? index_->ShouldBlock(url, opener, kTypePopup, &regex_hits)
+             : engine_->ShouldBlock(url, opener, kTypePopup, &regex_hits)) {
     ++total_blocked_;
     return true;
   }

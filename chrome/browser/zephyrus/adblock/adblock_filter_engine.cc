@@ -172,6 +172,65 @@ bool HostMatchesDomain(std::string_view host, const std::string& domain) {
   return HostMatchesFilterDomain(host, domain);
 }
 
+// The longest domain list that is simply searched end to end; past this the
+// list is sorted and searched by host suffix.
+constexpr size_t kLinearListMax = 6;
+
+bool IsEntityDomain(const std::string& domain) {
+  return domain.size() > 2 && domain.ends_with(".*");
+}
+
+// Sorts a domain list for HostInDomainList: plain domains in order, then the
+// `name.*` entities (which need their own, slower, comparison).
+void SortDomainList(std::vector<std::string>& list) {
+  std::sort(list.begin(), list.end(),
+            [](const std::string& a, const std::string& b) {
+              const bool ea = IsEntityDomain(a);
+              const bool eb = IsEntityDomain(b);
+              return ea != eb ? eb : a < b;
+            });
+  list.erase(std::unique(list.begin(), list.end()), list.end());
+}
+
+// Whether `host` is one of the domains in `list`, or a subdomain of one.
+bool HostInDomainList(std::string_view host,
+                      const std::vector<std::string>& list,
+                      bool sorted) {
+  if (!sorted || list.size() <= kLinearListMax) {
+    for (const std::string& d : list) {
+      if (HostMatchesDomain(host, d)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  const auto entities = std::partition_point(
+      list.begin(), list.end(),
+      [](const std::string& d) { return !IsEntityDomain(d); });
+  // `host` is in the list if it, or any suffix that starts after a dot, is.
+  for (std::string_view suffix = host;;) {
+    const auto it = std::lower_bound(
+        list.begin(), entities, suffix,
+        [](const std::string& a, std::string_view b) {
+          return std::string_view(a) < b;
+        });
+    if (it != entities && std::string_view(*it) == suffix) {
+      return true;
+    }
+    const size_t dot = suffix.find('.');
+    if (dot == std::string_view::npos) {
+      break;
+    }
+    suffix.remove_prefix(dot + 1);
+  }
+  for (auto it = entities; it != list.end(); ++it) {
+    if (HostMatchesDomain(host, *it)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // `$redirect=` resources that are only an empty stand-in: blocking the request
 // outright gives the page the same nothing. Rules redirecting to a SURROGATE
 // (google-ima.js, googletagservices_gpt.js...) are different -- the page calls
@@ -243,7 +302,64 @@ bool IsPureHostPattern(std::string_view pattern) {
   return true;
 }
 
+// The longest regex source accepted. The longest in the shipped lists is a few
+// hundred bytes; the cap is for a list that tries to make the compiler work.
+constexpr size_t kMaxRegexLength = 2048;
+
 }  // namespace
+
+bool RuleOptionsMatch(const FilterRule& rule,
+                      ResourceType type,
+                      bool third_party,
+                      std::string_view initiator_host,
+                      std::string_view request_host) {
+  // The cheap tests first (integers), the ones that compare host names last;
+  // every one has to pass, so the order changes the cost and nothing else.
+  // Resource-type scoping.
+  if (rule.type_mask != kTypeAll && !(rule.type_mask & type)) {
+    return false;
+  }
+  // An untyped block rule reaches a whole page or a pop-up only when it names
+  // a host; see FilterRule::pure_host.
+  if (rule.type_mask == kTypeAll && !rule.is_exception &&
+      (type & (kTypeDocument | kTypePopup)) && !rule.pure_host) {
+    return false;
+  }
+  if (rule.type_mask_not & type) {
+    return false;
+  }
+  // First/third-party scoping.
+  if (rule.party == 1 && third_party) {
+    return false;
+  }
+  if (rule.party == 2 && !third_party) {
+    return false;
+  }
+  const bool sorted = rule.domain_lists_sorted;
+  // $domain= scoping (matched against the document/initiator host).
+  if (!rule.domains_included.empty() &&
+      !HostInDomainList(initiator_host, rule.domains_included, sorted)) {
+    return false;
+  }
+  if (!rule.domains_excluded.empty() &&
+      HostInDomainList(initiator_host, rule.domains_excluded, sorted)) {
+    return false;
+  }
+  if (!rule.denyallow.empty() &&
+      HostInDomainList(request_host, rule.denyallow, sorted)) {
+    return false;
+  }
+  // $to= scoping (matched against the request's own host).
+  if (!rule.to_included.empty() &&
+      !HostInDomainList(request_host, rule.to_included, sorted)) {
+    return false;
+  }
+  if (!rule.to_excluded.empty() &&
+      HostInDomainList(request_host, rule.to_excluded, sorted)) {
+    return false;
+  }
+  return true;
+}
 
 AdblockFilterEngine::AdblockFilterEngine() = default;
 AdblockFilterEngine::~AdblockFilterEngine() = default;
@@ -276,11 +392,6 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
     if (HasCosmeticSeparator(line)) {
       continue;
     }
-    // Regex rules (/.../) are not supported yet.
-    if (line.size() >= 2 && line.front() == '/' && line.back() == '/') {
-      continue;
-    }
-
     FilterRule rule;
     // Exception (allowlist) rule.
     if (base::StartsWith(line, "@@")) {
@@ -288,20 +399,37 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
       line = line.substr(2);
     }
 
-    // Split pattern$options at the first '$'.
+    // A regex rule is `/.../`, optionally followed by `$options`. It is
+    // recognised BEFORE the options are split off, because the regex may hold a
+    // `$` of its own (an end anchor), and the split would cut it there.
     std::string options;
-    size_t dollar = line.find('$');
-    if (dollar != std::string::npos) {
-      options = line.substr(dollar + 1);
-      line = line.substr(0, dollar);
+    std::string regex_source;
+    bool is_regex = false;
+    if (line.size() >= 2 && line[0] == '/') {
+      const size_t close = line.rfind('/');
+      if (close > 0 && (close + 1 == line.size() || line[close + 1] == '$')) {
+        is_regex = true;
+        regex_source = line.substr(1, close - 1);
+        if (close + 1 < line.size()) {
+          options = line.substr(close + 2);
+        }
+      }
     }
 
-    // A regex rule is recognised by its PATTERN, not the whole line. The check
-    // above only catches one with no options; `/ad[0-9]+\.js/$script` got
-    // past it and was stored as a literal pattern that could never match, and
-    // was still tried against every request.
-    if (line.size() >= 2 && line.front() == '/' && line.back() == '/') {
-      continue;
+    if (!is_regex) {
+      // Split pattern$options at the first '$'.
+      size_t dollar = line.find('$');
+      if (dollar != std::string::npos) {
+        options = line.substr(dollar + 1);
+        line = line.substr(0, dollar);
+      }
+      // Whatever still looks like a regex here was not one by the test above
+      // (its options hold a `/`): skip it. It used to be stored as a literal
+      // pattern that could never match and was still tried against every
+      // request.
+      if (line.size() >= 2 && line.front() == '/' && line.back() == '/') {
+        continue;
+      }
     }
 
     // Parse options; bail on any option we don't understand to avoid
@@ -390,6 +518,8 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
           set_type(kTypeOther);
         } else if (opt == "important") {
           rule.important = true;
+        } else if (opt == "match-case" && !negate) {
+          rule.match_case = true;
         } else if (base::StartsWith(opt, "to=") && !negate) {
           // $to= is $domain= for the request's destination: the rule applies
           // only to requests whose host is one of these (or a subdomain),
@@ -426,6 +556,31 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
       }
     }
     if (unsupported) {
+      continue;
+    }
+    for (std::vector<std::string>* list :
+         {&rule.domains_included, &rule.domains_excluded, &rule.denyallow,
+          &rule.to_included, &rule.to_excluded}) {
+      SortDomainList(*list);
+    }
+    rule.domain_lists_sorted = true;
+
+    if (is_regex) {
+      // A tagged rule is found again by ForEachMatchingRule, which does not see
+      // regexes, so one added that way would never apply. A page-level
+      // exception granted by a regex is not supported either.
+      if (pending_tag_ != 0 || rule.document_exceptions != 0 ||
+          regex_source.empty() || regex_source.size() > kMaxRegexLength) {
+        continue;
+      }
+      rule.is_regex = true;
+      rule.pattern = std::move(regex_source);
+      regex_rules_.push_back(std::move(rule));
+      ++added;
+      continue;
+    }
+    // Only a regex can be case-sensitive; see FilterRule::match_case.
+    if (rule.match_case) {
       continue;
     }
 
@@ -533,66 +688,9 @@ bool AdblockFilterEngine::AnyRuleMatches(
       std::string_view(url_lower).substr(host_start, host_end - host_start);
 
   auto rule_matches = [&](const FilterRule& rule) -> bool {
-    // Resource-type scoping.
-    if (rule.type_mask != kTypeAll && !(rule.type_mask & type)) {
+    if (!RuleOptionsMatch(rule, type, third_party, initiator_host,
+                          request_host)) {
       return false;
-    }
-    // An untyped block rule reaches a whole page or a pop-up only when it
-    // names a host; see FilterRule::pure_host.
-    if (rule.type_mask == kTypeAll && !rule.is_exception &&
-        (type & (kTypeDocument | kTypePopup)) && !rule.pure_host) {
-      return false;
-    }
-    for (const std::string& d : rule.denyallow) {
-      if (HostMatchesDomain(request_host, d)) {
-        return false;
-      }
-    }
-    // $to= scoping (matched against the request's own host).
-    if (!rule.to_included.empty()) {
-      bool ok = false;
-      for (const std::string& d : rule.to_included) {
-        if (HostMatchesDomain(request_host, d)) {
-          ok = true;
-          break;
-        }
-      }
-      if (!ok) {
-        return false;
-      }
-    }
-    for (const std::string& d : rule.to_excluded) {
-      if (HostMatchesDomain(request_host, d)) {
-        return false;
-      }
-    }
-    if (rule.type_mask_not & type) {
-      return false;
-    }
-    // First/third-party scoping.
-    if (rule.party == 1 && third_party) {
-      return false;
-    }
-    if (rule.party == 2 && !third_party) {
-      return false;
-    }
-    // $domain= scoping (matched against the document/initiator host).
-    if (!rule.domains_included.empty()) {
-      bool ok = false;
-      for (const std::string& d : rule.domains_included) {
-        if (HostMatchesDomain(initiator_host, d)) {
-          ok = true;
-          break;
-        }
-      }
-      if (!ok) {
-        return false;
-      }
-    }
-    for (const std::string& d : rule.domains_excluded) {
-      if (HostMatchesDomain(initiator_host, d)) {
-        return false;
-      }
     }
     // Pattern match, within ONE step budget for the whole rule.
     //
@@ -692,7 +790,8 @@ bool AdblockFilterEngine::AnyRuleMatches(
 
 bool AdblockFilterEngine::ShouldBlock(const GURL& url,
                                       const GURL& initiator,
-                                      ResourceType type) const {
+                                      ResourceType type,
+                                      const RegexHits* regex) const {
   if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
     return false;
   }
@@ -709,16 +808,19 @@ bool AdblockFilterEngine::ShouldBlock(const GURL& url,
 
   // $important wins over every exception: it is how a list says "even where
   // something else allowlisted this".
-  if (AnyRuleMatches(important_buckets_, untokenized_important_, url_lower,
+  if ((regex && regex->important) ||
+      AnyRuleMatches(important_buckets_, untokenized_important_, url_lower,
                      initiator_host, third_party, type)) {
     return true;
   }
-  if (!AnyRuleMatches(block_buckets_, untokenized_block_, url_lower,
+  if (!(regex && regex->block) &&
+      !AnyRuleMatches(block_buckets_, untokenized_block_, url_lower,
                       initiator_host, third_party, type)) {
     return false;
   }
   // A matching allowlist (@@) rule un-blocks the request.
-  if (AnyRuleMatches(exception_buckets_, untokenized_exception_, url_lower,
+  if ((regex && regex->exception) ||
+      AnyRuleMatches(exception_buckets_, untokenized_exception_, url_lower,
                      initiator_host, third_party, type)) {
     return false;
   }

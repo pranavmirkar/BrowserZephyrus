@@ -151,9 +151,12 @@ class AdblockZIndex {
   // out of bounds. False leaves the index unusable.
   bool Load(base::span<const uint8_t> blob);
 
+  // `regex` is what the regex rules say about this request (see RegexHits); the
+  // index holds no regex rules itself.
   bool ShouldBlock(const GURL& url,
                    const GURL& initiator,
-                   ResourceType type) const;
+                   ResourceType type,
+                   const RegexHits* regex = nullptr) const;
 
   // Same contract as AdblockFilterEngine::GetDocumentExceptions.
   uint32_t GetDocumentExceptions(const GURL& document_url) const;

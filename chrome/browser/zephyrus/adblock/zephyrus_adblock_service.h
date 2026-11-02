@@ -21,6 +21,7 @@
 #include "chrome/browser/zephyrus/adblock/adblock_cosmetic_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_param_filter.h"
+#include "chrome/browser/zephyrus/adblock/adblock_regex_matcher.h"
 #include "chrome/browser/zephyrus/adblock/adblock_scriptlet_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_shared_index.h"
 #include "chrome/browser/zephyrus/adblock/adblock_startup_gate.h"
@@ -161,6 +162,8 @@ class ZephyrusAdblockService : public KeyedService {
     std::unique_ptr<AdblockCosmeticEngine> cosmetic;
     std::unique_ptr<AdblockScriptletEngine> scriptlet;
     scoped_refptr<const AdblockSharedIndex> shared_index;
+    // The `/regex/` rules, which neither `network` nor `shared_index` holds.
+    scoped_refptr<const AdblockRegexMatcher> regex;
     std::unique_ptr<AdblockParamFilter> params;
     // Identifies the network rules' list text; 0 when the compiled index is
     // off or no list could be read.
@@ -211,6 +214,9 @@ class ZephyrusAdblockService : public KeyedService {
   // that: the small starter list, or the whole list when the index is off or
   // could not be built.
   scoped_refptr<const AdblockSharedIndex> index_;
+  // The regex rules, shared by every profile; consulted next to whichever of
+  // `index_` / `engine_` is in force.
+  scoped_refptr<const AdblockRegexMatcher> regex_;
   std::unique_ptr<AdblockStartupGate> startup_gate_;
   // The `$removeparam` rules and the built-in tracking parameters. Starts as the
   // built-ins alone, so even the first page load of a session is cleaned.

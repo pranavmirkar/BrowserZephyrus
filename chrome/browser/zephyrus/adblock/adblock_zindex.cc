@@ -685,7 +685,8 @@ bool AdblockZIndex::Load(base::span<const uint8_t> blob) {
 
 bool AdblockZIndex::ShouldBlock(const GURL& url,
                                 const GURL& initiator,
-                                ResourceType type) const {
+                                ResourceType type,
+                                const RegexHits* regex) const {
   if (blob_.empty() || !url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
     return false;
   }
@@ -702,13 +703,13 @@ bool AdblockZIndex::ShouldBlock(const GURL& url,
   Context c;
   Prepare(scratch, url.spec(), initiator_host, third_party, type, &c);
 
-  if (Any(RuleGroup::kImportant, c, nullptr)) {
+  if ((regex && regex->important) || Any(RuleGroup::kImportant, c, nullptr)) {
     return true;
   }
-  if (!Any(RuleGroup::kBlock, c, nullptr)) {
+  if (!(regex && regex->block) && !Any(RuleGroup::kBlock, c, nullptr)) {
     return false;
   }
-  if (Any(RuleGroup::kException, c, nullptr)) {
+  if ((regex && regex->exception) || Any(RuleGroup::kException, c, nullptr)) {
     return false;
   }
   // `c` is finished with: the document lookup reuses a different scratch.

@@ -115,3 +115,60 @@ What was checked, and how each check was shown to be able to fail:
   `tonly.example`, which the rule says to block, so **adblock-rust 0.13.5 ignores
   `$to=` rules**. 172 of the 173 differences are those. The other is a regex rule
   that Zephyrus does not read yet (next).
+
+## Addendum: `/regex/` rules (RE2), and where Brave's engine is behind again
+
+Until now the engine and the compiled index dropped every `/regex/` rule: 608 lines in
+the lists. 393 of those have options this browser reads. They are matched by a new `AdblockRegexMatcher`, kept apart
+from the keyword buckets and the index, and its three answers (important, block,
+exception) are ORed into the verdict of whichever of the two is in use.
+
+How it stays cheap: RE2 (linear time, so a hostile list or URL cannot make it
+backtrack) behind three cheaper questions. (1) A **gate**: `re2::FilteredRE2` says
+which literals a regex needs; the smallest, rarest sufficient set becomes the rule's
+gate, and a four-byte-prefix scan of the URL wakes only the rules whose gate occurs.
+(2) The resource **type**, from 12 bytes per rule. (3) Every other option, by
+`RuleOptionsMatch` -- the same function the engine uses for its own rules, so the two
+cannot read an option differently. Long `$domain=` / `$to=` lists (some rules name a
+hundred sites) are now sorted at parse time and searched by host suffix.
+
+What does not run, and what stays safe: 39 of the 393 use lookahead or back-references,
+which RE2 (and Brave's Rust `regex`) cannot express. They are counted and left out; a
+rule we cannot read never blocks anything. A URL over 16 KB is allowed through. At most
+4,096 regexes are compiled, each with at most 2 MB of RE2 memory.
+
+Measured, same machine, same list:
+
+| | mean per request | notes |
+|---|---|---|
+| compiled index | ~3.8 us | before |
+| regex step alone | ~2.7 us | 354 compiled, 70 tried for every request, builds in ~40 ms |
+| index + regex | ~6.4 us | |
+| Brave 0.13.5, match only / with `Request::new` | ~6.5 / ~8.7-9.6 us | includes its own regex rules |
+
+- Real traffic, 9,591 requests: engine, index, engine + regex and index + regex still
+  block the same 4,467, and none differs from Brave on any request. The regex rules
+  add no block on this sample: they name rare malicious URL shapes (generated phishing
+  domains, one-off ad-malware paths), which a crawl of 30 popular sites does not hit.
+- Independent oracle (`research/rx_oracle.py`: Python `re` plus the option semantics),
+  on 4,152 requests generated from the real regexes (the URL a regex matches, the
+  same with the wrong type, and a one-character near miss): 4,135 agree. Of the
+  other 17, 7 are the oracle testing a URL before GURL rewrites it (`\`, `^`, an
+  invalid IPv4 address) and 10 are `redirect=noopjs` rules, which the oracle did not
+  read and the engine blocks as an empty response, as it does for plain rules.
+  Zephyrus blocked nothing the oracle did not, apart from those 10.
+- Brave as a second oracle, same 4,152 requests: Zephyrus blocks 1,382 and Brave 686;
+  664 are common. Of Zephyrus's 718: 617 are explained by a rule using `$to=` (Brave
+  ignores `$to=`, shown earlier), 49 by `$popup`/`$doc` rules, and 52 by others,
+  30 of which carry a `{400,1000}`-style repeat. Of Brave's 22 that Zephyrus does not
+  block: 14 involve `$popup`/`$doc` rules, 5 other rules, 3 `$to=` rules. We have not
+  established why Brave and Zephyrus differ on the 52 + 49 that are not `$to=`.
+- A mutated matcher (regex verdict inverted) failed 13 of the 20 regex tests then
+  written (22 now).
+- Live, in the browser (`research/ab_rx.py`, DevTools): a page requests 700 URLs built
+  from the real regex rules, each as an image and a script (1,400 requests), with the
+  shared index loaded from its disk cache and the downloaded 129,115-rule list. The
+  browser blocked 133: the 132 the unit-test binary predicts, plus
+  `ads.host-cdn.net/mcdZjs?2` as an image, which the built-in starter rule
+  `||ads.*^$third-party` blocks (the unit test does not load the starter list). All
+  81 requests that only the regex rules block were blocked.

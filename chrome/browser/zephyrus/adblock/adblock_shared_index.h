@@ -75,8 +75,9 @@ class AdblockSharedIndex
 
   bool ShouldBlock(const GURL& url,
                    const GURL& initiator,
-                   ResourceType type) const {
-    return index_.ShouldBlock(url, initiator, type);
+                   ResourceType type,
+                   const RegexHits* regex = nullptr) const {
+    return index_.ShouldBlock(url, initiator, type, regex);
   }
   uint32_t GetDocumentExceptions(const GURL& document_url) const {
     return index_.GetDocumentExceptions(document_url);

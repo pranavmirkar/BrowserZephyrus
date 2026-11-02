@@ -67,6 +67,80 @@ TEST(AdblockFilterEngineTest, ToOnAnExceptionCancelsOnlyThere) {
   EXPECT_FALSE(Blocks(rules, "https://ok.ads.example/a.js"));
 }
 
+// --- Long domain lists ----------------------------------------------------
+//
+// Some rules name a hundred sites. The parser sorts such a list, and a list
+// past a handful is searched by host suffix; a short one is searched end to
+// end. Both must answer the same.
+
+std::string DomainList(int count, const std::string& extra = std::string()) {
+  std::string list;
+  for (int i = 0; i < count; ++i) {
+    list += "site" + std::to_string(i * 7 % count) + ".example|";
+  }
+  return list + extra;
+}
+
+TEST(AdblockFilterEngineTest, ALongDomainListMatchesPlainAndSubdomains) {
+  const std::string rule = "||ads.example^$domain=" + DomainList(40, "last.test");
+  const std::string ads = "https://ads.example/x.js";
+  AdblockFilterEngine engine;
+  engine.AddRules(rule);
+  const auto on = [&](const std::string& page) {
+    return engine.ShouldBlock(GURL(ads), GURL(page), kTypeScript);
+  };
+  EXPECT_TRUE(on("https://site0.example/"));
+  EXPECT_TRUE(on("https://site39.example/"));
+  EXPECT_TRUE(on("https://www.site17.example/a")) << "a subdomain of a listed site";
+  EXPECT_TRUE(on("https://deep.er.last.test/"));
+  EXPECT_FALSE(on("https://site40.example/")) << "not in the list";
+  EXPECT_FALSE(on("https://notsite3.example/")) << "only a whole label counts";
+  EXPECT_FALSE(on("https://example/"));
+  EXPECT_FALSE(on("https://other.test/"));
+}
+
+TEST(AdblockFilterEngineTest, ALongDomainListCanLeaveSitesOut) {
+  // The page is on a listed site but also on an excluded one.
+  const std::string rule =
+      "||ads.example^$domain=" + DomainList(30) + "~skip.site3.example";
+  AdblockFilterEngine engine;
+  engine.AddRules(rule);
+  const GURL ads("https://ads.example/x.js");
+  EXPECT_TRUE(engine.ShouldBlock(ads, GURL("https://site3.example/"), kTypeScript));
+  EXPECT_FALSE(engine.ShouldBlock(ads, GURL("https://skip.site3.example/"),
+                                  kTypeScript));
+  EXPECT_FALSE(engine.ShouldBlock(ads, GURL("https://a.skip.site3.example/"),
+                                  kTypeScript));
+}
+
+TEST(AdblockFilterEngineTest, ALongDomainListKeepsItsEntityWildcards) {
+  // `google.*` is the same name under any public suffix; it has to survive the
+  // sort and still be found when the list is searched by suffix.
+  const std::string rule =
+      "||ads.example^$domain=" + DomainList(30, "mapsite.*");
+  AdblockFilterEngine engine;
+  engine.AddRules(rule);
+  const GURL ads("https://ads.example/x.js");
+  EXPECT_TRUE(engine.ShouldBlock(ads, GURL("https://mapsite.com/"), kTypeScript));
+  EXPECT_TRUE(
+      engine.ShouldBlock(ads, GURL("https://www.mapsite.co.uk/"), kTypeScript));
+  EXPECT_TRUE(engine.ShouldBlock(ads, GURL("https://site9.example/"), kTypeScript));
+  EXPECT_FALSE(engine.ShouldBlock(ads, GURL("https://mapsites.com/"), kTypeScript));
+}
+
+TEST(AdblockFilterEngineTest, ALongToListScopesTheDestination) {
+  const std::string rule = "/c/*?s1=$doc,to=" + DomainList(25, "landing.test");
+  AdblockFilterEngine engine;
+  engine.AddRules(rule);
+  const GURL page(kPage);
+  EXPECT_TRUE(engine.ShouldBlock(GURL("https://site4.example/c/x?s1=1"), page,
+                                 kTypeDocument));
+  EXPECT_TRUE(engine.ShouldBlock(GURL("https://a.landing.test/c/x?s1=1"), page,
+                                 kTypeDocument));
+  EXPECT_FALSE(engine.ShouldBlock(GURL("https://elsewhere.test/c/x?s1=1"), page,
+                                  kTypeDocument));
+}
+
 // --- Lines that are not network rules ------------------------------------
 
 TEST(AdblockFilterEngineTest, EveryCosmeticSpellingIsKeptOutOfTheNetworkIndex) {
@@ -144,14 +218,18 @@ TEST(AdblockFilterEngineTest, ScopingStillApplies) {
 
 // --- Regex rules ----------------------------------------------------------
 
-TEST(AdblockFilterEngineTest, RegexRulesWithOptionsAreSkippedNotMisread) {
-  // Unsupported, and used to be caught only when the line ENDED in '/'. With
-  // options after it the regex source was stored as a literal pattern: it never
-  // matched, and it still cost every request it was tried against.
+TEST(AdblockFilterEngineTest, RegexRulesAreKeptApartFromThePatternRules) {
+  // A regex used to be stored as a literal pattern when options followed it: it
+  // never matched, and it still cost every request it was tried against. Now
+  // it is parsed as a regex and none of the keyword buckets ever holds it.
   AdblockFilterEngine engine;
-  EXPECT_EQ(0u, engine.AddRules("/ad[0-9]+\\.js/$script"));
-  EXPECT_EQ(0u, engine.AddRules("/ad[0-9]+\\.js/"));
+  EXPECT_EQ(1u, engine.AddRules("/ad[0-9]+\\.js/$script"));
+  EXPECT_EQ(1u, engine.AddRules("/ad[0-9]+\\.js/"));
   EXPECT_EQ(0u, engine.block_rule_count());
+  EXPECT_EQ(2u, engine.regex_rules().size());
+  EXPECT_FALSE(engine.ShouldBlock(GURL("https://cdn.example/ad7.js"),
+                                  GURL(kPage), kTypeScript))
+      << "the engine alone does not run regexes; AdblockRegexMatcher does";
 }
 
 // --- Bounded work ---------------------------------------------------------
