@@ -1,0 +1,29 @@
+! Title: seed
+[Adblock Plus 2.0]
+||ads.example^$script,third-party
+||track.example/pixel?$image,domain=news.example|~sub.news.example
+@@||ads.example/ok.js$script
+|https://exact.example/path|
+/banner/*/img$image
+&adid=
+*/ads/*$xhr,important
+||cdn.example/lib.js$script,redirect=noopjs:5
+||cdn.example/vid.js$script,xhr,redirect-rule=google-ima.js
+@@||cdn.example/lib.js$script,redirect-rule=noopjs
+@@||cdn.example/other.js$redirect-rule
+||x.example^$to=y.example|~z.y.example,denyallow=a.example|b.example
+@@||safe.example^$document
+@@||safe.example^$generichide,specifichide
+||pop.example^$popup,3p
+||bad.example^$script
+||bad.example^$script,badfilter
+/ad[0-9]+\.js/$script,match-case
+/^https?:\/\/[a-z]{5,}\.xyz\/[0-9a-f]{8}$/$doc,to=xyz
+/(?=[a-z]*[0-9])x[a-z0-9]{4}\.js/$script
+/(a)\1/
+||many.example/a*b*c*d*e*f*g
+!#if env_chromium
+||only.chromium.example^
+!#else
+||other.example^
+!#endif

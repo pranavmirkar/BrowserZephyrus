@@ -1,0 +1,15 @@
+!#if env_chromium && !env_mobile
+||a.example^
+!#else
+||b.example^
+!#endif
+!#if (cap_html_filtering || ext_ublock)
+||c.example^
+!#endif
+!#include extra.txt
+! Zephyrus-Format: 2
+! Zephyrus-Full-Update: 86400
+! ===== https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt =====
+||d.example^
+! ===== https://lists.example/third.txt =====
+||e.example^

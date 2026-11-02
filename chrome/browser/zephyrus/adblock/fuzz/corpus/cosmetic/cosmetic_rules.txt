@@ -1,0 +1,14 @@
+##.ad-slot
+example.com##.sponsored
+example.com,~sub.example.com###banner
+example.org#@#.sponsored
+example.*##div[class^="ad-"]
+##a[href*="track"]:not(.keep)
+example.com##body:style(overflow: auto !important)
+example.com##.x:style(color: red; background: url(https://t.example/p))
+example.com##div[data-x=")"]
+example.com#?#div:has-text(Ad)
+example.com##+js(abort-on-property-read, foo)
+example.com##.a, .b > .c ~ .d
+example.com##x{color:red}
+example.com##x /* y

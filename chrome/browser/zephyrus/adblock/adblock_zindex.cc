@@ -517,8 +517,10 @@ struct AdblockZIndex::Context {
   bool third_party = false;
   ResourceType type = kTypeOther;
   uint64_t signature = 0;
-  const std::vector<uint32_t>* tokens = nullptr;
-  const std::vector<uint32_t>* grams = nullptr;  // kGramKinds of them
+  // Point into the calling thread's scratch for the length of one lookup; the
+  // Context is a stack local, so a protected pointer would only add cost.
+  RAW_PTR_EXCLUSION const std::vector<uint32_t>* tokens = nullptr;
+  RAW_PTR_EXCLUSION const std::vector<uint32_t>* grams = nullptr;  // kGramKinds
 };
 
 // Per-thread scratch, reused for every request: no allocation once warm, and
@@ -628,10 +630,12 @@ bool AdblockZIndex::Load(base::span<const uint8_t> blob) {
       }
     }
     // A table needs at least one empty slot, or probing a missing key would
-    // never end.
+    // never end. And at least the 16 the writer always makes: Probe() shifts the
+    // hash right by (32 - log2), which for log2 == 0 is a shift by the word size,
+    // an arbitrary slot (found by fuzzing an all-zero table directory).
     auto table_at = [&](uint32_t offset, uint32_t log2,
                         base::span<const Slot>* out) {
-      if (log2 > 24 || (offset & 3) ||
+      if (log2 < 4 || log2 > 24 || (offset & 3) ||
           !in_range(offset, uint64_t{sizeof(Slot)} << log2)) {
         return false;
       }

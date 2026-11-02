@@ -1,0 +1,10 @@
+! ===== https://easylist.to/easylist/easylist.txt =====
+||ads.example^
+example.com##.ad-banner
+! ===== https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt =====
+||tracker.example/c?$doc,urlskip=?url
+||redirector.example/go$doc,urlskip=/\/go\/(https?.+)/ -uricomponent
+example.org##+js(set-constant, adblock, false)
+example.org#$#body { overflow: auto !important }
+||t.example^$removeparam=utm_source
+||t.example^$removeparam=/^utm_/

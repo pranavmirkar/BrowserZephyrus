@@ -1,0 +1,14 @@
+||t.example/click?$doc,urlskip=?url
+||t.example/b?$doc,urlskip=?u -base64
+||t.example/s?$doc,urlskip=?u -safebase64 +https
+||t.example/n?$doc,urlskip=?a ?b
+||t.example/f?$doc,urlskip=#
+||t.example/p?$doc,urlskip=&1 -uricomponent
+||t.example/r$doc,urlskip=/\/go\/(https?[^#]*)/ -uricomponent
+||t.example/x{0,2}y$doc,urlskip=/x{0,2}(y)/
+||t.example/c$urlskip=?url,doc,1p
+||t.example/z$doc,urlskip=?url -blocked
+/^https?:\/\/t\.example\/r\/[a-z]+\?u=/$doc,urlskip=?u
+@@||t.example^$urlskip=?url
+?url -base64
+https://t.example/c?url=aHR0cHM6Ly9uZXdzLmV4YW1wbGUv

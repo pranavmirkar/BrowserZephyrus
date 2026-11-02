@@ -339,3 +339,52 @@ Not shown: that a real video player continues past our IMA stand-in (it is teste
 documented API, not against a live player), and iframes are only shown to load, because a
 blocked frame fires `load` too. Five rules need `method=` and three are malformed, so they
 still do nothing; a regex-pattern rule with `redirect=` still blocks but has no stand-in.
+
+## Addendum: fuzzing every parser, and the one crash it found
+
+Every place the blocker reads text or bytes it did not write now has a fuzz target: filter-list
+text into network rules and the compiled index (the engine and the index must agree on every
+probe), the compiled index itself as raw bytes, `/regex/` rules, `$removeparam`, `$urlskip`,
+cosmetic rules and `:style()`, `##+js()` scriptlet rules, and the `!#if` / section / header
+helpers. Each target runs one input through the parser and through whatever consumes its output,
+and checks the promises the parser makes: a hiding selector or style declaration cannot close its
+own rule, open a comment or leave a quote open; a scriptlet call line contains only string
+literals; a skip target is a plain web address different from the page; an index built from a list
+answers exactly as the engine it came from.
+
+How it was run:
+
+- **Deterministic mutation test** in the ordinary unit tests (`adblock_fuzz_regression_unittest.cc`):
+  every seed, then a seeded stream of mutations (bit flips, interesting bytes, inserts, deletes,
+  duplicated runs, spliced seeds, dictionary tokens, long repeated runs). 40,000 inputs per
+  target, with 80 windows of the real shipped list among the seeds, and 1,500 per target on every
+  ordinary test run (about 4 seconds).
+- **libFuzzer under AddressSanitizer**, one binary per target, with a dictionary of the syntax
+  tokens. Two rounds, all eight in parallel: 5 minutes, then 10 minutes on the grown corpora.
+  About 4.4 million executions in the second round, most of them the cheap helper target; the
+  parser-heavy targets run at 25 to 85 inputs a second under ASAN, so those got 15 to 50
+  thousand each. That is a modest amount of fuzzing, not a lot.
+
+Do the checks work? Each invariant was handed known-bad values and refuses them (4 tests), and a
+bug planted in the compiled index (ignore `$important`) was caught by the engine-against-index
+check within 789 inputs, with the failing input saved. A check that cannot fail would have proved
+nothing here.
+
+**One real finding.** A compiled index whose table directory was all zero (a valid header, then
+zeros) was accepted by `Load()`, and the first lookup stopped the browser on an out-of-range
+array index. The cause: slot lookup hashes with `key >> (32 - log2)`, which for `log2 == 0` is a
+shift by the word size, and `Load()` allowed it although the writer never makes a table smaller
+than 16 slots. The index is a file in the profile, so a damaged or tampered cache file could have
+crashed the browser on every start. `Load()` now refuses tables outside 16 slots to 2^24; this
+rejects only blobs the writer could never have produced. The test fails without the fix and
+passes with it. Nothing else was found by either method. The standing result is therefore one
+denial-of-service, bounded by the hardened `span` check, not memory corruption.
+
+**Against Brave.** Not better. Brave's engine is Rust, so this whole class is a safe panic or a
+rejected input by construction; ours reads a binary file in place from C++ and had to be checked.
+This closes the gap in the one place where our design is riskier than theirs; it does not put us
+ahead. I did not run their fuzzers.
+
+Found along the way: the sanitizer and plugin build refuses a raw `span` or pointer member, which
+the Release build never checks. The index's view members are now marked as deliberate exclusions
+(they are hot, read-only views into the index's own blob), so the fuzz and ASAN builds compile.

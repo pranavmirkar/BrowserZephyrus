@@ -12,6 +12,7 @@
 
 #include "base/containers/span.h"
 #include "base/functional/function_ref.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "url/gurl.h"
 
@@ -180,11 +181,15 @@ class AdblockZIndex {
  private:
   struct Context;
   struct GroupView {
-    base::span<const zindex_format::Slot> tokens;
+    // Views into the index's own blob, which outlives them (they are rebuilt
+    // with it and never handed out). RAW_PTR_EXCLUSION, not raw_span: every
+    // lookup reads these, and a protected pointer would add a reference count to
+    // each copy on a path measured in nanoseconds.
+    RAW_PTR_EXCLUSION base::span<const zindex_format::Slot> tokens;
     base::span<const zindex_format::Slot> grams[zindex_format::kGramKinds];
-    base::span<const zindex_format::Slot> domains;
-    base::span<const uint32_t> ids;
-    base::span<const uint32_t> residual;
+    RAW_PTR_EXCLUSION base::span<const zindex_format::Slot> domains;
+    RAW_PTR_EXCLUSION base::span<const uint32_t> ids;
+    RAW_PTR_EXCLUSION base::span<const uint32_t> residual;
     bool grams_empty[zindex_format::kGramKinds] = {};
     bool domains_empty = true;
   };
@@ -206,13 +211,14 @@ class AdblockZIndex {
                nullptr) const;
   bool DomainHit(std::string_view host, uint32_t pos) const;
 
-  base::span<const uint8_t> blob_;
+  // See GroupView: views into storage the caller keeps alive for the index's life.
+  RAW_PTR_EXCLUSION base::span<const uint8_t> blob_;
   zindex_format::Header header_ = {};
-  base::span<const zindex_format::Rule> rules_;
-  base::span<const uint32_t> domain_pool_;
+  RAW_PTR_EXCLUSION base::span<const zindex_format::Rule> rules_;
+  RAW_PTR_EXCLUSION base::span<const uint32_t> domain_pool_;
   std::string_view strings_;
   base::span<const uint8_t> union_grams_[zindex_format::kGramKinds];
-  base::span<const uint8_t> union_tokens_;
+  RAW_PTR_EXCLUSION base::span<const uint8_t> union_tokens_;
   bool union_grams_used_[zindex_format::kGramKinds] = {};
   GroupView groups_[zindex_format::kGroupCount];
   // Keyed by this index's generation, so a new index (a list update) can never

@@ -1,0 +1,10 @@
+*$removeparam=fbclid
+||t.example^$removeparam=gclid
+||t.example^$removeparam=/^utm_(source|medium)/
+||t.example^$removeparam=/^x=1$/i
+@@||t.example/keep^$removeparam=gclid
+@@||s.example^$removeparam
+||t.example^$removeparam=~keep
+||t.example^$removeparam=a=b
+||t.example^$removeparam
+||t.example^$removeparam=name,xhr,domain=news.example

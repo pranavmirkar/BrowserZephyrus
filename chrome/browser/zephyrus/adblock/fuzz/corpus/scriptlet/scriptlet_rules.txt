@@ -1,0 +1,11 @@
+example.com##+js(set-constant, adblock, false)
+example.com,~shop.example.com##+js(abort-on-property-read, google.ima)
+example.org##+js(nostif, popup, 3000)
+example.org#@#+js(nostif)
+example.net#@#+js()
+example.com##+js(trusted-set-cookie, consent, yes)
+example.com##+js(set-constant, a, "quoted", \"escaped\")
+example.com##+js(json-prune, ads.slot, , , propsToMatch, /a,b/)
+example.com##+js(abort-on-stack-trace, x, "); alert(1); //)
+! ===== https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt =====
+example.org##+js(trusted-set-local-storage-item, k, v)

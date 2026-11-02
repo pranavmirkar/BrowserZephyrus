@@ -213,6 +213,48 @@ TEST(AdblockZIndexTest, NothingLoadedMeansNothingBlocked) {
   EXPECT_EQ(empty.GetDocumentExceptions(GURL("https://x.example/")), 0u);
 }
 
+// Found by fuzzing: a header that is valid and otherwise all zero, so every table
+// has log2 == 0 and Probe() shifts a hash by the word size.
+TEST(AdblockZIndexTest, ATableSmallerThanTheWriterMakesIsRefused) {
+  std::vector<uint32_t> words(8000, 0);
+  words[0] = zindex_format::kMagic;
+  words[1] = zindex_format::kVersion;
+  const base::span<const uint8_t> blob = base::as_byte_span(words).first(31771u);
+  AdblockZIndex index;
+  EXPECT_FALSE(index.Load(blob));
+  // A refused index answers like an empty one rather than reading anywhere.
+  EXPECT_FALSE(
+      index.ShouldBlock(GURL("https://ads.example/a.js"), GURL(), kTypeScript));
+}
+
+// Any table directory entry the writer could not have produced is refused, one
+// field at a time, and what is accepted can be queried without leaving the blob.
+TEST(AdblockZIndexTest, EveryPatchedTableEntryIsRefusedOrHarmless) {
+  const Pair pair("||ads.example^\n||track.example/p.js$script\n||x.example^$domain=a.example|b.example\n");
+  const std::vector<uint8_t>* built = &pair.blob;
+  ASSERT_FALSE(built->empty());
+  constexpr size_t kHeaderWords = 10;
+  constexpr size_t kGroupWords = 14;
+  for (size_t g = 0; g < zindex_format::kGroupCount; ++g) {
+    // tok_log2, gram_log2[0..2], dom_tab_log2 of each group.
+    for (const size_t field : {size_t{1}, size_t{5}, size_t{6}, size_t{7},
+                               size_t{11}}) {
+      for (const uint32_t value : {0u, 1u, 2u, 3u, 25u, 31u, 32u, 0xffffffffu}) {
+        std::vector<uint32_t> words((built->size() + 3) / 4);
+        base::as_writable_byte_span(words)
+            .first(built->size())
+            .copy_from(*built);
+        words[kHeaderWords + g * kGroupWords + field] = value;
+        AdblockZIndex index;
+        if (index.Load(base::as_byte_span(words).first(built->size()))) {
+          index.ShouldBlock(GURL("https://ads.example/ad1.png"),
+                            GURL("https://news.example/"), kTypeImage);
+        }
+      }
+    }
+  }
+}
+
 // --- Against the shipped list -----------------------------------------------
 
 std::string ReadShippedFilterList() {

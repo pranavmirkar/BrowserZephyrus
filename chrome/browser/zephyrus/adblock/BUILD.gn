@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//testing/libfuzzer/fuzzer_test.gni")
 import("//testing/test.gni")
 
 # Bundles EasyList + EasyPrivacy next to the binary; the service reads it at
@@ -57,10 +58,28 @@ source_set("engines") {
   ]
 }
 
+# What each fuzz target feeds a parser and which invariant it asserts. Shared by
+# the libFuzzer binaries below and by the deterministic mutation test, so the two
+# can never drift apart.
+source_set("fuzz_targets") {
+  testonly = true
+  sources = [
+    "fuzz/adblock_fuzz_targets.cc",
+    "fuzz/adblock_fuzz_targets.h",
+  ]
+  deps = [
+    ":engines",
+    "//base",
+    "//third_party/re2",
+    "//url",
+  ]
+}
+
 #   autoninja -C out/Release chrome/browser/zephyrus/adblock:zephyrus_adblock_engine_unittests
 test("zephyrus_adblock_engine_unittests") {
   sources = [
     "adblock_filter_engine_unittest.cc",
+    "adblock_fuzz_regression_unittest.cc",
     "adblock_list_features_unittest.cc",
     "adblock_matcher_perftest.cc",
     "adblock_param_filter_unittest.cc",
@@ -73,6 +92,7 @@ test("zephyrus_adblock_engine_unittests") {
   ]
   deps = [
     ":engines",
+    ":fuzz_targets",
     "//base",
     "//base/test:run_all_unittests",
     "//base/test:test_support",
@@ -81,6 +101,67 @@ test("zephyrus_adblock_engine_unittests") {
     "//third_party/re2",
     "//url",
   ]
+  data = [ "fuzz/corpus/" ]
+}
+
+# One libFuzzer binary per parser. Build in out/FUZZ (libFuzzer + ASAN):
+#   autoninja -C out/FUZZ chrome/browser/zephyrus/adblock:zephyrus_adblock_list_parser_fuzzer
+template("zephyrus_adblock_fuzzer") {
+  fuzzer_test(target_name) {
+    sources = [
+      "fuzz/fuzzer_entry.h",
+      invoker.source,
+    ]
+    deps = [
+      ":engines",
+      ":fuzz_targets",
+      "//base",
+      "//base:i18n",
+      "//base/test:test_support",
+    ]
+    dict = "fuzz/adblock.dict"
+    seed_corpus = invoker.seed_corpus
+  }
+}
+
+zephyrus_adblock_fuzzer("zephyrus_adblock_list_parser_fuzzer") {
+  source = "fuzz/list_parser_fuzzer.cc"
+  seed_corpus = "fuzz/corpus/list"
+}
+
+zephyrus_adblock_fuzzer("zephyrus_adblock_index_blob_fuzzer") {
+  source = "fuzz/index_blob_fuzzer.cc"
+  seed_corpus = "fuzz/corpus/index_blob"
+}
+
+zephyrus_adblock_fuzzer("zephyrus_adblock_regex_matcher_fuzzer") {
+  source = "fuzz/regex_matcher_fuzzer.cc"
+  seed_corpus = "fuzz/corpus/regex"
+}
+
+zephyrus_adblock_fuzzer("zephyrus_adblock_param_filter_fuzzer") {
+  source = "fuzz/param_filter_fuzzer.cc"
+  seed_corpus = "fuzz/corpus/param"
+}
+
+zephyrus_adblock_fuzzer("zephyrus_adblock_urlskip_fuzzer") {
+  source = "fuzz/urlskip_fuzzer.cc"
+  seed_corpus = "fuzz/corpus/urlskip"
+}
+
+zephyrus_adblock_fuzzer("zephyrus_adblock_cosmetic_fuzzer") {
+  source = "fuzz/cosmetic_fuzzer.cc"
+  seed_corpus = "fuzz/corpus/cosmetic"
+}
+
+zephyrus_adblock_fuzzer("zephyrus_adblock_scriptlet_fuzzer") {
+  source = "fuzz/scriptlet_fuzzer.cc"
+  seed_corpus = "fuzz/corpus/scriptlet"
+}
+
+zephyrus_adblock_fuzzer("zephyrus_adblock_list_util_fuzzer") {
+  source = "fuzz/list_util_fuzzer.cc"
+  seed_corpus = "fuzz/corpus/list_util"
 }
 
 source_set("adblock") {

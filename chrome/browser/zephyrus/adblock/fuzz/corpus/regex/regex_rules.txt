@@ -1,0 +1,12 @@
+/ad[0-9]+\.js/$script
+/^https?:\/\/[a-z]{7,}\.xyz\/[+\/0-9a-zA-Z]{400,1000}$/$frame,3p,match-case
+@@/\/ok\/[0-9]+/
+/\/p(?=[A-Z])[a-zA-Z]+\/x/$match-case
+/(x+x+)+y(?=z)/
+/(\d)\1\1\.js/
+/\/v(?:1(?=[()]a)|2(?!\)))\/z/
+/a{1000}/
+/(?<=x)y/
+/[/
+/(?=x/
+/\/t(?=[0-9])[a-z0-9]+\//$script,third-party,domain=news.example.org
