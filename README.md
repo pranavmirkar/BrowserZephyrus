@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/zephyrus-logo.svg" alt="Zephyrus logo" width="128">
+
 # Zephyrus
 **Website and download: [thelazarus.in/zephyrus](https://thelazarus.in/zephyrus)**
 **A Chromium browser with an agent that does web tasks for you, on the real page in front of you.**
