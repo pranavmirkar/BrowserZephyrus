@@ -81,6 +81,12 @@ constexpr base::TimeDelta kUpdateCheckPeriod = base::Hours(1);
 // Delay before the first check after startup, so it doesn't compete with launch.
 constexpr base::TimeDelta kInitialUpdateDelay = base::Seconds(45);
 
+// The longest the first requests of a session wait for the full filter list.
+// Loading it takes a few hundred milliseconds; this is only the fail-open for
+// a list that cannot load, after which protection is the starter list, as it
+// was before the gate existed.
+constexpr base::TimeDelta kStartupHoldTimeout = base::Seconds(2);
+
 // Combined auto-updated list location (shared across profiles).
 base::FilePath DownloadedListPath() {
   base::FilePath dir;
@@ -88,6 +94,16 @@ base::FilePath DownloadedListPath() {
     return base::FilePath();
   }
   return dir.AppendASCII("ZephyrusAdBlock").AppendASCII("filters.txt");
+}
+
+// The compiled index built from that list, cached so the next start has it in
+// force in milliseconds instead of rebuilding it (shared across profiles).
+base::FilePath IndexCachePath() {
+  base::FilePath dir;
+  if (!base::PathService::Get(chrome::DIR_USER_DATA, &dir)) {
+    return base::FilePath();
+  }
+  return dir.AppendASCII("ZephyrusAdBlock").AppendASCII("filters.zidx");
 }
 
 // Which refresh, if any, the downloaded list is due. Reads only the file's
@@ -312,10 +328,13 @@ youtube.com##ytm-companion-slot
 
 // Builds the network + cosmetic engines on a background thread: the embedded
 // starter rules plus the bundled EasyList + EasyPrivacy file (if present).
-std::tuple<std::unique_ptr<AdblockFilterEngine>,
-           std::unique_ptr<AdblockCosmeticEngine>,
-           std::unique_ptr<AdblockScriptletEngine>>
-BuildEnginesFromBundledList() {
+// With the compiled index on, the network rules come back as the shared index
+// when this process or the disk cache already has one for this exact list, and
+// the returned network engine is then null. Otherwise (a first run, or a list
+// that just changed) the engine comes back as it always did, in the 60 ms it
+// always took, so protection never waits on the half-second index build; the
+// service builds the index afterwards and swaps it in.
+ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
   auto network = std::make_unique<AdblockFilterEngine>();
   auto cosmetic = std::make_unique<AdblockCosmeticEngine>();
   auto scriptlet = std::make_unique<AdblockScriptletEngine>();
@@ -357,6 +376,8 @@ BuildEnginesFromBundledList() {
 
   std::string contents;
   bool read = false;
+  scoped_refptr<const AdblockSharedIndex> shared_index;
+  uint64_t list_key = 0;
   base::FilePath downloaded = DownloadedListPath();
   if (!downloaded.empty()) {
     read = read_filter_file(downloaded, &contents);
@@ -370,7 +391,15 @@ BuildEnginesFromBundledList() {
   if (read) {
     // Resolve uBO's !#if blocks first; see PreprocessFilterList.
     contents = PreprocessFilterList(contents);
-    network->AddRules(contents);
+    if (base::FeatureList::IsEnabled(kZephyrusAdblockCompiledIndex)) {
+      list_key = AdblockSharedIndex::KeyFor(contents, kStarterFilterList);
+      shared_index = AdblockSharedIndex::GetCached(list_key, IndexCachePath());
+    }
+    if (shared_index) {
+      network.reset();  // the shared index replaces it
+    } else {
+      network->AddRules(contents);
+    }
     cosmetic->AddRules(contents);
     // Per-section trust (Z-04): third-party lists in the combined file may not
     // use trusted-* scriptlets; only uBO's own sections may.
@@ -381,7 +410,22 @@ BuildEnginesFromBundledList() {
               << " trusted scriptlet rule(s) from third-party lists";
     }
   }
-  return {std::move(network), std::move(cosmetic), std::move(scriptlet)};
+  ZephyrusAdblockService::BuiltEngines built;
+  built.network = std::move(network);
+  built.cosmetic = std::move(cosmetic);
+  built.scriptlet = std::move(scriptlet);
+  built.shared_index = std::move(shared_index);
+  built.list_key = list_key;
+  return built;
+}
+
+// Builds (or shares) the index for `list_key` from an engine that already has
+// the rules, and caches it on disk. Runs on a thread pool thread that may
+// block.
+scoped_refptr<const AdblockSharedIndex> BuildSharedIndex(
+    uint64_t list_key,
+    std::shared_ptr<const AdblockFilterEngine> engine) {
+  return AdblockSharedIndex::GetOrBuild(list_key, *engine, IndexCachePath());
 }
 
 }  // namespace
@@ -460,8 +504,14 @@ ZephyrusAdblockService::ZephyrusAdblockService(
                           base::Value(false));
   }
 
+  // Requests wait for the full list (see network_rules_ready()) unless the
+  // blocker is off, in which case there is nothing to wait for.
+  startup_gate_ = std::make_unique<AdblockStartupGate>(
+      enabled_ && base::FeatureList::IsEnabled(kZephyrusAdblockHoldUntilReady),
+      kStartupHoldTimeout);
+
   // Immediate small coverage; the full list swaps in asynchronously.
-  engine_ = std::make_unique<AdblockFilterEngine>();
+  engine_ = std::make_shared<AdblockFilterEngine>();
   engine_->AddRules(kStarterFilterList);
   rule_count_ =
       engine_->block_rule_count() + engine_->exception_rule_count();
@@ -493,9 +543,21 @@ ZephyrusAdblockService::ZephyrusAdblockService(
 
 ZephyrusAdblockService::~ZephyrusAdblockService() = default;
 
+void ZephyrusAdblockService::RunWhenNetworkRulesReady(
+    base::OnceClosure callback) {
+  if (!startup_gate_) {
+    std::move(callback).Run();
+    return;
+  }
+  startup_gate_->RunWhenOpen(std::move(callback));
+}
+
 void ZephyrusAdblockService::SetEnabled(bool enabled) {
   const bool was_enabled = enabled_;
   enabled_ = enabled;
+  if (!enabled_ && startup_gate_) {
+    startup_gate_->Open();  // nothing is blocked, so nothing to wait for
+  }
   if (prefs_) {
     prefs_->SetBoolean(kPrefEnabled, enabled);
   }
@@ -683,27 +745,74 @@ void ZephyrusAdblockService::LoadFullFilterListAsync() {
                      weak_factory_.GetWeakPtr()));
 }
 
-void ZephyrusAdblockService::OnFullFilterListLoaded(
-    std::unique_ptr<AdblockFilterEngine> network,
-    std::unique_ptr<AdblockCosmeticEngine> cosmetic,
-    std::unique_ptr<AdblockScriptletEngine> scriptlet) {
-  if (network) {
-    rule_count_ =
-        network->block_rule_count() + network->exception_rule_count();
-    engine_ = std::move(network);
+void ZephyrusAdblockService::OnFullFilterListLoaded(BuiltEngines built) {
+  current_list_key_ = built.list_key;
+  if (built.shared_index) {
+    UseSharedIndex(std::move(built.shared_index));
+  } else if (built.network) {
+    rule_count_ = built.network->block_rule_count() +
+                  built.network->exception_rule_count();
+    engine_ = std::move(built.network);
+    index_.reset();
+    VLOG(1) << "[Zephyrus] adblock: network rules matched by a per-profile "
+               "engine ("
+            << rule_count_ << " rules)";
     if (prefs_) {
       prefs_->SetInteger(kPrefRuleCount, static_cast<int>(rule_count_));
     }
+    if (built.list_key != 0) {
+      // The compiled index is on but not built for this list yet. The engine
+      // above covers the page loads of the next half second; the index
+      // replaces it when it is ready, and is cached for the next start.
+      base::ThreadPool::PostTaskAndReplyWithResult(
+          FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+          base::BindOnce(&BuildSharedIndex, built.list_key, engine_),
+          base::BindOnce(&ZephyrusAdblockService::OnIndexBuilt,
+                         weak_factory_.GetWeakPtr(), built.list_key));
+    }
   }
-  if (cosmetic) {
-    cosmetic_engine_ = std::move(cosmetic);
+  if (built.cosmetic) {
+    cosmetic_engine_ = std::move(built.cosmetic);
   }
-  if (scriptlet) {
-    scriptlet_engine_ = std::move(scriptlet);
+  if (built.scriptlet) {
+    scriptlet_engine_ = std::move(built.scriptlet);
+  }
+  // The full list is in force (or there is none to wait for): let the requests
+  // that were held go, and check them against it.
+  if (startup_gate_) {
+    startup_gate_->Open();
+  }
+}
+
+void ZephyrusAdblockService::OnIndexBuilt(
+    uint64_t list_key,
+    scoped_refptr<const AdblockSharedIndex> shared_index) {
+  // A newer list may have loaded while this was building; its engine is the
+  // one in force, and this index is for a list nobody is using any more.
+  if (!shared_index || list_key != current_list_key_) {
+    return;
+  }
+  UseSharedIndex(std::move(shared_index));
+}
+
+void ZephyrusAdblockService::UseSharedIndex(
+    scoped_refptr<const AdblockSharedIndex> shared_index) {
+  rule_count_ =
+      shared_index->block_rule_count() + shared_index->exception_rule_count();
+  index_ = std::move(shared_index);
+  engine_.reset();  // the index replaces it
+  VLOG(1) << "[Zephyrus] adblock: network rules matched by the shared "
+             "compiled index ("
+          << rule_count_ << " rules, " << index_->size_bytes() << " bytes)";
+  if (prefs_) {
+    prefs_->SetInteger(kPrefRuleCount, static_cast<int>(rule_count_));
   }
 }
 
 uint32_t ZephyrusAdblockService::DocumentExceptions(const GURL& url) const {
+  if (index_) {
+    return index_->GetDocumentExceptions(url);
+  }
   return engine_ ? engine_->GetDocumentExceptions(url) : 0;
 }
 
@@ -881,10 +990,11 @@ std::string ZephyrusAdblockService::GetScriptletInjection(
 bool ZephyrusAdblockService::ShouldBlockRequest(const GURL& url,
                                                 const GURL& initiator,
                                                 ResourceType type) {
-  if (!enabled_ || !engine_ || IsAllowlisted(initiator)) {
+  if (!enabled_ || !(index_ || engine_) || IsAllowlisted(initiator)) {
     return false;
   }
-  if (engine_->ShouldBlock(url, initiator, type)) {
+  if (index_ ? index_->ShouldBlock(url, initiator, type)
+             : engine_->ShouldBlock(url, initiator, type)) {
     ++total_blocked_;
     return true;
   }
@@ -893,10 +1003,11 @@ bool ZephyrusAdblockService::ShouldBlockRequest(const GURL& url,
 
 bool ZephyrusAdblockService::ShouldBlockPopup(const GURL& url,
                                               const GURL& opener) {
-  if (!enabled_ || !engine_ || IsAllowlisted(opener)) {
+  if (!enabled_ || !(index_ || engine_) || IsAllowlisted(opener)) {
     return false;
   }
-  if (engine_->ShouldBlock(url, opener, kTypePopup)) {
+  if (index_ ? index_->ShouldBlock(url, opener, kTypePopup)
+             : engine_->ShouldBlock(url, opener, kTypePopup)) {
     ++total_blocked_;
     return true;
   }

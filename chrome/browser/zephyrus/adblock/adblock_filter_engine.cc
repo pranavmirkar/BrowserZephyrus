@@ -696,4 +696,24 @@ uint32_t AdblockFilterEngine::GetDocumentExceptions(
   return exceptions;
 }
 
+void AdblockFilterEngine::ForEachRule(
+    base::FunctionRef<void(RuleGroup, const FilterRule&, std::string_view)>
+        visit) const {
+  auto walk = [&](RuleGroup group, const RuleBuckets& buckets,
+                  const std::vector<FilterRule>& untokenized) {
+    for (const auto& [keyword, rules] : buckets) {
+      for (const FilterRule& rule : rules) {
+        visit(group, rule, keyword);
+      }
+    }
+    for (const FilterRule& rule : untokenized) {
+      visit(group, rule, std::string_view());
+    }
+  };
+  walk(RuleGroup::kBlock, block_buckets_, untokenized_block_);
+  walk(RuleGroup::kException, exception_buckets_, untokenized_exception_);
+  walk(RuleGroup::kImportant, important_buckets_, untokenized_important_);
+  walk(RuleGroup::kDocument, document_buckets_, untokenized_document_);
+}
+
 }  // namespace zephyrus_adblock

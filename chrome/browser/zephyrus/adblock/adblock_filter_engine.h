@@ -13,6 +13,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "base/functional/function_ref.h"
 #include "url/gurl.h"
 
 namespace zephyrus_adblock {
@@ -117,6 +118,19 @@ class AdblockFilterEngine {
 
   size_t block_rule_count() const { return block_rule_count_; }
   size_t exception_rule_count() const { return exception_rule_count_; }
+
+  // Which of the engine's four rule sets a rule lives in.
+  enum class RuleGroup { kBlock, kException, kImportant, kDocument };
+
+  // Calls `visit` once for every rule the engine holds. `keyword` is the bucket
+  // key the engine filed it under, empty for rules it could not key. This is
+  // how a compiled index (AdblockZIndex) is built from the real parser's
+  // output rather than from a second parser, so the two cannot disagree about
+  // what a line of a list means.
+  void ForEachRule(base::FunctionRef<void(RuleGroup,
+                                          const FilterRule&,
+                                          std::string_view keyword)> visit)
+      const;
 
  private:
   // Rules keyed by a representative token from their pattern (for fast lookup).

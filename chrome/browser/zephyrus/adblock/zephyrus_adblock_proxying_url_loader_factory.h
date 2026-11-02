@@ -77,6 +77,17 @@ class ZephyrusAdblockProxyingURLLoaderFactory
 
   void OnTargetFactoryError();
 
+  // The part of CreateLoaderAndStart that checks the request against the lists
+  // and starts it. Runs at once, or after the startup gate releases the
+  // request (see ZephyrusAdblockService::RunWhenNetworkRulesReady).
+  void StartLoader(
+      mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver,
+      int32_t request_id,
+      uint32_t options,
+      const network::ResourceRequest& request,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+      const net::MutableNetworkTrafficAnnotationTag& traffic_annotation);
+
   // Feeds the Privacy Intelligence pipeline. No-op when the sink is null,
   // which is the case whenever the feature is off or the profile is
   // off-the-record. Never changes a block decision — the dependency is
@@ -114,6 +125,9 @@ class ZephyrusAdblockProxyingURLLoaderFactory
   // sighting would let an active site's name expire underneath it.
   std::string site_etld1_;
   std::optional<uint32_t> site_id_;
+
+  base::WeakPtrFactory<ZephyrusAdblockProxyingURLLoaderFactory> weak_factory_{
+      this};
 };
 
 }  // namespace zephyrus_adblock

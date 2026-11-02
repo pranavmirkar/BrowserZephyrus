@@ -21,6 +21,8 @@
 #include "chrome/browser/zephyrus/adblock/adblock_cosmetic_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_scriptlet_engine.h"
+#include "chrome/browser/zephyrus/adblock/adblock_shared_index.h"
+#include "chrome/browser/zephyrus/adblock/adblock_startup_gate.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_updater.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/prefs/pref_change_registrar.h"
@@ -122,6 +124,17 @@ class ZephyrusAdblockService : public KeyedService {
   // (empty if none / disabled). Neutralizes ad logic on hard sites (YouTube).
   std::string GetScriptletInjection(const GURL& url) const;
 
+  // The startup gap. For the first moments of a session only the small starter
+  // list is in force while the full list loads; a restored tab's requests fired
+  // in that window were never checked against it. Requests wait here, bounded
+  // (see AdblockStartupGate), until the full list is in force, and then run in
+  // the order they came. Runs `callback` at once when there is nothing to wait
+  // for: the blocker is off, the feature is off, or the lists are already in.
+  bool network_rules_ready() const {
+    return !startup_gate_ || startup_gate_->is_open();
+  }
+  void RunWhenNetworkRulesReady(base::OnceClosure callback);
+
   int total_blocked() const { return total_blocked_; }
   size_t rule_count() const { return rule_count_; }
 
@@ -129,14 +142,27 @@ class ZephyrusAdblockService : public KeyedService {
     return weak_factory_.GetWeakPtr();
   }
 
+  // What building the engines from the bundled and downloaded lists produces.
+  // Public only so the builder, a free function, can return it.
+  struct BuiltEngines {
+    // Null when `shared_index` stands in for it.
+    std::unique_ptr<AdblockFilterEngine> network;
+    std::unique_ptr<AdblockCosmeticEngine> cosmetic;
+    std::unique_ptr<AdblockScriptletEngine> scriptlet;
+    scoped_refptr<const AdblockSharedIndex> shared_index;
+    // Identifies the network rules' list text; 0 when the compiled index is
+    // off or no list could be read.
+    uint64_t list_key = 0;
+  };
+
  private:
   void LoadFullFilterListAsync();
-  // Called with the freshly-built engines (the returned tuple is unpacked into
-  // these args by PostTaskAndReplyWithResult).
-  void OnFullFilterListLoaded(
-      std::unique_ptr<AdblockFilterEngine> network,
-      std::unique_ptr<AdblockCosmeticEngine> cosmetic,
-      std::unique_ptr<AdblockScriptletEngine> scriptlet);
+  // Called with the freshly-built engines.
+  void OnFullFilterListLoaded(BuiltEngines built);
+  // The index for `list_key` finished building off-thread.
+  void OnIndexBuilt(uint64_t list_key,
+                    scoped_refptr<const AdblockSharedIndex> shared_index);
+  void UseSharedIndex(scoped_refptr<const AdblockSharedIndex> shared_index);
 
   // Filter-list auto-update. No-op when `url_loader_factory_` is null (off the
   // record) or the blocker is off.
@@ -168,7 +194,16 @@ class ZephyrusAdblockService : public KeyedService {
   bool updating_ = false;
   base::CallbackListSubscription list_updated_subscription_;
 
-  std::unique_ptr<AdblockFilterEngine> engine_;
+  // The network rules are matched by `index_` once the full list has loaded
+  // (one compiled index shared by every profile), and by `engine_` before
+  // that: the small starter list, or the whole list when the index is off or
+  // could not be built.
+  scoped_refptr<const AdblockSharedIndex> index_;
+  std::unique_ptr<AdblockStartupGate> startup_gate_;
+
+  // Shared with the thread that is building the index from it.
+  std::shared_ptr<AdblockFilterEngine> engine_;
+  uint64_t current_list_key_ = 0;
   std::unique_ptr<AdblockCosmeticEngine> cosmetic_engine_;
   std::unique_ptr<AdblockScriptletEngine> scriptlet_engine_;
   bool enabled_ = true;

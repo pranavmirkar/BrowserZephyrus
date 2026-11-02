@@ -138,6 +138,28 @@ void ZephyrusAdblockProxyingURLLoaderFactory::CreateLoaderAndStart(
     const network::ResourceRequest& request,
     mojo::PendingRemote<network::mojom::URLLoaderClient> client,
     const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
+  // For the first moments of a session the full list is still loading. A web
+  // request waits for it (bounded, and in order) rather than slipping through
+  // a list that only has the starter rules. Internal pages are never held.
+  if (service_ && request.url.SchemeIsHTTPOrHTTPS() &&
+      !service_->network_rules_ready()) {
+    service_->RunWhenNetworkRulesReady(base::BindOnce(
+        &ZephyrusAdblockProxyingURLLoaderFactory::StartLoader,
+        weak_factory_.GetWeakPtr(), std::move(loader_receiver), request_id,
+        options, request, std::move(client), traffic_annotation));
+    return;
+  }
+  StartLoader(std::move(loader_receiver), request_id, options, request,
+              std::move(client), traffic_annotation);
+}
+
+void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
+    mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver,
+    int32_t request_id,
+    uint32_t options,
+    const network::ResourceRequest& request,
+    mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+    const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
   const GURL initiator =
       request.request_initiator ? request.request_initiator->GetURL() : GURL();
   if (service_ &&
