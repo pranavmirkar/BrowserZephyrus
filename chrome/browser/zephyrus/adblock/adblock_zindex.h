@@ -44,7 +44,11 @@ namespace zephyrus_adblock {
 namespace zindex_format {
 
 inline constexpr uint32_t kMagic = 0x58444955;  // "UIDX"
-inline constexpr uint32_t kVersion = 2;
+inline constexpr uint32_t kVersion = 3;  // 3: $to= lists in the domain pool
+// A rule's entry in the domain pool starts with this many counts (included,
+// excluded, denyallow, to-included, to-excluded); the (offset, length) pairs of
+// the strings follow in the same order.
+inline constexpr uint32_t kDomainCounts = 5;
 inline constexpr size_t kGroupCount = 4;
 inline constexpr size_t kGramKinds = 3;  // n-grams of length 3, 4 and 5
 inline constexpr size_t kBitmapBytes = 8192;

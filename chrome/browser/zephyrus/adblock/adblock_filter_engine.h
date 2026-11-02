@@ -75,6 +75,10 @@ struct FilterRule {
   std::vector<std::string> domains_excluded;  // $domain=~b.com
   // $denyallow=a.com|b.com: the rule does not apply to requests TO these.
   std::vector<std::string> denyallow;
+  // $to=a.com|~b.a.com: the rule applies only to requests whose host is (a
+  // subdomain of) one of the first, and not one of the second.
+  std::vector<std::string> to_included;
+  std::vector<std::string> to_excluded;
   // An opaque number the caller attached with AddTaggedRule (0 = none). Used by
   // AdblockParamFilter to find which `$removeparam` spec a matching rule stands
   // for. Never read by the matcher, and not part of the compiled index.

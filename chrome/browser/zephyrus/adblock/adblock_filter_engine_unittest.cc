@@ -26,6 +26,47 @@ bool Blocks(const std::string& rules,
   return engine.ShouldBlock(GURL(url), GURL(kPage), type);
 }
 
+// --- $to= -----------------------------------------------------------------
+
+TEST(AdblockFilterEngineTest, ToScopesARuleToTheDestinationHost) {
+  // The rule has no host of its own: $to= is what limits it to .example hosts.
+  const std::string rule = "/c/*?s1=$doc,to=landing.example\n";
+  EXPECT_TRUE(Blocks(rule, "https://landing.example/c/x?s1=1", kTypeDocument));
+  EXPECT_TRUE(
+      Blocks(rule, "https://sub.landing.example/c/x?s1=1", kTypeDocument))
+      << "a subdomain of a listed host is the listed host";
+  EXPECT_FALSE(Blocks(rule, "https://other.example/c/x?s1=1", kTypeDocument));
+  EXPECT_FALSE(
+      Blocks(rule, "https://notlanding.example/c/x?s1=1", kTypeDocument))
+      << "only a whole label counts";
+}
+
+TEST(AdblockFilterEngineTest, ToCanLeaveHostsOut) {
+  const std::string rule = "/c/*?s1=$doc,to=example|~safe.example\n";
+  EXPECT_TRUE(Blocks(rule, "https://a.example/c/x?s1=1", kTypeDocument));
+  EXPECT_FALSE(Blocks(rule, "https://safe.example/c/x?s1=1", kTypeDocument));
+  EXPECT_FALSE(Blocks(rule, "https://www.safe.example/c/x?s1=1", kTypeDocument));
+  EXPECT_FALSE(Blocks(rule, "https://a.test/c/x?s1=1", kTypeDocument));
+  // Only exclusions: every other host is in.
+  const std::string only_out = "/c/*?s1=$doc,to=~safe.example\n";
+  EXPECT_TRUE(Blocks(only_out, "https://a.test/c/x?s1=1", kTypeDocument));
+  EXPECT_FALSE(Blocks(only_out, "https://safe.example/c/x?s1=1", kTypeDocument));
+}
+
+TEST(AdblockFilterEngineTest, ToAndDomainAreBothRequired) {
+  // $domain= is the page that asks, $to= is where it asks.
+  const std::string rule = "/ad.js$script,domain=news.example,to=cdn.example\n";
+  EXPECT_TRUE(Blocks(rule, "https://cdn.example/ad.js"));  // page is news.example
+  EXPECT_FALSE(Blocks(rule, "https://other.example/ad.js"));
+}
+
+TEST(AdblockFilterEngineTest, ToOnAnExceptionCancelsOnlyThere) {
+  const std::string rules =
+      "||ads.example^\n@@||ads.example^$to=ok.ads.example\n";
+  EXPECT_TRUE(Blocks(rules, "https://ads.example/a.js"));
+  EXPECT_FALSE(Blocks(rules, "https://ok.ads.example/a.js"));
+}
+
 // --- Lines that are not network rules ------------------------------------
 
 TEST(AdblockFilterEngineTest, EveryCosmeticSpellingIsKeptOutOfTheNetworkIndex) {

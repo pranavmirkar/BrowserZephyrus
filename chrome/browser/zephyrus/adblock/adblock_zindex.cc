@@ -35,6 +35,7 @@ namespace {
 using zindex_format::GroupHeader;
 using zindex_format::Header;
 using zindex_format::kBitmapBytes;
+using zindex_format::kDomainCounts;
 using zindex_format::kGramKinds;
 using zindex_format::kGroupCount;
 using zindex_format::Rule;
@@ -267,13 +268,16 @@ std::optional<std::vector<uint8_t>> AdblockZIndexBuilder::Finish() const {
     out.type_not = static_cast<uint16_t>(r.type_mask_not);
     out.doc_exc = static_cast<uint8_t>(r.document_exceptions);
     if (!r.domains_included.empty() || !r.domains_excluded.empty() ||
-        !r.denyallow.empty()) {
+        !r.denyallow.empty() || !r.to_included.empty() ||
+        !r.to_excluded.empty()) {
       out.dom_off = static_cast<uint32_t>(domains.size());
       domains.push_back(static_cast<uint32_t>(r.domains_included.size()));
       domains.push_back(static_cast<uint32_t>(r.domains_excluded.size()));
       domains.push_back(static_cast<uint32_t>(r.denyallow.size()));
-      for (const auto* list :
-           {&r.domains_included, &r.domains_excluded, &r.denyallow}) {
+      domains.push_back(static_cast<uint32_t>(r.to_included.size()));
+      domains.push_back(static_cast<uint32_t>(r.to_excluded.size()));
+      for (const auto* list : {&r.domains_included, &r.domains_excluded,
+                               &r.denyallow, &r.to_included, &r.to_excluded}) {
         for (const std::string& domain : *list) {
           domains.push_back(intern(domain));
           domains.push_back(static_cast<uint32_t>(domain.size()));
@@ -578,18 +582,20 @@ bool AdblockZIndex::Load(base::span<const uint8_t> blob) {
       return false;
     }
     if (rule.dom_off) {
-      if (uint64_t{rule.dom_off} + 3 > header.doms_n) {
+      if (uint64_t{rule.dom_off} + kDomainCounts > header.doms_n) {
         return false;
       }
       const uint64_t count = uint64_t{domain_pool[rule.dom_off]} +
                              domain_pool[rule.dom_off + 1] +
-                             domain_pool[rule.dom_off + 2];
-      if (uint64_t{rule.dom_off} + 3 + count * 2 > header.doms_n) {
+                             domain_pool[rule.dom_off + 2] +
+                             domain_pool[rule.dom_off + 3] +
+                             domain_pool[rule.dom_off + 4];
+      if (uint64_t{rule.dom_off} + kDomainCounts + count * 2 > header.doms_n) {
         return false;
       }
       for (uint64_t k = 0; k < count; ++k) {
-        if (uint64_t{domain_pool[rule.dom_off + 3 + k * 2]} +
-                domain_pool[rule.dom_off + 4 + k * 2] >
+        if (uint64_t{domain_pool[rule.dom_off + kDomainCounts + k * 2]} +
+                domain_pool[rule.dom_off + kDomainCounts + 1 + k * 2] >
             header.str_n) {
           return false;
         }
@@ -841,11 +847,29 @@ bool AdblockZIndex::RuleMatches(const Rule& r, const Context& c) const {
     const uint32_t included = domain_pool_[r.dom_off];
     const uint32_t excluded = domain_pool_[r.dom_off + 1];
     const uint32_t denied = domain_pool_[r.dom_off + 2];
-    const uint32_t include_at = r.dom_off + 3;
+    const uint32_t to_included = domain_pool_[r.dom_off + 3];
+    const uint32_t to_excluded = domain_pool_[r.dom_off + 4];
+    const uint32_t include_at = r.dom_off + kDomainCounts;
     const uint32_t exclude_at = include_at + included * 2;
     const uint32_t deny_at = exclude_at + excluded * 2;
+    const uint32_t to_include_at = deny_at + denied * 2;
+    const uint32_t to_exclude_at = to_include_at + to_included * 2;
     for (uint32_t k = 0; k < denied; ++k) {
       if (DomainHit(c.request_host, deny_at + k * 2)) {
+        return false;
+      }
+    }
+    if (to_included) {
+      bool ok = false;
+      for (uint32_t k = 0; k < to_included && !ok; ++k) {
+        ok = DomainHit(c.request_host, to_include_at + k * 2);
+      }
+      if (!ok) {
+        return false;
+      }
+    }
+    for (uint32_t k = 0; k < to_excluded; ++k) {
+      if (DomainHit(c.request_host, to_exclude_at + k * 2)) {
         return false;
       }
     }

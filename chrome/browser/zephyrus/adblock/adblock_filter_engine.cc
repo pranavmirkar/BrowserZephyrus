@@ -390,6 +390,20 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
           set_type(kTypeOther);
         } else if (opt == "important") {
           rule.important = true;
+        } else if (base::StartsWith(opt, "to=") && !negate) {
+          // $to= is $domain= for the request's destination: the rule applies
+          // only to requests whose host is one of these (or a subdomain),
+          // leaving out the ones written with a leading `~`.
+          for (std::string_view d : base::SplitStringPiece(
+                   std::string_view(opt).substr(3), "|", base::TRIM_WHITESPACE,
+                   base::SPLIT_WANT_NONEMPTY)) {
+            std::string ds = base::ToLowerASCII(d);
+            if (!ds.empty() && ds[0] == '~') {
+              rule.to_excluded.push_back(ds.substr(1));
+            } else {
+              rule.to_included.push_back(ds);
+            }
+          }
         } else if (base::StartsWith(opt, "domain=") ||
                    base::StartsWith(opt, "from=")) {
           // uBO spells $domain= as $from= too.
@@ -530,6 +544,24 @@ bool AdblockFilterEngine::AnyRuleMatches(
       return false;
     }
     for (const std::string& d : rule.denyallow) {
+      if (HostMatchesDomain(request_host, d)) {
+        return false;
+      }
+    }
+    // $to= scoping (matched against the request's own host).
+    if (!rule.to_included.empty()) {
+      bool ok = false;
+      for (const std::string& d : rule.to_included) {
+        if (HostMatchesDomain(request_host, d)) {
+          ok = true;
+          break;
+        }
+      }
+      if (!ok) {
+        return false;
+      }
+    }
+    for (const std::string& d : rule.to_excluded) {
       if (HostMatchesDomain(request_host, d)) {
         return false;
       }

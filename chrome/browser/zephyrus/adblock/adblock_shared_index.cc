@@ -97,6 +97,7 @@ constexpr char kCanaryRules[] = R"RULES(
 -banner-ads-
 &adunit=
 ||long.example/some/quite/long/path/with/many/tokens/in/it^*^utm=
+||dest.example^$doc,to=a.example|~b.a.example
 )RULES";
 
 // What this build's parser and builder make of the canary rules.

@@ -89,3 +89,29 @@ instead (`research/ab_params.py`): a navigation and a fetch and an
 image all arrive cleaned, `id`, `state`, `code`, `ref` and `source` are untouched,
 the fragment survives, history keeps one entry, and
 `--disable-features=ZephyrusAdblockStripTrackingParams` restores the original.
+
+## Addendum: `$to=` rules, and a place where Brave's engine is behind
+
+`$to=host|~host` limits a rule to requests whose destination host is (a subdomain
+of) one of the first and none of the second. 183 plain rules and 259 regex rules in
+the lists use it (mostly the malware list: `||name.$doc,to=~edu|~gov`). Both the
+engine and the compiled index now read it, so 158 more rules are usable (128,603 to
+128,761), the index grew from 10.65 to 10.70 MB, and the index format is version 3.
+
+What was checked, and how each check was shown to be able to fail:
+
+- Engine and index unit tests for include, exclude, exclude-only, `$to=` with
+  `$domain=`, and an exception rule. With the index's `$to=` test switched off,
+  exactly the new test fails.
+- The all-rules differential on the full downloaded list: 651,308 probes over
+  128,682 rules, 0 mismatches. With the index's `$to=` test switched off the same
+  differential reports 82. (On the shipped seed list it reported 0 even then,
+  because that list has no `$to=` rules; the check is now run on the full list too.)
+- Real traffic, 9,591 requests: engine, index and Brave still agree on every one.
+- Brave as an oracle, on 268 requests built from 112 real `$to=` rules (one request
+  at a host the rule admits, one at a host it does not): Zephyrus's engine and
+  index agree with each other on all of them, and block 173. Brave blocks 2. On six
+  hand-made cases Brave allows `||tonly.example^$doc,to=example` for a page at
+  `tonly.example`, which the rule says to block, so **adblock-rust 0.13.5 ignores
+  `$to=` rules**. 172 of the 173 differences are those. The other is a regex rule
+  that Zephyrus does not read yet (next).
