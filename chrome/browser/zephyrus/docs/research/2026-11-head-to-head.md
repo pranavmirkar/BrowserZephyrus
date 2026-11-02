@@ -65,3 +65,27 @@ Reproduce: `research/h2h_crawl.py` (needs Zephyrus), then run the test with
 `ZEPHYRUS_H2H_LIST`, `ZEPHYRUS_H2H_CORPUS` and `ZEPHYRUS_H2H_OUT` set, then
 `cargo run --release --bin h2h -- <out>/preprocessed.txt <corpus> <out>` in
 `research/brave_compare`.
+
+## Addendum: tracking-parameter removal costs less than it looks
+
+Brave's engine reports a rewritten URL from the same call (that is how it supports
+`$removeparam`), and the list Brave was given contains the same rules, so a fair
+total for Zephyrus has to add the cost of doing the same. (I did not measure how
+many of the rules Brave applies, only its whole call.) Zephyrus now removes
+tracking parameters (a built-in set of about 25 plus the 251 usable `$removeparam`
+rules of the lists; 20 more are skipped because they need a regex lookahead, which
+RE2 does not have, or are shapes that would be unsafe), by answering the request
+with a redirect to the same address without them.
+
+On the same 9,591 recorded requests: 4,469 carry a query string. Run on all of
+them the removal costs a mean of 2.08 µs, but the proxy only asks for a request
+that was **not blocked**, and for those it costs **0.54 µs on average, 0.29 µs
+averaged over all requests**. Together with matching that is about 4.2 µs per
+request against Brave's 6.56 µs for its whole call on the same list. A crawl of home
+pages removes nothing from the requests that are not blocked, because a tracker
+URL that carries `gclid` is blocked first; the feature matters on the link you click
+or paste, which a crawl by typed address does not exercise. That is measured live
+instead (`research/ab_params.py`): a navigation and a fetch and an
+image all arrive cleaned, `id`, `state`, `code`, `ref` and `source` are untouched,
+the fragment survives, history keeps one entry, and
+`--disable-features=ZephyrusAdblockStripTrackingParams` restores the original.

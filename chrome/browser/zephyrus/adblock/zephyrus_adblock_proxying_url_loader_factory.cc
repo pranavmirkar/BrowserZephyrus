@@ -5,6 +5,7 @@
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_proxying_url_loader_factory.h"
 
 #include "base/functional/bind.h"
+#include "chrome/browser/zephyrus/adblock/zephyrus_adblock_param_redirect.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service_factory.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_tab_helper.h"
@@ -153,6 +154,17 @@ void ZephyrusAdblockProxyingURLLoaderFactory::CreateLoaderAndStart(
               std::move(client), traffic_annotation);
 }
 
+void ZephyrusAdblockProxyingURLLoaderFactory::RestartAfterParamStrip(
+    mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver,
+    int32_t request_id,
+    uint32_t options,
+    const network::ResourceRequest& request,
+    mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+    const net::MutableNetworkTrafficAnnotationTag& traffic_annotation) {
+  StartLoader(std::move(loader_receiver), request_id, options, request,
+              std::move(client), traffic_annotation);
+}
+
 void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
     mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver,
     int32_t request_id,
@@ -183,6 +195,26 @@ void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
     client_remote->OnComplete(
         network::URLLoaderCompletionStatus(net::ERR_BLOCKED_BY_CLIENT));
     return;
+  }
+
+  // Tracking parameters (utm_*, fbclid, gclid, ...): hand the request back as
+  // a redirect to the same address without them. Only loads that can follow a
+  // redirect, and only GETs; the cleaned address is checked again when it comes
+  // back through here, so a rule cannot loop and the block lists still apply.
+  if (service_ && request.method == "GET" &&
+      request.url.SchemeIsHTTPOrHTTPS() &&
+      (request.mode == network::mojom::RequestMode::kNavigate ||
+       request.redirect_mode == network::mojom::RedirectMode::kFollow)) {
+    if (std::optional<GURL> cleaned = service_->StripTrackingParams(
+            request.url, initiator, MapDestination(request.destination))) {
+      ZephyrusAdblockParamRedirect::Start(
+          std::move(loader_receiver), request_id, options, request,
+          std::move(client), traffic_annotation, *cleaned,
+          base::BindOnce(
+              &ZephyrusAdblockProxyingURLLoaderFactory::RestartAfterParamStrip,
+              weak_factory_.GetWeakPtr()));
+      return;
+    }
   }
 
   // Nothing recorded here. The outcome of an unblocked request is not known

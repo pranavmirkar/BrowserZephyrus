@@ -29,6 +29,8 @@ source_set("engines") {
     "adblock_filter_engine.h",
     "adblock_list_util.cc",
     "adblock_list_util.h",
+    "adblock_param_filter.cc",
+    "adblock_param_filter.h",
     "adblock_scriptlet_engine.cc",
     "adblock_scriptlet_engine.h",
     "adblock_shared_index.cc",
@@ -38,7 +40,10 @@ source_set("engines") {
     "adblock_zindex.cc",
     "adblock_zindex.h",
   ]
-  deps = [ "//net" ]
+  deps = [
+    "//net",
+    "//third_party/re2",
+  ]
   public_deps = [
     "//base",
     "//url",
@@ -51,6 +56,7 @@ test("zephyrus_adblock_engine_unittests") {
     "adblock_filter_engine_unittest.cc",
     "adblock_list_features_unittest.cc",
     "adblock_matcher_perftest.cc",
+    "adblock_param_filter_unittest.cc",
     "adblock_shared_index_unittest.cc",
     "adblock_startup_gate_unittest.cc",
     "adblock_zindex_unittest.cc",
@@ -67,6 +73,8 @@ test("zephyrus_adblock_engine_unittests") {
 
 source_set("adblock") {
   sources = [
+    "zephyrus_adblock_param_redirect.cc",
+    "zephyrus_adblock_param_redirect.h",
     "zephyrus_adblock_proxying_url_loader_factory.cc",
     "zephyrus_adblock_proxying_url_loader_factory.h",
     "zephyrus_adblock_scriptlet_host.cc",

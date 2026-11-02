@@ -77,6 +77,15 @@ class ZephyrusAdblockProxyingURLLoaderFactory
 
   void OnTargetFactoryError();
 
+  // Starts the real request for a redirect that removed tracking parameters.
+  void RestartAfterParamStrip(
+      mojo::PendingReceiver<network::mojom::URLLoader> loader_receiver,
+      int32_t request_id,
+      uint32_t options,
+      const network::ResourceRequest& request,
+      mojo::PendingRemote<network::mojom::URLLoaderClient> client,
+      const net::MutableNetworkTrafficAnnotationTag& traffic_annotation);
+
   // The part of CreateLoaderAndStart that checks the request against the lists
   // and starts it. Runs at once, or after the startup gate releases the
   // request (see ZephyrusAdblockService::RunWhenNetworkRulesReady).

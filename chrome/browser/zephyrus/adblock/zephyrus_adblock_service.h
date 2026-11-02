@@ -20,6 +20,7 @@
 #include "base/timer/timer.h"
 #include "chrome/browser/zephyrus/adblock/adblock_cosmetic_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
+#include "chrome/browser/zephyrus/adblock/adblock_param_filter.h"
 #include "chrome/browser/zephyrus/adblock/adblock_scriptlet_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_shared_index.h"
 #include "chrome/browser/zephyrus/adblock/adblock_startup_gate.h"
@@ -135,6 +136,16 @@ class ZephyrusAdblockService : public KeyedService {
   }
   void RunWhenNetworkRulesReady(base::OnceClosure callback);
 
+  // Tracking-parameter removal (see AdblockParamFilter): `url` without the
+  // parameters that only say who sent you, or nullopt when there is nothing to
+  // remove (almost always), the feature or the blocker is off, or the site is on
+  // the allowlist. `initiator` is the page making the request (empty for a page
+  // load), `type` the kind of request.
+  std::optional<GURL> StripTrackingParams(const GURL& url,
+                                          const GURL& initiator,
+                                          ResourceType type);
+  int total_params_stripped() const { return total_params_stripped_; }
+
   int total_blocked() const { return total_blocked_; }
   size_t rule_count() const { return rule_count_; }
 
@@ -150,6 +161,7 @@ class ZephyrusAdblockService : public KeyedService {
     std::unique_ptr<AdblockCosmeticEngine> cosmetic;
     std::unique_ptr<AdblockScriptletEngine> scriptlet;
     scoped_refptr<const AdblockSharedIndex> shared_index;
+    std::unique_ptr<AdblockParamFilter> params;
     // Identifies the network rules' list text; 0 when the compiled index is
     // off or no list could be read.
     uint64_t list_key = 0;
@@ -200,6 +212,10 @@ class ZephyrusAdblockService : public KeyedService {
   // could not be built.
   scoped_refptr<const AdblockSharedIndex> index_;
   std::unique_ptr<AdblockStartupGate> startup_gate_;
+  // The `$removeparam` rules and the built-in tracking parameters. Starts as the
+  // built-ins alone, so even the first page load of a session is cleaned.
+  std::unique_ptr<const AdblockParamFilter> param_filter_;
+  int total_params_stripped_ = 0;
 
   // Shared with the thread that is building the index from it.
   std::shared_ptr<AdblockFilterEngine> engine_;

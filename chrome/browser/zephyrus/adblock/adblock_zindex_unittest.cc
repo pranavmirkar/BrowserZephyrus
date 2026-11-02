@@ -12,6 +12,7 @@
 #include "chrome/browser/zephyrus/adblock/adblock_zindex.h"
 
 #include <algorithm>
+#include <map>
 #include <cstdio>
 #include <memory>
 #include <random>
@@ -27,6 +28,7 @@
 #include "base/time/time.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
+#include "chrome/browser/zephyrus/adblock/adblock_param_filter.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -546,6 +548,81 @@ TEST(AdblockZIndexTest, HeadToHeadCorpus) {
           [&](const Row& r) { return index.ShouldBlock(r.url, r.page, r.type); },
           "zeph_index.txt");
   std::printf("  index blob %.2f MB\n\n", blob->size() / 1e6);
+
+  // Tracking-parameter removal on the same requests: what it costs, and what it
+  // would take off these real pages.
+  const base::TimeTicks p0 = base::TimeTicks::Now();
+  AdblockParamFilter params;
+  params.AddBuiltInRules();
+  params.AddRules(list);
+  const base::TimeDelta param_build = base::TimeTicks::Now() - p0;
+  size_t with_query = 0;
+  size_t stripped = 0;
+  std::map<std::string, int> removed_names;
+  std::vector<std::string> examples;
+  std::vector<double> micros;
+  for (int pass = 0; pass < 3; ++pass) {
+    for (const Row& r : rows) {
+      // A blocked request never gets as far as being cleaned.
+      if (index.ShouldBlock(r.url, r.page, r.type)) {
+        continue;
+      }
+      const base::TimeTicks t0 = base::TimeTicks::Now();
+      const std::optional<GURL> cleaned = params.Strip(r.url, r.page, r.type);
+      micros.push_back((base::TimeTicks::Now() - t0).InMicrosecondsF());
+      if (pass != 0) {
+        continue;
+      }
+      with_query += r.url.has_query();
+      if (!cleaned) {
+        continue;
+      }
+      ++stripped;
+      // which parameter names went
+      for (const std::string_view piece : base::SplitStringPiece(
+               r.url.query(), "&", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+        const std::string_view name = piece.substr(0, piece.find('='));
+        if (cleaned->query().find(piece) == std::string_view::npos) {
+          ++removed_names[std::string(name)];
+        }
+      }
+      if (examples.size() < 6) {
+        examples.push_back(r.url.spec().substr(0, 150) + "\n      -> " +
+                           cleaned->spec().substr(0, 150));
+      }
+    }
+  }
+  std::sort(micros.begin(), micros.end());
+  double sum = 0;
+  for (double m : micros) {
+    sum += m;
+  }
+  std::printf(
+      "=== Tracking-parameter removal on the same %zu requests ===\n"
+      "  rules %zu (%zu skipped), built in %.1f ms\n"
+      "  cost per request: mean %.2f us  p50 %.2f  p99 %.2f  p99.9 %.2f\n"
+      "  %zu of %zu requests carry a query; %zu (%.1f%%) had parameters removed\n",
+      rows.size(), params.rule_count(), params.skipped_count(),
+      param_build.InMillisecondsF(), sum / micros.size(),
+      micros[micros.size() / 2], micros[micros.size() * 99 / 100],
+      micros[micros.size() * 999 / 1000], with_query, rows.size(), stripped,
+      100.0 * stripped / rows.size());
+  std::vector<std::pair<int, std::string>> ranked;
+  for (const auto& [name, count] : removed_names) {
+    ranked.emplace_back(count, name);
+  }
+  std::sort(ranked.rbegin(), ranked.rend());
+  std::printf("  averaged over ALL %zu requests (blocked ones skip it): %.2f us\n",
+              rows.size(), sum / 3 / rows.size());
+  std::printf("  most removed:");
+  for (size_t i = 0; i < ranked.size() && i < 12; ++i) {
+    std::printf(" %s x%d", ranked[i].second.c_str(), ranked[i].first);
+  }
+  std::printf("\n");
+  for (const std::string& e : examples) {
+    std::printf("    %s\n", e.c_str());
+  }
+  std::printf("\n");
 }
 
 TEST(AdblockZIndexTest, ACorruptedBlobIsRejectedOrHarmless) {

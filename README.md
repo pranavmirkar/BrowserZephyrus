@@ -72,6 +72,7 @@ Zephyrus is an India-first fork: it understands Hinglish voice commands, offers 
 
 ### Privacy
 - Built-in ad and tracker blocking, cookie-banner removal, Secure DNS
+- **Tracking-parameter removal:** `utm_*`, `fbclid`, `gclid` and the like are stripped from a link before the page is requested, so the site (and anyone you share the URL with) never learns who sent you. Parameters that carry state (`id`, `q`, `code`, `state`) are left alone
 - **Shield** popup per site and a **privacy report**: companies, third-party domains, fingerprinting attempts
 - Fingerprint randomization against audio, WebGL and font probing
 - **Private Workspace:** separate storage, erased when you close it

@@ -410,7 +410,13 @@ ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
               << " trusted scriptlet rule(s) from third-party lists";
     }
   }
+  auto params = std::make_unique<AdblockParamFilter>();
+  params->AddBuiltInRules();
+  if (read) {
+    params->AddRules(contents);
+  }
   ZephyrusAdblockService::BuiltEngines built;
+  built.params = std::move(params);
   built.network = std::move(network);
   built.cosmetic = std::move(cosmetic);
   built.scriptlet = std::move(scriptlet);
@@ -504,6 +510,12 @@ ZephyrusAdblockService::ZephyrusAdblockService(
                           base::Value(false));
   }
 
+  {
+    auto builtin = std::make_unique<AdblockParamFilter>();
+    builtin->AddBuiltInRules();
+    param_filter_ = std::move(builtin);
+  }
+
   // Requests wait for the full list (see network_rules_ready()) unless the
   // blocker is off, in which case there is nothing to wait for.
   startup_gate_ = std::make_unique<AdblockStartupGate>(
@@ -542,6 +554,26 @@ ZephyrusAdblockService::ZephyrusAdblockService(
 }
 
 ZephyrusAdblockService::~ZephyrusAdblockService() = default;
+
+std::optional<GURL> ZephyrusAdblockService::StripTrackingParams(
+    const GURL& url,
+    const GURL& initiator,
+    ResourceType type) {
+  if (!enabled_ || !param_filter_ ||
+      !base::FeatureList::IsEnabled(kZephyrusAdblockStripTrackingParams)) {
+    return std::nullopt;
+  }
+  // A page load is judged by the site being opened, a subresource by the page
+  // that asked for it: the allowlist is "this site is left alone".
+  if (IsAllowlisted(type == kTypeDocument ? url : initiator)) {
+    return std::nullopt;
+  }
+  std::optional<GURL> cleaned = param_filter_->Strip(url, initiator, type);
+  if (cleaned) {
+    ++total_params_stripped_;
+  }
+  return cleaned;
+}
 
 void ZephyrusAdblockService::RunWhenNetworkRulesReady(
     base::OnceClosure callback) {
@@ -770,6 +802,12 @@ void ZephyrusAdblockService::OnFullFilterListLoaded(BuiltEngines built) {
           base::BindOnce(&ZephyrusAdblockService::OnIndexBuilt,
                          weak_factory_.GetWeakPtr(), built.list_key));
     }
+  }
+  if (built.params) {
+    VLOG(1) << "[Zephyrus] adblock: tracking-parameter rules: "
+            << built.params->rule_count() << " ("
+            << built.params->skipped_count() << " skipped)";
+    param_filter_ = std::move(built.params);
   }
   if (built.cosmetic) {
     cosmetic_engine_ = std::move(built.cosmetic);

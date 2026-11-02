@@ -75,6 +75,10 @@ struct FilterRule {
   std::vector<std::string> domains_excluded;  // $domain=~b.com
   // $denyallow=a.com|b.com: the rule does not apply to requests TO these.
   std::vector<std::string> denyallow;
+  // An opaque number the caller attached with AddTaggedRule (0 = none). Used by
+  // AdblockParamFilter to find which `$removeparam` spec a matching rule stands
+  // for. Never read by the matcher, and not part of the compiled index.
+  uint32_t tag = 0;
 };
 
 // A compiled set of network filter rules with fast request matching.
@@ -119,6 +123,21 @@ class AdblockFilterEngine {
   size_t block_rule_count() const { return block_rule_count_; }
   size_t exception_rule_count() const { return exception_rule_count_; }
 
+  // Parses ONE line like AddRules, and stamps the rule it produces with `tag`.
+  // A `*`-untyped rule added this way also reaches page loads (it is for rules
+  // that are not blocks, such as `$removeparam`, where a navigation is the
+  // case that matters). Returns whether a rule was added.
+  bool AddTaggedRule(std::string_view line, uint32_t tag);
+
+  // Calls `visit` for EVERY block or exception rule that matches this request,
+  // not only the first. For callers that need to know which rules apply (the
+  // `$removeparam` rules and their exceptions), not just whether one does.
+  void ForEachMatchingRule(const GURL& url,
+                           const GURL& initiator,
+                           ResourceType type,
+                           base::FunctionRef<void(const FilterRule&)> visit)
+      const;
+
   // Which of the engine's four rule sets a rule lives in.
   enum class RuleGroup { kBlock, kException, kImportant, kDocument };
 
@@ -159,7 +178,11 @@ class AdblockFilterEngine {
                       std::string_view initiator_host,
                       bool third_party,
                       ResourceType type,
-                      uint32_t* collect_exceptions = nullptr) const;
+                      uint32_t* collect_exceptions = nullptr,
+                      const base::FunctionRef<void(const FilterRule&)>*
+                          on_each_match = nullptr) const;
+  // Stamps the next rule AddParsedRule files; see AddTaggedRule.
+  uint32_t pending_tag_ = 0;
 
   size_t block_rule_count_ = 0;
   size_t exception_rule_count_ = 0;

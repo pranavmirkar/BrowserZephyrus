@@ -449,6 +449,15 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
 }
 
 void AdblockFilterEngine::AddParsedRule(FilterRule rule) {
+  if (pending_tag_ != 0) {
+    rule.tag = pending_tag_;
+    if (rule.type_mask == kTypeAll) {
+      // An untyped block rule is kept off page loads (see
+      // FilterRule::pure_host). A tagged rule is not a block; name every type
+      // so a navigation is one.
+      rule.type_mask = kTypeEverything;
+    }
+  }
   const bool exception = rule.is_exception;
   if (exception) {
     ++exception_rule_count_;
@@ -496,7 +505,8 @@ bool AdblockFilterEngine::AnyRuleMatches(
     std::string_view initiator_host,
     bool third_party,
     ResourceType type,
-    uint32_t* collect_exceptions) const {
+    uint32_t* collect_exceptions,
+    const base::FunctionRef<void(const FilterRule&)>* on_each_match) const {
   // Host boundaries within `url_lower`, for "||" hostname-anchored matching.
   size_t host_start = url_lower.find("://");
   host_start = (host_start == std::string::npos) ? 0 : host_start + 3;
@@ -611,10 +621,16 @@ bool AdblockFilterEngine::AnyRuleMatches(
   };
 
   bool matched = false;
+  // Collecting document exceptions or visiting every match means looking at
+  // every candidate; otherwise the first match is the answer.
+  const bool visit_all = collect_exceptions || on_each_match;
   auto on_match = [&](const FilterRule& rule) {
     matched = true;
     if (collect_exceptions) {
       *collect_exceptions |= rule.document_exceptions;
+    }
+    if (on_each_match) {
+      (*on_each_match)(rule);
     }
   };
   for (std::string_view token : ExtractTokens(url_lower)) {
@@ -625,7 +641,7 @@ bool AdblockFilterEngine::AnyRuleMatches(
     for (const FilterRule& rule : it->second) {
       if (rule_matches(rule)) {
         on_match(rule);
-        if (!collect_exceptions) {
+        if (!visit_all) {
           return true;
         }
       }
@@ -634,7 +650,7 @@ bool AdblockFilterEngine::AnyRuleMatches(
   for (const FilterRule& rule : untokenized) {
     if (rule_matches(rule)) {
       on_match(rule);
-      if (!collect_exceptions) {
+      if (!visit_all) {
         return true;
       }
     }
@@ -694,6 +710,36 @@ uint32_t AdblockFilterEngine::GetDocumentExceptions(
                  base::ToLowerASCII(document_url.spec()), document_url.host(),
                  /*third_party=*/false, kTypeDocument, &exceptions);
   return exceptions;
+}
+
+bool AdblockFilterEngine::AddTaggedRule(std::string_view line, uint32_t tag) {
+  pending_tag_ = tag;
+  const size_t added = AddRules(line);
+  pending_tag_ = 0;
+  return added > 0;
+}
+
+void AdblockFilterEngine::ForEachMatchingRule(
+    const GURL& url,
+    const GURL& initiator,
+    ResourceType type,
+    base::FunctionRef<void(const FilterRule&)> visit) const {
+  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
+    return;
+  }
+  std::string_view initiator_host;
+  bool third_party = false;
+  if (initiator.is_valid() && !initiator.host().empty()) {
+    initiator_host = initiator.host();
+    third_party = !net::registry_controlled_domains::SameDomainOrHost(
+        url, initiator,
+        net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
+  }
+  const std::string url_lower = base::ToLowerASCII(url.spec());
+  AnyRuleMatches(block_buckets_, untokenized_block_, url_lower, initiator_host,
+                 third_party, type, nullptr, &visit);
+  AnyRuleMatches(exception_buckets_, untokenized_exception_, url_lower,
+                 initiator_host, third_party, type, nullptr, &visit);
 }
 
 void AdblockFilterEngine::ForEachRule(
