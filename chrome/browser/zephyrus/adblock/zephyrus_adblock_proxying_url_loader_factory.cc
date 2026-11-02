@@ -6,6 +6,7 @@
 
 #include "base/functional/bind.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_param_redirect.h"
+#include "chrome/browser/zephyrus/adblock/zephyrus_adblock_stand_in.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service_factory.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_tab_helper.h"
@@ -219,6 +220,23 @@ void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
       }
     }
     RecordPrivacyEvent(request.url, /*blocked=*/true);
+
+    // A rule may name a stand-in for what it blocks (`$redirect=`): a script
+    // that does nothing, a transparent pixel, an ad manager that has no ads.
+    // The page gets a working answer instead of an error and carries on. Never
+    // for a page load, which has nothing to be a stand-in for.
+    if (request.destination != network::mojom::RequestDestination::kDocument) {
+      if (const std::optional<uint16_t> stand_in =
+              service_->StandInFor(request.url, initiator, type)) {
+        if (const RedirectResource* resource =
+                RedirectResourceById(*stand_in)) {
+          ZephyrusAdblockStandIn::Start(std::move(loader_receiver),
+                                        std::move(client), request, *resource,
+                                        type);
+          return;
+        }
+      }
+    }
 
     // Fail the request without contacting the network.
     mojo::Remote<network::mojom::URLLoaderClient> client_remote(

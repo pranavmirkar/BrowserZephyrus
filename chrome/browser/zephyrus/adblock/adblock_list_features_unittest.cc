@@ -14,6 +14,7 @@
 
 #include "chrome/browser/zephyrus/adblock/adblock_cosmetic_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
+#include "chrome/browser/zephyrus/adblock/adblock_redirect_resources.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "chrome/browser/zephyrus/adblock/adblock_scriptlet_engine.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -112,16 +113,23 @@ TEST(AdblockListFeaturesTest, DenyallowSparesTheListedHosts) {
                                   GURL("https://warez.example/"), kTypeScript));
 }
 
-TEST(AdblockListFeaturesTest, EmptyRedirectBlocksSurrogateRedirectDoesNot) {
+TEST(AdblockListFeaturesTest, ARedirectRuleBlocksAndNamesItsStandIn) {
+  // These used to be told apart: an "empty" stand-in blocked, one that the page
+  // calls into (the IMA SDK) was dropped, so the request went through. Both
+  // block now, and each says what to serve instead.
   AdblockFilterEngine engine;
   engine.AddRules(
       "||stats.example/a.js$script,redirect=noopjs:10\n"
       "||imasdk.example/ima3.js$script,redirect=google-ima.js");
-  EXPECT_TRUE(engine.ShouldBlock(GURL("https://stats.example/a.js"),
-                                 GURL("https://news.example/"), kTypeScript));
-  // Blocking the IMA SDK without its surrogate would break the player.
-  EXPECT_FALSE(engine.ShouldBlock(GURL("https://imasdk.example/ima3.js"),
-                                  GURL("https://news.example/"), kTypeScript));
+  const GURL page("https://news.example/");
+  const GURL stats("https://stats.example/a.js");
+  const GURL ima("https://imasdk.example/ima3.js");
+  EXPECT_TRUE(engine.ShouldBlock(stats, page, kTypeScript));
+  EXPECT_TRUE(engine.ShouldBlock(ima, page, kTypeScript));
+  EXPECT_EQ(engine.ResolveRedirect(stats, page, kTypeScript),
+            FindRedirectResource("noop.js")->id);
+  EXPECT_EQ(engine.ResolveRedirect(ima, page, kTypeScript),
+            FindRedirectResource("google-ima.js")->id);
 }
 
 TEST(AdblockListFeaturesTest, EntityDomainOptionMatchesAnySuffix) {

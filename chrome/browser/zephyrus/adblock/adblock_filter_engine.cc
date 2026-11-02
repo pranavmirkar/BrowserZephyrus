@@ -7,9 +7,11 @@
 #include <algorithm>
 #include <optional>
 
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
+#include "chrome/browser/zephyrus/adblock/adblock_redirect_resources.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
 
 namespace zephyrus_adblock {
@@ -231,28 +233,52 @@ bool HostInDomainList(std::string_view host,
   return false;
 }
 
-// `$redirect=` resources that are only an empty stand-in: blocking the request
-// outright gives the page the same nothing. Rules redirecting to a SURROGATE
-// (google-ima.js, googletagservices_gpt.js...) are different -- the page calls
-// into the fake -- so those stay unsupported rather than become a block that
-// breaks the player the surrogate was keeping alive.
-bool IsEmptyRedirect(std::string_view resource) {
-  // uBO appends a priority as ":N".
-  resource = resource.substr(0, resource.find(':'));
-  static constexpr std::string_view kEmpty[] = {
-      "noopjs",       "noop.js",       "nooptext",   "noop.txt",
-      "noopframe",    "noop.html",     "noopjson",   "noop.json",
-      "noopmp3-0.1s", "noop-0.1s.mp3", "noopmp4-1s", "noop-1s.mp4",
-      "1x1.gif",      "2x2.png",       "3x2.png",    "32x32.png",
-      "1x1-transparent.gif", "2x2-transparent.png", "3x2-transparent.png",
-      "32x32-transparent.png", "empty", "none",
-  };
-  for (std::string_view name : kEmpty) {
-    if (resource == name) {
-      return true;
-    }
+// Reads `redirect=name[:priority]` / `redirect-rule=name[:priority]` (and the
+// bare `redirect-rule` of an exception) into `rule`. False when the option is
+// one this engine does not act on, which drops the whole line:
+//  * a resource there is no stand-in for (the lists name them; an unknown name is
+//    discarded, as uBO does),
+//  * a `redirect=` exception (only `redirect-rule` exceptions are defined),
+//  * a negated option, or a priority that is not a number.
+// `redirect=none` is a plain block: the name that says "no stand-in".
+bool ParseRedirectOption(std::string_view opt, bool negate, FilterRule* rule) {
+  if (negate) {
+    return false;
   }
-  return false;
+  const bool only = opt.starts_with("redirect-rule");
+  std::string_view value = opt.substr(only ? 13 : 8);
+  if (!value.empty() && value.front() != '=') {
+    return false;  // `redirect-ruleX`, `redirectX`
+  }
+  if (rule->is_exception && !only) {
+    return false;
+  }
+  if (value.empty()) {
+    // A bare `redirect-rule` cancels every redirect the exception matches.
+    if (!rule->is_exception) {
+      return false;
+    }
+    rule->redirect_any = true;
+    return true;
+  }
+  value.remove_prefix(1);
+  std::string_view name = value.substr(0, value.find(':'));
+  int priority = 0;
+  if (value.size() > name.size() &&
+      !base::StringToInt(value.substr(name.size() + 1), &priority)) {
+    return false;
+  }
+  if (name == "none") {
+    return !only && !rule->is_exception;  // blocks, with nothing to serve
+  }
+  const RedirectResource* resource = FindRedirectResource(name);
+  if (!resource) {
+    return false;
+  }
+  rule->redirect_resource = resource->id;
+  rule->redirect_priority = static_cast<int8_t>(std::clamp(priority, -100, 100));
+  rule->redirect_only = only;
+  return true;
 }
 
 // For a `$badfilter` rule, the text of the rule it cancels (the same line
@@ -497,10 +523,12 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
         } else if ((opt == "specifichide" || opt == "shide") &&
                    rule.is_exception && !negate) {
           rule.document_exceptions |= kExceptSpecificHide;
-        } else if (opt.starts_with("redirect=") && !rule.is_exception &&
-                   IsEmptyRedirect(std::string_view(opt).substr(9))) {
-          // Blocking hands the page the same empty response the redirect
-          // would have; see IsEmptyRedirect.
+        } else if (opt == "redirect" || opt.starts_with("redirect=") ||
+                   opt == "redirect-rule" || opt.starts_with("redirect-rule=")) {
+          if (!ParseRedirectOption(opt, negate, &rule)) {
+            unsupported = true;
+            break;
+          }
         } else if (opt.starts_with("denyallow=") && !negate) {
           for (std::string_view d : base::SplitStringPiece(
                    std::string_view(opt).substr(10), "|",
@@ -573,6 +601,13 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
           regex_source.empty() || regex_source.size() > kMaxRegexLength) {
         continue;
       }
+      if (rule.redirect_only || rule.redirect_any ||
+          (rule.is_exception && rule.redirect_resource != kNoRedirectResource)) {
+        continue;  // a regex cannot carry a stand-in directive here
+      }
+      // `redirect=` on a regex blocks, as before; its stand-in is not served.
+      rule.redirect_resource = kNoRedirectResource;
+      rule.redirect_priority = 0;
       rule.is_regex = true;
       rule.pattern = std::move(regex_source);
       regex_rules_.push_back(std::move(rule));
@@ -627,12 +662,6 @@ void AdblockFilterEngine::AddParsedRule(FilterRule rule) {
       rule.type_mask = kTypeEverything;
     }
   }
-  const bool exception = rule.is_exception;
-  if (exception) {
-    ++exception_rule_count_;
-  } else {
-    ++block_rule_count_;
-  }
   std::string keyword =
       FindKeyword(rule.pattern, rule.anchor != FilterRule::kAnchorNone,
                   rule.anchor_end);
@@ -644,6 +673,31 @@ void AdblockFilterEngine::AddParsedRule(FilterRule rule) {
       buckets[keyword].push_back(std::move(r));
     }
   };
+  if (rule.redirect_resource != kNoRedirectResource || rule.redirect_any) {
+    // A stand-in directive. An exception for one only cancels directives; it
+    // never unblocks. `redirect=` is a block rule AND a directive: the directive
+    // is filed here and the rest of this function files the block half.
+    if (rule.is_exception) {
+      file(redirect_exception_buckets_, untokenized_redirect_exception_,
+           std::move(rule));
+      return;
+    }
+    ++redirect_rule_count_;
+    const bool only = rule.redirect_only;
+    FilterRule directive = rule;
+    file(redirect_buckets_, untokenized_redirect_, std::move(directive));
+    if (only) {
+      return;  // `redirect-rule=` blocks nothing itself
+    }
+    rule.redirect_resource = kNoRedirectResource;
+    rule.redirect_priority = 0;
+  }
+  const bool exception = rule.is_exception;
+  if (exception) {
+    ++exception_rule_count_;
+  } else {
+    ++block_rule_count_;
+  }
   if (rule.document_exceptions) {
     // `@@||x^$document,subdocument` both allowlists pages on x AND is an
     // ordinary exception for x's frames: file one copy per role.
@@ -853,6 +907,48 @@ bool AdblockFilterEngine::AddTaggedRule(std::string_view line, uint32_t tag) {
   return added > 0;
 }
 
+std::optional<uint16_t> AdblockFilterEngine::ResolveRedirect(
+    const GURL& url,
+    const GURL& initiator,
+    ResourceType type) const {
+  if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS() ||
+      (redirect_buckets_.empty() && untokenized_redirect_.empty())) {
+    return std::nullopt;
+  }
+  std::string_view initiator_host;
+  bool third_party = false;
+  if (initiator.is_valid() && !initiator.host().empty()) {
+    initiator_host = initiator.host();
+    third_party = !net::registry_controlled_domains::SameDomainOrHost(
+        url, initiator,
+        net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
+  }
+  const std::string url_lower = base::ToLowerASCII(url.spec());
+  std::vector<RedirectCandidate> candidates;
+  const auto add_candidate = [&](const FilterRule& rule) {
+    candidates.push_back({rule.redirect_resource, rule.redirect_priority});
+  };
+  const base::FunctionRef<void(const FilterRule&)> add_candidate_ref(
+      add_candidate);
+  AnyRuleMatches(redirect_buckets_, untokenized_redirect_, url_lower,
+                 initiator_host, third_party, type, nullptr,
+                 &add_candidate_ref);
+  if (candidates.empty()) {
+    return std::nullopt;
+  }
+  std::vector<uint16_t> exceptions;
+  const auto add_exception = [&](const FilterRule& rule) {
+    exceptions.push_back(rule.redirect_any ? kNoRedirectResource
+                                           : rule.redirect_resource);
+  };
+  const base::FunctionRef<void(const FilterRule&)> add_exception_ref(
+      add_exception);
+  AnyRuleMatches(redirect_exception_buckets_, untokenized_redirect_exception_,
+                 url_lower, initiator_host, third_party, type, nullptr,
+                 &add_exception_ref);
+  return ChooseRedirect(candidates, exceptions, type);
+}
+
 void AdblockFilterEngine::ForEachMatchingRule(
     const GURL& url,
     const GURL& initiator,
@@ -894,6 +990,9 @@ void AdblockFilterEngine::ForEachRule(
   walk(RuleGroup::kException, exception_buckets_, untokenized_exception_);
   walk(RuleGroup::kImportant, important_buckets_, untokenized_important_);
   walk(RuleGroup::kDocument, document_buckets_, untokenized_document_);
+  walk(RuleGroup::kRedirect, redirect_buckets_, untokenized_redirect_);
+  walk(RuleGroup::kRedirectException, redirect_exception_buckets_,
+       untokenized_redirect_exception_);
 }
 
 }  // namespace zephyrus_adblock

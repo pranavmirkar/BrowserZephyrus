@@ -82,6 +82,11 @@ class AdblockSharedIndex
   uint32_t GetDocumentExceptions(const GURL& document_url) const {
     return index_.GetDocumentExceptions(document_url);
   }
+  std::optional<uint16_t> ResolveRedirect(const GURL& url,
+                                          const GURL& initiator,
+                                          ResourceType type) const {
+    return index_.ResolveRedirect(url, initiator, type);
+  }
 
   size_t block_rule_count() const { return block_rule_count_; }
   size_t exception_rule_count() const { return exception_rule_count_; }

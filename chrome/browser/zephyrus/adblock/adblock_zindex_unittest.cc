@@ -328,6 +328,8 @@ void CheckAgreementOnEveryRule(const std::string& list) {
   size_t probes = 0;
   size_t mismatches = 0;
   size_t blocked = 0;
+  size_t redirected = 0;
+  size_t redirect_mismatches = 0;
   base::TimeDelta engine_time;
   base::TimeDelta index_time;
   auto compare = [&](const std::string& url, const std::string& initiator,
@@ -348,6 +350,15 @@ void CheckAgreementOnEveryRule(const std::string& list) {
         ADD_FAILURE() << "engine=" << a << " index=" << b << " url=" << url
                       << " initiator=" << initiator << " type=" << type;
       }
+    }
+    // The stand-in a blocked request would be served must be the same one.
+    const std::optional<uint16_t> ra = engine->ResolveRedirect(u, i, type);
+    const std::optional<uint16_t> rb = index.ResolveRedirect(u, i, type);
+    redirected += ra.has_value();
+    if (ra != rb && ++redirect_mismatches <= 20) {
+      ADD_FAILURE() << "redirect engine=" << ra.value_or(0)
+                    << " index=" << rb.value_or(0) << " url=" << url
+                    << " initiator=" << initiator << " type=" << type;
     }
   };
 
@@ -388,6 +399,7 @@ void CheckAgreementOnEveryRule(const std::string& list) {
     }
   }
   EXPECT_EQ(mismatches, 0u);
+  EXPECT_EQ(redirect_mismatches, 0u);
   EXPECT_EQ(document_mismatches, 0u);
   EXPECT_GT(blocked, probes / 10) << "the probes should hit real rules";
 
@@ -406,6 +418,8 @@ void CheckAgreementOnEveryRule(const std::string& list) {
       engine_time.InMicrosecondsF() / probes,
       index_time.InMicrosecondsF() / probes,
       engine_time.InMicrosecondsF() / index_time.InMicrosecondsF());
+  std::printf("  stand-ins           : %zu probes served one, %zu disagreements\n\n",
+              redirected, redirect_mismatches);
 }
 
 TEST(AdblockZIndexTest, AgreesWithTheEngineOnEveryRuleOfTheShippedList) {
@@ -625,6 +639,30 @@ TEST(AdblockZIndexTest, HeadToHeadCorpus) {
             return index.ShouldBlock(r.url, r.page, r.type, &h);
           },
           "zeph_index_regex.txt");
+  {
+    // Choosing the stand-in costs something only for a request that is blocked.
+    std::vector<const Row*> blocked_rows;
+    for (const Row& r : rows) {
+      if (index.ShouldBlock(r.url, r.page, r.type)) {
+        blocked_rows.push_back(&r);
+      }
+    }
+    size_t served = 0;
+    for (const Row* r : blocked_rows) {  // warm up
+      served += index.ResolveRedirect(r->url, r->page, r->type).has_value();
+    }
+    const base::TimeTicks s0 = base::TimeTicks::Now();
+    for (int pass = 0; pass < 3; ++pass) {
+      for (const Row* r : blocked_rows) {
+        index.ResolveRedirect(r->url, r->page, r->type);
+      }
+    }
+    const double us = (base::TimeTicks::Now() - s0).InMicrosecondsF() /
+                      (3.0 * static_cast<double>(blocked_rows.size()));
+    std::printf("  stand-in lookup (blocked requests only): mean %.2f us over %zu "
+                "blocked, %zu of them get a stand-in\n",
+                us, blocked_rows.size(), served);
+  }
   measure("Zephyrus engine + regex",
           [&](const Row& r) {
             const RegexHits h = regex->Match(r.url, r.page, r.type);

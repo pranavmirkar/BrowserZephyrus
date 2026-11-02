@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -92,6 +93,16 @@ struct FilterRule {
   // pattern for MatchAt. These never enter the keyword buckets or the compiled
   // index; AdblockRegexMatcher matches them.
   bool is_regex = false;
+  // `$redirect=name` / `$redirect-rule=name`: the stand-in (see
+  // adblock_redirect_resources.h) to serve instead of a request that is blocked.
+  // `redirect=` blocks as well; `redirect-rule=` only asks for a stand-in for
+  // requests something else blocks (`redirect_only`). On an exception rule
+  // (`@@...$redirect-rule[=name]`) it cancels the redirects it matches, all of
+  // them when `redirect_any`; it never unblocks anything.
+  uint16_t redirect_resource = 0;  // 0 = none
+  int8_t redirect_priority = 0;    // `redirect=name:N`; the highest wins
+  bool redirect_only = false;
+  bool redirect_any = false;
   // `$match-case`: the regex is case-sensitive. Only a regex rule may have it;
   // on any other rule the line is dropped, because the engine lowercases both
   // the URL and the pattern.
@@ -162,7 +173,17 @@ class AdblockFilterEngine {
   // (`@@||site^$generichide` and friends). 0 for nearly every page.
   uint32_t GetDocumentExceptions(const GURL& document_url) const;
 
+  // The stand-in to serve in place of `url`, which the lists block: the
+  // resource id (adblock_redirect_resources.h), or nullopt to just block it.
+  // Only meaningful for a request ShouldBlock() said to block. Of the
+  // directives that match and are not cancelled by an exception, the highest
+  // priority whose stand-in can answer this kind of request wins.
+  std::optional<uint16_t> ResolveRedirect(const GURL& url,
+                                          const GURL& initiator,
+                                          ResourceType type) const;
+
   size_t block_rule_count() const { return block_rule_count_; }
+  size_t redirect_rule_count() const { return redirect_rule_count_; }
   size_t exception_rule_count() const { return exception_rule_count_; }
 
   // Parses ONE line like AddRules, and stamps the rule it produces with `tag`.
@@ -181,7 +202,14 @@ class AdblockFilterEngine {
       const;
 
   // Which of the engine's four rule sets a rule lives in.
-  enum class RuleGroup { kBlock, kException, kImportant, kDocument };
+  enum class RuleGroup {
+    kBlock,
+    kException,
+    kImportant,
+    kDocument,
+    kRedirect,           // stand-in directives (redirect= and redirect-rule=)
+    kRedirectException,  // @@...$redirect-rule: cancels directives
+  };
 
   // Calls `visit` once for every rule the engine holds. `keyword` is the bucket
   // key the engine filed it under, empty for rules it could not key. This is
@@ -206,6 +234,11 @@ class AdblockFilterEngine {
   // Rules granting page-level exceptions, matched against the document URL.
   RuleBuckets document_buckets_;
   std::vector<FilterRule> untokenized_document_;
+  // Stand-in directives, and the exceptions that cancel them.
+  RuleBuckets redirect_buckets_;
+  std::vector<FilterRule> untokenized_redirect_;
+  RuleBuckets redirect_exception_buckets_;
+  std::vector<FilterRule> untokenized_redirect_exception_;
 
   // `/regex/` rules (block, exception and $important alike; each says which).
   std::vector<FilterRule> regex_rules_;
@@ -231,6 +264,7 @@ class AdblockFilterEngine {
 
   size_t block_rule_count_ = 0;
   size_t exception_rule_count_ = 0;
+  size_t redirect_rule_count_ = 0;
 };
 
 }  // namespace zephyrus_adblock

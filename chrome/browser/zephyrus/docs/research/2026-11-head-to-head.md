@@ -270,3 +270,72 @@ What was checked, and how each check was shown able to fail:
   referrer policy as it would have to the tracker, so it is never fuller. The kill switch
   restores the plain navigation. Tracking-parameter removal was re-run after the redirect
   change and still passes all 8 of its checks.
+
+## Addendum: `$redirect=` stand-ins, the biggest coverage hole where Brave was ahead
+
+A `redirect=` rule does not only refuse a file: it names a harmless substitute with the
+same shape, so a page that expected `googletag`, a `ga()` that runs its callbacks or an ad
+manager that answers at once keeps working. The lists carry 1,378 such rules (959
+`redirect=`, 419 `redirect-rule=`, plus 19 exceptions for them) naming 49 resources. Until
+now the engine did one of two bad things with them: 665 (the "empty" stand-ins) were plain
+blocks, which breaks pages, and **294 were dropped, so the real ad or tracker script
+loaded**; the 419 `redirect-rule=` lines and the exceptions were ignored. Brave's engine
+supports redirect resources.
+
+What was built:
+
+- **40 stand-ins and 24 aliases, written from scratch** from the public documentation of
+  each API (`redirect_resources/`; uBlock Origin's are GPL and the lists only name them).
+  Scripts: an IMA ad manager that answers at once and tells the player to resume, GPT with
+  its chained calls and command queue, GTM/analytics that run `eventCallback`/`hitCallback`,
+  `adsbygoogle`, Amazon APS, fingerprinting libraries that return one constant, anti-adblock
+  detectors that never detect, and so on; plus transparent images, silent audio, a 1 s video,
+  empty documents and VAST/VMAP stubs. `tools/gen_redirect_resources.py` builds the table;
+  resource ids are stored in the compiled index and are never renumbered.
+- **Semantics as uBlock Origin documents them:** `redirect=` is a block plus a directive,
+  `redirect-rule=` only a directive for requests something else blocks, `name:N` priority
+  (highest wins, then lowest id so the engine and the index choose alike), a named
+  `@@...$redirect-rule=name` cancels that stand-in and a nameless one all of them, none of
+  which ever unblocks; an unknown resource name drops the rule; `redirect=none` is a block.
+- **Index format 4:** two more rule groups and the stand-in id and priority in the rule
+  record's spare bytes. The stand-in is chosen only for a request that is blocked.
+- **The response is given under the original address** by a loader in the browser process
+  (`ZephyrusAdblockStandIn`): the page's Content-Security-Policy, which allowed that file,
+  still holds; `response_type` and the CORS headers are what the network stack would have
+  produced, so `fetch()` and credentialed XHR of a stand-in resolve; `no-store`; never for a
+  page load; a stand-in only answers the kinds of request it can (a picture is not handed to
+  a `<script>`). Kill switch: `--disable-features=ZephyrusAdblockStandIns`.
+- This Chromium build has no H.264 (`canPlayType` says so), so the video stand-in is
+  VP9-in-MP4, which every Chromium build plays.
+
+What was checked, and how each check was shown able to fail:
+
+- Every stand-in executed in `node` and used the way a page does (39 checks:
+  `tools/test_redirect_stubs.cjs`); 22 unit tests for the table and rules; **all 1,397
+  redirect options of the shipped list resolve to a stand-in** (0 unknown names).
+  With the index made to ignore redirect exceptions, exactly the three tests about
+  exceptions fail.
+- The all-rules differential on the full list now also compares the stand-in chosen:
+  660,428 probes, 0 mismatches, and the 8,421 probes served a stand-in agree between the
+  engine and the compiled index.
+- Real traffic, 9,591 requests: engine, index and Brave still agree on every one (4,467
+  blocked); the index is unchanged at about 3.9 us. Choosing the stand-in costs 3.3 us on a
+  blocked request and nothing on an allowed one; 106 of the 4,467 blocked real requests are
+  given one.
+- Brave as an oracle on 921 requests built from the real redirect rules: 859 blocked by
+  both. Zephyrus alone blocks 4: all four rules use `domain=site.*`, an entity wildcard
+  Brave's engine has never matched (hand-made case confirms). Brave alone blocks 1: a
+  `redirect-rule=` marked `important`, which Brave treats as a block and uBlock Origin's
+  documentation says is only a directive (hand-made case confirms).
+- **Live, in the browser** (`research/ab_standins.py`): a page requests, at hosts that do not
+  exist, one URL per stand-in. All 40 test rules and all 25 real rules the page can reach are
+  served: scripts fire `load` (not `error`) and the API the page expects exists, images
+  decode, stylesheets load, audio and video report their duration, and `fetch` and a
+  credentialed `XMLHttpRequest` get status 200 and the right body. With the kill switch none
+  is served. Tracking-parameter removal, link skipping and the regex rules were re-run on the
+  new proxy code and still pass.
+
+Not shown: that a real video player continues past our IMA stand-in (it is tested against the
+documented API, not against a live player), and iframes are only shown to load, because a
+blocked frame fires `load` too. Five rules need `method=` and three are malformed, so they
+still do nothing; a regex-pattern rule with `redirect=` still blocks but has no stand-in.

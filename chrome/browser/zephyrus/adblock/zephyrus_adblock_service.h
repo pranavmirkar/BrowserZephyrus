@@ -104,6 +104,14 @@ class ZephyrusAdblockService : public KeyedService {
                          ResourceType type) const;
   void NoteRequestBlocked() { ++total_blocked_; }
 
+  // The stand-in (adblock_redirect_resources.h) a request that is blocked should
+  // be answered with, or nullopt to refuse it plainly: the feature is off, no
+  // rule names one for this request, or the resource cannot answer this kind of
+  // request.
+  std::optional<uint16_t> StandInFor(const GURL& url,
+                                     const GURL& initiator,
+                                     ResourceType type) const;
+
   // Returns true if a pop-up/pop-under to `url` opened from `opener` should be
   // blocked (matched against $popup and general block rules).
   bool ShouldBlockPopup(const GURL& url, const GURL& opener);

@@ -20,6 +20,7 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
+#include "chrome/browser/zephyrus/adblock/adblock_redirect_resources.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_updater.h"
 #include "chrome/common/chrome_paths.h"
 #include "base/strings/string_util.h"
@@ -1063,6 +1064,18 @@ bool ZephyrusAdblockService::WouldBlockRequest(const GURL& url,
   }
   return index_ ? index_->ShouldBlock(url, initiator, type, &regex_hits)
                 : engine_->ShouldBlock(url, initiator, type, &regex_hits);
+}
+
+std::optional<uint16_t> ZephyrusAdblockService::StandInFor(
+    const GURL& url,
+    const GURL& initiator,
+    ResourceType type) const {
+  if (!base::FeatureList::IsEnabled(kZephyrusAdblockStandIns)) {
+    return std::nullopt;
+  }
+  return index_ ? index_->ResolveRedirect(url, initiator, type)
+                : engine_ ? engine_->ResolveRedirect(url, initiator, type)
+                          : std::nullopt;
 }
 
 bool ZephyrusAdblockService::ShouldBlockRequest(const GURL& url,

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/functional/function_ref.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "url/gurl.h"
 
@@ -44,12 +45,13 @@ namespace zephyrus_adblock {
 namespace zindex_format {
 
 inline constexpr uint32_t kMagic = 0x58444955;  // "UIDX"
-inline constexpr uint32_t kVersion = 3;  // 3: $to= lists in the domain pool
+inline constexpr uint32_t kVersion = 4;  // 4: redirect groups, stand-in id per rule
+                                          // 3: $to= lists in the domain pool
 // A rule's entry in the domain pool starts with this many counts (included,
 // excluded, denyallow, to-included, to-excluded); the (offset, length) pairs of
 // the strings follow in the same order.
 inline constexpr uint32_t kDomainCounts = 5;
-inline constexpr size_t kGroupCount = 4;
+inline constexpr size_t kGroupCount = 6;  // RuleGroup, in its order
 inline constexpr size_t kGramKinds = 3;  // n-grams of length 3, 4 and 5
 inline constexpr size_t kBitmapBytes = 8192;
 
@@ -63,7 +65,10 @@ struct Rule {
   uint16_t type_not;
   uint32_t dom_off;  // 0 = no domain lists; else offset into the domain pool.
   uint8_t doc_exc;
-  uint8_t pad[3];
+  // A redirect directive: the stand-in's id and priority. In the exception
+  // group, id 0 cancels every directive. Not read for any other group.
+  int8_t redirect_priority;
+  uint16_t redirect_resource;
   // One bit per whole token the URL must contain; (sig & ~url_sig) == 0 is a
   // free reject.
   uint32_t sig_lo;
@@ -161,6 +166,11 @@ class AdblockZIndex {
   // Same contract as AdblockFilterEngine::GetDocumentExceptions.
   uint32_t GetDocumentExceptions(const GURL& document_url) const;
 
+  // Same contract as AdblockFilterEngine::ResolveRedirect.
+  std::optional<uint16_t> ResolveRedirect(const GURL& url,
+                                          const GURL& initiator,
+                                          ResourceType type) const;
+
   size_t size_bytes() const { return blob_.size(); }
 
  public:
@@ -186,9 +196,14 @@ class AdblockZIndex {
                ResourceType type,
                Context* c) const;
   bool RuleMatches(const zindex_format::Rule& rule, const Context& c) const;
+  // With `collect`, every match is visited and its document exceptions ORed in;
+  // with `each`, every match is handed to it. Otherwise the first match ends
+  // the search.
   bool Any(AdblockFilterEngine::RuleGroup group,
            const Context& c,
-           uint32_t* collect) const;
+           uint32_t* collect,
+           const base::FunctionRef<void(const zindex_format::Rule&)>* each =
+               nullptr) const;
   bool DomainHit(std::string_view host, uint32_t pos) const;
 
   base::span<const uint8_t> blob_;

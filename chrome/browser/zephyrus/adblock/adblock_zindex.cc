@@ -2,6 +2,7 @@
 // LICENSE).
 
 #include "chrome/browser/zephyrus/adblock/adblock_zindex.h"
+#include "chrome/browser/zephyrus/adblock/adblock_redirect_resources.h"
 
 // The index arithmetic is validated once in Load() (every offset, count and
 // table size) and every container read here is a base::span, std::vector or
@@ -267,6 +268,8 @@ std::optional<std::vector<uint8_t>> AdblockZIndexBuilder::Finish() const {
     out.type_mask = static_cast<uint16_t>(r.type_mask);
     out.type_not = static_cast<uint16_t>(r.type_mask_not);
     out.doc_exc = static_cast<uint8_t>(r.document_exceptions);
+    out.redirect_priority = r.redirect_priority;
+    out.redirect_resource = r.redirect_any ? uint16_t{0} : r.redirect_resource;
     if (!r.domains_included.empty() || !r.domains_excluded.empty() ||
         !r.denyallow.empty() || !r.to_included.empty() ||
         !r.to_excluded.empty()) {
@@ -754,6 +757,48 @@ uint32_t AdblockZIndex::GetDocumentExceptions(const GURL& document_url) const {
   return exceptions;
 }
 
+std::optional<uint16_t> AdblockZIndex::ResolveRedirect(
+    const GURL& url,
+    const GURL& initiator,
+    ResourceType type) const {
+  if (blob_.empty() || !url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
+    return std::nullopt;
+  }
+  const GroupView& directives =
+      groups_[static_cast<size_t>(RuleGroup::kRedirect)];
+  if (directives.ids.empty() && directives.residual.empty()) {
+    return std::nullopt;  // the lists have no stand-ins at all
+  }
+  bool third_party = false;
+  std::string_view initiator_host;
+  if (initiator.is_valid() && !initiator.host().empty()) {
+    initiator_host = initiator.host();
+    third_party = !net::registry_controlled_domains::SameDomainOrHost(
+        url, initiator,
+        net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
+  }
+  Scratch& scratch = ThreadScratch(0);
+  Context c;
+  Prepare(scratch, url.spec(), initiator_host, third_party, type, &c);
+
+  std::vector<RedirectCandidate> candidates;
+  const auto add_candidate = [&](const Rule& r) {
+    candidates.push_back({r.redirect_resource, r.redirect_priority});
+  };
+  const base::FunctionRef<void(const Rule&)> add_candidate_ref(add_candidate);
+  Any(RuleGroup::kRedirect, c, nullptr, &add_candidate_ref);
+  if (candidates.empty()) {
+    return std::nullopt;
+  }
+  std::vector<uint16_t> exceptions;
+  const auto add_exception = [&](const Rule& r) {
+    exceptions.push_back(r.redirect_resource);
+  };
+  const base::FunctionRef<void(const Rule&)> add_exception_ref(add_exception);
+  Any(RuleGroup::kRedirectException, c, nullptr, &add_exception_ref);
+  return ChooseRedirect(candidates, exceptions, type);
+}
+
 void AdblockZIndex::Prepare(Scratch& scratch,
                             const std::string& spec,
                             std::string_view initiator_host,
@@ -951,13 +996,15 @@ bool AdblockZIndex::RuleMatches(const Rule& r, const Context& c) const {
   }
 }
 
-bool AdblockZIndex::Any(RuleGroup group,
-                        const Context& c,
-                        uint32_t* collect) const {
+bool AdblockZIndex::Any(
+    RuleGroup group,
+    const Context& c,
+    uint32_t* collect,
+    const base::FunctionRef<void(const Rule&)>* each) const {
   const GroupView& view = groups_[static_cast<size_t>(group)];
   bool matched = false;
-  // With `collect`, every match is visited and its document exceptions ORed
-  // in; otherwise the first match ends the search.
+  // With `collect` or `each`, every match is visited (its document exceptions
+  // ORed in, or handed over); otherwise the first match ends the search.
   auto visit = [&](uint32_t id) {
     const Rule& r = rules_[id];
     if (!RuleMatches(r, c)) {
@@ -966,9 +1013,11 @@ bool AdblockZIndex::Any(RuleGroup group,
     matched = true;
     if (collect) {
       *collect |= r.doc_exc;
-      return false;
     }
-    return true;
+    if (each) {
+      (*each)(r);
+    }
+    return !(collect || each);
   };
   auto visit_slot = [&](const Slot* slot) {
     if (!slot) {
