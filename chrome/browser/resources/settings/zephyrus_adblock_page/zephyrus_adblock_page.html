@@ -211,6 +211,17 @@
   </div>
 </settings-section>
 
+<settings-section page-title="$i18n{zephyrusShieldDnsSectionTitle}"
+    class="cr-centered-card-container">
+  <settings-toggle-button
+      id="shieldDnsToggle"
+      icon="settings:security"
+      pref="{{prefs.zephyrus.threat.shield_dns}}"
+      label="$i18n{zephyrusShieldDnsLabel}"
+      sub-label="$i18n{zephyrusShieldDnsSubLabel}">
+  </settings-toggle-button>
+</settings-section>
+
 <settings-section page-title="$i18n{zephyrusResetIdsSectionTitle}"
     class="cr-centered-card-container">
   <settings-toggle-button

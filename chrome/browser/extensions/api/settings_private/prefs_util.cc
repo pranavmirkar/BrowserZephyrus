@@ -221,6 +221,9 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
       settings_api::PrefType::kBoolean;
   (*s_allowlist)["zephyrus.appearance.m3_containers"] =
       settings_api::PrefType::kBoolean;
+  // Zephyrus Shield DNS (threat protection). Local state, like the pref above.
+  (*s_allowlist)["zephyrus.threat.shield_dns"] =
+      settings_api::PrefType::kBoolean;
   (*s_allowlist)["zephyrus.adblock.enabled"] =
       settings_api::PrefType::kBoolean;
   (*s_allowlist)["zephyrus.adblock.aggressive_popup"] =

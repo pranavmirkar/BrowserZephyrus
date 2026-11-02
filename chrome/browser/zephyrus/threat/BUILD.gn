@@ -1,0 +1,91 @@
+# Copyright 2026 Pranav Mirkar. PolyForm Strict 1.0.0 (see the repository's
+# LICENSE).
+
+import("//testing/libfuzzer/fuzzer_test.gni")
+import("//testing/test.gni")
+
+# Threat protection that needs no Google account or API key: a local index of
+# known-bad addresses, and Shield DNS (a free filtering resolver, off unless the
+# user turns it on). See docs/research/2026-11-head-to-head.md.
+
+# The two blobs the check reads, next to the binary (the installer lists them in
+# chrome.release). Generated, not source: research/make_threat_blob.py makes them
+# from the open feeds, and they are kept out of the overlay repository. Refresh them
+# before building an installer (research/refresh_threat_data.py).
+copy("threat_data") {
+  sources = [
+    "data/zephyrus_popular.bin",
+    "data/zephyrus_threats.bin",
+  ]
+  outputs = [ "$root_out_dir/{{source_file_part}}" ]
+}
+
+# The index alone: no browser, links in seconds.
+source_set("index") {
+  sources = [
+    "zephyrus_threat_index.cc",
+    "zephyrus_threat_index.h",
+  ]
+  deps = [
+    "//base",
+    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+    "//url",
+  ]
+}
+
+source_set("threat") {
+  sources = [
+    "zephyrus_database_manager.cc",
+    "zephyrus_database_manager.h",
+    "zephyrus_shield_dns.cc",
+    "zephyrus_shield_dns.h",
+    "zephyrus_threat_data.cc",
+    "zephyrus_threat_data.h",
+    "zephyrus_threat_prefs.h",
+  ]
+  public_deps = [
+    ":index",
+    "//base",
+    "//components/safe_browsing/core/browser/db:v4_local_database_manager",
+    "//url",
+  ]
+  data_deps = [ ":threat_data" ]
+  deps = [
+    "//chrome/browser/zephyrus/buildflags:dev_switches",
+    "//components/safe_browsing/core/browser/db:util",
+    "//net",
+    "//net/traffic_annotation",
+    "//services/network/public/cpp",
+    "//services/network/public/mojom",
+  ]
+}
+
+#   autoninja -C out/Release chrome/browser/zephyrus/threat:zephyrus_threat_unittests
+test("zephyrus_threat_unittests") {
+  sources = [
+    "zephyrus_shield_dns_unittest.cc",
+    "zephyrus_threat_index_unittest.cc",
+  ]
+  deps = [
+    ":index",
+    ":threat",
+    "//base",
+    "//base/test:test_support",
+    "//mojo/core/test:run_all_unittests",
+    "//services/network:test_support",
+    "//testing/gtest",
+    "//url",
+  ]
+}
+
+# Coverage-guided fuzzing of the blob loader (build in out/FUZZ):
+#   autoninja -C out/FUZZ chrome/browser/zephyrus/threat:zephyrus_threat_index_fuzzer
+fuzzer_test("zephyrus_threat_index_fuzzer") {
+  sources = [ "zephyrus_threat_index_fuzzer.cc" ]
+  deps = [
+    ":index",
+    "//base",
+    "//url",
+  ]
+  seed_corpus = "fuzz_corpus"
+}

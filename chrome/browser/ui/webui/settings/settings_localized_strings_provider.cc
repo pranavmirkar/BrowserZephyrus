@@ -848,6 +848,20 @@ void AddZephyrusAdblockStrings(content::WebUIDataSource* html_source) {
       u"Clears the internal IDs this installation would otherwise keep "
       u"forever, so they cannot be used to recognise it across sessions. "
       u"This does not hide your IP address or clear cookies.");
+  // Said as plainly as the facts allow: what is sent, to whom, and when not.
+  html_source->AddString("zephyrusShieldDnsSectionTitle",
+                         u"Phishing and malware protection");
+  html_source->AddString(
+      "zephyrusShieldDnsLabel",
+      u"Shield DNS: also ask a security DNS service about unfamiliar sites");
+  html_source->AddString(
+      "zephyrusShieldDnsSubLabel",
+      u"A built-in list of known phishing and malware sites is always checked "
+      u"on this computer and sends nothing. Turning this on also sends the "
+      u"host name (only that: no page address, cookies or account) of a site "
+      u"that is not among the 100,000 most popular to Cloudflare's security "
+      u"DNS service before it opens, and warns you if the site is known to be "
+      u"harmful. Off by default.");
   html_source->AddString("zephyrusM3ContainersLabel",
                          u"Tonal containers behind toolbar buttons");
   html_source->AddString(

@@ -35,6 +35,8 @@ optimization_guide_internal.dll: %(VersionDir)s\
 resources.pak: %(VersionDir)s\
 FILTER_LISTS_NOTICE.txt: %(VersionDir)s\
 zephyrus_filters.txt: %(VersionDir)s\
+zephyrus_threats.bin: %(VersionDir)s\
+zephyrus_popular.bin: %(VersionDir)s\
 vk_swiftshader.dll: %(VersionDir)s\
 vk_swiftshader_icd.json: %(VersionDir)s\
 vulkan-1.dll: %(VersionDir)s\

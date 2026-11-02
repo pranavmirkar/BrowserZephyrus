@@ -1405,6 +1405,11 @@ void RegisterLocalState(PrefRegistrySimple* registry) {
   // against. Literal for the same layering reason as the pref above; mirrored
   // as zephyrus_privacy::kAutoResetIdsPref.
   registry->RegisterBooleanPref("zephyrus.privacy.auto_reset_ids", true);
+  // Zephyrus Shield DNS (threat protection that asks a free filtering resolver
+  // about the host names of unpopular sites). OFF by default: turning it on
+  // sends those host names to the resolver. Mirrored as
+  // zephyrus_threat::kShieldDnsPref.
+  registry->RegisterBooleanPref("zephyrus.threat.shield_dns", false);
   // Call outs to individual subsystems that register Local State (browser-wide)
   // prefs en masse. See RegisterProfilePrefs for per-profile prefs. Please
   // keep this list alphabetized.

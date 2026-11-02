@@ -84,6 +84,36 @@ follow, and the architecture already reflects them:
 source dataset, and **the feature is required to work with no dataset at all** (bare domains, every
 other capability intact). Swapping datasets is a converter change, not a rewrite.
 
+## 2b. Threat protection data (`zephyrus_threats.bin`, `zephyrus_popular.bin`)
+
+Shipped beside the binary as two generated blobs of keyed hashes (no feed text is shipped), made by
+`research/refresh_threat_data.py`. Verified 2026-11-03.
+
+| Dataset | Source | Licence | Used for | Status |
+|---|---|---|---|---|
+| Phishing.Database (links and domains) | github.com/mitchellkrogza/Phishing.Database | MIT (LICENSE read at the source) | known-bad addresses | VERIFIED |
+| Blocklist Project, phishing list | github.com/blocklistproject/Lists | MIT (stated in the list file's own header; the repository's LICENSE was not read) | known-bad hosts | UNVERIFIED: read the repository LICENSE before a commercial release |
+| Majestic Million | downloads.majestic.com/majestic_million.csv | Creative Commons Attribution 3.0 Unported (read on majestic.com/reports/majestic-million) | the 100,000 sites Shield DNS never asks about | VERIFIED |
+| Public Suffix List | publicsuffix.org | MPL 2.0 | leaves shared hosts out of the popular list | UNVERIFIED (well known; not re-read today) |
+
+**Attribution required by CC BY 3.0:** "Site popularity data: the Majestic Million, majestic.com,
+licensed under CC BY 3.0." This must appear in the About/credits page of any build that ships
+`zephyrus_popular.bin`.
+
+**Deliberately not used: the Tranco list.** It aggregates sources that include one licensed for
+non-commercial use only (Cloudflare Radar, CC BY-NC 4.0) and one share-alike (CrUX, CC BY-SA 4.0),
+and states no licence of its own. It was used for research measurements only (`research/sb_*.py`),
+and nothing shipped is derived from it.
+
+**Not used and why:** OpenPhish's community feed is for non-commercial use; PhishTank was used as a
+held-out test set only; abuse.ch's URLhaus now requires an account key.
+
+**Shield DNS is not a dataset.** When the user turns it on, host names of unpopular sites are sent to
+Cloudflare's security resolver (security.cloudflare-dns.com). Cloudflare's public terms cover the
+1.1.1.1 resolver family; I did not find terms specific to 1.1.1.2 used inside a distributed product.
+Ask Cloudflare in writing before this is promoted beyond an opt-in setting, and keep the resolver
+replaceable.
+
 ## 3. Commercial distribution — planned, not immediate
 
 **Answered 2026-08-11 (Appendix B.2): Zephyrus is a college project today, with commercial

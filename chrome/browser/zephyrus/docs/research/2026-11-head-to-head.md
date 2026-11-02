@@ -498,3 +498,69 @@ a tie nor a win overall.
 non-commercial use only (commercial use goes through the paid Web Risk API), requires clear
 attribution to Google and only trusts a listing if the client updated within the last 30
 minutes. Brave presumably has its own agreement with Google; I did not verify that.
+
+## Addendum: threat protection that costs nothing, built and measured
+
+The previous addendum found that open feeds alone do not match Google's coverage. This is what was
+built instead, and what it measured. Everything below costs nothing to run: no Google key, no paid
+API, no server.
+
+**What was built** (`chrome/browser/zephyrus/threat/`, wired in through one factory line in
+`services_delegate_desktop.cc`):
+
+1. **A local index** of 1,340,107 known-bad addresses (Phishing.Database, Blocklist Project) as keyed
+   48-bit hashes: 5.6 MB, instant, nothing leaves the machine. Always on.
+2. **Shield DNS**, an opt-in switch in Settings (off by default): before a site outside the 100,000
+   most popular (Majestic Million, 0.66 MB list) opens, the browser asks Cloudflare's free security
+   DNS resolver whether the host name is blocked. Only the host name is sent: no path, query, cookies
+   or identifiers. At most 8 requests in flight and 120 a minute, answers cached for minutes, and any
+   failure means "allow".
+3. Both feed Chromium's own Safe Browsing path, so the stock warning page, "proceed anyway" and the
+   per-site bypass work unchanged. A build that later gains Google's lists keeps all three.
+
+**Result**, on the same 419 live phishing hosts as before (PhishTank verified in the last 3 days and
+OpenPhish's last hours, still resolving):
+
+| | Fresh phishing caught |
+|---|---|
+| Brave (Google's lists) | **60.1%** (252 of 419) |
+| Zephyrus as shipped (Shield DNS off) | 5.0% (21) |
+| **Zephyrus with Shield DNS on** | **72.8%** (305) |
+| Brave and Zephyrus together | 89.5% (375) |
+
+With Shield DNS on, Zephyrus caught 123 hosts Brave's list did not, and Brave caught 70 that Zephyrus
+did not. Skipping the popular sites cost nothing here (11 of the 419 are on a popular site; Cloudflare
+flagged none of them).
+
+**Did it beat Brave and Google? Honestly: only with the switch on, and only on this measure.**
+
+- *Coverage of fresh phishing:* ahead by 12.7 points with Shield DNS on; far behind (5.0% against
+  60.1%) with it off. The shipped default is off because turning it on sends host names to a third
+  party, and a default cannot be taken back from a public installer.
+- *Privacy:* with it off, nothing is sent, which is better than Brave (which sends a 4-byte hash
+  prefix to Google, through its own proxy, for about 3 in 100 URLs it checks). With it on, Zephyrus
+  sends the full host name of unfamiliar sites to Cloudflare. How many that is in ordinary use I
+  measured only once: 0 lookups across 25 popular news pages and 3 small sites in the real browser
+  (the end-to-end test shows exactly the two intended lookups). I did not measure Brave's rate on
+  the same pages (its 3% is per URL, across every URL in a recorded crawl), nor the rate for
+  someone who mostly visits unpopular sites, who would send many more. Each lookup also reveals
+  more than a 4-byte prefix does. That trade is why it is a switch.
+- *Latency:* the local index adds nothing. With Shield DNS on, the first visit in ten minutes to an
+  unpopular host waits for one HTTPS round trip to Cloudflare.
+- *Google:* the comparison is against Google's Safe Browsing lists as Brave holds them. Chrome also
+  does real-time URL checks and page analysis that this build cannot reproduce, so this does not
+  show Zephyrus beats Chrome.
+
+**Caveats that matter.** The sample is one afternoon and 419 hosts. Some of the free resolvers
+probably ingest PhishTank and OpenPhish, which inflates their score on those feeds; an independent
+test (finding phishing from certificate logs myself) did not work at the scale I tried. Only
+Cloudflare is used because it is the one resolver that answers a clean, unambiguous 0.0.0.0 for a
+block and has a JSON interface; Quad9 scored 52.5% and could be added. Cloudflare's terms for use
+inside a distributed product are unconfirmed (THIRD_PARTY_DATA.md), so keep it opt-in and replaceable
+until they are.
+
+**Tests:** 19 unit tests (index round trip, strict loading, 3,000 mutated blobs, the SipHash
+reference vector, Shield DNS parsing and the request cap, the shipped blob finding 4,000 of 4,000
+sampled feed URLs through Chromium's own canonicaliser); the blob loader fuzzed 213,000 runs under
+ASan; and a real-browser test of 9 cases (`research/ab_threat.py`: listed host, subdomain, exact
+address, other path, clean host, Shield on and off) that all pass.

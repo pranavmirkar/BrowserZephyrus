@@ -51,6 +51,10 @@ REQUIRED = [
      "entity dataset -- without it every tracker shows as unattributed"),
     ("zephyrus_filters.txt",
      "ad-block filter list"),
+    ("zephyrus_threats.bin",
+     "known-bad address list -- without it only Shield DNS (if on) protects"),
+    ("zephyrus_popular.bin",
+     "popular-sites list -- without it Shield DNS asks about no site at all"),
     ("FILTER_LISTS_NOTICE.txt",
      "EasyList attribution notice -- CC BY-SA 3.0 / GPLv3 REQUIRE this ship "
      "alongside zephyrus_filters.txt"),
