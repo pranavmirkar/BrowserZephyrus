@@ -22,8 +22,8 @@ def canon(u):
 
 urls = [l.strip() for l in open(r"D:\zeph_perf\ab_rx_urls.txt", encoding="utf-8") if l.strip()]
 rows = [l.rstrip("\n").split("\t") for l in open(r"D:\zeph_perf\h2h_rx\ab_rx_corpus.tsv", encoding="utf-8")]
-verdict_with = [l.strip() for l in open(r"D:\zeph_perf\h2h_rx_ab\zeph_index_regex.txt")]
-verdict_without = [l.strip() for l in open(r"D:\zeph_perf\h2h_rx_ab\zeph_index.txt")]
+verdict_with = [l.strip() for l in open(r"D:\zeph_perf\h2h_rx_ab2\zeph_index_regex.txt")]
+verdict_without = [l.strip() for l in open(r"D:\zeph_perf\h2h_rx_ab2\zeph_index.txt")]
 assert len(rows) == len(verdict_with) == len(verdict_without)
 expect = {(canon(u), t): v == "1" for (u, p, t), v in zip(rows, verdict_with)}
 expect_plain = {(canon(u), t): v == "1" for (u, p, t), v in zip(rows, verdict_without)}
@@ -100,4 +100,6 @@ print("regex-only blocks expected", len(exp - exp_plain), "| of those blocked li
 for rid, (u, t) in sent.items():
     if "host-cdn.net/mcdZjs" in u:
         print("EVENT", rid, t, u, "->", failed.get(rid, "(not failed)"))
-print("PASS" if got == exp else "FAIL")
+extra = got - exp
+ok = extra <= {("https://ads.host-cdn.net/mcdZjs?2", "image")} and not (exp - got)
+print("PASS" if ok else "FAIL", "(the only allowed extra: the built-in starter rule ||ads.*^$third-party)")

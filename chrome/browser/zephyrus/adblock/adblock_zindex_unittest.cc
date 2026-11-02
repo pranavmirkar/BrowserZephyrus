@@ -609,10 +609,10 @@ TEST(AdblockZIndexTest, HeadToHeadCorpus) {
       AdblockRegexMatcher::Build(engine);
   const base::TimeDelta regex_build = base::TimeTicks::Now() - r0;
   std::printf(
-      "  regex rules: %zu compiled, %zu skipped (RE2 cannot), %zu without a "
-      "prefilter | built in %.1f ms\n",
-      regex->rule_count(), regex->skipped_count(), regex->unfiltered_count(),
-      regex_build.InMillisecondsF());
+      "  regex rules: %zu compiled (%zu checked by ICU), %zu skipped, %zu "
+      "without a prefilter | built in %.1f ms\n",
+      regex->rule_count(), regex->verified_count(), regex->skipped_count(),
+      regex->unfiltered_count(), regex_build.InMillisecondsF());
   measure("regex step alone",
           [&](const Row& r) {
             const RegexHits h = regex->Match(r.url, r.page, r.type);

@@ -7,6 +7,7 @@
 #include <iterator>
 #include <map>
 #include <numeric>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -16,6 +17,8 @@
 #include "base/strings/string_util.h"
 #include "base/synchronization/lock.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
+#include "third_party/icu/source/common/unicode/unistr.h"
+#include "third_party/icu/source/i18n/unicode/regex.h"
 #include "third_party/re2/src/re2/filtered_re2.h"
 #include "third_party/re2/src/re2/re2.h"
 
@@ -174,6 +177,100 @@ std::vector<std::string> GatesOf(re2::FilteredRE2& regex) {
   return gates;
 }
 
+// Whether `p[at]` begins a lookahead or lookbehind group: (?= (?! (?<= (?<!
+bool StartsLookaround(std::string_view p, size_t at) {
+  if (at + 2 >= p.size() || p[at] != '(' || p[at + 1] != '?') {
+    return false;
+  }
+  if (p[at + 2] == '=' || p[at + 2] == '!') {
+    return true;
+  }
+  return p[at + 2] == '<' && at + 3 < p.size() &&
+         (p[at + 3] == '=' || p[at + 3] == '!');
+}
+
+// The index just past the `)` that closes the group opened at `p[open]`, or
+// npos. Escapes and character classes are skipped, so a parenthesis inside
+// either does not count.
+size_t EndOfGroup(std::string_view p, size_t open) {
+  int depth = 0;
+  bool in_class = false;
+  for (size_t i = open; i < p.size(); ++i) {
+    const char c = p[i];
+    if (c == '\\') {
+      ++i;
+    } else if (in_class) {
+      in_class = c != ']';
+    } else if (c == '[') {
+      in_class = true;
+    } else if (c == '(') {
+      ++depth;
+    } else if (c == ')' && --depth == 0) {
+      return i + 1;
+    }
+  }
+  return std::string_view::npos;
+}
+
+// A regex RE2 can run that matches EVERYTHING `pattern` matches, and possibly
+// more: each lookahead / lookbehind group is removed (an extra condition can
+// only narrow a match) and each back-reference becomes `.*` (it matches some
+// substring, and `.*` matches any). Used to gate a rule and as the first, cheap
+// test; ICU then checks the real pattern. Null when `pattern` has neither (RE2
+// refused it for some other reason), or when the removal would leave a
+// quantifier with nothing to repeat, or for a named back-reference.
+std::optional<std::string> WidenForRe2(std::string_view pattern) {
+  std::string out;
+  bool changed = false;
+  bool in_class = false;
+  size_t i = 0;
+  while (i < pattern.size()) {
+    const char c = pattern[i];
+    if (c == '\\') {
+      if (i + 1 >= pattern.size()) {
+        return std::nullopt;
+      }
+      const char next = pattern[i + 1];
+      if (!in_class && next == 'k') {
+        return std::nullopt;
+      }
+      if (!in_class && next >= '1' && next <= '9') {
+        out += ".*";
+        changed = true;
+      } else {
+        out.append(pattern.substr(i, 2));
+      }
+      i += 2;
+    } else if (in_class) {
+      in_class = c != ']';
+      out += c;
+      ++i;
+    } else if (c == '[') {
+      in_class = true;
+      out += c;
+      ++i;
+    } else if (StartsLookaround(pattern, i)) {
+      const size_t end = EndOfGroup(pattern, i);
+      if (end == std::string_view::npos) {
+        return std::nullopt;
+      }
+      i = end;
+      changed = true;
+      if (i < pattern.size() && (pattern[i] == '*' || pattern[i] == '+' ||
+                                 pattern[i] == '?' || pattern[i] == '{')) {
+        return std::nullopt;
+      }
+    } else {
+      out += c;
+      ++i;
+    }
+  }
+  if (!changed) {
+    return std::nullopt;
+  }
+  return out;
+}
+
 struct SharedCache {
   base::Lock lock;
   uint64_t key = 0;
@@ -185,7 +282,55 @@ SharedCache& Cache() {
   return *cache;
 }
 
+// ICU's regex engine is a backtracking one, so a hostile pattern could run for
+// a very long time on a chosen URL. It is only reached by a URL RE2 has already
+// found plausible, and is held to these limits; exceeding either is "no match".
+// The time limit counts blocks of 10,000 match-engine steps.
+constexpr int32_t kIcuTimeLimit = 20;
+// How many rules ICU may be asked about. The shipped lists have about 40.
+constexpr size_t kMaxVerifiedRules = 512;
+constexpr int32_t kIcuStackBytes = 256 * 1024;
+
 }  // namespace
+
+// A pattern in ICU's engine, which reads lookahead and back-references.
+struct AdblockRegexMatcher::Verifier {
+  std::unique_ptr<icu::RegexPattern> pattern;
+
+  static std::unique_ptr<Verifier> Create(std::string_view regex,
+                                          bool match_case) {
+    UErrorCode status = U_ZERO_ERROR;
+    UParseError parse_error;
+    auto verifier = std::make_unique<Verifier>();
+    verifier->pattern.reset(icu::RegexPattern::compile(
+        icu::UnicodeString::fromUTF8(
+            icu::StringPiece(regex.data(), static_cast<int32_t>(regex.size()))),
+        match_case ? 0u : static_cast<uint32_t>(UREGEX_CASE_INSENSITIVE),
+        parse_error, status));
+    if (U_FAILURE(status) || !verifier->pattern) {
+      return nullptr;
+    }
+    return verifier;
+  }
+
+  bool Matches(const std::string& url) const {
+    UErrorCode status = U_ZERO_ERROR;
+    const icu::UnicodeString text = icu::UnicodeString::fromUTF8(
+        icu::StringPiece(url.data(), static_cast<int32_t>(url.size())));
+    std::unique_ptr<icu::RegexMatcher> matcher(
+        pattern->matcher(text, status));
+    if (U_FAILURE(status) || !matcher) {
+      return false;
+    }
+    matcher->setTimeLimit(kIcuTimeLimit, status);
+    matcher->setStackLimit(kIcuStackBytes, status);
+    if (U_FAILURE(status)) {
+      return false;
+    }
+    const UBool found = matcher->find(status);
+    return found && U_SUCCESS(status);
+  }
+};
 
 AdblockRegexMatcher::AdblockRegexMatcher() = default;
 AdblockRegexMatcher::~AdblockRegexMatcher() = default;
@@ -244,11 +389,26 @@ void AdblockRegexMatcher::Compile(const std::vector<FilterRule>& rules) {
     options.set_max_mem(kRegexMemoryBytes);
     auto regex = std::make_unique<re2::FilteredRE2>(kMinAtomLength);
     int id = -1;
+    std::unique_ptr<Verifier> verifier;
     if (regex->Add(rule.pattern, options, &id) != RE2::NoError) {
-      ++skipped_;
-      continue;
+      // RE2 refuses lookahead and back-references. Run a widened copy in RE2
+      // and let ICU, which reads them, check the real pattern.
+      const std::optional<std::string> widened = WidenForRe2(rule.pattern);
+      // The bounded step first (RE2's memory cap), ICU's compile after it.
+      if (!widened || verified_ >= kMaxVerifiedRules ||
+          regex->Add(*widened, options, &id) != RE2::NoError) {
+        ++skipped_;
+        continue;
+      }
+      verifier = Verifier::Create(rule.pattern, rule.match_case);
+      if (!verifier) {
+        ++skipped_;
+        continue;
+      }
+      ++verified_;
     }
     gates_of_entry.push_back(GatesOf(*regex));
+    verifiers_.push_back(std::move(verifier));
     regexes_.push_back(std::move(regex));
     entries_.push_back(rule);
     entries_.back().pattern.clear();
@@ -354,7 +514,10 @@ RegexHits AdblockRegexMatcher::Match(const GURL& url,
                           request_host)) {
       return false;
     }
-    if (RE2::PartialMatch(spec, regexes_[id]->GetRE2(0))) {
+    // RE2 first: for a lookahead rule it is the widened regex, which says
+    // "possibly", and only then is ICU asked.
+    if (RE2::PartialMatch(spec, regexes_[id]->GetRE2(0)) &&
+        (!verifiers_[id] || verifiers_[id]->Matches(spec))) {
       decided = true;
     }
     return hits.important;  // nothing overrides it

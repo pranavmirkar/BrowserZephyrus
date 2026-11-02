@@ -44,6 +44,7 @@ source_set("engines") {
   ]
   deps = [
     "//net",
+    "//third_party/icu",
     "//third_party/re2",
   ]
   public_deps = [
@@ -70,6 +71,8 @@ test("zephyrus_adblock_engine_unittests") {
     "//base/test:run_all_unittests",
     "//base/test:test_support",
     "//testing/gtest",
+    "//third_party/icu",
+    "//third_party/re2",
     "//url",
   ]
 }

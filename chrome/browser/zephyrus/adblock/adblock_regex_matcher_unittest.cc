@@ -7,14 +7,24 @@
 
 #include "chrome/browser/zephyrus/adblock/adblock_regex_matcher.h"
 
+#include <cstdio>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "base/environment.h"
+#include "base/files/file_path.h"
+#include "base/files/file_util.h"
+#include "base/strings/string_split.h"
 #include "base/time/time.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
+#include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "chrome/browser/zephyrus/adblock/adblock_zindex.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/icu/source/common/unicode/unistr.h"
+#include "third_party/icu/source/i18n/unicode/regex.h"
+#include "third_party/re2/src/re2/re2.h"
 #include "url/gurl.h"
 
 namespace zephyrus_adblock {
@@ -155,14 +165,80 @@ TEST(AdblockRegexMatcherTest, ARegexWithNothingToPrefilterOnStillRuns) {
   EXPECT_FALSE(r.Blocks("https://cdn.example/a/12345678"));
 }
 
-TEST(AdblockRegexMatcherTest, ARegexRE2CannotCompileIsLeftOutNotMisread) {
-  // Lookahead and back-references are not regular; RE2 refuses them. The rule
-  // is counted as skipped and never blocks anything.
-  Rules r("/ad(?!ok)[0-9]/\n/(a)\\1/\n/\\/real\\/[0-9]/\n");
+// --- Lookahead and back-references (RE2 cannot; ICU checks them) ---------------
+
+TEST(AdblockRegexMatcherTest, ANegativeLookaheadIsHonoured) {
+  Rules r("/ad(?!ok)[0-9]/\n");
   EXPECT_EQ(r.matcher->rule_count(), 1u);
-  EXPECT_EQ(r.matcher->skipped_count(), 2u);
-  EXPECT_FALSE(r.Blocks("https://cdn.example/ad7"));
-  EXPECT_FALSE(r.Blocks("https://cdn.example/aa"));
+  EXPECT_EQ(r.matcher->verified_count(), 1u);
+  EXPECT_TRUE(r.Blocks("https://cdn.example/ad7"));
+  EXPECT_FALSE(r.Blocks("https://cdn.example/adok7"))
+      << "the widened regex alone would have blocked this";
+}
+
+TEST(AdblockRegexMatcherTest, APositiveLookaheadIsHonoured) {
+  // Five letters or digits, at least one a digit.
+  Rules r("/^https:\\/\\/cdn\\.example\\/(?=[a-z]*[0-9])[a-z0-9]{5}\\.js$/"
+          "$script,match-case\n");
+  EXPECT_EQ(r.matcher->verified_count(), 1u);
+  EXPECT_TRUE(r.Blocks("https://cdn.example/ab1de.js"));
+  EXPECT_TRUE(r.Blocks("https://cdn.example/abcd5.js"));
+  EXPECT_FALSE(r.Blocks("https://cdn.example/abcde.js"));
+  EXPECT_FALSE(r.Blocks("https://cdn.example/ab1de.js", kTypeImage));
+}
+
+TEST(AdblockRegexMatcherTest, ALookaheadFollowsTheRulesCaseSetting) {
+  // Without $match-case [A-Z] also reads lower case; with it, it does not.
+  Rules r("/\\/p(?=[A-Z])[a-zA-Z]+\\/x/\n/\\/q(?=[A-Z])[a-zA-Z]+\\/x/$match-case\n");
+  EXPECT_TRUE(r.Blocks("https://cdn.example/pabc/x"));
+  EXPECT_FALSE(r.Blocks("https://cdn.example/qabc/x"));
+  EXPECT_TRUE(r.Blocks("https://cdn.example/qAbc/x"));
+}
+
+TEST(AdblockRegexMatcherTest, ABackReferenceIsHonoured) {
+  Rules r("/(\\d)\\1\\1\\.js/\n");
+  EXPECT_EQ(r.matcher->verified_count(), 1u);
+  EXPECT_TRUE(r.Blocks("https://cdn.example/a777.js"));
+  EXPECT_FALSE(r.Blocks("https://cdn.example/a778.js"));
+}
+
+TEST(AdblockRegexMatcherTest, ALookaroundInsideGroupsAndClassesIsFound) {
+  // A `)` inside a class and an escaped one do not close the group early; a
+  // lookahead sits inside an alternation and a non-capturing group.
+  Rules r("/\\/v(?:1(?=[()]a)|2(?!\\)))\\/z/\n");
+  EXPECT_EQ(r.matcher->verified_count(), 1u);
+  EXPECT_FALSE(r.Blocks("https://cdn.example/v1/z"));
+  EXPECT_TRUE(r.Blocks("https://cdn.example/v2/z"));
+}
+
+TEST(AdblockRegexMatcherTest, ALookaheadRuleTakesPartInExceptionsAndOptions) {
+  Rules r("/\\/t(?=[0-9])[a-z0-9]+\\//$script,third-party,domain=news.example.org\n"
+          "@@/\\/t(?=[0-9])5[a-z0-9]*\\//\n");
+  EXPECT_TRUE(r.Blocks("https://cdn.example/t7a/"));
+  EXPECT_FALSE(r.Blocks("https://cdn.example/t5a/")) << "the exception rule";
+  EXPECT_FALSE(r.Blocks("https://cdn.example/tzz/")) << "no digit ahead";
+  EXPECT_FALSE(r.Blocks("https://cdn.example/t7a/", kTypeScript,
+                        "https://other.example/"))
+      << "wrong $domain=";
+}
+
+TEST(AdblockRegexMatcherTest, ABacktrackingLookaheadRuleCannotHangTheMatcher) {
+  // RE2 accepts the widened regex, so ICU is asked, and ICU backtracks without
+  // end here (the lookahead always fails). Its step limit ends it: the answer is
+  // "no match" and it comes back at once.
+  Rules r("/(x+x+)+y(?=z)/\n");
+  const std::string url = "https://cdn.example/" + std::string(60, 'x') + "y";
+  const base::TimeTicks start = base::TimeTicks::Now();
+  EXPECT_FALSE(r.Blocks(url));
+  EXPECT_LT(base::TimeTicks::Now() - start, base::Milliseconds(500));
+  EXPECT_TRUE(r.Blocks(url + "z"));
+}
+
+TEST(AdblockRegexMatcherTest, ARegexNeitherEngineReadsIsLeftOutNotMisread) {
+  // An unbalanced group is no regex for either; it is counted and never blocks.
+  Rules r("/ad(?=x/\n/\\/real\\/[0-9]/\n");
+  EXPECT_EQ(r.matcher->rule_count(), 1u);
+  EXPECT_EQ(r.matcher->skipped_count(), 1u);
   EXPECT_TRUE(r.Blocks("https://cdn.example/real/7"));
 }
 
@@ -236,6 +312,22 @@ TEST(AdblockRegexMatcherTest, ThereIsACapOnHowManyRegexesAreCompiled) {
                   .block);
 }
 
+TEST(AdblockRegexMatcherTest, ThereIsACapOnHowManyRulesICUIsAskedAbout) {
+  std::string rules;
+  for (int i = 0; i < 600; ++i) {
+    rules += "/\\/k" + std::to_string(i) + "(?=x)x\\/y/\n";
+  }
+  AdblockFilterEngine engine;
+  engine.AddRules(rules);
+  scoped_refptr<const AdblockRegexMatcher> matcher =
+      AdblockRegexMatcher::Build(engine);
+  EXPECT_EQ(matcher->verified_count(), 512u);
+  EXPECT_EQ(matcher->skipped_count(), 600u - 512u);
+  EXPECT_TRUE(matcher->Match(GURL("https://cdn.example/k7x/y"), GURL(kPage),
+                             kTypeScript)
+                  .block);
+}
+
 TEST(AdblockRegexMatcherTest, AnEmptyMatcherSaysNothing) {
   Rules r("||ads.example^\n");
   EXPECT_EQ(r.matcher->rule_count(), 0u);
@@ -272,6 +364,83 @@ TEST(AdblockRegexMatcherTest, GetOrBuildSharesPerListKey) {
   auto e = AdblockRegexMatcher::GetOrBuild(0, list);
   EXPECT_NE(d.get(), e.get());
   AdblockRegexMatcher::ResetForTesting();
+}
+
+// ICU has to read a regex the way RE2 does, or trusting it for the rules RE2
+// cannot read proves nothing. Every regex of a real list that BOTH compile is
+// run in both on every URL of a corpus, and they must agree.
+// ZEPHYRUS_H2H_LIST and ZEPHYRUS_H2H_CORPUS (url<TAB>page<TAB>type lines).
+TEST(AdblockRegexMatcherTest, IcuReadsTheRealRegexesLikeRE2Does) {
+  std::unique_ptr<base::Environment> env = base::Environment::Create();
+  const std::optional<std::string> list_path = env->GetVar("ZEPHYRUS_H2H_LIST");
+  const std::optional<std::string> corpus_path =
+      env->GetVar("ZEPHYRUS_H2H_CORPUS");
+  if (!list_path || !corpus_path) {
+    GTEST_SKIP() << "set ZEPHYRUS_H2H_LIST and ZEPHYRUS_H2H_CORPUS to run";
+  }
+  std::string list;
+  std::string corpus;
+  ASSERT_TRUE(base::ReadFileToString(base::FilePath::FromUTF8Unsafe(*list_path),
+                                     &list));
+  ASSERT_TRUE(base::ReadFileToString(
+      base::FilePath::FromUTF8Unsafe(*corpus_path), &corpus));
+  list = PreprocessFilterList(list);
+  std::vector<std::string> urls;
+  for (const std::string_view line : base::SplitStringPiece(
+           corpus, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    const GURL url(line.substr(0, line.find('\t')));
+    if (url.is_valid()) {
+      urls.push_back(url.spec());  // the form the matcher is given
+    }
+  }
+  ASSERT_GT(urls.size(), 100u);
+
+  AdblockFilterEngine engine;
+  engine.AddRules(list);
+  size_t both = 0;
+  size_t icu_only_failures = 0;
+  size_t matched = 0;
+  size_t disagreements = 0;
+  for (const FilterRule& rule : engine.regex_rules()) {
+    RE2::Options options;
+    options.set_case_sensitive(rule.match_case);
+    options.set_log_errors(false);
+    RE2 re2(rule.pattern, options);
+    if (!re2.ok()) {
+      continue;
+    }
+    UErrorCode status = U_ZERO_ERROR;
+    UParseError parse_error;
+    std::unique_ptr<icu::RegexPattern> icu_pattern(icu::RegexPattern::compile(
+        icu::UnicodeString::fromUTF8(rule.pattern),
+        rule.match_case ? 0u : static_cast<uint32_t>(UREGEX_CASE_INSENSITIVE),
+        parse_error, status));
+    if (U_FAILURE(status)) {
+      ++icu_only_failures;
+      ADD_FAILURE() << "ICU cannot compile a regex RE2 can: " << rule.pattern;
+      continue;
+    }
+    ++both;
+    for (const std::string& url : urls) {
+      const bool by_re2 = RE2::PartialMatch(url, re2);
+      status = U_ZERO_ERROR;
+      const icu::UnicodeString text = icu::UnicodeString::fromUTF8(url);
+      std::unique_ptr<icu::RegexMatcher> matcher(
+          icu_pattern->matcher(text, status));
+      const bool by_icu = U_SUCCESS(status) && matcher->find(status) &&
+                          U_SUCCESS(status);
+      matched += by_re2;
+      if (by_re2 != by_icu && ++disagreements <= 10) {
+        ADD_FAILURE() << "RE2 " << by_re2 << " ICU " << by_icu << " for "
+                      << rule.pattern << " on " << url;
+      }
+    }
+  }
+  std::printf("  ICU vs RE2: %zu regexes x %zu urls, %zu matches, %zu "
+              "disagreements, %zu ICU compile failures\n",
+              both, urls.size(), matched, disagreements, icu_only_failures);
+  EXPECT_GT(both, 100u);
+  EXPECT_EQ(disagreements, 0u);
 }
 
 }  // namespace

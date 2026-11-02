@@ -41,10 +41,17 @@ namespace zephyrus_adblock {
 //  3. OPTIONS. Party, $domain=, $to=, ... by RuleOptionsMatch, the same code the
 //     engine uses for its own rules.
 //
-// What does not run: a regex RE2 cannot express (lookahead, back-references:
-// a few dozen in the shipped lists) is counted in skipped_count() and left out,
-// which is the safe side -- the request is allowed, never blocked wrongly.
-// A URL over kMaxMatchedUrlBytes is not tested at all, for the same reason.
+// Lookahead and back-references (about 40 rules in the shipped lists, the newest
+// phishing and ad-malware patterns) are beyond RE2. Such a regex is widened --
+// every lookaround group removed, every back-reference made `.*` -- into one RE2
+// can run, which can only match MORE; that gates the rule and is run first, and
+// only a URL it accepts reaches ICU's regex engine, which checks the real
+// pattern under a step limit and a memory limit. Hitting a limit means "no
+// match": a request is allowed, never blocked wrongly.
+//
+// What does not run: a regex neither engine reads is counted in skipped_count()
+// and left out, which is the safe side. A URL over kMaxMatchedUrlBytes is not
+// tested at all, for the same reason.
 //
 // Immutable once built; Match() is const and safe from any thread.
 class AdblockRegexMatcher
@@ -81,8 +88,10 @@ class AdblockRegexMatcher
                   ResourceType type) const;
 
   size_t rule_count() const { return entries_.size(); }
-  // Regex rules left out because RE2 cannot compile them.
+  // Regex rules left out because neither RE2 nor ICU can compile them.
   size_t skipped_count() const { return skipped_; }
+  // Compiled rules that ICU checks after RE2 (lookahead, back-references).
+  size_t verified_count() const { return verified_; }
   // Compiled rules with no literal to gate on: tried for every request.
   size_t unfiltered_count() const { return always_.size(); }
   // How many distinct gate literals the rules share between them.
@@ -129,6 +138,10 @@ class AdblockRegexMatcher
   // The compiled regex of each entry. A FilteredRE2 of one regex: it owns the
   // RE2, and said which literals the regex needs when it was built.
   std::vector<std::unique_ptr<re2::FilteredRE2>> regexes_;
+  // For the rules RE2 can only approximate: the real pattern, in ICU's engine.
+  // Null for the rest. Defined in the .cc.
+  struct Verifier;
+  std::vector<std::unique_ptr<Verifier>> verifiers_;
 
   std::vector<uint32_t> always_;       // entries with no gate
   std::vector<Gate> gates_;            // sorted by prefix
@@ -136,6 +149,7 @@ class AdblockRegexMatcher
   std::vector<Slot> slots_;            // power-of-two sized, open addressing
   std::vector<uint64_t> prefix_bits_;  // one bit per hashed 3-byte prefix
   size_t skipped_ = 0;
+  size_t verified_ = 0;
 };
 
 }  // namespace zephyrus_adblock

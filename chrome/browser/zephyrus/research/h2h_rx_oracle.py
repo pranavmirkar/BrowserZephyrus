@@ -57,6 +57,13 @@ for line in open(LIST, encoding="utf-8", errors="replace"):
     rx = body[1:close]
     optl = [o for o in (body[close + 2:] if close < len(body) - 1 else "").split(",") if o]
     names = [o.split("=")[0].lstrip("~") for o in optl]
+    EMPTY = {"noopjs", "noop.js", "nooptext", "noop.txt", "noopframe", "noop.html", "noopjson", "noop.json",
+             "empty", "none", "1x1.gif", "2x2.png", "3x2.png", "32x32.png"}
+    # $redirect= to an empty resource is, to the engine, a block (the page gets nothing either way)
+    redirects = [o.partition("=")[2].split(":")[0] for o in optl if o.startswith("redirect=")]
+    if any(rv not in EMPTY for rv in redirects) or (exc and redirects):
+        continue
+    names = [n for n in names if n != "redirect"]
     if any(n not in SUPPORTED for n in names):
         continue
     if exc and any(n in ("document", "doc") for n in names):
@@ -83,17 +90,12 @@ for line in open(LIST, encoding="utf-8", errors="replace"):
                 (r["to_ex"] if d.startswith("~") else r["to_in"]).append(d.lstrip("~").lower())
         elif k == "denyallow":
             r["deny"] += [d.lower() for d in v.split("|") if d]
-    # RE2 (and Brave's Rust regex) have no lookahead or back-references: those rules are
-    # left out of both, so they are left out of the oracle too, and counted.
-    if re.search(r"\(\?(=|!|<=|<!)|\[1-9]", rx):
-        unsupported.append(line)
-        continue
     try:
         r["re"] = re.compile(rx, 0 if r["mc"] else re.I)
     except re.error:
         continue
     rules.append(r)
-print("oracle rules:", len(rules), "| lookahead/backref rules left out:", len(unsupported))
+print("oracle rules:", len(rules), "(lookahead and back-reference rules included: Python re reads them)")
 
 
 def canon(url):

@@ -133,9 +133,10 @@ cannot read an option differently. Long `$domain=` / `$to=` lists (some rules na
 hundred sites) are now sorted at parse time and searched by host suffix.
 
 What does not run, and what stays safe: 39 of the 393 use lookahead or back-references,
-which RE2 (and Brave's Rust `regex`) cannot express. They are counted and left out; a
-rule we cannot read never blocks anything. A URL over 16 KB is allowed through. At most
-4,096 regexes are compiled, each with at most 2 MB of RE2 memory.
+which RE2 (and Brave's Rust `regex`) cannot express; the next addendum shows how those
+are now read. A rule neither engine reads is counted and left out, and never blocks
+anything. A URL over 16 KB is allowed through. At most 4,096 regexes are compiled, each
+with at most 2 MB of RE2 memory.
 
 Measured, same machine, same list:
 
@@ -172,3 +173,50 @@ Measured, same machine, same list:
   `ads.host-cdn.net/mcdZjs?2` as an image, which the built-in starter rule
   `||ads.*^$third-party` blocks (the unit test does not load the starter list). All
   81 requests that only the regex rules block were blocked.
+
+## Addendum: lookahead and back-references (ICU), and a second place Brave stops
+
+The 39 regex rules RE2 cannot read target generated-looking ad-malware and phishing
+paths, such as `^https:\/\/[a-z]{2}\.[a-z]{7,14}\.com\/[a-z](?=[a-z]*[0-9A-Z])...`.
+They were 11% of the generated requests in the corpus above, and uBlock Origin reads
+them (its regexes are JavaScript's). They are read now.
+
+How: each such regex is **widened** into one RE2 can run, by removing every lookahead /
+lookbehind group (an extra condition can only narrow a match) and turning every
+back-reference into `.*`. That regex can only match more than the original, so it gates
+the rule (its required literals) and is the cheap first test. Only a URL it accepts
+reaches **ICU's regex engine** (already in the browser process, used by autofill), which
+checks the real pattern under a step limit (200,000 match steps) and a 256 KB backtrack
+stack; hitting either means "no match", so a request is allowed and never blocked wrongly.
+At most 512 rules may use ICU; RE2's memory cap is applied before ICU compiles anything.
+
+What was checked, and how each check was shown able to fail:
+
+- **ICU reads a regex the way RE2 does**: all 354 real regexes both can compile, run in
+  both on 4,146 generated and 9,591 real-traffic URLs: 0 disagreements, 6,039 true
+  matches (`IcuReadsTheRealRegexesLikeRE2Does`). Without that, trusting ICU for the
+  rules RE2 cannot read would prove nothing.
+- Unit tests for negative and positive lookahead, case-insensitive vs `$match-case`
+  lookahead, back-references, lookarounds nested in groups and classes, and a lookahead
+  rule inside exceptions and options. In each the widened regex alone gives the wrong
+  answer, so each fails if ICU is not asked.
+- **The step limit is what stops a hang**: `/(x+x+)+y(?=z)/` on a URL of 60 `x` returns in
+  3 ms. With the limit removed the same test did not finish in 60 s.
+- Independent oracle (Python `re`, which reads lookahead natively), now on all 393 rules
+  and the same 4,152 generated requests: 4,145 agree and Zephyrus blocks nothing the
+  oracle does not; the other 7 are URLs GURL rewrites or rejects before matching.
+- Real traffic, 9,591 requests: engine, index, with and without regex rules, and Brave
+  still agree on every request (4,467 blocked). Engine/index all-rules differential on the
+  full list: 651,419 probes, 0 mismatches.
+- Corpus built from the real regexes: Zephyrus now blocks 1,617 of 4,152 (it was 1,382
+  before the lookahead rules), Brave 686. The 235 added are requests only a lookahead
+  rule blocks.
+- Live, in the browser (DevTools, shared index from its disk cache): 1,400 requests from
+  the generated URLs. The browser blocked 163 = the 162 predicted + the starter-rule
+  block seen before; all 111 requests only the regex rules block (30 of them only the
+  lookahead rules) were blocked.
+
+Cost: 393 rules compile in ~50 ms (39 of them also in ICU); 82 are tried for every
+request (70 before). The regex step is about 3.0 us mean on real traffic (2.7 before), so
+index + regex is ~6.9 us against Brave's 6.5 us match-only (8.7-9.6 us with its Request
+object).
