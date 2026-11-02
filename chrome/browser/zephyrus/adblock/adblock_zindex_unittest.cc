@@ -11,6 +11,7 @@
 
 #include "chrome/browser/zephyrus/adblock/adblock_zindex.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 #include <random>
@@ -20,9 +21,12 @@
 
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
+#include "base/environment.h"
+#include "base/strings/string_split.h"
 #include "base/path_service.h"
 #include "base/time/time.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
+#include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -434,6 +438,114 @@ TEST(AdblockZIndexTest, LatencyOnARealisticPage) {
       urls.size(), blocked, engine_time.InMicrosecondsF() / n,
       index_time.InMicrosecondsF() / n,
       engine_time.InMicrosecondsF() / index_time.InMicrosecondsF());
+}
+
+// --- Head to head with another engine -----------------------------------------
+//
+// Not a unit test: it measures. With ZEPHYRUS_H2H_LIST (a filter list) and
+// ZEPHYRUS_H2H_CORPUS (url, page, type per line: real recorded traffic) set, it
+// writes the preprocessed list and both matchers' decisions into
+// ZEPHYRUS_H2H_OUT and prints their latency, for comparison with another
+// engine on the SAME list and the SAME requests (see research/brave_compare,
+// bin_h2h.rs). Skipped otherwise.
+
+ResourceType TypeFromName(std::string_view name) {
+  if (name == "script") return kTypeScript;
+  if (name == "image") return kTypeImage;
+  if (name == "stylesheet") return kTypeStylesheet;
+  if (name == "font") return kTypeFont;
+  if (name == "media") return kTypeMedia;
+  if (name == "xhr") return kTypeXhr;
+  return kTypeOther;
+}
+
+TEST(AdblockZIndexTest, HeadToHeadCorpus) {
+  std::unique_ptr<base::Environment> env = base::Environment::Create();
+  const std::optional<std::string> list_path = env->GetVar("ZEPHYRUS_H2H_LIST");
+  const std::optional<std::string> corpus_path = env->GetVar("ZEPHYRUS_H2H_CORPUS");
+  const std::optional<std::string> out_dir = env->GetVar("ZEPHYRUS_H2H_OUT");
+  if (!list_path || !corpus_path || !out_dir) {
+    GTEST_SKIP() << "set ZEPHYRUS_H2H_LIST, _CORPUS and _OUT to run";
+  }
+  std::string list;
+  ASSERT_TRUE(base::ReadFileToString(base::FilePath::FromUTF8Unsafe(*list_path),
+                                     &list));
+  list = PreprocessFilterList(list);
+  const base::FilePath out = base::FilePath::FromUTF8Unsafe(*out_dir);
+  ASSERT_TRUE(base::WriteFile(out.AppendASCII("preprocessed.txt"), list));
+  std::string corpus_text;
+  ASSERT_TRUE(base::ReadFileToString(
+      base::FilePath::FromUTF8Unsafe(*corpus_path), &corpus_text));
+
+  struct Row {
+    GURL url;
+    GURL page;
+    ResourceType type;
+  };
+  std::vector<Row> rows;
+  for (const std::string_view line : base::SplitStringPiece(
+           corpus_text, "\n", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    const std::vector<std::string_view> cols = base::SplitStringPiece(
+        line, "\t", base::KEEP_WHITESPACE, base::SPLIT_WANT_ALL);
+    if (cols.size() < 3) {
+      continue;
+    }
+    rows.push_back({GURL(cols[0]), GURL(cols[1]), TypeFromName(cols[2])});
+  }
+  ASSERT_GT(rows.size(), 1000u);
+
+  AdblockFilterEngine engine;
+  engine.AddRules(list);
+  AdblockZIndexBuilder builder;
+  engine.ForEachRule(
+      [&](RuleGroup group, const FilterRule& rule, std::string_view) {
+        builder.Add(group, rule);
+      });
+  std::optional<std::vector<uint8_t>> blob = builder.Finish();
+  ASSERT_TRUE(blob.has_value());
+  AdblockZIndex index;
+  ASSERT_TRUE(index.Load(*blob));
+
+  auto measure = [&](const std::string& name, auto&& decide,
+                     const std::string& file) {
+    for (const Row& r : rows) {  // warm up
+      decide(r);
+    }
+    std::vector<double> micros;
+    std::string decisions;
+    size_t blocked = 0;
+    for (int pass = 0; pass < 3; ++pass) {
+      for (const Row& r : rows) {
+        const base::TimeTicks t0 = base::TimeTicks::Now();
+        const bool b = decide(r);
+        micros.push_back((base::TimeTicks::Now() - t0).InMicrosecondsF());
+        if (pass == 0) {
+          decisions += b ? "1\n" : "0\n";
+          blocked += b;
+        }
+      }
+    }
+    std::sort(micros.begin(), micros.end());
+    double sum = 0;
+    for (double m : micros) {
+      sum += m;
+    }
+    std::printf(
+        "  %-26s mean %6.2f us  p50 %6.2f  p99 %7.2f  p99.9 %8.2f | blocked %zu of %zu (%.1f%%)\n",
+        name.c_str(), sum / micros.size(), micros[micros.size() / 2],
+        micros[micros.size() * 99 / 100], micros[micros.size() * 999 / 1000],
+        blocked, rows.size(), 100.0 * blocked / rows.size());
+    ASSERT_TRUE(base::WriteFile(out.AppendASCII(file), decisions));
+  };
+  std::printf("\n=== head to head: %zu real requests, %.2f MB list ===\n",
+              rows.size(), list.size() / 1e6);
+  measure("Zephyrus engine (before)",
+          [&](const Row& r) { return engine.ShouldBlock(r.url, r.page, r.type); },
+          "zeph_engine.txt");
+  measure("Zephyrus compiled index",
+          [&](const Row& r) { return index.ShouldBlock(r.url, r.page, r.type); },
+          "zeph_index.txt");
+  std::printf("  index blob %.2f MB\n\n", blob->size() / 1e6);
 }
 
 TEST(AdblockZIndexTest, ACorruptedBlobIsRejectedOrHarmless) {

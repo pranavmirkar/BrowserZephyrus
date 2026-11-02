@@ -26,6 +26,7 @@ With the lists and a crawl already cached it takes about 35 seconds.
 | `ztest.cc` | Builds ZIndex from the real parser's output, then **differential-tests** it against the real engine on about 660,000 probes derived from every rule (including URLs with the match after 150 other tokens), and benchmarks both |
 | `zfuzz.cc` | Mutates the blob and, if `Load()` accepts it, *uses* it, under ASan + UBSan with a hang watchdog |
 | `brave_compare/` | Brave's `adblock-rust` 0.13.5 as a black box: speed, memory, and the rule-by-rule parser comparison |
+| `h2h_crawl.py`, `brave_compare/src/bin_h2h.rs` | The head-to-head on ONE machine: record real traffic with Zephyrus's NetLog, then run Brave's engine and `AdblockZIndexTest.HeadToHeadCorpus` on the same list and requests. Results: `../docs/research/2026-11-head-to-head.md` |
 | `threat_index.h`, `threat_test.cc` | **ThreatIndex**: an offline list of known-bad hosts and URLs. No per-URL network query |
 | `idleak.h`, `idleak_test.cc` | **IdLeakScanner**: finds the user's own identifiers (plain, percent-encoded, or as MD5/SHA-1/SHA-256 in hex/base64) in an outgoing request |
 | `scriptlet_compile_time.js` | V8 cost of the scriptlet runtime library per document, with and without a code cache |

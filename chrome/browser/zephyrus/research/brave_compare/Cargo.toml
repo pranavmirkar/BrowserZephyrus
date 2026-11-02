@@ -6,6 +6,7 @@ publish = false
 
 [dependencies]
 adblock = "0.13"        # Brave's engine (adblock-rust); crates.io
+memory-stats = "1"      # working set, for the head-to-head
 
 [[bin]]
 name = "brave_cmp"      # speed and memory on the 20,000-request synthetic corpus
@@ -18,6 +19,10 @@ path = "src/bin_cross.rs"
 [[bin]]
 name = "real"           # speed and verdicts on recorded page traffic
 path = "src/bin_real.rs"
+
+[[bin]]
+name = "h2h"             # Brave vs Zephyrus on one list and one recorded corpus, same machine
+path = "src/bin_h2h.rs"
 
 [[bin]]
 name = "parity"         # which rule lines Brave's parser keeps
