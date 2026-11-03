@@ -33,6 +33,16 @@ source_set("index") {
   ]
 }
 
+# The DNS wire format Shield DNS speaks to Quad9: build a query, read an answer that
+# came off the network. Pure functions, base only, fuzzed.
+source_set("dnswire") {
+  sources = [
+    "zephyrus_dns_wire.cc",
+    "zephyrus_dns_wire.h",
+  ]
+  deps = [ "//base" ]
+}
+
 source_set("threat") {
   sources = [
     "zephyrus_database_manager.cc",
@@ -44,6 +54,7 @@ source_set("threat") {
     "zephyrus_threat_prefs.h",
   ]
   public_deps = [
+    ":dnswire",
     ":index",
     "//base",
     "//components/safe_browsing/core/browser/db:v4_local_database_manager",
@@ -63,10 +74,13 @@ source_set("threat") {
 #   autoninja -C out/Release chrome/browser/zephyrus/threat:zephyrus_threat_unittests
 test("zephyrus_threat_unittests") {
   sources = [
+    "zephyrus_dns_wire_test_util.h",
+    "zephyrus_dns_wire_unittest.cc",
     "zephyrus_shield_dns_unittest.cc",
     "zephyrus_threat_index_unittest.cc",
   ]
   deps = [
+    ":dnswire",
     ":index",
     ":threat",
     "//base",
@@ -88,4 +102,15 @@ fuzzer_test("zephyrus_threat_index_fuzzer") {
     "//url",
   ]
   seed_corpus = "fuzz_corpus"
+}
+
+# Coverage-guided fuzzing of the DNS answer parser (build in out/FUZZ):
+#   autoninja -C out/FUZZ chrome/browser/zephyrus/threat:zephyrus_dns_wire_fuzzer
+fuzzer_test("zephyrus_dns_wire_fuzzer") {
+  sources = [ "zephyrus_dns_wire_fuzzer.cc" ]
+  deps = [
+    ":dnswire",
+    "//base",
+  ]
+  seed_corpus = "fuzz_corpus_dns"
 }

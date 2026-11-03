@@ -859,9 +859,9 @@ void AddZephyrusAdblockStrings(content::WebUIDataSource* html_source) {
       u"A built-in list of known phishing and malware sites is always checked "
       u"on this computer and sends nothing. Turning this on also sends the "
       u"host name (only that: no page address, cookies or account) of a site "
-      u"that is not among the 100,000 most popular to Cloudflare's security "
-      u"DNS service before it opens, and warns you if the site is known to be "
-      u"harmful. Off by default.");
+      u"that is not among the 100,000 most popular to two security DNS "
+      u"services, Cloudflare's and Quad9's, before it opens, and warns you if "
+      u"either knows the site to be harmful. Off by default.");
   html_source->AddString("zephyrusM3ContainersLabel",
                          u"Tonal containers behind toolbar buttons");
   html_source->AddString(

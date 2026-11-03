@@ -4,6 +4,7 @@
 #ifndef CHROME_BROWSER_ZEPHYRUS_THREAT_ZEPHYRUS_SHIELD_DNS_H_
 #define CHROME_BROWSER_ZEPHYRUS_THREAT_ZEPHYRUS_SHIELD_DNS_H_
 
+#include <array>
 #include <deque>
 #include <map>
 #include <memory>
@@ -24,16 +25,21 @@ class SimpleURLLoader;
 
 namespace zephyrus_threat {
 
-// Asks a free filtering DNS resolver (Cloudflare's security resolver, which
-// refuses names it has seen used for phishing and malware by answering 0.0.0.0)
-// whether a hostname is blocked. Measured on 419 live phishing hosts reported
-// in the last three days: it flagged 72%, against 60% for Google's Safe
-// Browsing lists as Brave holds them (research/sb_free_signals.py).
+// Asks two free filtering DNS resolvers whether a hostname is one they refuse,
+// and blocks if EITHER says so:
+//  - Cloudflare's security resolver (answers 0.0.0.0 for names used for phishing
+//    and malware), over its JSON API;
+//  - Quad9 (answers NXDOMAIN with an Extended DNS Error of "Filtered"), over
+//    RFC 8484 DNS-over-HTTPS.
+// They run on different intelligence, so each catches what the other misses: the
+// measured numbers, and where each one is blind, are in
+// docs/research/2026-11-shield-dns-bench.md (research/shield_bench.py).
 //
-// What it costs: the HOSTNAME goes to the resolver. So it is off unless the user
+// What it costs: the HOSTNAME goes to both resolvers. So it is off unless the user
 // turns it on, it is asked only for hosts that are not on the bundled list of
 // popular sites, and a verdict is cached for minutes. No path, no query, no
-// cookies, no identifiers are sent.
+// cookies, no identifiers are sent. A resolver that keeps failing is left alone
+// for a few minutes, so an unreachable one never slows every page.
 //
 // UI thread only.
 class ShieldDnsChecker {
@@ -66,19 +72,33 @@ class ShieldDnsChecker {
   static Verdict ParseAnswer(std::string_view json);
 
  private:
+  enum Source { kCloudflare, kQuad9, kSourceCount };
+
   struct Pending {
-    std::unique_ptr<network::SimpleURLLoader> loader;
+    std::array<std::unique_ptr<network::SimpleURLLoader>, kSourceCount> loaders;
+    int outstanding = 0;
+    bool any_unknown = false;
     std::vector<Callback> callbacks;
   };
   struct CacheEntry {
     Verdict verdict;
     base::TimeTicks expires;
   };
+  // Consecutive failures of one resolver, and until when it is left alone.
+  struct Health {
+    int failures = 0;
+    base::TimeTicks muted_until;
+  };
 
-  void OnResponse(const std::string& host, std::optional<std::string> body);
+  bool IsMuted(Source source) const;
+  void StartRequest(const std::string& host, Source source, Pending& pending);
+  void OnResponse(const std::string& host,
+                  Source source,
+                  std::optional<std::string> body);
   void Finish(const std::string& host, Verdict verdict);
 
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+  std::array<Health, kSourceCount> health_;
   std::map<std::string, Pending> pending_;
   std::map<std::string, CacheEntry> cache_;
   // When recent requests were sent, for the per-minute cap.
