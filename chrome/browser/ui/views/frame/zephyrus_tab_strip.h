@@ -79,6 +79,7 @@ class ZephyrusTabStrip : public views::View,
   void Layout(PassKey key) override;
   bool OnMouseWheel(const ui::MouseWheelEvent& event) override;
   void OnThemeChanged() override;
+  void OnPaintBackground(gfx::Canvas* canvas) override;
   void VisibilityChanged(views::View* starting_from, bool is_visible) override;
 
   // TabStripModelObserver:
@@ -87,7 +88,6 @@ class ZephyrusTabStrip : public views::View,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
   void OnTabChangedAt(tabs::TabInterface* tab,
-                      int index,
                       TabChangeType change_type) override;
   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
   void OnSplitTabChanged(const SplitTabChange& change) override;

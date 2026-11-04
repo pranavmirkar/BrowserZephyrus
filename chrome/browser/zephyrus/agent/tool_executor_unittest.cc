@@ -554,19 +554,21 @@ TEST_F(ToolExecutorTest, RefusesANonWebSchemeThatPolicyAllowed) {
   ToolExecutor::Result result =
       Run("browser.navigate", R"({"url":"ftp://files.example.com/x"})",
           "Fetch the archive from files.example.com");
-  EXPECT_EQ(result.status, Status::kFailed);
+  // The kernel now refuses a non-web scheme outright (Denied, not Ask): there is
+  // nothing the user could approve that would make the executor load it. The
+  // executor's own refusal behind it is still there, for a kernel that said Allow.
+  EXPECT_EQ(result.status, Status::kDenied);
   EXPECT_TRUE(surface_.navigated_to.is_empty());
 }
 
 TEST_F(ToolExecutorTest, ThePolicyAlsoCatchesAFileUrl) {
-  // Written expecting the executor to be the thing that stopped this, and it
-  // never got the chance: the kernel cannot parse an origin out of a file URL
-  // and its parser fails closed, so this comes back as Ask. Both layers cover
-  // it, which is the point of having both.
+  // The kernel stops this first: a file URL is not a web address, so it is
+  // Denied rather than asked about. Both layers cover it, which is the point of
+  // having both.
   ToolExecutor::Result result =
       Run("browser.navigate", R"({"url":"file:///C:/Windows/win.ini"})",
           "Open file:///C:/Windows/win.ini");
-  EXPECT_EQ(result.status, Status::kNeedsApproval);
+  EXPECT_EQ(result.status, Status::kDenied);
   EXPECT_TRUE(surface_.navigated_to.is_empty());
 }
 

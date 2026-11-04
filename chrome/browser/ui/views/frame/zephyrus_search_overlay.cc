@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
 
 #include <optional>
@@ -841,7 +842,7 @@ void ZephyrusSearchOverlay::ContentsChanged(views::Textfield* sender,
 
 void ZephyrusSearchOverlay::UpdateSuggestions(const std::u16string& text) {
   Profile* const profile =
-      browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
+      browser_view_ ? zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_view_->browser()))
                     : nullptr;
   if (!profile) {
     return;
@@ -948,7 +949,7 @@ void ZephyrusSearchOverlay::RebuildSuggestionRows() {
   }
 
   Profile* const profile =
-      browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
+      browser_view_ ? zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_view_->browser()))
                     : nullptr;
   favicon::FaviconService* const favicons =
       profile ? FaviconServiceFactory::GetForProfile(
@@ -1046,7 +1047,7 @@ void ZephyrusSearchOverlay::ShowEnginePicker() {
   // anchor. That was the crash when this was a bubble.
   SetChevronOpen(true);
   ZephyrusSearchEnginePicker::Show(
-      zephyrus::ActiveProfile(browser_view_->browser()), engine_chip_,
+      zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_view_->browser())), engine_chip_,
       base::BindOnce(&ZephyrusSearchOverlay::OnEnginePickerFinished,
                      weak_factory_.GetWeakPtr()));
 }
@@ -1085,7 +1086,7 @@ void ZephyrusSearchOverlay::SetChevronOpen(bool open) {
 }
 
 void ZephyrusSearchOverlay::RequestShortcuts() {
-  Profile* profile = browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
+  Profile* profile = browser_view_ ? zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_view_->browser()))
                                    : nullptr;
   scoped_refptr<history::TopSites> top_sites =
       profile ? TopSitesFactory::GetForProfile(profile) : nullptr;
@@ -1110,7 +1111,7 @@ void ZephyrusSearchOverlay::OnShortcutsReady(
   ++shortcuts_generation_;
   chips_row_->RemoveAllChildViews();
 
-  Profile* profile = browser_view_ ? zephyrus::ActiveProfile(browser_view_->browser())
+  Profile* profile = browser_view_ ? zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_view_->browser()))
                                    : nullptr;
   favicon::FaviconService* favicons =
       profile ? FaviconServiceFactory::GetForProfile(
@@ -1225,12 +1226,12 @@ void ZephyrusSearchOverlay::RefreshEngineLabel() {
     return;
   }
   const std::u16string name =
-      zephyrus::GetDefaultSearchEngineName(zephyrus::ActiveProfile(browser_view_->browser()));
+      zephyrus::GetDefaultSearchEngineName(zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_view_->browser())));
 
   // The engine's own mark, if one is cached locally. Cancel any earlier lookup
   // so a previous engine's icon cannot land after a newer choice.
   engine_favicon_tracker_.TryCancelAll();
-  Profile* profile = zephyrus::ActiveProfile(browser_view_->browser());
+  Profile* profile = zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_view_->browser()));
   TemplateURLService* service =
       profile ? TemplateURLServiceFactory::GetForProfile(profile) : nullptr;
   const TemplateURL* def =
@@ -1277,7 +1278,7 @@ void ZephyrusSearchOverlay::OpenQuery(const std::u16string& text) {
   // anything else searches with the user's default engine.
   AutocompleteMatch match;
   AutocompleteClassifier* classifier =
-      AutocompleteClassifierFactory::GetForProfile(zephyrus::ActiveProfile(browser_view_->browser()));
+      AutocompleteClassifierFactory::GetForProfile(zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_view_->browser())));
   if (!classifier) {
     return;
   }

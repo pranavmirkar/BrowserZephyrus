@@ -101,7 +101,7 @@ void ZephyrusAgentMascotOverlay::RefreshPresence() {
   // browser is not always there yet when its views are being built.
   if (!observing_prefs_ && browser_view_ && browser_view_->browser()) {
     observing_prefs_ = true;
-    pref_registrar_.Init(browser_view_->browser()->profile()->GetPrefs());
+    pref_registrar_.Init(browser_view_->browser()->GetProfile()->GetPrefs());
     pref_registrar_.Add(
         zephyrus::agent::kMascotPref,
         base::BindRepeating(&ZephyrusAgentMascotOverlay::RefreshPresence,
@@ -116,7 +116,7 @@ void ZephyrusAgentMascotOverlay::RefreshPresence() {
   RefreshLook();
   const bool enabled =
       !browser_view_ || !browser_view_->browser() ||
-      browser_view_->browser()->profile()->GetPrefs()->GetBoolean(
+      browser_view_->browser()->GetProfile()->GetPrefs()->GetBoolean(
           zephyrus::agent::kMascotPref);
   SetPresent(enabled && !suppressed_);
 }
@@ -1159,7 +1159,7 @@ void ZephyrusAgentMascotOverlay::RefreshLook() {
   const MascotLook want =
       browser_view_ && browser_view_->browser()
           ? zephyrus::agent::ReadMascotLook(
-                *browser_view_->browser()->profile()->GetPrefs())
+                *browser_view_->browser()->GetProfile()->GetPrefs())
           : MascotLook::kZep;
   const bool was_lens = lens();
   const bool fill_changed = want != look_;

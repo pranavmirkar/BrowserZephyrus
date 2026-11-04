@@ -3,6 +3,7 @@
 # found in the LICENSE file.
 
 import("//build/buildflag_header.gni")
+import("//build/config/features.gni")
 import("//build/config/ozone.gni")
 import("//build/config/ui.gni")
 import("//build/nocompile.gni")
@@ -271,9 +272,13 @@ component("views") {
     "focus/focus_search.h",
     "focus/native_view_focus_manager.h",
     "input_event_activation_protector.h",
-    "input_protection/default_input_protector_delegate.h",
-    "input_protection/input_protector_delegate.h",
+    "input_protection/default_input_protection_policy.h",
+    "input_protection/input_protection_event_handler.h",
+    "input_protection/input_protection_policy.h",
+    "input_protection/input_protection_specification.h",
     "input_protection/occluded_widget_input_protector.h",
+    "input_protection/widget_stationarity_monitor.h",
+    "input_protection/window_activation_input_protection_policy.h",
     "interaction/element_highlighter_views.h",
     "interaction/element_tracker_views.h",
     "interaction/element_tracker_widget_state.h",
@@ -368,7 +373,6 @@ component("views") {
     "window/window_button_order_provider.h",
     "window/window_resources.h",
     "window/window_shape.h",
-    "windows_stationarity_monitor.h",
     "word_lookup_client.h",
   ]
 
@@ -518,8 +522,12 @@ component("views") {
     "focus/focus_search.cc",
     "focus/native_view_focus_manager.cc",
     "input_event_activation_protector.cc",
-    "input_protection/default_input_protector_delegate.cc",
+    "input_protection/default_input_protection_policy.cc",
+    "input_protection/input_protection_event_handler.cc",
+    "input_protection/input_protection_specification.cc",
     "input_protection/occluded_widget_input_protector.cc",
+    "input_protection/widget_stationarity_monitor.cc",
+    "input_protection/window_activation_input_protection_policy.cc",
     "interaction/element_highlighter_views.cc",
     "interaction/element_tracker_views.cc",
     "interaction/element_tracker_widget_state.cc",
@@ -595,7 +603,6 @@ component("views") {
     "window/non_client_view.cc",
     "window/window_button_order_provider.cc",
     "window/window_shape.cc",
-    "windows_stationarity_monitor.cc",
   ]
 
   # Other targets in this file (e.g. tests) get access to the internal headers.
@@ -635,7 +642,7 @@ component("views") {
     "//ui/base/interaction",
     "//ui/color",
     "//ui/color:mixers",
-    "//ui/compositor_extra",
+    "//ui/decoration",
     "//ui/display",
     "//ui/gfx:native_ui_types",
     "//ui/latency",
@@ -735,7 +742,6 @@ component("views") {
       "widget/native_widget_mac.h",
       "widget/widget_utils_mac.h",
       "window/native_frame_view_mac.h",
-      "windows_stationarity_monitor_mac.h",
     ]
     sources += [
       "accessibility/ax_virtual_view_mac.mm",
@@ -769,7 +775,6 @@ component("views") {
       "widget/native_widget_mac.mm",
       "widget/widget_utils_mac.mm",
       "window/native_frame_view_mac.mm",
-      "windows_stationarity_monitor_mac.mm",
     ]
     public_deps += [ "//components/remote_cocoa/common:mojo" ]
     deps += [
@@ -861,11 +866,11 @@ component("views") {
       "touchui/touch_selection_controller_impl.h",
       "view_constants_aura.h",
       "widget/focus_manager_event_handler.h",
+      "widget/legacy_window_reorderer.h",
       "widget/native_widget_aura.h",
       "widget/tooltip_manager_aura.h",
       "widget/widget_aura_utils.h",
       "widget/window_reorderer.h",
-      "windows_stationarity_monitor_aura.h",
     ]
 
     sources += [
@@ -893,10 +898,10 @@ component("views") {
       "touchui/touch_selection_controller_impl.cc",
       "view_constants_aura.cc",
       "widget/focus_manager_event_handler.cc",
+      "widget/legacy_window_reorderer.cc",
       "widget/native_widget_aura.cc",
       "widget/tooltip_manager_aura.cc",
       "widget/window_reorderer.cc",
-      "windows_stationarity_monitor_aura.cc",
     ]
     deps += [
       "//components/crash/core/common:crash_key",
@@ -977,12 +982,12 @@ component("views") {
       }
       if (is_linux || is_fuchsia) {
         public += [
+          "widget/desktop_aura/desktop_drag_drop_client_ozone.h",
           "widget/desktop_aura/desktop_window_tree_host_platform.h",
           "widget/desktop_aura/window_move_client_platform.h",
         ]
         sources += [
           "widget/desktop_aura/desktop_drag_drop_client_ozone.cc",
-          "widget/desktop_aura/desktop_drag_drop_client_ozone.h",
           "widget/desktop_aura/desktop_window_tree_host_platform.cc",
           "widget/desktop_aura/window_move_client_platform.cc",
         ]
@@ -1039,6 +1044,7 @@ component("views") {
   if (use_ozone) {
     deps += [ "//ui/ozone" ]
   }
+  check_includes_strict = CHECK_INCLUDES_STRICT_PUBLIC_INCLUDES_PRIVATE
 }
 
 if (is_win || is_mac || is_linux || is_chromeos) {
@@ -1166,8 +1172,6 @@ source_set("test_support") {
     "view_test_api.h",
     "views_test_suite.cc",
     "views_test_suite.h",
-    "widget/widget_interactive_uitest_utils.cc",
-    "widget/widget_interactive_uitest_utils.h",
   ]
 
   configs += [ "//build/config:precompiled_headers" ]
@@ -1359,11 +1363,16 @@ test("views_unittests") {
     "controls/theme_tracking_animated_image_view_unittest.cc",
     "controls/theme_tracking_image_view_unittest.cc",
     "controls/tree/tree_view_unittest.cc",
+    "debug_utils_unittest.cc",
     "event_monitor_unittest.cc",
     "focus/focus_manager_unittest.cc",
     "focus/focus_traversal_unittest.cc",
     "input_event_activation_protector_unittest.cc",
+    "input_protection/default_input_protection_policy_unittest.cc",
+    "input_protection/input_protection_event_handler_unittest.cc",
     "input_protection/occluded_widget_input_protector_unittest.cc",
+    "input_protection/widget_stationarity_monitor_unittest.cc",
+    "input_protection/window_activation_input_protection_policy_unittest.cc",
     "layout/animating_layout_manager_unittest.cc",
     "layout/box_layout_unittest.cc",
     "layout/box_layout_view_unittest.cc",
@@ -1372,6 +1381,7 @@ test("views_unittests") {
     "layout/flex_layout_unittest.cc",
     "layout/flex_layout_view_unittest.cc",
     "layout/layout_manager_base_unittest.cc",
+    "layout/layout_manager_unittest.cc",
     "layout/normalized_geometry_unittest.cc",
     "layout/proposed_layout_unittest.cc",
     "layout/table_layout_unittest.cc",
@@ -1398,6 +1408,7 @@ test("views_unittests") {
     "widget/unique_widget_ptr_unittest.cc",
     "widget/widget_delegate_unittest.cc",
     "widget/widget_unittest.cc",
+    "widget/widget_utils_unittest.cc",
     "window/default_frame_view_unittest.cc",
     "window/dialog_client_view_unittest.cc",
     "window/dialog_delegate_unittest.cc",
@@ -1412,6 +1423,7 @@ test("views_unittests") {
     ":views",
     "//base",
     "//base:i18n",
+    "//base/i18n:test_support",
     "//base/test:test_support",
     "//cc:test_support",
     "//cc/paint",
@@ -1439,7 +1451,7 @@ test("views_unittests") {
     "//ui/color",
     "//ui/color:mixers",
     "//ui/compositor:test_support",
-    "//ui/compositor_extra",
+    "//ui/decoration",
     "//ui/display:test_support",
     "//ui/events:dom_keycode_converter",
     "//ui/events:events_base",
@@ -1503,6 +1515,9 @@ test("views_unittests") {
       "//ui/base/ime/linux",
       "//ui/linux:test_support",
     ]
+    if (use_dbus) {
+      deps += [ "//ui/linux:portal_settings_unittests" ]
+    }
   }
 
   if (has_native_accessibility) {
@@ -1575,6 +1590,7 @@ test("views_unittests") {
       "corewm/tooltip_controller_unittest.cc",
       "touchui/touch_selection_controller_impl_unittest.cc",
       "view_unittest_aura.cc",
+      "widget/legacy_window_reorderer_unittest.cc",
       "widget/native_widget_aura_unittest.cc",
       "widget/window_reorderer_unittest.cc",
     ]
@@ -1582,13 +1598,17 @@ test("views_unittests") {
       "//ui/aura",
       "//ui/aura:test_support",
       "//ui/base/cursor/mojom:cursor_type",
+      "//ui/platform_window",
       "//ui/wm",
       "//ui/wm/public",
     ]
 
     if (is_mac) {
       # views_unittests not yet compiling on Mac. http://crbug.com/378134
-      sources -= [ "widget/window_reorderer_unittest.cc" ]
+      sources -= [
+        "widget/legacy_window_reorderer_unittest.cc",
+        "widget/window_reorderer_unittest.cc",
+      ]
     }
 
     if (is_win) {
@@ -1670,7 +1690,10 @@ source_set("views_interactive_ui_tests") {
   testonly = true
 
   sources = [
-    "widget/any_widget_observer_uitest.cc",
+    "input_protection/input_protection_interactive_test.cc",
+    "input_protection/input_protection_interactive_test.h",
+    "input_protection/input_protection_interactive_uitest.cc",
+    "widget/any_widget_observer_interactive_uitest.cc",
     "widget/widget_interactive_uitest.cc",
   ]
 
@@ -1682,6 +1705,7 @@ source_set("views_interactive_ui_tests") {
     "//mojo/core/embedder",
     "//skia",
     "//testing/gtest",
+    "//ui/accessibility:test_support",
     "//ui/base:test_support",
     "//ui/base/ime",
     "//ui/compositor",
@@ -1690,9 +1714,14 @@ source_set("views_interactive_ui_tests") {
     "//ui/resources",
     "//ui/resources:ui_test_pak",
     "//ui/strings",
+    "//ui/views/interaction:test_support",
   ]
 
   public_deps = [ "//ui/base/mojom" ]
+
+  if (use_ozone) {
+    deps += [ "//ui/ozone" ]
+  }
 
   if (is_win) {
     sources += [
@@ -1748,7 +1777,13 @@ source_set("views_interactive_ui_tests") {
   }
 }
 
-test("views_perftests") {
+if (is_fuchsia) {
+  views_perftests_target_name = "views_perftests_fuchsia"
+} else {
+  views_perftests_target_name = "views_perftests"
+}
+
+test(views_perftests_target_name) {
   sources = [
     "controls/label_perftest.cc",
     "views_perftests.cc",
@@ -1768,4 +1803,16 @@ test("views_perftests") {
     "//testing:run_perf_test",
     "//ui/resources:ui_test_pak_data",
   ]
+
+  if (is_fuchsia) {
+    # These tests use SwiftShader (crbug.com/1022542), which uses JIT.
+    test_runner_shard = "//build/config/fuchsia/test/elf_test_ambient_exec_runner.shard.test-cml"
+
+    additional_manifest_fragments = [
+      "//build/config/fuchsia/test/fonts.shard.test-cml",
+      "//build/config/fuchsia/test/mark_vmo_executable.shard.test-cml",
+      "//build/config/fuchsia/test/present_view.shard.test-cml",
+      "//third_party/fuchsia-sdk/sdk/pkg/vulkan/client.shard.cml",
+    ]
+  }
 }

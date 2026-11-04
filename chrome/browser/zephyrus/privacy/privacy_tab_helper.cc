@@ -112,6 +112,7 @@ std::vector<PrivacyTabHelper::DomainRow> PrivacyTabHelper::PageRows() const {
 void PrivacyTabHelper::ResourceLoadComplete(
     content::RenderFrameHost* render_frame_host,
     const content::GlobalRequestID& request_id,
+    const GURL& /*original_url*/,
     const blink::mojom::ResourceLoadInfo& info) {
   // The blocker cancels its own requests with ERR_BLOCKED_BY_CLIENT and records
   // kBlocked itself, at the moment it makes the decision — which is the only

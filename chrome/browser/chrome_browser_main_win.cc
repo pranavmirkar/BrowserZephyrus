@@ -48,9 +48,7 @@
 #include "base/trace_event/trace_event.h"
 #include "base/types/expected.h"
 #include "base/version.h"
-#include "base/win/elevation_util.h"
 #include "base/win/pe_image.h"
-#include "base/win/win_util.h"
 #include "base/win/wrapped_window_proc.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
@@ -82,7 +80,7 @@
 #include "chrome/browser/win/conflicts/enumerate_shell_extensions.h"
 #include "chrome/browser/win/conflicts/module_database.h"
 #include "chrome/browser/win/conflicts/module_event_sink_impl.h"
-#include "chrome/browser/win/isolated_browser_support.h"
+#include "chrome/browser/win/isolated_browser/isolated_browser_support.h"
 #include "chrome/browser/win/remove_app_compat_entries.h"
 #include "chrome/browser/win/util_win_service.h"
 #include "chrome/common/channel_info.h"
@@ -121,7 +119,6 @@
 #include "sandbox/policy/switches.h"
 #include "sandbox/win/src/sandbox.h"
 #include "sandbox/win/src/sandbox_factory.h"
-#include "services/device/public/cpp/device_features.h"
 #include "services/device/public/cpp/geolocation/geolocation_system_permission_manager.h"
 #include "services/device/public/cpp/geolocation/system_geolocation_source_win.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -241,9 +238,8 @@ void InitializeModuleDatabase() {
 
 // Gets the TimeDateStamp from the file on disk and, if successful, sends the
 // load event to the ModuleDatabase.
-void HandleModuleLoadEventWithoutTimeDateStamp(
-    const base::FilePath& module_path,
-    size_t module_size) {
+void HandleModuleLoadEventWithoutTimeDateStamp(base::FilePath module_path,
+                                               size_t module_size) {
   uint32_t size_of_image = 0;
   uint32_t time_date_stamp = 0;
   bool got_time_date_stamp = GetModuleImageSizeAndTimeDateStamp(
@@ -256,8 +252,9 @@ void HandleModuleLoadEventWithoutTimeDateStamp(
   if (!got_time_date_stamp)
     return;
 
-  ModuleDatabase::HandleModuleLoadEvent(
-      content::PROCESS_TYPE_BROWSER, module_path, module_size, time_date_stamp);
+  ModuleDatabase::HandleModuleLoadEvent(content::PROCESS_TYPE_BROWSER,
+                                        std::move(module_path), module_size,
+                                        time_date_stamp);
 }
 
 // Helper function for getting the module size associated with a module in this
@@ -471,6 +468,50 @@ void ReportParentProcessName() {
   }
 }
 
+void MaybeUpdateIsolationStateFromFieldTrial() {
+  std::string group_name;
+  base::FieldTrial* trial =
+      base::FeatureList::GetFieldTrial(features::kIsolatedProcess);
+  if (trial) {
+    group_name = trial->group_name();
+  }
+
+  const std::string old_group_name =
+      g_browser_process->local_state()->GetString(
+          prefs::kPreviousIsolationState);
+
+  if (group_name == old_group_name) {
+    return;
+  }
+
+  // If an enterprise administrator has set a Mandatory policy,
+  // do not allow a field trial to override it.
+  if (g_browser_process->local_state()->IsManagedPreference(
+          prefs::kProcessIsolationEnabled)) {
+    return;
+  }
+
+  // Only persist `prefs::kPreviousIsolationState` after
+  // `SetIsolationState` completes successfully. Persisting it
+  // before the re-encryption and registry update completes would leave
+  // the profile in an inconsistent state if shutdown or failure
+  // occurs mid-operation, preventing retry on subsequent startups.
+  chrome::SetIsolationState(
+      base::FeatureList::IsEnabled(features::kIsolatedProcess)
+          ? chrome::IsolationState::kProcessIsolation
+          : chrome::IsolationState::kIsolationDisabled,
+      g_browser_process->local_state(),
+      base::BindOnce(
+          [](std::string new_group_name,
+             base::expected<chrome::IsolationState, HRESULT> result) {
+            if (result.has_value()) {
+              g_browser_process->local_state()->SetString(
+                  prefs::kPreviousIsolationState, new_group_name);
+            }
+          },
+          std::move(group_name)));
+}
+
 // This error message is not localized because we failed to load the
 // localization data files.
 const char kMissingLocaleDataTitle[] = "Missing File Error";
@@ -539,11 +580,6 @@ int ChromeBrowserMainPartsWin::PreEarlyInitialization() {
     return CHROME_RESULT_CODE_NORMAL_EXIT_UPGRADE_RELAUNCHED;
   }
 
-  // Requires FeatureList and may restart the browser.
-  if (auto deelevate_result = MaybeAutoDeElevate()) {
-    return *deelevate_result;
-  }
-
   return content::RESULT_CODE_NORMAL_EXIT;
 }
 
@@ -609,10 +645,25 @@ int ChromeBrowserMainPartsWin::PreCreateThreads() {
   return ChromeBrowserMainParts::PreCreateThreads();
 }
 
-void ChromeBrowserMainPartsWin::PostCreateThreads() {
+int ChromeBrowserMainPartsWin::PostCreateThreads() {
+  const base::CommandLine& command_line =
+      *base::CommandLine::ForCurrentProcess();
+
+  // This timing is specific:
+  // - It must occur AFTER the process singleton is acquired in
+  //   ChromeMainDelegate::PostEarlyInitialization.
+  // - The updater's COM task needs to run after the ThreadPool's threads are
+  // released in BrowserMainLoop::CreateThreads()
+  // - It runs BEFORE PostCreateThreadsImpl() can launch child processes, so
+  // that creation of child processes that are doomed to fail don't race with
+  // the rename and shutdown of this browser process.
+  if (upgrade_util::DoUpgradeTasks(command_line)) {
+    return CHROME_RESULT_CODE_NORMAL_EXIT_UPGRADE_RELAUNCHED;
+  }
+
   performance_manager::InitializeDllPrereadPolicy();
 
-  ChromeBrowserMainParts::PostCreateThreads();
+  return ChromeBrowserMainParts::PostCreateThreads();
 }
 
 void ChromeBrowserMainPartsWin::PostMainMessageLoopRun() {
@@ -641,8 +692,7 @@ void ChromeBrowserMainPartsWin::PreProfileInit() {
   // `ModuleDatabase` is an endpoint for IPC from child processes.
   SetupModuleDatabase(&module_watcher_);
 
-  if (base::FeatureList::IsEnabled(features::kWinSystemLocationPermission) &&
-      !device::GeolocationSystemPermissionManager::GetInstance()) {
+  if (!device::GeolocationSystemPermissionManager::GetInstance()) {
     device::GeolocationSystemPermissionManager::SetInstance(
         device::SystemGeolocationSourceWin::
             CreateGeolocationSystemPermissionManager());
@@ -743,44 +793,24 @@ void ChromeBrowserMainPartsWin::PostBrowserStart() {
   }
 #endif  // GOOGLE_CHROME_BRANDING
 
+  // Record the launch result HRESULT if an attempt to launch an isolated
+  // browser was made during early startup. On launch failure, this records the
+  // failure HRESULT when the process falls through to run unisolated. On launch
+  // success, this records S_OK in the isolated browser process itself, because
+  // the launcher stub process terminates without initializing metrics.
+  if (auto launch_result = chrome::GetIsolatedBrowserLaunchResult()) {
+    base::UmaHistogramSparse("Windows.IsolatedBrowser.LaunchResult",
+                             *launch_result);
+  }
+
   // Record the parent process at a low priority.
   base::ThreadPool::PostTask(
       FROM_HERE, {base::TaskPriority::BEST_EFFORT, base::MayBlock()},
       base::BindOnce(&ReportParentProcessName));
 
   content::GetUIThreadTaskRunner({base::TaskPriority::BEST_EFFORT})
-      ->PostTask(FROM_HERE, base::BindOnce([]() {
-                   std::string group_name;
-                   base::FieldTrial* trial = base::FeatureList::GetFieldTrial(
-                       features::kIsolatedProcess);
-                   if (trial) {
-                     group_name = trial->group_name();
-                   }
-
-                   const std::string old_group_name =
-                       g_browser_process->local_state()->GetString(
-                           prefs::kPreviousIsolationState);
-
-                   if (group_name == old_group_name) {
-                     return;
-                   }
-
-                   // If an enterprise administrator has set a Mandatory policy,
-                   // do not allow a field trial to override it.
-                   if (g_browser_process->local_state()->IsManagedPreference(
-                           prefs::kProcessIsolationEnabled)) {
-                     return;
-                   }
-
-                   g_browser_process->local_state()->SetString(
-                       prefs::kPreviousIsolationState, group_name);
-
-                   chrome::SetIsolationState(
-                       base::FeatureList::IsEnabled(features::kIsolatedProcess)
-                           ? chrome::IsolationState::kProcessIsolation
-                           : chrome::IsolationState::kIsolationDisabled,
-                       g_browser_process->local_state(), base::DoNothing());
-                 }));
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(&MaybeUpdateIsolationStateFromFieldTrial));
 
   base::ImportantFileWriterCleaner::GetInstance().Start();
 }
@@ -997,55 +1027,3 @@ void ChromeBrowserMainPartsWin::SetupModuleDatabase(
       &ChromeBrowserMainPartsWin::OnModuleEvent, base::Unretained(this)));
 }
 
-// Check if the browser process is launching elevated, and attempt to
-// automatically de-elevate.
-std::optional<int> ChromeBrowserMainPartsWin::MaybeAutoDeElevate() {
-  // Do not de-elevate in an integration test.
-  if (is_integration_test()) {
-    return std::nullopt;
-  }
-
-  if (!base::FeatureList::IsEnabled(features::kAutoDeElevate)) {
-    return std::nullopt;
-  }
-
-  // Don't bother trying when UAC is disabled because it won't work anyway.
-  if (!base::win::UserAccountIsUnnecessarilyElevated()) {
-    return std::nullopt;
-  }
-
-  const char* const kNoRestartSwitches[] = {
-      // Do not interfere with automation scenarios, which might want to launch
-      // Chrome elevated.
-      switches::kEnableAutomation,
-      // Never attempt to de-elevate a second time.
-      switches::kDoNotDeElevateOnLaunch};
-  if (std::ranges::any_of(
-          kNoRestartSwitches,
-          [command_line = base::CommandLine::ForCurrentProcess()](
-              const char* no_restart_switch) {
-            return command_line->HasSwitch(no_restart_switch);
-          })) {
-    return std::nullopt;
-  }
-
-  base::CommandLine new_command_line(*base::CommandLine::ForCurrentProcess());
-  // Give a fully qualified .exe name
-  base::FilePath full_exe_name;
-  if (base::PathService::Get(base::FILE_EXE, &full_exe_name)) {
-    new_command_line.SetProgram(full_exe_name);
-  }
-  new_command_line.AppendSwitch(switches::kDoNotDeElevateOnLaunch);
-
-  auto process_or_error = base::win::RunDeElevated(new_command_line);
-  const HRESULT hr = process_or_error.has_value()
-                         ? S_OK
-                         : HRESULT_FROM_WIN32(process_or_error.error());
-  base::UmaHistogramSparse("Windows.AutoDeElevateResult", hr);
-  // If it fails, it doesn't matter why, just proceed with the normal launch.
-  if (SUCCEEDED(hr)) {
-    return CHROME_RESULT_CODE_NORMAL_EXIT_AUTO_DE_ELEVATED;
-  }
-
-  return std::nullopt;
-}

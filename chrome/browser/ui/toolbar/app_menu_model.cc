@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/toolbar/app_menu_model.h"
 
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
@@ -28,6 +29,7 @@
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/defaults.h"
+#include "chrome/browser/enterprise/isolated_mode/isolated_mode_settings_service_factory.h"
 #include "chrome/browser/enterprise/util/managed_browser_utils.h"
 #include "chrome/browser/extensions/extension_ui_util.h"
 #include "chrome/browser/feedback/report_unsafe_site_dialog.h"
@@ -46,15 +48,17 @@
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/search/background/ntp_custom_background_service_factory.h"
 #include "chrome/browser/search/search.h"
+#include "chrome/browser/send_tab_to_self/send_tab_to_self_util.h"
 #include "chrome/browser/sharing_hub/sharing_hub_features.h"
+#include "chrome/browser/signin/account_preview_data_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/sync/sync_ui_util.h"
 #include "chrome/browser/themes/theme_service_factory.h"
+#include "chrome/browser/ttc/core/ttc_keyed_service.h"
 #include "chrome/browser/ui/bookmarks/bookmark_utils.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
@@ -73,8 +77,10 @@
 #include "chrome/browser/ui/profiles/profile_view_utils.h"
 #include "chrome/browser/ui/safety_hub/menu_notification_service_factory.h"
 #include "chrome/browser/ui/safety_hub/safety_hub_constants.h"
-#include "chrome/browser/ui/safety_hub/safety_hub_hats_service.h"
-#include "chrome/browser/ui/safety_hub/safety_hub_hats_service_factory.h"
+#include "chrome/browser/ui/safety_hub/safety_hub_util.h"
+#include "chrome/browser/ui/send_tab_to_self/send_tab_to_self_context_menu_delegate.h"
+#include "chrome/browser/ui/side_panel/side_panel_action_callback.h"
+#include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/startup/default_browser_prompt/default_browser_prompt_manager.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/recent_tabs_sub_menu_model.h"
@@ -89,6 +95,7 @@
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
+#include "chrome/browser/ui/web_applications/web_app_ui_utils.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome_page_handler.h"
 #include "chrome/browser/ui/webui/signin/signin_utils_desktop.h"
 #include "chrome/browser/ui/webui/whats_new/whats_new_util.h"
@@ -101,6 +108,7 @@
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
+#include "chrome/common/channel_info.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
@@ -126,11 +134,13 @@
 #include "components/prefs/pref_service.h"
 #include "components/profile_metrics/browser_profile_type.h"
 #include "components/saved_tab_groups/public/features.h"
+#include "components/send_tab_to_self/features.h"
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
+#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/skills/features.h"
 #include "components/strings/grit/components_strings.h"
-#include "components/sync/base/features.h"
 #include "components/sync/service/sync_service.h"
 #include "components/user_education/common/feature_promo/feature_promo_controller.h"
 #include "components/vector_icons/vector_icons.h"
@@ -152,6 +162,7 @@
 #include "ui/base/models/menu_separator_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/ui_base_features.h"
+#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/color_palette.h"
@@ -185,7 +196,6 @@
 using base::UserMetricsAction;
 using content::WebContents;
 
-DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kCreateNewTabGroupTopLevel);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kProfileMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kProfileOpenGuestItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kBookmarksMenuItem);
@@ -193,6 +203,7 @@ DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kTabGroupsMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kDownloadsMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kHistoryMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kExtensionsMenuItem);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kSkillsMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kClearBrowsingDataMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kMoreToolsMenuItem);
 DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(AppMenuModel, kIncognitoMenuItem);
@@ -246,182 +257,11 @@ void AddSubMenuWithStringIdAndVectorIcon(ui::SimpleMenuModel* model,
                                      ui::SimpleMenuModel::kDefaultIconSize));
 }
 
-// Conditionally return the update app menu item title based on upgrade detector
-// state.
-std::u16string GetUpgradeDialogTitleText() {
-  if (UpgradeDetector::GetInstance()->is_outdated_install() ||
-      UpgradeDetector::GetInstance()->is_outdated_install_no_au()) {
-    return l10n_util::GetStringUTF16(IDS_UPGRADE_BUBBLE_MENU_ITEM);
-  }
-#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && \
-    (BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX))
-  return l10n_util::GetStringUTF16(IDS_RELAUNCH_TO_UPDATE_ALT);
-#else
-  return l10n_util::GetStringUTF16(IDS_RELAUNCH_TO_UPDATE);
-#endif
+const gfx::VectorIcon& GetSendTabToSelfIcon() {
+  return features::IsRoundedIconsEnabled() ? kDevicesIcon
+                                           : kDevicesChromeRefreshOldIcon;
 }
 
-// Returns the appropriate menu label for the IDC_INSTALL_PWA command if
-// available.
-std::u16string GetInstallPWALabel(const Browser* browser) {
-  // There may be no active web contents in tests.
-  auto* const web_contents = browser->tab_strip_model()->GetActiveWebContents();
-  if (!web_contents) {
-    return std::u16string();
-  }
-  if (!web_app::CanCreateWebApp(browser)) {
-    return std::u16string();
-  }
-  // Don't allow apps created from chrome-extension urls.
-  if (web_contents->GetLastCommittedURL().SchemeIs("chrome-extension")) {
-    return std::u16string();
-  }
-
-  // TODO(b/328077967): Support async nature of AppBannerManager pipeline runs
-  // with the menu model instead of needing this workaround to verify if an
-  // non-installable site is installed.
-  const webapps::AppId* app_id =
-      web_app::WebAppTabHelper::GetAppId(web_contents);
-  web_app::WebAppProvider* const provider =
-      web_app::WebAppProvider::GetForLocalAppsUnchecked(browser->profile());
-  if (app_id &&
-      provider->registrar_unsafe().GetInstallState(*app_id) ==
-          web_app::proto::INSTALLED_WITH_OS_INTEGRATION &&
-      provider->registrar_unsafe().GetAppUserDisplayMode(*app_id) !=
-          web_app::mojom::UserDisplayMode::kBrowser) {
-    return std::u16string();
-  }
-
-  std::u16string install_page_as_app_label =
-      l10n_util::GetStringUTF16(IDS_INSTALL_DIY_TO_OS_LAUNCH_SURFACE);
-  webapps::AppBannerManager* banner =
-      webapps::AppBannerManager::FromWebContents(web_contents);
-  if (!banner) {
-    // Showing `Install Page as App` allows the user to refetch the manifest and
-    // go through the install flow without relying on the AppBannerManager to
-    // finish working.
-    return install_page_as_app_label;
-  }
-
-  std::optional<webapps::InstallBannerConfig> install_config =
-      banner->GetCurrentBannerConfig();
-  if (!install_config) {
-    // In some edge cases where the `AppBannerManager` pipeline hasn't run yet,
-    // the information populated to be used for determining installability and
-    // other parameters is not available. In this case, allow users to try
-    // installability by refetching the manifest.
-    return install_page_as_app_label;
-  }
-  CHECK_EQ(install_config->mode, webapps::AppBannerMode::kWebApp);
-  webapps::InstallableWebAppCheckResult installable =
-      banner->GetInstallableWebAppCheckResult();
-
-  switch (installable) {
-    case webapps::InstallableWebAppCheckResult::kUnknown:
-      // Loading of the menu model is synchronous, so there could be a condition
-      // where the `AppBannerManager` has not yet finished the pipeline while
-      // the menu item has been triggered. In such a case,
-      // `banner->GetInstallableWebAppCheckResult()` returns the default value
-      // of `kUnknown`.
-      // Show `Install Page as App` for that use-case, since that allows the
-      // user to trigger the install flow to verify all the data required for
-      // installability. The correct dialog will be shown to the user depending
-      // on whether the app turns out to be installable or not.
-      return install_page_as_app_label;
-    case webapps::InstallableWebAppCheckResult::kNo_AlreadyInstalled:
-      // Returning an empty string here allows the `launch page as app` field to
-      // get populated in place of the `install` strings.
-      return std::u16string();
-    case webapps::InstallableWebAppCheckResult::kNo:
-      return install_page_as_app_label;
-    case webapps::InstallableWebAppCheckResult::kYes_ByUserRequest:
-    case webapps::InstallableWebAppCheckResult::kYes_Promotable:
-      std::u16string app_name = install_config->GetWebOrNativeAppName();
-      if (app_name.empty()) {
-        // Prefer showing `Install Page as App` here, as users can set the name
-        // of the installed app on the DIY app dialog anyway.
-        return install_page_as_app_label;
-      }
-      return l10n_util::GetStringFUTF16(
-          IDS_INSTALL_TO_OS_LAUNCH_SURFACE,
-          ui::EscapeMenuLabelAmpersands(app_name));
-  }
-}
-
-// TODO(b/328077967): Implement async updates of menu for app icon.
-ui::ImageModel GetInstallPWAIcon(Browser* browser) {
-  ui::ImageModel app_icon_to_use = ui::ImageModel::FromVectorIcon(
-      features::IsRoundedIconsEnabled() ? kInstallDesktopIcon
-                                        : kInstallDesktopChromeRefreshOldIcon,
-      ui::kColorMenuIcon, ui::SimpleMenuModel::kDefaultIconSize);
-
-  content::WebContents* const web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
-  if (!web_contents) {
-    return app_icon_to_use;
-  }
-
-  webapps::AppBannerManager* const banner =
-      webapps::AppBannerManager::FromWebContents(web_contents);
-  if (!banner) {
-    return app_icon_to_use;
-  }
-
-  // For sites that are not installable (DIY apps), do not return any icons,
-  // instead use the default chrome refresh icon for installing.
-  auto installable_check_result = banner->GetInstallableWebAppCheckResult();
-  if (installable_check_result == webapps::InstallableWebAppCheckResult::kNo ||
-      installable_check_result ==
-          webapps::InstallableWebAppCheckResult::kUnknown) {
-    return app_icon_to_use;
-  }
-
-  std::optional<webapps::WebAppBannerData> install_config =
-      banner->GetCurrentWebAppBannerData();
-
-  // If no data or no icons have been obtained by the AppBannerManager, return
-  // the default icon.
-  if (!install_config || install_config->primary_icon.empty()) {
-    return app_icon_to_use;
-  }
-
-  gfx::ImageSkia primary_icon =
-      gfx::ImageSkia::CreateFrom1xBitmap(install_config->primary_icon);
-  gfx::ImageSkia resized_app_icon =
-      gfx::ImageSkiaOperations::CreateResizedImage(
-          primary_icon, skia::ImageOperations::RESIZE_BEST,
-          gfx::Size(ui::SimpleMenuModel::kDefaultIconSize,
-                    ui::SimpleMenuModel::kDefaultIconSize));
-  app_icon_to_use = ui::ImageModel::FromImageSkia(resized_app_icon);
-  return app_icon_to_use;
-}
-
-// Returns the appropriate menu label for the IDC_OPEN_IN_PWA_WINDOW command if
-// available.
-std::u16string GetOpenPWALabel(const Browser* browser) {
-  std::optional<webapps::AppId> app_id =
-      web_app::GetWebAppForActiveTab(browser);
-  if (!app_id.has_value()) {
-    return std::u16string();
-  }
-
-  // Only show this menu item for apps that open in an app window.
-  const auto* const provider =
-      web_app::WebAppProvider::GetForLocalAppsUnchecked(browser->profile());
-  if (provider->registrar_unsafe().GetAppUserDisplayMode(*app_id) ==
-      web_app::mojom::UserDisplayMode::kBrowser) {
-    return std::u16string();
-  }
-
-  const std::u16string short_name =
-      base::UTF8ToUTF16(provider->registrar_unsafe().GetAppShortName(*app_id));
-  return l10n_util::GetStringFUTF16(
-      IDS_OPEN_IN_APP_WINDOW,
-      ui::EscapeMenuLabelAmpersands(gfx::TruncateString(
-          short_name,
-          GetLayoutConstant(LayoutConstant::kAppMenuMaximumCharacterLength),
-          gfx::CHARACTER_BREAK)));
-}
 
 #if !BUILDFLAG(IS_CHROMEOS)
 std::u16string GetSyncSectionTitle(Profile* profile,
@@ -433,12 +273,144 @@ std::u16string GetSyncSectionTitle(Profile* profile,
   }
 
   if (signin_util::IsSigninPending(identity_manager)) {
-    return base::UTF8ToUTF16(account.email);
+    return base::UTF8ToUTF16(account.GetEmail());
   }
 
   return l10n_util::GetStringFUTF16(
       IDS_PROFILE_ROW_SIGNED_IN_MESSAGE_WITH_EMAIL,
-      {base::UTF8ToUTF16(account.email)});
+      {base::UTF8ToUTF16(account.GetEmail())});
+}
+
+struct SigninSectionInfo {
+  bool should_build_signin_section = false;
+  std::u16string title;
+  int command_id = 0;
+  int button_string_id = 0;
+  raw_ptr<const gfx::VectorIcon> icon = nullptr;
+  bool has_actionable_error = false;
+  std::optional<signin_metrics::PromoAction> signin_promo_action;
+};
+
+SigninSectionInfo ComputeSigninSectionInfo(Profile* profile) {
+  SigninSectionInfo info;
+  // TODO(crbug.com/440342282): Support personalized signin button.
+  if (!CanOfferSignin(profile, GaiaId(), /*email=*/std::string(),
+                      /*allow_account_from_other_profile=*/true)
+           .IsOk()) {
+    return info;
+  }
+
+  if (!SyncServiceFactory::IsSyncAllowed(profile)) {
+    return info;
+  }
+
+  info.should_build_signin_section = true;
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
+  info.title = GetSyncSectionTitle(profile, identity_manager);
+
+  // First, check for sync errors. They may exist even if sync-the-feature is
+  // disabled and only sync-the-transport is running.
+  syncer::SyncService* service = SyncServiceFactory::GetForProfile(profile);
+  if (service) {
+    const syncer::SyncService::UserActionableError error =
+        service->GetUserActionableError();
+    if (error != syncer::SyncService::UserActionableError::kNone) {
+      info.button_string_id =
+          GetSyncErrorButtonStringId(error, /*support_title_case=*/true);
+      switch (error) {
+        case syncer::SyncService::UserActionableError::kNone:
+          NOTREACHED();
+        case syncer::SyncService::UserActionableError::kSignInNeedsUpdate:
+          info.command_id = IDC_SHOW_SIGNIN_WHEN_PAUSED;
+          info.has_actionable_error = true;
+          if (identity_manager->HasPrimaryAccount(
+                  signin::ConsentLevel::kSync)) {
+            info.button_string_id = IDS_SYNC_RELOGIN_BUTTON_MAYBE_TITLE_CASE;
+            info.icon = &(features::IsRoundedIconsEnabled()
+                              ? vector_icons::kSyncDisabledIcon
+                              : vector_icons::kSyncOffChromeRefreshOldIcon);
+          } else {
+            // Merge this case with the others below once ConsentLevel::kSync is
+            // gone.
+            info.icon =
+                &(features::IsRoundedIconsEnabled()
+                      ? vector_icons::kAccountCircleOffIcon
+                      : vector_icons::kAccountCircleOffChromeRefreshOldIcon);
+          }
+          break;
+        case syncer::SyncService::UserActionableError::
+            kNeedsTrustedVaultKeyForPasswords:
+        case syncer::SyncService::UserActionableError::
+            kTrustedVaultRecoverabilityDegradedForPasswords:
+        case syncer::SyncService::UserActionableError::
+            kTrustedVaultRecoverabilityDegradedForEverything:
+        case syncer::SyncService::UserActionableError::
+            kNeedsTrustedVaultKeyForEverything:
+          info.command_id = IDC_SHOW_SIGNIN_WHEN_PAUSED;
+          info.has_actionable_error = true;
+          info.icon =
+              &(features::IsRoundedIconsEnabled()
+                    ? vector_icons::kAccountCircleOffIcon
+                    : vector_icons::kAccountCircleOffChromeRefreshOldIcon);
+          break;
+        case syncer::SyncService::UserActionableError::kNeedsClientUpgrade:
+          info.command_id = IDC_UPGRADE_DIALOG;
+          info.has_actionable_error = true;
+          info.icon = &(features::IsRoundedIconsEnabled()
+                            ? vector_icons::kErrorIcon
+                            : vector_icons::kErrorOutlineOldIcon);
+          break;
+        case syncer::SyncService::UserActionableError::kNeedsPassphrase:
+          info.command_id = IDC_SHOW_SYNC_PASSPHRASE_DIALOG;
+          info.has_actionable_error = true;
+          info.icon = &(features::IsRoundedIconsEnabled()
+                            ? vector_icons::kErrorIcon
+                            : vector_icons::kErrorOutlineOldIcon);
+          break;
+        case syncer::SyncService::UserActionableError::
+            kNeedsSettingsConfirmation:
+        case syncer::SyncService::UserActionableError::kUnrecoverableError:
+          // Only shown for "Sync-the-feature".
+          info.command_id = IDC_SHOW_SYNC_SETTINGS;
+          info.has_actionable_error = true;
+          info.icon = &(features::IsRoundedIconsEnabled()
+                            ? vector_icons::kErrorIcon
+                            : vector_icons::kErrorOutlineOldIcon);
+          break;
+        case syncer::SyncService::UserActionableError::kBookmarksLimitExceeded:
+          // For this specific error (as opposed to all others), there is no
+          // error UI in the menu.
+          return info;
+      }
+      CHECK_NE(info.command_id, 0);
+      return info;
+    }
+  }
+
+  if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync)) {
+    info.command_id = IDC_SHOW_SYNC_SETTINGS;
+    info.button_string_id = IDS_PROFILE_ROW_SYNC_IS_ON;
+    info.icon = &(features::IsRoundedIconsEnabled()
+                      ? vector_icons::kSyncIcon
+                      : vector_icons::kSyncChromeRefreshOldIcon);
+  } else if (!identity_manager->HasPrimaryAccount(
+                 signin::ConsentLevel::kSignin)) {
+    info.command_id = IDC_SHOW_SIGNIN;
+    info.button_string_id = IDS_PROFILE_MENU_SIGNIN_PROMO_BUTTON;
+    info.icon = &(features::IsRoundedIconsEnabled()
+                      ? kAccountCircleFilledIcon
+                      : vector_icons::kAccountCircleOldIcon);
+    info.signin_promo_action =
+        signin_ui_util::GetSingleAccountForPromos(
+            identity_manager,
+            AccountPreviewDataServiceFactory::GetForProfile(profile))
+                .IsEmpty()
+            ? signin_metrics::PromoAction::
+                  PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT
+            : signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT;
+  }
+  return info;
 }
 
 class ProfileSubMenuModel : public ui::SimpleMenuModel,
@@ -456,6 +428,7 @@ class ProfileSubMenuModel : public ui::SimpleMenuModel,
   }
 
   const std::u16string& profile_name() const { return profile_name_; }
+  const std::u16string& accessible_name() const { return accessible_name_; }
 
   // Returns |next_menu_id_| and increments it by n. This allows for 'sharing'
   // command ids with the other variable sized menu, which also uses every other
@@ -470,7 +443,7 @@ class ProfileSubMenuModel : public ui::SimpleMenuModel,
   void ExecuteCommand(int command_id, int event_flags) override;
 
  private:
-  bool BuildSyncSection();
+  bool BuildSigninSection(const SigninSectionInfo& info);
 
   void BuildGuestProfileRow(Profile* profile);
   void BuildCustomizeProfileRow(Profile* profile);
@@ -479,6 +452,7 @@ class ProfileSubMenuModel : public ui::SimpleMenuModel,
 
   ui::ImageModel avatar_image_model_;
   std::u16string profile_name_;
+  std::u16string accessible_name_;
   raw_ptr<Profile> profile_;
   raw_ptr<ui::SimpleMenuModel::Delegate> app_menu_model_delegate_;
   // ID of the next menu item.
@@ -497,8 +471,8 @@ ProfileSubMenuModel::ProfileSubMenuModel(
   const int avatar_icon_size =
       GetLayoutConstant(LayoutConstant::kAppMenuProfileRowAvatarIconSize);
   avatar_image_model_ = ui::ImageModel::FromVectorIcon(
-      features::IsRoundedIconsEnabled()   ? kAccountCircleIcon
-                                          : kAccountCircleChromeRefreshOldIcon,
+      features::IsRoundedIconsEnabled() ? kAccountCircleIcon
+                                        : kAccountCircleChromeRefreshOldIcon,
       ui::kColorMenuIcon, avatar_icon_size);
   if (profile->IsIncognitoProfile()) {
     avatar_image_model_ = ui::ImageModel::FromVectorIcon(
@@ -509,7 +483,8 @@ ProfileSubMenuModel::ProfileSubMenuModel(
   } else if (profile->IsGuestSession()) {
     profile_name_ = l10n_util::GetStringUTF16(IDS_GUEST_PROFILE_NAME);
   } else {
-    if (BuildSyncSection()) {
+    SigninSectionInfo signin_section_info = ComputeSigninSectionInfo(profile);
+    if (BuildSigninSection(signin_section_info)) {
       AddSeparator(ui::NORMAL_SEPARATOR);
     }
 
@@ -517,6 +492,9 @@ ProfileSubMenuModel::ProfileSubMenuModel(
         GetProfileAttributesFromProfile(profile);
     // If the profile is being deleted, profile_attributes may be null.
     if (profile_attributes) {
+      profile_name_ = GetProfileMenuDisplayName(profile_attributes);
+      accessible_name_ = profile_name_;
+
       AccountInfo account_info = GetAccountInfoFromProfile(profile);
       auto [avatar_image, icon_type] =
           account_info.IsEmpty()
@@ -526,8 +504,9 @@ ProfileSubMenuModel::ProfileSubMenuModel(
                         ThemeServiceFactory::GetForProfile(profile),
                         /*background_color_id=*/ui::kColorMenuBackground,
                         *color_provider))
-              : std::make_pair(account_info.account_image,
-                               AvatarIconType::kNonPlaceholder);
+              : std::make_pair(
+                    account_info.GetAvatarImage().value_or(gfx::Image()),
+                    AvatarIconType::kNonPlaceholder);
       // The avatar image can be empty if the account image hasn't been
       // fetched yet, if there is no image, or in tests.
       // Keep the default vector icon for placeholder avatars so that
@@ -538,17 +517,26 @@ ProfileSubMenuModel::ProfileSubMenuModel(
             ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
                 avatar_image, avatar_icon_size, avatar_icon_size,
                 profiles::SHAPE_CIRCLE));
-        // TODO(crbug.com/530147081): Clarify the AI ring may show up for users
-        // with a placeholder icon. Signed in users should have always an
-        // account_info and thus they will never have a placeholder icon.
-        if (IsAiSubscriptionRingEnabled(profile)) {
-          avatar_image_model_ = ui::ImageModel::FromImageSkia(AddAiRingToAvatar(
-              avatar_model, *color_provider, avatar_icon_size));
+        if (signin_section_info.has_actionable_error) {
+          avatar_image_model_ =
+              ui::ImageModel::FromImageSkia(profiles::GetAvatarWithDottedRing(
+                  avatar_model, avatar_icon_size, /*has_padding=*/false,
+                  /*has_background=*/false, *color_provider));
+        } else if (ShouldShowAvatarGradientRing(profile)) {
+          // TODO(crbug.com/530147081): Clarify if the ring may show up for
+          // users with a placeholder icon. Signed in users should have always
+          // an account_info and thus they will never have a placeholder icon.
+          avatar_image_model_ =
+              ui::ImageModel::FromImageSkia(AddLinearGradientRingToAvatar(
+                  avatar_model, *color_provider, avatar_icon_size));
+          if (!profile_name_.empty()) {
+            accessible_name_ = l10n_util::GetStringFUTF16(
+                IDS_PROFILE_AVATAR_NAME_WITH_AI_MEMBERSHIP, profile_name_);
+          }
         } else {
           avatar_image_model_ = avatar_model;
         }
       }
-      profile_name_ = GetProfileMenuDisplayName(profile_attributes);
     }
   }
 
@@ -558,8 +546,8 @@ ProfileSubMenuModel::ProfileSubMenuModel(
 
   bool needs_separator = false;
   const bool is_guest_mode_enabled = profiles::IsGuestModeEnabled(*profile);
-
-  if (!profile->IsIncognitoProfile() && !profile->IsGuestSession()) {
+  if (!profile->IsPrimaryOTRProfileWithRegularParent() &&
+      !profile->IsGuestSession()) {
     AddSeparator(ui::NORMAL_SEPARATOR);
     AddTitle(l10n_util::GetStringUTF16(IDS_OTHER_CHROME_PROFILES_TITLE));
     auto profile_entries = GetAllOtherProfileEntriesForProfileSubMenu(profile);
@@ -570,16 +558,38 @@ ProfileSubMenuModel::ProfileSubMenuModel(
     for (ProfileAttributesEntry* profile_entry : profile_entries) {
       std::u16string display_name = GetProfileMenuDisplayName(profile_entry);
       int menu_id = GetAndIncrementNextMenuID();
+
+      ui::ImageModel avatar_model =
+          ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
+              profile_entry->GetAvatarIcon(
+                  avatar_icon_size, /*use_high_res_file=*/true, icon_params),
+              avatar_icon_size, avatar_icon_size, profiles::SHAPE_CIRCLE));
+
+      bool has_ai_ring = false;
+      if (base::FeatureList::IsEnabled(
+              switches::kEnableAiSubscriptionAvatarRing) &&
+          profile_entry->GetAiSubscriptionTier() > 0) {
+        has_ai_ring = true;
+        avatar_model =
+            ui::ImageModel::FromImageSkia(AddLinearGradientRingToAvatar(
+                avatar_model, *color_provider, avatar_icon_size));
+      }
+
       AddItemWithIcon(
           menu_id,
           ui::EscapeMenuLabelAmpersands(gfx::TruncateString(
               display_name,
               GetLayoutConstant(LayoutConstant::kAppMenuMaximumCharacterLength),
               gfx::CHARACTER_BREAK)),
-          ui::ImageModel::FromImage(profiles::GetSizedAvatarIcon(
-              profile_entry->GetAvatarIcon(
-                  avatar_icon_size, /*use_high_res_file=*/true, icon_params),
-              avatar_icon_size, avatar_icon_size, profiles::SHAPE_CIRCLE)));
+          avatar_model);
+      if (has_ai_ring && !display_name.empty()) {
+        std::optional<size_t> index = GetIndexOfCommandId(menu_id);
+        CHECK(index.has_value());
+        SetAccessibleNameAt(
+            index.value(),
+            l10n_util::GetStringFUTF16(
+                IDS_PROFILE_AVATAR_NAME_WITH_AI_MEMBERSHIP, display_name));
+      }
       other_profiles_.insert({menu_id, profile_entry->GetPath()});
     }
 
@@ -641,128 +651,20 @@ int ProfileSubMenuModel::GetAndIncrementNextMenuID() {
   return current_id;
 }
 
-bool ProfileSubMenuModel::BuildSyncSection() {
-#if !BUILDFLAG(IS_CHROMEOS)
-  // TODO(crbug.com/440342282): Support personalized signin button.
-  if (!CanOfferSignin(profile_, GaiaId(), /*email=*/std::string(),
-                      /*allow_account_from_other_profile=*/true)
-           .IsOk()) {
-    return false;
-  }
-#endif  // BUILDFLAG(IS_CHROMEOS)
-
-  if (!SyncServiceFactory::IsSyncAllowed(profile_)) {
+bool ProfileSubMenuModel::BuildSigninSection(const SigninSectionInfo& info) {
+  if (!info.should_build_signin_section) {
     return false;
   }
 
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile_);
-  AddTitle(GetSyncSectionTitle(profile_, identity_manager));
+  AddTitle(info.title);
 
-  // First, check for sync errors. They may exist even if sync-the-feature is
-  // disabled and only sync-the-transport is running.
-  syncer::SyncService* service = SyncServiceFactory::GetForProfile(profile_);
-  if (service) {
-    const syncer::SyncService::UserActionableError error =
-        service->GetUserActionableError();
-    if (error != syncer::SyncService::UserActionableError::kNone) {
-      int command_id = 0;
-      const gfx::VectorIcon* icon = nullptr;
-      int button_string_id =
-          GetSyncErrorButtonStringId(error, /*support_title_case=*/true);
-      switch (error) {
-        case syncer::SyncService::UserActionableError::kNone:
-          NOTREACHED();
-        case syncer::SyncService::UserActionableError::kSignInNeedsUpdate:
-          command_id = IDC_SHOW_SIGNIN_WHEN_PAUSED;
-          if (identity_manager->HasPrimaryAccount(
-                  signin::ConsentLevel::kSync)) {
-            button_string_id = IDS_SYNC_RELOGIN_BUTTON_MAYBE_TITLE_CASE;
-            icon = &(features::IsRoundedIconsEnabled()
-                         ? vector_icons::kSyncDisabledIcon
-                         : vector_icons::kSyncOffChromeRefreshOldIcon);
-          } else {
-            // Merge this case with the others below once ConsentLevel::kSync is
-            // gone.
-            icon = &(features::IsRoundedIconsEnabled()
-                         ? vector_icons::kAccountCircleOffIcon
-                         : vector_icons::kAccountCircleOffChromeRefreshOldIcon);
-          }
-          break;
-        case syncer::SyncService::UserActionableError::
-            kNeedsTrustedVaultKeyForPasswords:
-        case syncer::SyncService::UserActionableError::
-            kTrustedVaultRecoverabilityDegradedForPasswords:
-        case syncer::SyncService::UserActionableError::
-            kTrustedVaultRecoverabilityDegradedForEverything:
-        case syncer::SyncService::UserActionableError::
-            kNeedsTrustedVaultKeyForEverything:
-          command_id = IDC_SHOW_SIGNIN_WHEN_PAUSED;
-          icon = &(features::IsRoundedIconsEnabled()
-                       ? vector_icons::kAccountCircleOffIcon
-                       : vector_icons::kAccountCircleOffChromeRefreshOldIcon);
-          break;
-        case syncer::SyncService::UserActionableError::kNeedsClientUpgrade:
-          command_id = IDC_UPGRADE_DIALOG;
-          icon = &(features::IsRoundedIconsEnabled()
-                       ? vector_icons::kErrorIcon
-                       : vector_icons::kErrorOutlineOldIcon);
-          break;
-        case syncer::SyncService::UserActionableError::kNeedsPassphrase:
-          command_id = IDC_SHOW_SYNC_PASSPHRASE_DIALOG;
-          icon = &(features::IsRoundedIconsEnabled()
-                       ? vector_icons::kErrorIcon
-                       : vector_icons::kErrorOutlineOldIcon);
-          break;
-        case syncer::SyncService::UserActionableError::
-            kNeedsSettingsConfirmation:
-        case syncer::SyncService::UserActionableError::kUnrecoverableError:
-          // Only shown for "Sync-the-feature".
-          command_id = IDC_SHOW_SYNC_SETTINGS;
-          icon = &(features::IsRoundedIconsEnabled()
-                       ? vector_icons::kErrorIcon
-                       : vector_icons::kErrorOutlineOldIcon);
-          break;
-        case syncer::SyncService::UserActionableError::kBookmarksLimitExceeded:
-          // For this specific error (as opposed to all others), there is no
-          // error UI in the menu.
-          return true;
-      }
-      CHECK_NE(command_id, 0);
-      AddItemWithStringIdAndVectorIcon(this, command_id, button_string_id,
-                                       *icon);
-      return true;
-    }
-  }
-
-  if (identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSync)) {
-    AddItemWithStringIdAndVectorIcon(
-        this, IDC_SHOW_SYNC_SETTINGS, IDS_PROFILE_ROW_SYNC_IS_ON,
-        features::IsRoundedIconsEnabled()
-            ? kSyncIcon
-            : vector_icons::kSyncChromeRefreshOldIcon);
-  } else {
-    if (syncer::IsReplaceSyncPromosWithSignInPromosEnabled()) {
-      if (!identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
-        AddItemWithStringIdAndVectorIcon(
-            this, IDC_SHOW_SIGNIN, IDS_PROFILE_MENU_SIGNIN_PROMO_BUTTON,
-            features::IsRoundedIconsEnabled()
-                ? kAccountCircleFilledIcon
-                : vector_icons::kAccountCircleOldIcon);
-        signin_metrics::LogSignInOffered(
-            signin_metrics::AccessPoint::kMenu,
-            signin_ui_util::GetSingleAccountForPromos(identity_manager)
-                    .IsEmpty()
-                ? signin_metrics::PromoAction::
-                      PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT
-                : signin_metrics::PromoAction::PROMO_ACTION_WITH_DEFAULT);
-      }
-    } else {
-      AddItemWithStringIdAndVectorIcon(
-          this, IDC_TURN_ON_SYNC, IDS_PROFILE_ROW_TURN_ON_SYNC,
-          features::IsRoundedIconsEnabled()
-              ? vector_icons::kSyncDisabledIcon
-              : vector_icons::kSyncOffChromeRefreshOldIcon);
+  if (info.command_id != 0) {
+    CHECK(info.icon);
+    AddItemWithStringIdAndVectorIcon(this, info.command_id,
+                                     info.button_string_id, *info.icon);
+    if (info.signin_promo_action.has_value()) {
+      signin_metrics::LogSignInOffered(signin_metrics::AccessPoint::kMenu,
+                                       *info.signin_promo_action);
     }
   }
   return true;
@@ -775,9 +677,9 @@ void ProfileSubMenuModel::BuildGuestProfileRow(Profile* profile) {
   SetElementIdentifierAt(GetIndexOfCommandId(IDC_OPEN_GUEST_PROFILE).value(),
                          AppMenuModel::kProfileOpenGuestItem);
 }
-
 void ProfileSubMenuModel::BuildCustomizeProfileRow(Profile* profile) {
-  if (!profile->IsIncognitoProfile() && !profile->IsGuestSession()) {
+  if (!profile->IsPrimaryOTRProfileWithRegularParent() &&
+      !profile->IsGuestSession()) {
     AddItemWithStringIdAndVectorIcon(
         this, IDC_CUSTOMIZE_CHROME, IDS_CUSTOMIZE_CHROME,
         features::IsRoundedIconsEnabled()
@@ -799,7 +701,7 @@ void ProfileSubMenuModel::BuildCloseProfileRow(Profile* profile) {
 
 void ProfileSubMenuModel::BuildManageGoogleAccountRow(Profile* profile) {
   if (HasUnconstentedProfile(profile) && !IsSyncPaused(profile) &&
-      !profile->IsIncognitoProfile()) {
+      !profile->IsPrimaryOTRProfileWithRegularParent()) {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
     const gfx::VectorIcon& manage_account_icon =
         vector_icons::kGoogleGLogoMonochromeIcon;
@@ -837,44 +739,32 @@ PasswordsAndAutofillSubMenuModel::PasswordsAndAutofillSubMenuModel(
   SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_PASSWORD_MANAGER).value(),
                          AppMenuModel::kPasswordManagerMenuItem);
 
-  AddItemWithStringIdAndVectorIcon(
-      this, IDC_SHOW_PAYMENT_METHODS,
-      base::FeatureList::IsEnabled(
-          autofill::features::kYourSavedInfoSettingsPage)
-          ? IDS_YOUR_SAVED_INFO_PAYMENTS_SUBMENU_OPTION
-          : IDS_PAYMENT_METHOD_SUBMENU_OPTION,
-      features::IsRoundedIconsEnabled() ? kCreditCardIcon
-                                        : kCreditCardChromeRefreshOldIcon);
+  AddItemWithStringIdAndVectorIcon(this, IDC_SHOW_PAYMENT_METHODS,
+                                   IDS_YOUR_SAVED_INFO_PAYMENTS_SUBMENU_OPTION,
+                                   features::IsRoundedIconsEnabled()
+                                       ? kCreditCardIcon
+                                       : kCreditCardChromeRefreshOldIcon);
 
-  if (!base::FeatureList::IsEnabled(
-          autofill::features::kYourSavedInfoSettingsPage)) {
-    AddItemWithStringIdAndVectorIcon(
-        this, IDC_SHOW_ADDRESSES, IDS_ADDRESSES_AND_MORE_SUBMENU_OPTION,
-        features::IsRoundedIconsEnabled()
-            ? vector_icons::kLocationOnIcon
-            : vector_icons::kLocationOnChromeRefreshOldIcon);
-  } else {
-    AddItemWithStringIdAndVectorIcon(
-        this, IDC_SHOW_CONTACT_INFO,
-        IDS_YOUR_SAVED_INFO_CONTACT_INFO_SUBMENU_OPTION,
-        features::IsRoundedIconsEnabled()
-            ? vector_icons::kLocationOnIcon
-            : vector_icons::kLocationOnChromeRefreshOldIcon);
-    SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_CONTACT_INFO).value(),
-                           AppMenuModel::kContactInfoMenuItem);
-    AddItemWithStringIdAndVectorIcon(
-        this, IDC_SHOW_IDENTITY_DOCS, IDS_IDENTITY_DOCS_SUBMENU_OPTION,
-        features::IsRoundedIconsEnabled() ? vector_icons::kIdCardIcon
-                                          : vector_icons::kIdCardOldIcon);
-    SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_IDENTITY_DOCS).value(),
-                           AppMenuModel::kIdentityDocsMenuItem);
-    AddItemWithStringIdAndVectorIcon(
-        this, IDC_SHOW_TRAVEL, IDS_TRAVEL_SUBMENU_OPTION,
-        features::IsRoundedIconsEnabled() ? vector_icons::kTripIcon
-                                          : vector_icons::kTripOldIcon);
-    SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_TRAVEL).value(),
-                           AppMenuModel::kTravelMenuItem);
-  }
+  AddItemWithStringIdAndVectorIcon(
+      this, IDC_SHOW_CONTACT_INFO,
+      IDS_YOUR_SAVED_INFO_CONTACT_INFO_SUBMENU_OPTION,
+      features::IsRoundedIconsEnabled()
+          ? vector_icons::kLocationOnIcon
+          : vector_icons::kLocationOnChromeRefreshOldIcon);
+  SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_CONTACT_INFO).value(),
+                         AppMenuModel::kContactInfoMenuItem);
+  AddItemWithStringIdAndVectorIcon(
+      this, IDC_SHOW_IDENTITY_DOCS, IDS_IDENTITY_DOCS_SUBMENU_OPTION,
+      features::IsRoundedIconsEnabled() ? vector_icons::kIdCardIcon
+                                        : vector_icons::kIdCardOldIcon);
+  SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_IDENTITY_DOCS).value(),
+                         AppMenuModel::kIdentityDocsMenuItem);
+  AddItemWithStringIdAndVectorIcon(
+      this, IDC_SHOW_TRAVEL, IDS_TRAVEL_SUBMENU_OPTION,
+      features::IsRoundedIconsEnabled() ? vector_icons::kTripIcon
+                                        : vector_icons::kTripOldIcon);
+  SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_TRAVEL).value(),
+                         AppMenuModel::kTravelMenuItem);
 }
 
 class FindAndEditSubMenuModel : public ui::SimpleMenuModel {
@@ -895,9 +785,10 @@ FindAndEditSubMenuModel::FindAndEditSubMenuModel(
   AddItemWithStringIdAndVectorIcon(
       this, IDC_CUT, IDS_CUT,
       features::IsRoundedIconsEnabled() ? kContentCutIcon : kCutMenuOldIcon);
-  AddItemWithStringIdAndVectorIcon(
-      this, IDC_COPY, IDS_COPY,
-      features::IsRoundedIconsEnabled() ? kContentCopyIcon : kCopyMenuOldIcon);
+  AddItemWithStringIdAndVectorIcon(this, IDC_COPY, IDS_COPY,
+                                   features::IsRoundedIconsEnabled()
+                                       ? vector_icons::kContentCopyIcon
+                                       : kCopyMenuOldIcon);
   AddItemWithStringIdAndVectorIcon(this, IDC_PASTE, IDS_PASTE,
                                    features::IsRoundedIconsEnabled()
                                        ? kContentPasteIcon
@@ -907,17 +798,60 @@ FindAndEditSubMenuModel::FindAndEditSubMenuModel(
 class SaveAndShareSubMenuModel : public ui::SimpleMenuModel {
  public:
   SaveAndShareSubMenuModel(ui::SimpleMenuModel::Delegate* delegate,
-                           Browser* browser);
+                           BrowserWindowInterface* browser);
   SaveAndShareSubMenuModel(const SaveAndShareSubMenuModel&) = delete;
   SaveAndShareSubMenuModel& operator=(const SaveAndShareSubMenuModel&) = delete;
   ~SaveAndShareSubMenuModel() override = default;
+
+ private:
+  // Builds Send Tab to Self target device submenu when enhanced desktop UI is
+  // enabled.
+  void BuildSendTabToSelfSubmenu(BrowserWindowInterface* browser,
+                                 content::WebContents* web_contents);
+
+  // Fallback helper to add simple Send Tab to Self menu item.
+  void BuildSendTabToSelfSimpleItem();
+
+  std::unique_ptr<send_tab_to_self::SendTabToSelfContextMenuDelegate>
+      send_tab_to_self_submenu_delegate_;
+  std::unique_ptr<ui::SimpleMenuModel> send_tab_to_self_submenu_;
 };
+
+void SaveAndShareSubMenuModel::BuildSendTabToSelfSubmenu(
+    BrowserWindowInterface* browser,
+    content::WebContents* web_contents) {
+  CHECK(web_contents);
+
+  send_tab_to_self_submenu_delegate_ =
+      std::make_unique<send_tab_to_self::SendTabToSelfContextMenuDelegate>(
+          web_contents, send_tab_to_self::ShareEntryPoint::kShareMenu);
+  send_tab_to_self_submenu_ = std::make_unique<ui::SimpleMenuModel>(
+      send_tab_to_self_submenu_delegate_.get());
+  send_tab_to_self_submenu_delegate_->PopulateSubmenu(
+      send_tab_to_self_submenu_.get());
+
+  AddSubMenuWithStringIdAndIcon(
+      IDC_SEND_TAB_TO_SELF, IDS_MENU_SEND_TAB_TO_SELF,
+      send_tab_to_self_submenu_.get(),
+      ui::ImageModel::FromVectorIcon(GetSendTabToSelfIcon()));
+
+  SetIsNewFeatureAt(GetItemCount() - 1,
+                    UserEducationService::MaybeShowNewBadge(
+                        browser->GetProfile(),
+                        send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2));
+}
+
+void SaveAndShareSubMenuModel::BuildSendTabToSelfSimpleItem() {
+  AddItemWithStringIdAndVectorIcon(this, IDC_SEND_TAB_TO_SELF,
+                                   IDS_MENU_SEND_TAB_TO_SELF,
+                                   GetSendTabToSelfIcon());
+}
 
 SaveAndShareSubMenuModel::SaveAndShareSubMenuModel(
     ui::SimpleMenuModel::Delegate* delegate,
-    Browser* browser)
+    BrowserWindowInterface* browser)
     : SimpleMenuModel(delegate) {
-  if (media_router::MediaRouterEnabled(browser->profile())) {
+  if (media_router::MediaRouterEnabled(browser->GetProfile())) {
     AddTitle(l10n_util::GetStringUTF16(IDS_SAVE_AND_SHARE_MENU_CAST));
     SetElementIdentifierAt(GetItemCount() - 1, AppMenuModel::kCastTitleItem);
     AddItemWithStringIdAndVectorIcon(
@@ -932,11 +866,12 @@ SaveAndShareSubMenuModel::SaveAndShareSubMenuModel(
                                        ? kFileSaveIcon
                                        : kFileSaveChromeRefreshOldIcon);
   AddSeparator(ui::NORMAL_SEPARATOR);
-  if (std::u16string install_item = GetInstallPWALabel(browser);
+  if (std::u16string install_item = web_app::GetInstallPWALabel(browser);
       !install_item.empty()) {
-    AddItemWithIcon(IDC_INSTALL_PWA, install_item, GetInstallPWAIcon(browser));
+    AddItemWithIcon(IDC_INSTALL_PWA, install_item,
+                    web_app::GetInstallPWAIcon(browser));
     SetElementIdentifierAt(GetItemCount() - 1, AppMenuModel::kInstallAppItem);
-  } else if (std::u16string open_item = GetOpenPWALabel(browser);
+  } else if (std::u16string open_item = web_app::GetOpenPWALabel(browser);
              !open_item.empty()) {
     AddItemWithIcon(IDC_OPEN_IN_PWA_WINDOW, open_item,
                     ui::ImageModel::FromVectorIcon(
@@ -950,25 +885,43 @@ SaveAndShareSubMenuModel::SaveAndShareSubMenuModel(
       features::IsRoundedIconsEnabled() ? kDriveShortcutIcon
                                         : kDriveShortcutChromeRefreshOldIcon);
   SetElementIdentifierAt(GetItemCount() - 1, AppMenuModel::kCreateShortcutItem);
-  if (!sharing_hub::SharingIsDisabledByPolicy(browser->profile()) ||
-      sharing_hub::DesktopScreenshotsFeatureEnabled(browser->profile())) {
+  if (!sharing_hub::SharingIsDisabledByPolicy(browser->GetProfile()) ||
+      sharing_hub::DesktopScreenshotsFeatureEnabled(browser->GetProfile())) {
     AddSeparator(ui::NORMAL_SEPARATOR);
     AddTitle(l10n_util::GetStringUTF16(IDS_SAVE_AND_SHARE_MENU_SHARE));
-    if (!sharing_hub::SharingIsDisabledByPolicy(browser->profile())) {
+    if (!sharing_hub::SharingIsDisabledByPolicy(browser->GetProfile())) {
       AddItemWithStringIdAndVectorIcon(
           this, IDC_COPY_URL, IDS_APP_MENU_COPY_LINK,
-          features::IsRoundedIconsEnabled() ? kLinkIcon
+          features::IsRoundedIconsEnabled() ? vector_icons::kLinkIcon
                                             : kLinkChromeRefreshOldIcon);
-      AddItemWithStringIdAndVectorIcon(
-          this, IDC_SEND_TAB_TO_SELF, IDS_MENU_SEND_TAB_TO_SELF,
-          features::IsRoundedIconsEnabled() ? kDevicesIcon
-                                            : kDevicesChromeRefreshOldIcon);
+
+      // WebContents is required to query target devices and display state for
+      // Send Tab to Self.
+      content::WebContents* web_contents =
+          browser->tab_strip_model()->GetActiveWebContents();
+      std::optional<send_tab_to_self::EntryPointDisplayReason> reason =
+          web_contents
+              ? send_tab_to_self::GetEntryPointDisplayReason(web_contents)
+              : std::nullopt;
+
+      // When enhanced desktop UI v2 feature flag is enabled and feature is
+      // offered, build submenu with available devices. Otherwise, build simple
+      // command item.
+      if (web_contents &&
+          base::FeatureList::IsEnabled(
+              send_tab_to_self::kSendTabToSelfEnhancedDesktopUIv2) &&
+          reason == send_tab_to_self::EntryPointDisplayReason::kOfferFeature) {
+        BuildSendTabToSelfSubmenu(browser, web_contents);
+      } else {
+        BuildSendTabToSelfSimpleItem();
+      }
+
       AddItemWithStringIdAndVectorIcon(
           this, IDC_QRCODE_GENERATOR, IDS_APP_MENU_CREATE_QR_CODE,
           features::IsRoundedIconsEnabled() ? kQrCodeIcon
                                             : kQrCodeChromeRefreshOldIcon);
     }
-    if (sharing_hub::DesktopScreenshotsFeatureEnabled(browser->profile())) {
+    if (sharing_hub::DesktopScreenshotsFeatureEnabled(browser->GetProfile())) {
       AddItemWithStringIdAndVectorIcon(
           this, IDC_SHARING_HUB_SCREENSHOT, IDS_SHARING_HUB_SCREENSHOT_LABEL,
           features::IsRoundedIconsEnabled() ? kScreenshotRegionIcon
@@ -1009,66 +962,91 @@ void LogWrenchMenuAction(AppMenuAction action_id) {
 // Only used in branded builds.
 
 HelpMenuModel::HelpMenuModel(ui::SimpleMenuModel::Delegate* delegate,
-                             Browser* browser)
+                             BrowserWindowInterface* browser)
     : SimpleMenuModel(delegate) {
   Build(browser);
 }
 
 HelpMenuModel::~HelpMenuModel() = default;
 
-void HelpMenuModel::Build(Browser* browser) {
+void HelpMenuModel::Build(BrowserWindowInterface* browser) {
 #if BUILDFLAG(IS_CHROMEOS) && defined(OFFICIAL_BUILD)
-    int help_string_id = IDS_GET_HELP;
+  int help_string_id = IDS_GET_HELP;
 #else
-    int help_string_id = IDS_HELP_PAGE;
+  int help_string_id = IDS_HELP_PAGE;
 #endif
-    AddItemWithStringIdAndVectorIcon(this, IDC_ABOUT, IDS_ABOUT,
-                                     features::IsRoundedIconsEnabled()
-                                         ? vector_icons::kInfoIcon
-                                         : vector_icons::kInfoRefreshOldIcon);
+  AddItemWithStringIdAndVectorIcon(this, IDC_ABOUT, IDS_ABOUT,
+                                   features::IsRoundedIconsEnabled()
+                                       ? vector_icons::kInfoIcon
+                                       : vector_icons::kInfoRefreshOldIcon);
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-    if (whats_new::IsEnabled()) {
-      AddItemWithStringIdAndVectorIcon(
-          this, IDC_CHROME_WHATS_NEW, IDS_CHROME_WHATS_NEW,
-          features::IsRoundedIconsEnabled() ? kReleaseAlertIcon
-                                            : kReleaseAlertOldIcon);
-    }
+  if (whats_new::IsEnabled()) {
+    AddItemWithStringIdAndVectorIcon(
+        this, IDC_CHROME_WHATS_NEW, IDS_CHROME_WHATS_NEW,
+        features::IsRoundedIconsEnabled() ? kReleaseAlertIcon
+                                          : kReleaseAlertOldIcon);
+  }
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
-    AddItemWithStringId(IDC_HELP_PAGE_VIA_MENU, help_string_id);
-    if (browser_defaults::kShowHelpMenuItemIcon) {
-      ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
-      SetIconForCommandId(
-          IDC_HELP_PAGE_VIA_MENU,
-          ui::ImageModel::FromImage(rb.GetNativeImageNamed(IDR_HELP_MENU)));
-    } else {
-      SetCommandIcon(this, IDC_HELP_PAGE_VIA_MENU,
-                     features::IsRoundedIconsEnabled() ? kHelpCustomIcon
-                                                       : kHelpMenuOldIcon);
-    }
+  AddItemWithStringId(IDC_HELP_PAGE_VIA_MENU, help_string_id);
+  if (browser_defaults::kShowHelpMenuItemIcon) {
+    ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
+    SetIconForCommandId(
+        IDC_HELP_PAGE_VIA_MENU,
+        ui::ImageModel::FromImage(rb.GetNativeImageNamed(IDR_HELP_MENU)));
+  } else {
+    SetCommandIcon(
+        this, IDC_HELP_PAGE_VIA_MENU,
+        features::IsRoundedIconsEnabled() ? kHelpCustomIcon : kHelpMenuOldIcon);
+  }
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-    if (chrome::CanShowFeedback(browser->profile())) {
-      AddItemWithStringIdAndVectorIcon(
-          this, IDC_FEEDBACK, IDS_FEEDBACK,
-          features::IsRoundedIconsEnabled() ? kFeedbackIcon : kReportOldIcon);
+  if (chrome::CanShowFeedback(browser->GetProfile())) {
+    AddItemWithStringIdAndVectorIcon(
+        this, IDC_FEEDBACK, IDS_FEEDBACK,
+        features::IsRoundedIconsEnabled() ? kFeedbackIcon : kReportOldIcon);
 
-      if (feedback::ReportUnsafeSiteDialog::IsEnabled(*browser->profile())) {
-        AddItemWithStringIdAndVectorIcon(
-            this, IDC_REPORT_UNSAFE_SITE, IDS_REPORT_UNSAFE_SITE,
-            features::IsRoundedIconsEnabled() ? vector_icons::kWarningFilledIcon
-                                              : vector_icons::kWarningOldIcon);
-        SetElementIdentifierAt(
-            GetIndexOfCommandId(IDC_REPORT_UNSAFE_SITE).value(),
-            HelpMenuModel::kReportUnsafeSiteMenuItem);
-      }
+    if (feedback::ReportUnsafeSiteDialog::IsEnabled(*browser->GetProfile())) {
+      AddItemWithStringIdAndVectorIcon(
+          this, IDC_REPORT_UNSAFE_SITE, IDS_REPORT_UNSAFE_SITE,
+          features::IsRoundedIconsEnabled() ? vector_icons::kWarningFilledIcon
+                                            : vector_icons::kWarningOldIcon);
+      SetElementIdentifierAt(
+          GetIndexOfCommandId(IDC_REPORT_UNSAFE_SITE).value(),
+          HelpMenuModel::kReportUnsafeSiteMenuItem);
     }
+  }
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SkillsMenuModel
+
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(SkillsMenuModel, kManageSkillsMenuItem);
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(SkillsMenuModel, kBrowseSkillsMenuItem);
+
+SkillsMenuModel::SkillsMenuModel(ui::SimpleMenuModel::Delegate* delegate)
+    : SimpleMenuModel(delegate) {
+  Build();
+}
+
+SkillsMenuModel::~SkillsMenuModel() = default;
+
+void SkillsMenuModel::Build() {
+  AddItemWithStringIdAndVectorIcon(
+      this, IDC_MANAGE_SKILLS, IDS_SKILLS_MENU_MANAGE_SKILLS,
+      features::IsRoundedIconsEnabled() ? kSettingsIcon : kSettingsMenuOldIcon);
+  SetElementIdentifierAt(GetIndexOfCommandId(IDC_MANAGE_SKILLS).value(),
+                         kManageSkillsMenuItem);
+  AddItemWithStringIdAndVectorIcon(this, IDC_BROWSE_SKILLS,
+                                   IDS_SKILLS_MENU_BROWSE_SKILLS, kExploreIcon);
+  SetElementIdentifierAt(GetIndexOfCommandId(IDC_BROWSE_SKILLS).value(),
+                         kBrowseSkillsMenuItem);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // ToolsMenuModel
 
 ToolsMenuModel::ToolsMenuModel(ui::SimpleMenuModel::Delegate* delegate,
-                               Browser* browser)
+                               BrowserWindowInterface* browser)
     : SimpleMenuModel(delegate) {
   Build(browser);
 }
@@ -1081,7 +1059,7 @@ ToolsMenuModel::~ToolsMenuModel() = default;
 // - Reading mode.
 // - Developer tools.
 // - Option to enable profiling.
-void ToolsMenuModel::Build(Browser* browser) {
+void ToolsMenuModel::Build(BrowserWindowInterface* browser) {
   // Tablet mode does not have a Tab Search button. We should not show tablet
   // mode users these menu items.
   bool is_tablet_mode = false;
@@ -1112,29 +1090,23 @@ void ToolsMenuModel::Build(Browser* browser) {
                                     : kDockToRightOldIcon
           : features::IsRoundedIconsEnabled() ? kDockToRightIcon
                                               : kDockToLeftOldIcon);
-      const bool use_preview_badge =
-          base::FeatureList::IsEnabled(tabs::kVerticalTabsPreviewBadge);
-      const ui::NewBadgeType badge_type = use_preview_badge
-                                              ? ui::NewBadgeType::kPreview
-                                              : ui::NewBadgeType::kNew;
       const user_education::DisplayNewBadge show_badge =
-          UserEducationService::MaybeShowNewBadge(
-              browser->GetProfile(), use_preview_badge
-                                         ? tabs::kVerticalTabsPreviewBadge
-                                         : tabs::kVerticalTabsNewBadge);
+          UserEducationService::MaybeShowNewBadge(browser->GetProfile(),
+                                                  tabs::kVerticalTabsNewBadge);
       SetIsNewFeatureAt(GetIndexOfCommandId(IDC_TOGGLE_VERTICAL_TABS).value(),
-                        show_badge, badge_type);
+                        show_badge, ui::NewBadgeType::kNew);
     }
   }
 
   if (CustomizeChromePageHandler::IsSupported(
-          NtpCustomBackgroundServiceFactory::GetForProfile(browser->profile()),
-          browser->profile())) {
-    AddItemWithStringIdAndVectorIcon(
-        this, IDC_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL,
-        IDS_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL,
-        features::IsRoundedIconsEnabled()   ? kEditIcon
-                                            : kEditChromeRefreshOldIcon);
+          NtpCustomBackgroundServiceFactory::GetForProfile(
+              browser->GetProfile()),
+          browser->GetProfile())) {
+    AddItemWithStringIdAndVectorIcon(this, IDC_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL,
+                                     IDS_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL,
+                                     features::IsRoundedIconsEnabled()
+                                         ? kEditIcon
+                                         : kEditChromeRefreshOldIcon);
   }
 
   AddSeparator(ui::NORMAL_SEPARATOR);
@@ -1156,10 +1128,9 @@ void ToolsMenuModel::Build(Browser* browser) {
                          kPerformanceMenuItem);
 
   if (chrome::CanOpenTaskManager()) {
-    AddItemWithStringIdAndVectorIcon(
-        this, IDC_TASK_MANAGER_APP_MENU, IDS_TASK_MANAGER,
-        features::IsRoundedIconsEnabled() ? kTableChartIcon
-                                          : kTaskManagerOldIcon);
+    AddItemWithStringIdAndVectorIcon(this, IDC_TASK_MANAGER_APP_MENU,
+                                     IDS_TASK_MANAGER,
+                                     vector_icons::kTableChartIcon);
   }
 #if BUILDFLAG(IS_CHROMEOS)
   AddItemWithStringId(IDC_TAKE_SCREENSHOT, IDS_TAKE_SCREENSHOT);
@@ -1174,7 +1145,7 @@ void ToolsMenuModel::Build(Browser* browser) {
     AddCheckItemWithStringId(IDC_PROFILING_ENABLED, IDS_PROFILING_ENABLED);
   }
   if (IsChromeLabsEnabled()) {
-    auto* profile = browser->profile();
+    auto* profile = browser->GetProfile();
     UpdateChromeLabsNewBadgePrefs(profile);
     if (ShouldShowChromeLabsUI(profile)) {
       BooleanPrefMember show_chrome_labs_item;
@@ -1185,8 +1156,8 @@ void ToolsMenuModel::Build(Browser* browser) {
         AddSeparator(ui::NORMAL_SEPARATOR);
         AddItemWithStringIdAndVectorIcon(
             this, IDC_SHOW_CHROME_LABS, IDS_CHROMELABS,
-            features::IsRoundedIconsEnabled()   ? kScienceIcon
-                                                : kScienceOldIcon);
+            features::IsRoundedIconsEnabled() ? vector_icons::kScienceIcon
+                                              : vector_icons::kScienceOldIcon);
         SetElementIdentifierAt(
             GetIndexOfCommandId(IDC_SHOW_CHROME_LABS).value(),
             kChromeLabsMenuItem);
@@ -1200,7 +1171,7 @@ void ToolsMenuModel::Build(Browser* browser) {
 
 ExtensionsMenuModel::ExtensionsMenuModel(
     ui::SimpleMenuModel::Delegate* delegate,
-    Browser* browser)
+    BrowserWindowInterface* browser)
     : SimpleMenuModel(delegate) {
   Build(browser);
 }
@@ -1211,7 +1182,7 @@ ExtensionsMenuModel::~ExtensionsMenuModel() = default;
 // - An overflow with two items:
 //   - An item to manage extensions at chrome://extensions
 //   - An item to visit the Chrome Web Store
-void ExtensionsMenuModel::Build(Browser* browser) {
+void ExtensionsMenuModel::Build(BrowserWindowInterface* browser) {
   AddItemWithStringIdAndVectorIcon(
       this, IDC_EXTENSIONS_SUBMENU_MANAGE_EXTENSIONS,
       IDS_EXTENSIONS_SUBMENU_MANAGE_EXTENSIONS_ITEM,
@@ -1244,14 +1215,41 @@ AlertMenuItem AppMenuModel::GetAlertItemForRunningTutorial(
   }
   auto* const service =
       UserEducationServiceFactory::GetForBrowserContext(browser->GetProfile());
-  return service && service->tutorial_service().IsRunningTutorial(
-                        kPasswordManagerTutorialId)
+  return service && service->tutorial_service() &&
+                 service->tutorial_service()->IsRunningTutorial(
+                     kPasswordManagerTutorialId)
              ? AlertMenuItem::kPasswordManager
              : AlertMenuItem::kNone;
 }
 
+// static
+std::u16string AppMenuModel::GetUpgradeDialogTitleText() {
+  if (UpgradeDetector::GetInstance()->is_outdated_install() ||
+      UpgradeDetector::GetInstance()->is_outdated_install_no_au()) {
+    return l10n_util::GetStringUTF16(IDS_UPGRADE_BUBBLE_MENU_ITEM);
+  }
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && \
+    (BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX))
+  return l10n_util::GetStringUTF16(IDS_RELAUNCH_TO_UPDATE_ALT);
+#else
+  return l10n_util::GetStringUTF16(IDS_RELAUNCH_TO_UPDATE);
+#endif
+}
+
+// static
+std::u16string AppMenuModel::GetUpgradeDialogSubstringText() {
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && \
+    (BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX))
+  if (!UpgradeDetector::GetInstance()->is_outdated_install() &&
+      !UpgradeDetector::GetInstance()->is_outdated_install_no_au()) {
+    return l10n_util::GetStringUTF16(IDS_RELAUNCH_TO_UPDATE_ALT_MINOR_TEXT);
+  }
+#endif
+  return std::u16string();
+}
+
 AppMenuModel::AppMenuModel(ui::AcceleratorProvider* provider,
-                           Browser* browser,
+                           BrowserWindowInterface* browser,
                            AppMenuIconController* app_menu_icon_controller,
                            AlertMenuItem alert_item)
     : ui::SimpleMenuModel(this),
@@ -1287,7 +1285,7 @@ bool AppMenuModel::DoesCommandIdDismissMenu(int command_id) const {
 
 void AppMenuModel::ExecuteCommand(int command_id, int event_flags) {
   GlobalError* error =
-      GlobalErrorServiceFactory::GetForProfile(browser_->profile())
+      GlobalErrorServiceFactory::GetForProfile(browser_->GetProfile())
           ->GetGlobalErrorByMenuItemCommandID(command_id);
   if (error) {
     error->ExecuteMenuItem(browser_);
@@ -1295,7 +1293,7 @@ void AppMenuModel::ExecuteCommand(int command_id, int event_flags) {
   }
 
   if (command_id == IDC_VIEW_PASSWORDS) {
-    browser()->profile()->GetPrefs()->SetBoolean(
+    browser()->GetProfile()->GetPrefs()->SetBoolean(
         password_manager::prefs::kPasswordsPrefWithNewLabelUsed, true);
   }
 
@@ -1306,24 +1304,36 @@ void AppMenuModel::ExecuteCommand(int command_id, int event_flags) {
   }
 
   LogMenuMetrics(command_id);
-  chrome::ExecuteCommand(browser_, command_id);
+
+  switch (command_id) {
+    case IDC_SHOW_BOOKMARK_SIDE_PANEL:
+    case IDC_SHOW_HISTORY_CLUSTERS_SIDE_PANEL:
+    case IDC_SHOW_READING_MODE_SIDE_PANEL:
+    case IDC_READING_LIST_MENU_SHOW_UI:
+    case IDC_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL: {
+      actions::ActionInvocationContext context =
+          actions::ActionInvocationContext::Builder()
+              .SetProperty(
+                  kSidePanelOpenTriggerKey,
+                  static_cast<std::underlying_type_t<SidePanelOpenTrigger>>(
+                      SidePanelOpenTrigger::kAppMenu))
+              .Build();
+      chrome::ExecuteCommandWithContext(browser_, command_id,
+                                        std::move(context));
+      break;
+    }
+
+    default:
+      chrome::ExecuteCommand(browser_, command_id);
+      break;
+  }
 }
 
 void AppMenuModel::LogSafetyHubInteractionMetrics(
     safety_hub::SafetyHubModuleType sh_module,
     int event_flags) {
-  base::UmaHistogramEnumeration("Settings.SafetyHub.Interaction",
-                                safety_hub::SafetyHubSurfaces::kThreeDotMenu);
-  base::UmaHistogramEnumeration(
-      "Settings.SafetyHub.EntryPointInteraction",
-      safety_hub::SafetyHubEntryPoint::kMenuNotifications);
-  base::UmaHistogramEnumeration("Settings.SafetyHub.MenuNotificationClicked",
-                                sh_module);
-
-  if (SafetyHubHatsService* hats_service =
-          SafetyHubHatsServiceFactory::GetForProfile(browser_->profile())) {
-    hats_service->SafetyHubNotificationClicked(sh_module);
-  }
+  safety_hub_util::LogMenuNotificationClicked(browser_->GetProfile(),
+                                              sh_module);
 }
 
 void AppMenuModel::LogMenuMetrics(int command_id) {
@@ -1352,6 +1362,9 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
             "WrenchMenu.TimeToAction.NewIncognitoWindow", delta);
       }
       LogMenuAction(MENU_ACTION_NEW_INCOGNITO_WINDOW);
+      break;
+    case IDC_NEW_ISOLATED_WINDOW:
+      LogMenuAction(MENU_ACTION_NEW_ISOLATED_WINDOW);
       break;
 
     // Bookmarks sub menu.
@@ -1480,6 +1493,13 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
                                       delta);
       }
       LogMenuAction(MENU_ACTION_OPEN_GLIC);
+      break;
+    case IDC_SHOW_TTC_MENU:
+      if (!uma_action_recorded_) {
+        base::UmaHistogramMediumTimes("WrenchMenu.TimeToAction.TtcAppMenu",
+                                      delta);
+      }
+      LogMenuAction(MENU_ACTION_TTC_APP_MENU);
       break;
 
     case IDC_SHOW_TRANSLATE:
@@ -1695,7 +1715,7 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
       LogMenuAction(MENU_ACTION_SHOW_DOWNLOADS);
       base::UmaHistogramEnumeration(
           "Download.OpenDownloadsFromMenu.PerProfileType",
-          profile_metrics::GetBrowserProfileType(browser_->profile()));
+          profile_metrics::GetBrowserProfileType(browser_->GetProfile()));
       break;
     case IDC_OPTIONS:
       if (!uma_action_recorded_) {
@@ -1705,7 +1725,7 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
       LogMenuAction(MENU_ACTION_OPTIONS);
       base::UmaHistogramEnumeration(
           "Settings.OpenSettingsFromMenu.PerProfileType",
-          profile_metrics::GetBrowserProfileType(browser_->profile()));
+          profile_metrics::GetBrowserProfileType(browser_->GetProfile()));
       break;
     case IDC_ABOUT:
       if (!uma_action_recorded_) {
@@ -1895,13 +1915,6 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
       }
       LogMenuAction(MENU_ACTION_SHOW_PAYMENT_METHODS);
       break;
-    case IDC_SHOW_ADDRESSES:
-      if (!uma_action_recorded_) {
-        base::UmaHistogramMediumTimes("WrenchMenu.TimeToAction.ShowAddresses",
-                                      delta);
-      }
-      LogMenuAction(MENU_ACTION_SHOW_ADDRESSES);
-      break;
     case IDC_SHOW_CONTACT_INFO:
       if (!uma_action_recorded_) {
         base::UmaHistogramMediumTimes("WrenchMenu.TimeToAction.ShowContactInfo",
@@ -1988,7 +2001,7 @@ void AppMenuModel::LogMenuMetrics(int command_id) {
 }
 
 bool AppMenuModel::IsCommandIdChecked(int command_id) const {
-  PrefService* prefs = browser_->profile()->GetPrefs();
+  PrefService* prefs = browser_->GetProfile()->GetPrefs();
   if (command_id == IDC_SHOW_BOOKMARK_BAR) {
     return prefs->GetBoolean(bookmarks::prefs::kShowBookmarkBar);
   }
@@ -2017,7 +2030,7 @@ bool AppMenuModel::IsCommandIdChecked(int command_id) const {
 
 bool AppMenuModel::IsCommandIdEnabled(int command_id) const {
   GlobalError* error =
-      GlobalErrorServiceFactory::GetForProfile(browser_->profile())
+      GlobalErrorServiceFactory::GetForProfile(browser_->GetProfile())
           ->GetGlobalErrorByMenuItemCommandID(command_id);
   if (error) {
     return true;
@@ -2025,7 +2038,9 @@ bool AppMenuModel::IsCommandIdEnabled(int command_id) const {
 
   switch (command_id) {
     case IDC_NEW_INCOGNITO_WINDOW:
-      return IncognitoModePrefs::IsIncognitoAllowed(browser_->profile());
+      return IncognitoModePrefs::IsIncognitoTypeAllowed(
+          browser_->GetProfile(),
+          IncognitoModePrefs::IncognitoModeType::kStandard);
     case IDC_ZEPHYRUS_UI_LAYOUT:
       // Enabled so its thumbnails are; the row itself does nothing.
       return true;
@@ -2046,6 +2061,25 @@ bool AppMenuModel::IsCommandIdAlerted(int command_id) const {
 bool AppMenuModel::GetAcceleratorForCommandId(
     int command_id,
     ui::Accelerator* accelerator) const {
+  if (command_id == IDC_NEW_ISOLATED_WINDOW) {
+    return provider_->GetAcceleratorForCommandId(IDC_NEW_INCOGNITO_WINDOW,
+                                                 accelerator);
+  }
+
+  // Reading mode uses different command IDs for different ways of opening
+  // it, so adjust to use the command ID for the keyboard shortcut to grab
+  // the proper accelerator.
+  if (command_id == IDC_SHOW_READING_MODE_SIDE_PANEL) {
+    return provider_->GetAcceleratorForCommandId(IDC_SHOW_READING_MODE_KEYBOARD,
+                                                 accelerator);
+  }
+
+  if (command_id == IDC_NEW_INCOGNITO_WINDOW) {
+    if (!IncognitoModePrefs::IsIncognitoAllowed(browser_->GetProfile())) {
+      return false;
+    }
+  }
+
   return provider_->GetAcceleratorForCommandId(command_id, accelerator);
 }
 
@@ -2054,6 +2088,10 @@ void AppMenuModel::LogMenuAction(AppMenuAction action_id) {
 }
 
 // Note: When adding new menu items please place under an appropriate section.
+// Capitalization Policy (go/chrome-capitalization):
+// In-browser 3-dot app menus use sentence case across all platforms, including
+// macOS. Native macOS system menus (the main menu bar and right-click context
+// menus) use Title Case separately.
 // Menu is organised as follows:
 // - Extension toolbar overflow.
 // - Global browser errors and warnings.
@@ -2086,25 +2124,17 @@ void AppMenuModel::Build() {
       AddDefaultBrowserMenuItems()) {
     AddSeparator(ui::NORMAL_SEPARATOR);
   }
-
-  AddItemWithStringIdAndVectorIcon(
-      this, IDC_NEW_TAB,
-      browser_->profile()->IsIncognitoProfile() &&
-              !browser_->profile()->IsGuestSession()
-          ? IDS_NEW_INCOGNITO_TAB
-          : IDS_NEW_TAB,
-      features::IsRoundedIconsEnabled() ? kTabIcon : kNewTabRefreshOldIcon);
-
-  if (base::FeatureList::IsEnabled(
-          features::kCreateNewTabGroupAppMenuTopLevel)) {
-    AddItemWithStringIdAndVectorIcon(
-        this, IDC_CREATE_NEW_TAB_GROUP_TOP_LEVEL, IDS_NEW_TAB_GROUP,
-        features::IsRoundedIconsEnabled() ? kLibraryAddIcon
-                                          : kCreateNewTabGroupOldIcon);
-    SetElementIdentifierAt(
-        GetIndexOfCommandId(IDC_CREATE_NEW_TAB_GROUP_TOP_LEVEL).value(),
-        kCreateNewTabGroupTopLevel);
+  int new_tab_string_id = IDS_NEW_TAB;
+  if (browser_->GetProfile()->IsEnterpriseIsolatedModeProfile() &&
+      !browser_->GetProfile()->IsGuestSession()) {
+    new_tab_string_id = IDS_NEW_ISOLATED_TAB;
+  } else if (browser_->GetProfile()->IsIncognitoProfile() &&
+             !browser_->GetProfile()->IsGuestSession()) {
+    new_tab_string_id = IDS_NEW_INCOGNITO_TAB;
   }
+  AddItemWithStringIdAndVectorIcon(
+      this, IDC_NEW_TAB, new_tab_string_id,
+      features::IsRoundedIconsEnabled() ? kTabIcon : kNewTabRefreshOldIcon);
 
   AddItemWithStringIdAndVectorIcon(
       this, IDC_NEW_WINDOW, IDS_NEW_WINDOW,
@@ -2112,14 +2142,14 @@ void AppMenuModel::Build() {
 
   // This menu item is not visible in Guest Mode. If incognito mode is not
   // available, it will be shown in disabled state. (crbug.com/40703208)
-  if (!browser_->profile()->IsGuestSession()) {
+  if (!browser_->GetProfile()->IsGuestSession()) {
     // Zephyrus: the command enters OR LEAVES Private Workspace (see
     // BrowserCommandController), so the label must not still promise Incognito
     // -- and must say which direction it goes. A single item reading "Private
     // Workspace" in a window that is already private tells the user nothing
     // about what clicking it does.
     const bool in_private =
-        ZephyrusPrivateWorkspace::IsPrivate(browser_);
+        ZephyrusPrivateWorkspace::IsPrivate(zephyrus::AsBrowser(browser_.get()));
     AddItemWithIcon(
         IDC_NEW_INCOGNITO_WINDOW,
         l10n_util::GetStringUTF16(
@@ -2131,6 +2161,18 @@ void AppMenuModel::Build() {
     SetElementIdentifierAt(
         GetIndexOfCommandId(IDC_NEW_INCOGNITO_WINDOW).value(),
         kIncognitoMenuItem);
+
+    bool isolated_mode_enabled =
+        enterprise_isolated_mode::IsolatedModeReplacesIncognito(
+            browser_->GetProfile());
+
+    if (isolated_mode_enabled) {
+      AddItemWithStringIdAndVectorIcon(
+          this, IDC_NEW_ISOLATED_WINDOW, IDS_NEW_ISOLATED_WINDOW,
+          features::IsRoundedIconsEnabled()
+              ? vector_icons::kDomainIcon
+              : vector_icons::kBusinessChromeRefreshOldIcon);
+    }
   }
 
   AddSeparator(ui::NORMAL_SEPARATOR);
@@ -2144,67 +2186,70 @@ void AppMenuModel::Build() {
   //
   // Identity in this browser is the WORKSPACE, and that lives in the title bar.
 
-  if (!browser_->profile()->IsGuestSession()) {
+  if (!browser_->GetProfile()->IsGuestSession()) {
     sub_menus_.push_back(
         std::make_unique<PasswordsAndAutofillSubMenuModel>(this));
     AddSubMenuWithStringIdAndVectorIcon(
-        this, IDC_PASSWORDS_AND_AUTOFILL_MENU, IDS_PASSWORDS_AND_AUTOFILL_MENU,
-        sub_menus_.back().get(),
+        this, kPasswordsAndAutofillMenuPlaceholder,
+        IDS_PASSWORDS_AND_AUTOFILL_MENU, sub_menus_.back().get(),
         features::IsRoundedIconsEnabled()
             ? vector_icons::kPasswordManagerIcon
             : vector_icons::kPasswordManagerOldIcon);
     SetElementIdentifierAt(
-        GetIndexOfCommandId(IDC_PASSWORDS_AND_AUTOFILL_MENU).value(),
+        GetIndexOfCommandId(kPasswordsAndAutofillMenuPlaceholder).value(),
         kPasswordAndAutofillMenuItem);
   }
 
-  if (!browser_->profile()->IsOffTheRecord()) {
+  if (!browser_->GetProfile()->IsOffTheRecord()) {
     auto recent_tabs_sub_menu =
         std::make_unique<RecentTabsSubMenuModel>(provider_, browser_);
     recent_tabs_sub_menu->RegisterLogMenuMetricsCallback(base::BindRepeating(
         &AppMenuModel::LogMenuMetrics, base::Unretained(this)));
     sub_menus_.push_back(std::move(recent_tabs_sub_menu));
     AddSubMenuWithStringIdAndVectorIcon(
-        this, IDC_RECENT_TABS_MENU, IDS_HISTORY_MENU, sub_menus_.back().get(),
+        this, kRecentTabsMenuPlaceholder, IDS_HISTORY_MENU,
+        sub_menus_.back().get(),
         features::IsRoundedIconsEnabled() ? kHistoryIcon : kHistoryOldIcon);
-    SetElementIdentifierAt(GetIndexOfCommandId(IDC_RECENT_TABS_MENU).value(),
-                           kHistoryMenuItem);
+    SetElementIdentifierAt(
+        GetIndexOfCommandId(kRecentTabsMenuPlaceholder).value(),
+        kHistoryMenuItem);
   }
   AddItemWithStringIdAndVectorIcon(
       this, IDC_SHOW_DOWNLOADS, IDS_SHOW_DOWNLOADS,
       features::IsRoundedIconsEnabled() ? kDownloadIcon : kDownloadMenuOldIcon);
   SetElementIdentifierAt(GetIndexOfCommandId(IDC_SHOW_DOWNLOADS).value(),
                          kDownloadsMenuItem);
-  if (!browser_->profile()->IsGuestSession()) {
+  if (!browser_->GetProfile()->IsGuestSession()) {
     bookmark_sub_menu_model_ =
         std::make_unique<BookmarkSubMenuModel>(this, browser_);
 
     AddSubMenuWithStringIdAndVectorIcon(
-        this, IDC_BOOKMARKS_MENU, IDS_BOOKMARKS_AND_LISTS_MENU,
+        this, kBookmarksMenuPlaceholder, IDS_BOOKMARKS_AND_LISTS_MENU,
         bookmark_sub_menu_model_.get(),
         features::IsRoundedIconsEnabled() ? kStarIcon
                                           : kBookmarksListsMenuOldIcon);
-    SetElementIdentifierAt(GetIndexOfCommandId(IDC_BOOKMARKS_MENU).value(),
-                           kBookmarksMenuItem);
+    SetElementIdentifierAt(
+        GetIndexOfCommandId(kBookmarksMenuPlaceholder).value(),
+        kBookmarksMenuItem);
   }
 
-  if (browser_->profile()->IsRegularProfile()) {
+  if (browser_->GetProfile()->IsRegularProfile()) {
     auto saved_tab_groups_model = std::make_unique<ui::SimpleMenuModel>(this);
     sub_menus_.push_back(std::move(saved_tab_groups_model));
     AddSubMenuWithStringIdAndVectorIcon(
-        this, IDC_SAVED_TAB_GROUPS_MENU, IDS_SAVED_TAB_GROUPS_MENU,
+        this, kSavedTabGroupsMenuPlaceholder, IDS_SAVED_TAB_GROUPS_MENU,
         sub_menus_.back().get(),
         features::IsRoundedIconsEnabled() ? kGridViewIcon
                                           : kSavedTabGroupBarEverythingOldIcon);
     SetElementIdentifierAt(
-        GetIndexOfCommandId(IDC_SAVED_TAB_GROUPS_MENU).value(),
+        GetIndexOfCommandId(kSavedTabGroupsMenuPlaceholder).value(),
         kTabGroupsMenuItem);
   }
 
   // Extensions sub menu.
   if (ArePromotionsEnabled() &&
       base::FeatureList::IsEnabled(features::kExtensionsCollapseMainMenu) &&
-      !extensions::ui_util::HasManageableExtensions(browser_->profile())) {
+      !extensions::ui_util::HasManageableExtensions(browser_->GetProfile())) {
     AddItemWithStringIdAndVectorIcon(
         this, IDC_FIND_EXTENSIONS, IDS_FIND_EXTENSIONS,
         features::IsRoundedIconsEnabled()
@@ -2215,13 +2260,29 @@ void AppMenuModel::Build() {
   } else {
     sub_menus_.push_back(std::make_unique<ExtensionsMenuModel>(this, browser_));
     AddSubMenuWithStringIdAndVectorIcon(
-        this, IDC_EXTENSIONS_SUBMENU, IDS_EXTENSIONS_SUBMENU,
+        this, kExtensionsSubmenuPlaceholder, IDS_EXTENSIONS_SUBMENU,
         sub_menus_.back().get(),
         features::IsRoundedIconsEnabled()
             ? vector_icons::kChromeExtensionIcon
             : vector_icons::kExtensionChromeRefreshOldIcon);
-    SetElementIdentifierAt(GetIndexOfCommandId(IDC_EXTENSIONS_SUBMENU).value(),
-                           kExtensionsMenuItem);
+    SetElementIdentifierAt(
+        GetIndexOfCommandId(kExtensionsSubmenuPlaceholder).value(),
+        kExtensionsMenuItem);
+  }
+
+  if (browser_->GetProfile()->IsRegularProfile() &&
+      base::FeatureList::IsEnabled(features::kSkillsEnabled) &&
+      base::FeatureList::IsEnabled(features::kSkillsAppMenu)) {
+    sub_menus_.push_back(std::make_unique<SkillsMenuModel>(this));
+    AddSubMenuWithStringIdAndVectorIcon(this, kSkillsMenuPlaceholder,
+                                        IDS_SKILLS_MENU,
+                                        sub_menus_.back().get(), kContractIcon);
+    SetElementIdentifierAt(GetIndexOfCommandId(kSkillsMenuPlaceholder).value(),
+                           kSkillsMenuItem);
+    SetIsNewFeatureAt(
+        GetIndexOfCommandId(kSkillsMenuPlaceholder).value(),
+        BrowserUserEducationInterface::From(browser())->MaybeShowNewBadgeFor(
+            features::kSkillsAppMenu));
   }
 
   AddItemWithStringIdAndVectorIcon(
@@ -2236,7 +2297,7 @@ void AppMenuModel::Build() {
   AddSeparator(ui::NORMAL_SEPARATOR);
   // Zephyrus: where the tabs live. A row of layout thumbnails, drawn by
   // AppMenu (see ZephyrusLayoutPicker); only normal windows have a choice.
-  if (browser_->is_type_normal()) {
+  if (zephyrus::IsTypeNormal(browser_)) {
     AddItem(IDC_ZEPHYRUS_UI_LAYOUT, u"Layout");
     AddSeparator(ui::NORMAL_SEPARATOR);
   }
@@ -2245,7 +2306,7 @@ void AppMenuModel::Build() {
       this, IDC_PRINT, IDS_PRINT,
       features::IsRoundedIconsEnabled() ? kPrintIcon : kPrintMenuOldIcon);
 
-  if (glic::GlicEnabling::IsEnabledForProfile(browser_->profile())) {
+  if (glic::GlicEnabling::IsEnabledForProfile(browser_->GetProfile())) {
     AddItemWithStringIdAndVectorIcon(this, IDC_OPEN_GLIC,
                                      IDS_GLIC_THREE_DOT_MENU_ITEM,
                                      glic::GlicVectorIconManager::GetVectorIcon(
@@ -2254,6 +2315,21 @@ void AppMenuModel::Build() {
         GetIndexOfCommandId(IDC_OPEN_GLIC).value(),
         BrowserUserEducationInterface::From(browser())->MaybeShowNewBadgeFor(
             features::kGlicAppMenuNewBadge));
+  }
+
+  if (ttc::TtcKeyedService* service =
+          ttc::TtcKeyedService::Get(browser_->GetProfile());
+      service && service->IsEnabled()) {
+    const gfx::VectorIcon& icon =
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING)
+        vector_icons::kAudioSparkIcon;
+#else
+        features::IsRoundedIconsEnabled()
+            ? vector_icons::kMicFilledIcon
+            : vector_icons::kMicChromeRefreshOldIcon;
+#endif
+    AddItemWithStringIdAndVectorIcon(this, IDC_SHOW_TTC_MENU,
+                                     IDS_TTC_ENTRYPOINT_LABEL, icon);
   }
 
   if (auto* controller = lens::LensOverlayEntryPointController::From(browser());
@@ -2268,7 +2344,7 @@ void AppMenuModel::Build() {
 #endif
     AddItemWithStringIdAndVectorIcon(
         this, IDC_CONTENT_CONTEXT_LENS_OVERLAY,
-        lens::GetLensOverlayEntrypointLabelAltIds(IDS_SHOW_LENS_OVERLAY), icon);
+        lens::GetLensOverlayEntrypointLabelAltIds(), icon);
     const int lens_command_index =
         GetIndexOfCommandId(IDC_CONTENT_CONTEXT_LENS_OVERLAY).value();
     SetElementIdentifierAt(lens_command_index, kShowLensOverlay);
@@ -2285,15 +2361,16 @@ void AppMenuModel::Build() {
 
   sub_menus_.push_back(
       std::make_unique<SaveAndShareSubMenuModel>(this, browser_));
-  int string_id = media_router::MediaRouterEnabled(browser()->profile())
+  int string_id = media_router::MediaRouterEnabled(browser()->GetProfile())
                       ? IDS_CAST_SAVE_AND_SHARE_MENU
                       : IDS_SAVE_AND_SHARE_MENU;
   AddSubMenuWithStringIdAndVectorIcon(
-      this, IDC_SAVE_AND_SHARE_MENU, string_id, sub_menus_.back().get(),
+      this, kSaveAndShareMenuPlaceholder, string_id, sub_menus_.back().get(),
       features::IsRoundedIconsEnabled() ? kFileSaveIcon
                                         : kFileSaveChromeRefreshOldIcon);
-  SetElementIdentifierAt(GetIndexOfCommandId(IDC_SAVE_AND_SHARE_MENU).value(),
-                         kSaveAndShareMenuItem);
+  SetElementIdentifierAt(
+      GetIndexOfCommandId(kSaveAndShareMenuPlaceholder).value(),
+      kSaveAndShareMenuItem);
 
 #if BUILDFLAG(IS_CHROMEOS)
   // Always show this option if we're in tablet mode on Chrome OS.
@@ -2312,10 +2389,11 @@ void AppMenuModel::Build() {
 
   sub_menus_.push_back(std::make_unique<ToolsMenuModel>(this, browser_));
   AddSubMenuWithStringIdAndVectorIcon(
-      this, IDC_MORE_TOOLS_MENU, IDS_MORE_TOOLS_MENU, sub_menus_.back().get(),
+      this, kMoreToolsMenuPlaceholder, IDS_MORE_TOOLS_MENU,
+      sub_menus_.back().get(),
       features::IsRoundedIconsEnabled() ? kHomeRepairServiceIcon
                                         : kMoreToolsMenuOldIcon);
-  SetElementIdentifierAt(GetIndexOfCommandId(IDC_MORE_TOOLS_MENU).value(),
+  SetElementIdentifierAt(GetIndexOfCommandId(kMoreToolsMenuPlaceholder).value(),
                          kMoreToolsMenuItem);
 
   AddSeparator(ui::NORMAL_SEPARATOR);
@@ -2325,9 +2403,9 @@ void AppMenuModel::Build() {
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
   sub_menus_.push_back(std::make_unique<HelpMenuModel>(this, browser_));
   AddSubMenuWithStringIdAndVectorIcon(
-      this, IDC_HELP_MENU, IDS_HELP_MENU, sub_menus_.back().get(),
+      this, kHelpMenuPlaceholder, IDS_HELP_MENU, sub_menus_.back().get(),
       features::IsRoundedIconsEnabled() ? kHelpCustomIcon : kHelpMenuOldIcon);
-  SetElementIdentifierAt(GetIndexOfCommandId(IDC_HELP_MENU).value(),
+  SetElementIdentifierAt(GetIndexOfCommandId(kHelpMenuPlaceholder).value(),
                          kHelpMenuItem);
 #else
 #if BUILDFLAG(IS_CHROMEOS)
@@ -2353,18 +2431,18 @@ void AppMenuModel::Build() {
   // On Chrome OS, similar UI is displayed in the system tray menu, instead of
   // this menu.
 #if !BUILDFLAG(IS_CHROMEOS)
-  if (ShouldDisplayManagedUi(browser_->profile())) {
+  if (ShouldDisplayManagedUi(browser_->GetProfile())) {
     AddSeparator(ui::NORMAL_SEPARATOR);
     AddItemWithIcon(
         IDC_SHOW_MANAGEMENT_PAGE,
-        GetManagedUiMenuItemLabel(browser_->profile()),
-        ui::ImageModel::FromVectorIcon(GetManagedUiIcon(browser_->profile()),
+        GetManagedUiMenuItemLabel(browser_->GetProfile()),
+        ui::ImageModel::FromVectorIcon(GetManagedUiIcon(browser_->GetProfile()),
                                        ui::kColorMenuIcon, kDefaultIconSize));
 
     SetAccessibleNameAt(GetIndexOfCommandId(IDC_SHOW_MANAGEMENT_PAGE).value(),
-                        GetManagedUiMenuItemTooltip(browser_->profile()));
+                        GetManagedUiMenuItemTooltip(browser_->GetProfile()));
 #if BUILDFLAG(IS_LINUX)
-    if (enterprise_util::IsBrowserManaged(browser_->profile()) &&
+    if (enterprise_util::IsBrowserManaged(browser_->GetProfile()) &&
         base::FeatureList::IsEnabled(features::kEnterpriseReleaseNotes)) {
       AddItemWithStringIdAndVectorIcon(
           this, IDC_CHROME_ENTERPRISE_RELEASE_NOTES,
@@ -2383,13 +2461,13 @@ void AppMenuModel::CreateCutCopyPasteMenu() {
   edit_menu_item_model_->AddGroupItemWithStringId(IDC_CUT, IDS_CUT);
   edit_menu_item_model_->AddGroupItemWithStringId(IDC_COPY, IDS_COPY);
   edit_menu_item_model_->AddGroupItemWithStringId(IDC_PASTE, IDS_PASTE);
-  AddButtonItem(IDC_EDIT_MENU, edit_menu_item_model_.get());
+  AddButtonItem(kEditMenuPlaceholder, edit_menu_item_model_.get());
 }
 
 void AppMenuModel::CreateFindAndEditSubMenu() {
   sub_menus_.push_back(std::make_unique<FindAndEditSubMenuModel>(this));
   AddSubMenuWithStringIdAndVectorIcon(
-      this, IDC_FIND_AND_EDIT_MENU, IDS_FIND_AND_EDIT_MENU,
+      this, kFindAndEditMenuPlaceholder, IDS_FIND_AND_EDIT_MENU,
       sub_menus_.back().get(),
       features::IsRoundedIconsEnabled() ? kFindInPageIcon : kSearchMenuOldIcon);
 }
@@ -2402,9 +2480,9 @@ void AppMenuModel::CreateZoomMenu() {
   zoom_menu_item_model_->AddGroupItemWithStringId(IDC_ZOOM_PLUS,
                                                   IDS_ZOOM_PLUS2);
   zoom_menu_item_model_->AddImageItem(IDC_FULLSCREEN);
-  AddButtonItem(IDC_ZOOM_MENU, zoom_menu_item_model_.get());
+  AddButtonItem(kZoomMenuPlaceholder, zoom_menu_item_model_.get());
   SetCommandIcon(
-      this, IDC_ZOOM_MENU,
+      this, kZoomMenuPlaceholder,
       features::IsRoundedIconsEnabled() ? kZoomInIcon : kZoomInOldIcon);
 }
 
@@ -2414,7 +2492,8 @@ bool AppMenuModel::AddGlobalErrorMenuItems() {
   // it won't show in the existing app menu. To fix this we need to some
   // how update the menu if new errors are added.
   const GlobalErrorService::GlobalErrorList& errors =
-      GlobalErrorServiceFactory::GetForProfile(browser_->profile())->errors();
+      GlobalErrorServiceFactory::GetForProfile(browser_->GetProfile())
+          ->errors();
   bool menu_items_added = false;
   for (GlobalError* error : errors) {
     DCHECK(error);
@@ -2426,15 +2505,10 @@ bool AppMenuModel::AddGlobalErrorMenuItems() {
   }
   return menu_items_added;
 }
-
 bool AppMenuModel::AddDefaultBrowserMenuItems() {
 #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
-  if (browser_->profile()->IsIncognitoProfile() ||
-      browser_->profile()->IsGuestSession()) {
-    return false;
-  }
-
-  if (DefaultBrowserPromptManager::GetInstance()->show_app_menu_item()) {
+  if (DefaultBrowserPromptManager::GetInstance()->ShouldShowAppMenuItem(
+          browser_->GetProfile())) {
     AddItemWithIcon(
         IDC_SET_BROWSER_AS_DEFAULT,
         l10n_util::GetStringUTF16(IDS_SET_BROWSER_AS_DEFAULT_MENU_ITEM),
@@ -2454,7 +2528,7 @@ bool AppMenuModel::AddDefaultBrowserMenuItems() {
 bool AppMenuModel::AddSafetyHubMenuItem() {
   auto* safety_hub_menu_notification_service =
       SafetyHubMenuNotificationServiceFactory::GetForProfile(
-          browser_->profile());
+          browser_->GetProfile());
   if (!safety_hub_menu_notification_service) {
     return false;
   }
@@ -2464,13 +2538,7 @@ bool AppMenuModel::AddSafetyHubMenuItem() {
   if (!notification.has_value()) {
     return false;
   }
-  base::UmaHistogramEnumeration("Settings.SafetyHub.Impression",
-                                safety_hub::SafetyHubSurfaces::kThreeDotMenu);
-  base::UmaHistogramEnumeration(
-      "Settings.SafetyHub.EntryPointImpression",
-      safety_hub::SafetyHubEntryPoint::kMenuNotifications);
-  base::UmaHistogramEnumeration("Settings.SafetyHub.MenuNotificationImpression",
-                                notification->module);
+  safety_hub_util::LogMenuNotificationImpression(notification->module);
   const auto safety_hub_icon = ui::ImageModel::FromVectorIcon(
       features::IsRoundedIconsEnabled() ? kSecurityIcon : kSecurityOldIcon,
       ui::kColorMenuIcon, kDefaultIconSize);
@@ -2495,7 +2563,7 @@ void AppMenuModel::UpdateSettingsItemState() {
   }
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  index = GetIndexOfCommandId(IDC_HELP_MENU);
+  index = GetIndexOfCommandId(kHelpMenuPlaceholder);
   if (index.has_value()) {
     ui::SimpleMenuModel* help_menu =
         static_cast<ui::SimpleMenuModel*>(GetSubmenuModelAt(index.value()));

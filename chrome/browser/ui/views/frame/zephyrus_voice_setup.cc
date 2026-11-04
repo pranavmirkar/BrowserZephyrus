@@ -127,7 +127,7 @@ class ZephyrusVoicePopup : public views::View {
  public:
   explicit ZephyrusVoicePopup(BrowserView* browser_view)
       : browser_view_(browser_view) {
-    Profile* profile = browser_view_->browser()->profile();
+    Profile* profile = browser_view_->browser()->GetProfile();
     prefs_ = profile->GetPrefs();
     private_ = profile->IsOffTheRecord();
     library_ = agent::GetVoiceLibrary(profile);

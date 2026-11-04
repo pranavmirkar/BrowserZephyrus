@@ -13,7 +13,7 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/zephyrus/threat/zephyrus_shield_dns.h"
 #include "chrome/browser/zephyrus/threat/zephyrus_threat_data.h"
-#include "components/safe_browsing/core/browser/db/v4_local_database_manager.h"
+#include "components/safe_browsing/core/browser/db/sb_local_database_manager.h"
 
 namespace zephyrus_threat {
 
@@ -30,7 +30,7 @@ namespace zephyrus_threat {
 // own warning page, "proceed anyway" and per-site bypass all work unchanged.
 // When neither check finds anything the request goes to the stock manager, so a
 // build that later gains Google's lists uses both.
-class ZephyrusDatabaseManager : public safe_browsing::V4LocalDatabaseManager {
+class ZephyrusDatabaseManager : public safe_browsing::SBLocalDatabaseManager {
  public:
   static scoped_refptr<ZephyrusDatabaseManager> Create(
       const base::FilePath& base_path,
@@ -50,7 +50,7 @@ class ZephyrusDatabaseManager : public safe_browsing::V4LocalDatabaseManager {
   void CancelCheck(Client* client) override;
   void StartOnUIThread(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-      const safe_browsing::V4ProtocolConfig& config) override;
+      const safe_browsing::SBProtocolConfig& config) override;
   void StopOnUIThread(bool shutdown) override;
 
  protected:
@@ -72,10 +72,10 @@ class ZephyrusDatabaseManager : public safe_browsing::V4LocalDatabaseManager {
   void ReportLater(Client* client,
                    const GURL& url,
                    safe_browsing::SBThreatType type);
-  void Deliver(Client* client,
+  void Deliver(uintptr_t client_address,
                const GURL& url,
                safe_browsing::SBThreatType type);
-  void OnShieldVerdict(Client* client,
+  void OnShieldVerdict(uintptr_t client_address,
                        GURL url,
                        safe_browsing::SBThreatTypeSet threat_types,
                        safe_browsing::CheckBrowseUrlType check_type,

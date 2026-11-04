@@ -37,6 +37,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/auto_reset.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -58,9 +59,11 @@
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/public/resources/grit/blink_image_resources.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_controller.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_dom_rect_init.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_image_bitmap_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_image_encode_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_element_elementimage.h"
+#include "third_party/blink/renderer/bindings/core/v8/v8_update_element_geometry_options.h"
 #include "third_party/blink/renderer/core/css/css_font_selector.h"
 #include "third_party/blink/renderer/core/css/style_change_reason.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
@@ -68,6 +71,8 @@
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/element_traversal.h"
+#include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
+#include "third_party/blink/renderer/core/event_type_names.h"
 #include "third_party/blink/renderer/core/fileapi/file.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
@@ -80,6 +85,7 @@
 #include "third_party/blink/renderer/core/html/canvas/canvas_context_creation_attributes_core.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_draw_listener.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_font_cache.h"
+#include "third_party/blink/renderer/core/html/canvas/canvas_paint_event.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_rendering_context_factory.h"
 #include "third_party/blink/renderer/core/html/canvas/canvas_resource_tracker.h"
@@ -95,6 +101,7 @@
 #include "third_party/blink/renderer/core/imagebitmap/image_bitmap.h"
 #include "third_party/blink/renderer/core/input_type_names.h"
 #include "third_party/blink/renderer/core/inspector/console_message.h"
+#include "third_party/blink/renderer/core/keywords.h"
 #include "third_party/blink/renderer/core/layout/hit_test_canvas_result.h"
 #include "third_party/blink/renderer/core/layout/layout_html_canvas.h"
 #include "third_party/blink/renderer/core/layout/layout_object_inlines.h"
@@ -112,7 +119,6 @@
 #include "third_party/blink/renderer/platform/fonts/plain_text_painter.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/canvas_resource_dispatcher.h"
-#include "third_party/blink/renderer/platform/graphics/canvas_resource_provider.h"
 #include "third_party/blink/renderer/platform/graphics/compositing/paint_artifact_compositor.h"
 #include "third_party/blink/renderer/platform/graphics/exported_canvas_resource.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/canvas_utils.h"
@@ -121,6 +127,7 @@
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/image_data_buffer.h"
 #include "third_party/blink/renderer/platform/graphics/memory_managed_paint_recorder.h"
+#include "third_party/blink/renderer/platform/graphics/paint/float_clip_rect.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_canvas.h"
 #include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
@@ -135,6 +142,7 @@
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/base/resource/resource_scale_factor.h"
 #include "ui/gfx/geometry/rect_conversions.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/size_conversions.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "v8/include/v8.h"
@@ -228,21 +236,6 @@ class DisabledAccelerationCounterSupplement final
 const char DisabledAccelerationCounterSupplement::kSupplementName[] =
     "DisabledAccelerationCounterSupplement";
 
-// viz::ReleaseCallback for CanvasResource
-void ReleaseCanvasResource(scoped_refptr<CanvasResource> canvas_resource,
-                           const gpu::SyncToken& sync_token,
-                           bool is_lost) {
-  CHECK(canvas_resource);
-  canvas_resource->WaitSyncToken(sync_token);
-  if (is_lost) {
-    canvas_resource->NotifyResourceLost();
-  }
-
-  CanvasResource::DropRefOnOwningThread(std::move(canvas_resource));
-}
-
-
-
 }  // namespace
 
 HTMLCanvasElement::HTMLCanvasElement(Document& document)
@@ -298,27 +291,33 @@ bool HTMLCanvasElement::PrepareTransferableResource(
 
   scoped_refptr<CanvasResource> frame =
       RenderingContext()->PaintRenderingResultsToResource(kBackBuffer, reason);
-  if (!frame || !frame->IsValid()) {
+  if (!frame) {
     return false;
   }
 
-  if (!frame->PrepareTransferableResource(out_resource,
-                                          /*needs_verified_synctoken=*/false) ||
-      *out_resource == cc_layer_->current_transferable_resource()) {
-    // If the resource did not change, the release will be handled correctly
-    // when the callback from the previous frame is dispatched. But we need to
-    // drop ref to the current resource.
-    CanvasResource::DropRefOnOwningThread(std::move(frame));
-    return false;
-  }
+  auto exported_resource =
+      base::MakeRefCounted<ExportedCanvasResource>(std::move(frame));
+
+  CHECK_DEREF(out_resource) = exported_resource->PrepareTransferableResource();
+
   // TODO(https://crbug.com/1475955): HDR metadata should be propagated to
   // `frame`, and should be populated by the above call to
   // CanvasResource::PrepareTransferableResource, rather than be inserted
-  // here.
+  // here. It must be set before comparing against the layer's current resource,
+  // since the comparison includes `hdr_metadata`.
   out_resource->hdr_metadata = hdr_metadata_;
+
+  if (*out_resource == cc_layer_->current_transferable_resource()) {
+    // If resource didn't change, we don't need to trigger the update.
+    return false;
+  }
   // Note: frame is kept alive via a reference kept in out_release_callback.
-  *out_release_callback =
-      blink::BindOnce(ReleaseCanvasResource, std::move(frame));
+  *out_release_callback = blink::BindOnce(
+      [](scoped_refptr<ExportedCanvasResource> exported_resource,
+         const gpu::SyncToken& sync_token, bool is_lost) {
+        exported_resource->EndDisplayCompositorAccess(sync_token, is_lost);
+      },
+      std::move(exported_resource));
 
   return true;
 }
@@ -379,15 +378,28 @@ void HTMLCanvasElement::AttributeChanged(
     }
   }
 
-  if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(GetExecutionContext()) &&
-      params.name == html_names::kLayoutsubtreeAttr) {
-    bool had_layoutsubtree = !params.old_value.IsNull();
-    bool has_layoutsubtree = !params.new_value.IsNull();
-    if (had_layoutsubtree != has_layoutsubtree) {
-      setLayoutSubtree(has_layoutsubtree);
-      UseCounter::Count(GetDocument(), WebFeature::kHTMLInCanvas);
-      if (accessibility_manager_) {
-        accessibility_manager_->SetHasLayoutSubtree(has_layoutsubtree);
+  if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(GetExecutionContext())) {
+    if (params.name == html_names::kContentAttr ||
+        params.name == html_names::kLayoutsubtreeAttr) {
+      const AtomicString& content_attr =
+          FastGetAttribute(html_names::kContentAttr);
+      bool has_content_drawable =
+          !content_attr.IsNull()
+              ? EqualIgnoringAsciiCase(content_attr, keywords::kDrawable)
+              // TODO(crbug.com/561849343): Remove support for layoutsubtree.
+              : FastHasAttribute(html_names::kLayoutsubtreeAttr);
+      if (is_content_drawable_ != has_content_drawable) {
+        is_content_drawable_ = has_content_drawable;
+        SetNeedsStyleRecalc(kSubtreeStyleChange,
+                            StyleChangeReasonForTracing::Create(
+                                style_change_reason::kAttribute));
+        SetForceReattachLayoutTree();
+        if (auto* object = GetLayoutObject()) {
+          object->SetNeedsLayout(layout_invalidation_reason::kAttributeChanged);
+        }
+        if (accessibility_manager_) {
+          accessibility_manager_->SetHasContentDrawable(has_content_drawable);
+        }
       }
     }
   }
@@ -408,7 +420,6 @@ LayoutObject* HTMLCanvasElement::CreateLayoutObject(
 
 Node::InsertionNotificationRequest HTMLCanvasElement::InsertedInto(
     ContainerNode& node) {
-  SetIsCanvasOrInCanvasSubtree(true);
   ColorSchemeMayHaveChanged();
   return HTMLElement::InsertedInto(node);
 }
@@ -439,25 +450,31 @@ void HTMLCanvasElement::setWidth(unsigned value,
   }
 }
 
+// TODO(crbug.com/561849343): Remove support for layoutsubtree.
 void HTMLCanvasElement::setLayoutSubtree(bool value) {
   SetBooleanAttribute(html_names::kLayoutsubtreeAttr, value);
-  SetNeedsStyleRecalc(
-      kSubtreeStyleChange,
-      StyleChangeReasonForTracing::Create(style_change_reason::kAttribute));
-  SetForceReattachLayoutTree();
-  if (auto* object = GetLayoutObject()) {
-    object->SetNeedsLayout(layout_invalidation_reason::kAttributeChanged);
-  }
 }
 
+// TODO(crbug.com/561849343): Remove support for layoutsubtree.
 bool HTMLCanvasElement::layoutSubtree() const {
-  return FastHasAttribute(html_names::kLayoutsubtreeAttr);
+  return IsContentDrawable();
 }
 
 void HTMLCanvasElement::requestPaint() {
   if (LocalFrameView* view = GetDocument().View()) {
     view->RequestCanvasOnpaint(*this);
   }
+  if (LayoutObject* layout_object = GetLayoutObject()) {
+    layout_object->SetShouldCheckForPaintInvalidation();
+    if (auto* layer = layout_object->PaintingLayer()) {
+      layer->SetNeedsRepaint();
+    }
+  }
+}
+
+void HTMLCanvasElement::DispatchPaintEvent(CanvasPaintEventInit* init) {
+  base::AutoReset<bool> dispatching(&is_dispatching_paint_event_, true);
+  DispatchEvent(*CanvasPaintEvent::Create(event_type_names::kPaint, init));
 }
 
 void HTMLCanvasElement::SetSize(gfx::Size new_size) {
@@ -629,8 +646,9 @@ void HTMLCanvasElement::configureHighDynamicRange(
 }
 
 bool HTMLCanvasElement::ShouldSkipPaintInvalidation() const {
-  if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(GetExecutionContext()) &&
-      IsInCanvasSubtree()) {
+  if (IsInCanvasSubtree()) {
+    // Canvases in a canvas subtree must invalidate paint so that ancestor
+    // canvases fire paint events when they change.
     return false;
   }
   return (context_ && context_->IsComposited()) || (!!surface_layer_bridge_);
@@ -679,12 +697,15 @@ void HTMLCanvasElement::DidDraw(const gfx::Rect& rect) {
   // and only issue invalidations the first time it becomes non-empty.
   if (dirty_rect_.IsEmpty()) {
     if (LayoutObject* layout_object = GetLayoutObject()) {
-      if (layout_object->PreviousVisibilityVisible() &&
-          GetDocument().GetPage()) {
-        GetDocument().GetPage()->Animator().SetHasCanvasInvalidation();
-      }
-      if (!LowLatencyEnabled()) {
-        layout_object->SetShouldCheckForPaintInvalidation();
+      const bool skip_paint_invalidation = is_dispatching_paint_event_;
+      if (!skip_paint_invalidation) {
+        if (layout_object->PreviousVisibilityVisible() &&
+            GetDocument().GetPage()) {
+          GetDocument().GetPage()->Animator().SetHasCanvasInvalidation();
+        }
+        if (!LowLatencyEnabled()) {
+          layout_object->SetShouldCheckForPaintInvalidation();
+        }
       }
     }
   }
@@ -747,7 +768,59 @@ void HTMLCanvasElement::OnAccelerationDisabled() {
 }
 
 void HTMLCanvasElement::SetNeedsCompositingUpdate() {
+  if (IsInCanvasSubtree() && IsContentDrawable()) {
+    // Nested content=drawable canvases cannot be composited and do not need
+    // repainting when their resource provider or context updates.
+    return;
+  }
   Element::SetNeedsCompositingUpdate();
+}
+
+void HTMLCanvasElement::UpdateDrawnElementGeometry(
+    Element& element,
+    const gfx::Transform* transform,
+    const FloatClipRect* clip,
+    bool update_hit_test_order) {
+  if (element.CanvasForDrawing() != this) {
+    return;
+  }
+  if (update_hit_test_order || !hit_testable_descendants_.Contains(&element)) {
+    hit_testable_descendants_.AppendOrMoveToLast(&element);
+  }
+  if (transform) {
+    element.SetCanvasTransform(*transform);
+  }
+  if (clip) {
+    element.SetCanvasClip(*clip);
+  }
+}
+
+void HTMLCanvasElement::UpdateDrawnElementGeometry(
+    ElementImage& element_image,
+    const gfx::Transform* transform,
+    const FloatClipRect* clip,
+    bool update_hit_test_order) {
+  if (element_image.GetCanvasNodeId() != GetDomNodeId()) {
+    return;
+  }
+  if (Element* element = DynamicTo<Element>(
+          DOMNodeIds::NodeForId(element_image.GetNodeId()))) {
+    UpdateDrawnElementGeometry(*element, transform, clip,
+                               update_hit_test_order);
+  }
+}
+
+void HTMLCanvasElement::ClearDrawnElementGeometry(Element& element) {
+  hit_testable_descendants_.erase(&element);
+  element.ClearCanvasTransform();
+  element.ClearCanvasClip();
+}
+
+void HTMLCanvasElement::ClearDrawnElementGeometry(ElementImage& element_image) {
+  if (Element* element = DynamicTo<Element>(
+          DOMNodeIds::NodeForId(element_image.GetNodeId()))) {
+    ClearDrawnElementGeometry(*element);
+  }
 }
 
 bool HTMLCanvasElement::DoDeferredPaintInvalidation() {
@@ -866,11 +939,11 @@ void HTMLCanvasElement::OnWidthOrHeightAssigned() {
 
     if (RuntimeEnabledFeatures::CanvasDrawElementEnabled(
             GetExecutionContext()) &&
-        layoutSubtree()) {
+        IsContentDrawable()) {
       // Invalidate the child's paint properties so that its cached
       // CanvasChildPaintState is updated with the new canvas size.
       for (LayoutObject* child = layout_object->SlowFirstChild(); child;
-           child = child->NextSibling()) {
+           child = child->NextInPreOrder(layout_object)) {
         child->SetNeedsPaintPropertyUpdate();
       }
     }
@@ -919,33 +992,62 @@ DOMMatrix* HTMLCanvasElement::getElementTransform(
   }
 
   gfx::Transform transform =
-      GetElementTransform(*paint_state, Size(), draw_transform->Matrix());
+      GetElementTransform(*paint_state, Size(), draw_transform->Matrix(),
+                          RuntimeEnabledFeatures::ElementCanvasTransformEnabled(
+                              GetExecutionContext()));
   return MakeGarbageCollected<DOMMatrix>(transform, transform.Is2dTransform());
+}
+
+DOMMatrix* HTMLCanvasElement::getElementTransform(
+    Element* element,
+    ExceptionState& exception_state) const {
+  if (!VerifyDrawElementImageEligibility(element, "getElementTransform",
+                                         exception_state)) {
+    return nullptr;
+  }
+  if (element) {
+    if (const gfx::Transform* transform = element->GetCanvasTransform()) {
+      return MakeGarbageCollected<DOMMatrix>(*transform,
+                                             transform->Is2dTransform());
+    }
+  }
+  return DOMMatrix::Create();
 }
 
 bool HTMLCanvasElement::VerifyDrawElementImageEligibility(
     Element* element,
     const String& func_name,
     ExceptionState& exception_state) const {
-  if (IsInCanvasSubtree()) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                      "Nested canvases are not supported.");
-    return false;
-  }
-  if (element->parentElement() != this) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kInvalidStateError,
-        "Only immediate children of the <canvas> element can be passed to " +
-            func_name + ".");
-    return false;
-  }
-  if (!layoutSubtree()) {
+  if (!IsContentDrawable()) {
     exception_state.ThrowDOMException(
         DOMExceptionCode::kInvalidStateError,
         func_name +
-            " requires the canvas to have the layoutsubtree attribute.");
+            " requires the canvas to have the content=drawable attribute.");
     return false;
   }
+
+  const Element* parent =
+      FlatTreeTraversal::ParentElementSkippingSlots(*element);
+  bool is_direct_child = parent == this;
+  if (!is_direct_child && element->CanvasForDrawing() != this) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "The element can only be drawn into its nearest ancestor <canvas>.");
+    return false;
+  }
+
+  // TODO(paint-dev): The check for `drawable` purposely skips immediate
+  // canvas children, to ease migration. Ultimately it must apply to
+  // immediate children as well.
+  if (!is_direct_child &&
+      !element->FastHasAttribute(html_names::kDrawableAttr)) {
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kInvalidStateError,
+        "Descendants passed to " + func_name +
+            " must have the 'drawable' attribute.");
+    return false;
+  }
+
   return true;
 }
 
@@ -993,6 +1095,72 @@ ElementImage* HTMLCanvasElement::captureElementImage(
   }
   return MakeGarbageCollected<ElementImage>(
       std::make_unique<CanvasChildPaintRecord>(std::move(*child_paint_record)));
+}
+
+void HTMLCanvasElement::updateElementGeometry(
+    const V8UnionElementOrElementImage* element_or_element_image,
+    const UpdateElementGeometryOptions* options,
+    ExceptionState& exception_state) {
+  Element* element = nullptr;
+  if (element_or_element_image->IsElement()) {
+    element = element_or_element_image->GetAsElement();
+  } else if (element_or_element_image->IsElementImage()) {
+    element = DynamicTo<Element>(DOMNodeIds::NodeForId(
+        element_or_element_image->GetAsElementImage()->GetNodeId()));
+    if (!element) {
+      exception_state.ThrowDOMException(
+          DOMExceptionCode::kInvalidStateError,
+          "Could not find live Element associated with the given "
+          "ElementImage.");
+      return;
+    }
+  }
+
+  if (!VerifyDrawElementImageEligibility(element, "updateElementGeometry",
+                                         exception_state)) {
+    return;
+  }
+
+  const gfx::Transform* transform_ptr = nullptr;
+  gfx::Transform transform;
+  if (options->hasCanvasTransform()) {
+    DOMMatrix* matrix =
+        DOMMatrix::fromMatrix(options->canvasTransform(), exception_state);
+    if (exception_state.HadException()) {
+      return;
+    }
+    CHECK(matrix);
+    transform = matrix->Matrix();
+    transform_ptr = &transform;
+  }
+
+  const FloatClipRect* clip_ptr = nullptr;
+  FloatClipRect clip;
+  if (options->hasCanvasClip()) {
+    const DOMRectInit* rect = options->canvasClip();
+    double x = rect->x();
+    double y = rect->y();
+    double width = rect->width();
+    double height = rect->height();
+    if (std::isfinite(x) && std::isfinite(y) && std::isfinite(width) &&
+        std::isfinite(height)) {
+      CanvasRenderingContext::AdjustRectForCanvas(x, y, width, height);
+      clip = FloatClipRect(gfx::RectF(x, y, width, height));
+      clip_ptr = &clip;
+    }
+  }
+
+  UpdateDrawnElementGeometry(*element, transform_ptr, clip_ptr,
+                             !options->preserveHitTestOrder());
+}
+
+void HTMLCanvasElement::clearElementGeometry(
+    const V8UnionElementOrElementImage* element_or_element_image) {
+  if (element_or_element_image->IsElement()) {
+    ClearDrawnElementGeometry(*element_or_element_image->GetAsElement());
+  } else if (element_or_element_image->IsElementImage()) {
+    ClearDrawnElementGeometry(*element_or_element_image->GetAsElementImage());
+  }
 }
 
 bool HTMLCanvasElement::PaintsIntoCanvasBuffer() const {
@@ -1129,7 +1297,7 @@ void HTMLCanvasElement::Paint(GraphicsContext& context,
     // Make the icon more visually prominent on high-DPI displays.
     icon_size.Scale(dpr);
     context.DrawImage(*broken_canvas, Image::kSyncDecode,
-                      ImageAutoDarkMode::Disabled(), ImagePaintTimingInfo(),
+                      ImageAutoDarkMode::Disabled(), ReportPaintTiming::kReport,
                       gfx::RectF(upper_left, icon_size));
     context.Restore();
     return;
@@ -1157,7 +1325,7 @@ void HTMLCanvasElement::Paint(GraphicsContext& context,
     if (!image_for_printing)
       return;
     context.DrawImage(*image_for_printing, Image::kSyncDecode,
-                      ImageAutoDarkMode::Disabled(), ImagePaintTimingInfo(),
+                      ImageAutoDarkMode::Disabled(), ReportPaintTiming::kReport,
                       gfx::RectF(ToPixelSnappedRect(r)));
     return;
   }
@@ -1186,7 +1354,7 @@ void HTMLCanvasElement::PaintInternal(GraphicsContext& context,
   // it's difficult to handle texture-backed PaintImage's correctly. This
   // could be fixed, but it's unclear whether it's worth the effort to
   // enable vector scaling of content while printing.
-  if (IsPrinting() && IsRenderingContext2D() && !layoutSubtree()) {
+  if (IsPrinting() && IsRenderingContext2D() && !IsContentDrawable()) {
     RenderingContext()->FlushCanvas(FlushReason::kPrinting);
     // `FlushRecording` might be a no-op if a flush already happened before.
     // Fortunately, the last flush recording was kept by the context.
@@ -1221,7 +1389,7 @@ void HTMLCanvasElement::PaintInternal(GraphicsContext& context,
     snapshot = snapshot->MakeUnaccelerated();
     DCHECK(!snapshot->IsTextureBacked());
     context.DrawImage(*snapshot, Image::kSyncDecode,
-                      ImageAutoDarkMode::Disabled(), ImagePaintTimingInfo(),
+                      ImageAutoDarkMode::Disabled(), ReportPaintTiming::kReport,
                       gfx::RectF(ToPixelSnappedRect(r)), &src_rect,
                       composite_operator);
   } else {
@@ -1341,8 +1509,7 @@ String HTMLCanvasElement::ToDataURLInternal(
     return String("data:,");
 
   ImageEncodingMimeType encoding_mime_type =
-      ImageEncoderUtils::ToEncodingMimeType(
-          mime_type, ImageEncoderUtils::kEncodeReasonToDataURL);
+      ImageEncoderUtils::ToEncodingMimeType(mime_type);
 
   scoped_refptr<StaticBitmapImage> image_bitmap =
       ZephyrusPerturbForExport(Snapshot(source_buffer), GetExecutionContext());
@@ -1446,8 +1613,7 @@ void HTMLCanvasElement::toBlob(V8BlobCallback* callback,
   }
 
   ImageEncodingMimeType encoding_mime_type =
-      ImageEncoderUtils::ToEncodingMimeType(
-          mime_type, ImageEncoderUtils::kEncodeReasonToBlobCallback);
+      ImageEncoderUtils::ToEncodingMimeType(mime_type);
 
   CanvasAsyncBlobCreator* async_creator = nullptr;
   scoped_refptr<StaticBitmapImage> image_bitmap =
@@ -1533,11 +1699,6 @@ CanvasResourceDispatcher* HTMLCanvasElement::GetOrCreateResourceDispatcher() {
   return frame_dispatcher_.get();
 }
 
-bool HTMLCanvasElement::PushFrame(scoped_refptr<CanvasResource>&& image) {
-  NOTIMPLEMENTED();
-  return false;
-}
-
 bool HTMLCanvasElement::ShouldAccelerate() const {
   if (context_ && !IsRenderingContext2D())
     return false;
@@ -1583,7 +1744,7 @@ bool HTMLCanvasElement::ShouldAccelerate() const {
 }
 
 bool HTMLCanvasElement::CanStartSelection() const {
-  if (!layoutSubtree()) {
+  if (!IsContentDrawable()) {
     return false;
   }
   return HTMLElement::CanStartSelection();
@@ -1604,6 +1765,7 @@ void HTMLCanvasElement::Trace(Visitor* visitor) const {
   visitor->Trace(listeners_);
   visitor->Trace(context_);
   visitor->Trace(accessibility_manager_);
+  visitor->Trace(hit_testable_descendants_);
   ExecutionContextLifecycleObserver::Trace(visitor);
   PageVisibilityObserver::Trace(visitor);
   CanvasRenderingContextHost::Trace(visitor);
@@ -2184,6 +2346,16 @@ String HTMLCanvasElement::CanvasAnnotation() const {
     return accessibility_manager_->CanvasAnnotation();
   }
   return String();
+}
+
+bool HTMLCanvasElement::HasRequestedOCR() const {
+  return accessibility_manager_ && accessibility_manager_->HasRequestedOCR();
+}
+
+void HTMLCanvasElement::ClearHasRequestedOCR() {
+  if (accessibility_manager_) {
+    accessibility_manager_->ClearHasRequestedOCR();
+  }
 }
 
 void HTMLCanvasElement::EnsureAccessibilityManager() {

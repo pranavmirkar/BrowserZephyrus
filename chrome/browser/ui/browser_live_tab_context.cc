@@ -6,6 +6,7 @@
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_partition.h"
 
+#include <algorithm>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -24,20 +25,22 @@
 #include "chrome/browser/sessions/session_service_utils.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_tab_strip_model_delegate.h"
 #include "chrome/browser/ui/browser_tabrestore.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
-#include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_strip_model_selection_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "components/saved_tab_groups/public/features.h"
@@ -47,6 +50,7 @@
 #include "components/sessions/content/content_live_tab.h"
 #include "components/sessions/content/content_platform_specific_tab_data.h"
 #include "components/sessions/core/live_tab_context.h"
+#include "components/sessions/core/session_id.h"
 #include "components/sessions/core/session_types.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/split_tabs/split_tab_visual_data.h"
@@ -55,13 +59,13 @@
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/navigation_controller.h"
-#include "content/public/browser/session_storage_namespace.h"
+#include "content/public/browser/session_storage_namespace_handle.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/base/window_open_disposition.h"
 
 using content::NavigationController;
-using content::SessionStorageNamespace;
+using content::SessionStorageNamespaceHandle;
 using content::WebContents;
 
 namespace {
@@ -88,11 +92,46 @@ bool ShouldCreateAppWindowForAppName(Profile* profile,
 
 sessions::LiveTabContext* GetLiveTabContext(BrowserWindowInterface* browser) {
   return browser && !browser->IsDeleteScheduled()
-             ? browser->GetFeatures().live_tab_context()
+             ? BrowserLiveTabContext::From(browser)
              : nullptr;
 }
 
+// Returns the tab strip index at which to restore a tab closed from
+// `index_in_group` of `group`. Resolving against the group's current range,
+// rather than the tab strip, survives the group being reopened or moved to
+// another window. An unknown or unreachable index lands at the end.
+int GetInsertionIndexInGroup(const TabStripModel& tab_strip_model,
+                             std::optional<tab_groups::TabGroupId> group,
+                             int index_in_group) {
+  const TabGroupModel* const group_model = tab_strip_model.group_model();
+  if (!group.has_value() || !group_model ||
+      !group_model->ContainsTabGroup(group.value())) {
+    return tab_strip_model.count();
+  }
+
+  // An empty range means the group has no tabs or is detached; resolving
+  // against it would put the tab at index 0, outside the group.
+  const gfx::Range group_range =
+      group_model->GetTabGroup(group.value())->ListTabs();
+  if (group_range.is_empty()) {
+    return tab_strip_model.count();
+  }
+  if (index_in_group < 0) {
+    return static_cast<int>(group_range.end());
+  }
+  return std::min(static_cast<int>(group_range.start()) + index_in_group,
+                  static_cast<int>(group_range.end()));
+}
+
 }  // namespace
+
+DEFINE_USER_DATA(BrowserLiveTabContext);
+
+// static
+BrowserLiveTabContext* BrowserLiveTabContext::From(
+    BrowserWindowInterface* browser) {
+  return Get(browser->GetUnownedUserDataHost());
+}
 
 BrowserLiveTabContext::BrowserLiveTabContext(BrowserWindowInterface* browser,
                                              TabStripModel* tab_strip_model,
@@ -101,7 +140,8 @@ BrowserLiveTabContext::BrowserLiveTabContext(BrowserWindowInterface* browser,
                                              BrowserWindowInterface::Type type,
                                              const std::string& app_name,
                                              SessionID session_id)
-    : browser_(CHECK_DEREF(browser)),
+    : scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this),
+      browser_(CHECK_DEREF(browser)),
       tab_strip_model_(CHECK_DEREF(tab_strip_model)),
       profile_(CHECK_DEREF(profile)),
       base_window_(CHECK_DEREF(base_window)),
@@ -203,6 +243,14 @@ BrowserLiveTabContext::GetExtraDataForWindow() const {
         base::NumberToString(controller->GetUncollapsedWidth());
   }
 
+  if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
+    if (std::optional<tab_groups::TabGroupId> focused_group =
+            tab_strip_model_->GetFocusedGroup()) {
+      data[tabs::TabStripModelSelectionState::kFocusedTabGroupIdKey] =
+          focused_group->ToString();
+    }
+  }
+
   return data;
 }
 
@@ -286,6 +334,28 @@ void BrowserLiveTabContext::SetVisualDataForGroup(
   tab_strip_model_->ChangeTabGroupVisuals(group, std::move(visual_data));
 }
 
+const std::optional<tab_groups::TabGroupId>
+BrowserLiveTabContext::GetInitialFocusedTabGroup() const {
+  if (!base::FeatureList::IsEnabled(features::kTabGroupsFocusing) ||
+      !tab_strip_model_->SupportsTabGroups()) {
+    return std::nullopt;
+  }
+  BrowserInitState* browser_init_state = BrowserInitState::From(&*browser_);
+  CHECK(browser_init_state);
+  return browser_init_state->initial_focused_tab_group_id();
+}
+
+void BrowserLiveTabContext::SetFocusedTabGroup(
+    const tab_groups::TabGroupId& group) {
+  if (!base::FeatureList::IsEnabled(features::kTabGroupsFocusing) ||
+      !tab_strip_model_->SupportsTabGroups()) {
+    return;
+  }
+  if (tab_strip_model_->group_model()->ContainsTabGroup(group)) {
+    tab_strip_model_->EnterFocusMode(group);
+  }
+}
+
 const gfx::Rect BrowserLiveTabContext::GetRestoredBounds() const {
   return base_window_->GetRestoredBounds();
 }
@@ -308,7 +378,7 @@ sessions::LiveTab* BrowserLiveTabContext::AddRestoredTab(
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(&profile_.get());
   CHECK(tab_group_service);
 
-  SessionStorageNamespace* storage_namespace =
+  SessionStorageNamespaceHandle* storage_namespace =
       tab.platform_data
           ? static_cast<const sessions::ContentPlatformSpecificTabData*>(
                 tab.platform_data.get())
@@ -322,7 +392,7 @@ sessions::LiveTab* BrowserLiveTabContext::AddRestoredTab(
   std::optional<base::Uuid> saved_group_id = tab.saved_group_id;
   content::WebContents* web_contents = nullptr;
 
-  Browser* const browser = browser_->GetBrowserForMigrationOnly();
+  BrowserWindowInterface* const browser = &*browser_;
   const bool is_normal_tab = !group_id.has_value();
   const bool is_grouped_tab_unsaved =
       group_id.has_value() && !saved_group_id.has_value();
@@ -343,7 +413,7 @@ sessions::LiveTab* BrowserLiveTabContext::AddRestoredTab(
       // It's possible a tab's group was deleted or was unsaved before this tab
       // was restored. In that case, if the local group didn't become saved add
       // the visual metadata and save it manually.
-      browser->GetFeatures().live_tab_context()->SetVisualDataForGroup(
+      BrowserLiveTabContext::From(browser)->SetVisualDataForGroup(
           group_id.value(), tab.group_visual_data.value());
       tab_group_service->SaveGroup(
           tab_groups::SavedTabGroupUtils::CreateSavedTabGroupFromLocalId(
@@ -356,7 +426,7 @@ sessions::LiveTab* BrowserLiveTabContext::AddRestoredTab(
     group_id = saved_group->local_group_id();
 
     if (group_id) {
-      Browser* source_browser =
+      BrowserWindowInterface* const source_browser =
           tab_groups::SavedTabGroupUtils::GetBrowserWithTabGroupId(
               group_id.value());
       if (original_session_type == sessions::tab_restore::Type::GROUP) {
@@ -383,9 +453,15 @@ sessions::LiveTab* BrowserLiveTabContext::AddRestoredTab(
       return nullptr;
     }
 
-    // Add the saved tab to the end of group.
+    // Mapped here rather than in the sessions layer because the group's range
+    // is only known after it was opened or moved into `browser` above.
+    // `tab_index` is unused: it indexes the tab strip, not the group.
+    // TODO(crbug.com/486858673): `index_in_group` is not persisted, so a tab
+    // restored after a restart still lands at the end of its group.
+    const int insertion_index = GetInsertionIndexInGroup(
+        *tab_strip_model_, group_id, tab.index_in_group);
     web_contents = chrome::AddRestoredTab(
-        browser, tab.navigations, tab_strip_model_->count(),
+        browser, tab.navigations, insertion_index,
         tab.normalized_navigation_index(), tab.extension_app_id, group_id,
         select, tab.pinned, base::TimeTicks(), base::Time(), storage_namespace,
         tab.user_agent_override, tab.extra_data,
@@ -407,7 +483,7 @@ sessions::LiveTab* BrowserLiveTabContext::ReplaceRestoredTab(
     const sessions::tab_restore::Tab& tab) {
   const sessions::tab_restore::PlatformSpecificTabData* tab_platform_data =
       tab.platform_data.get();
-  SessionStorageNamespace* storage_namespace =
+  SessionStorageNamespaceHandle* storage_namespace =
       tab_platform_data
           ? static_cast<const sessions::ContentPlatformSpecificTabData*>(
                 tab_platform_data)
@@ -415,10 +491,9 @@ sessions::LiveTab* BrowserLiveTabContext::ReplaceRestoredTab(
           : nullptr;
 
   WebContents* web_contents = chrome::ReplaceRestoredTab(
-      browser_->GetBrowserForMigrationOnly(), tab.navigations,
-      tab.normalized_navigation_index(), tab.extension_app_id,
-      storage_namespace, tab.user_agent_override, tab.extra_data,
-      false /* from_session_restore */);
+      &*browser_, tab.navigations, tab.normalized_navigation_index(),
+      tab.extension_app_id, storage_namespace, tab.user_agent_override,
+      tab.extra_data, false /* from_session_restore */);
   return sessions::ContentLiveTab::GetOrCreateForWebContents(web_contents);
 }
 
@@ -458,23 +533,23 @@ sessions::LiveTabContext* BrowserLiveTabContext::Create(
     const std::string& workspace,
     const std::string& user_title,
     const std::map<std::string, std::string>& extra_data) {
-  std::unique_ptr<Browser::CreateParams> create_params;
+  std::unique_ptr<BrowserWindowCreateParams> create_params;
   if (ShouldCreateAppWindowForAppName(profile, app_name)) {
     // Only trusted app popup windows should ever be restored.
     if (type == sessions::SessionWindow::TYPE_APP_POPUP) {
-      create_params = std::make_unique<Browser::CreateParams>(
-          Browser::CreateParams::CreateForAppPopup(
+      create_params = std::make_unique<BrowserWindowCreateParams>(
+          BrowserWindowCreateParams::CreateForAppPopup(
               app_name, /*trusted_source=*/true, bounds, profile,
               /*user_gesture=*/true));
     } else {
-      create_params = std::make_unique<Browser::CreateParams>(
-          Browser::CreateParams::CreateForApp(app_name, /*trusted_source=*/true,
-                                              bounds, profile,
-                                              /*user_gesture=*/true));
+      create_params = std::make_unique<BrowserWindowCreateParams>(
+          BrowserWindowCreateParams::CreateForApp(
+              app_name, /*trusted_source=*/true, bounds, profile,
+              /*user_gesture=*/true));
     }
   } else {
-    create_params = std::make_unique<Browser::CreateParams>(
-        Browser::CreateParams(profile, true));
+    create_params = std::make_unique<BrowserWindowCreateParams>(
+        BrowserWindowCreateParams(profile, true));
     create_params->initial_bounds = bounds;
   }
 
@@ -482,29 +557,40 @@ sessions::LiveTabContext* BrowserLiveTabContext::Create(
   create_params->initial_workspace = workspace;
   create_params->user_title = user_title;
 
-  if (tabs::IsVerticalTabsFeatureEnabled()) {
-    if (extra_data.contains(
-            tabs::VerticalTabStripStateController::kCollapsedKey)) {
-      create_params->vertical_tab_strip_collapsed =
-          extra_data.at(tabs::VerticalTabStripStateController::kCollapsedKey) ==
-          "true";
-    }
+  if (extra_data.contains(
+          tabs::VerticalTabStripStateController::kCollapsedKey)) {
+    create_params->vertical_tab_strip_collapsed =
+        extra_data.at(tabs::VerticalTabStripStateController::kCollapsedKey) ==
+        "true";
+  }
 
-    if (extra_data.contains(
-            tabs::VerticalTabStripStateController::kUncollapsedWidthKey)) {
-      int uncollapsed_width = 0;
-      if (base::StringToInt(
-              extra_data.at(
-                  tabs::VerticalTabStripStateController::kUncollapsedWidthKey),
-              &uncollapsed_width)) {
-        create_params->vertical_tab_strip_uncollapsed_width = uncollapsed_width;
+  if (extra_data.contains(
+          tabs::VerticalTabStripStateController::kUncollapsedWidthKey)) {
+    int uncollapsed_width = 0;
+    if (base::StringToInt(
+            extra_data.at(
+                tabs::VerticalTabStripStateController::kUncollapsedWidthKey),
+            &uncollapsed_width)) {
+      create_params->vertical_tab_strip_uncollapsed_width = uncollapsed_width;
+    }
+  }
+
+  if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
+    auto it = extra_data.find(
+        tabs::TabStripModelSelectionState::kFocusedTabGroupIdKey);
+    if (it != extra_data.end()) {
+      std::optional<base::Token> token = base::Token::FromString(it->second);
+      if (token.has_value()) {
+        create_params->focused_tab_group_id =
+            tab_groups::TabGroupId::FromRawToken(*token);
       }
     }
   }
 
-  Browser* browser = Browser::Create(*create_params.get());
+  BrowserWindowInterface* browser =
+      CreateBrowserWindow(std::move(*create_params));
 
-  return browser->GetFeatures().live_tab_context();
+  return BrowserLiveTabContext::From(browser);
 }
 
 // static

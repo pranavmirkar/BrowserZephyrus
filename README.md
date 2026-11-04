@@ -9,7 +9,7 @@
 Say "Hey Zep" and a task. Zep opens the pages, fills the forms and clicks the buttons. It asks you before spending money and when you need to sign in, and at no other time.
 
 [![License: PolyForm Strict](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-blueviolet.svg)](LICENSE)
-[![Chromium](https://img.shields.io/badge/Chromium-151.0.7922.171-4285F4?logo=googlechrome&logoColor=white)](#building)
+[![Chromium](https://img.shields.io/badge/Chromium-156.0.8078.80-4285F4?logo=googlechrome&logoColor=white)](#building)
 [![Agent kernel: Rust](https://img.shields.io/badge/agent%20kernel-Rust-DEA584?logo=rust&logoColor=black)](chrome/services/zephyrus_agent/)
 [![Platform: Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white)](#install)
 [![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange.svg)](#status-and-limits)
@@ -190,7 +190,7 @@ This repository is an **overlay**: only the files changed or added on top of ups
 
 **Requirements:** Windows 10/11, Visual Studio 2022 with the C++ workload, [`depot_tools`](https://commondatastorage.googleapis.com/chrome-infra-docs/flat/depot_tools/docs/html/depot_tools_tutorial.html), and roughly 150 GB of disk and 16 GB of RAM. A full official build takes many hours; incremental builds take minutes.
 
-1. Check out upstream Chromium at the base commit `cc5584af0df9786f00efdb71f666c6664f836c2d` (version `151.0.7922.171`) with `depot_tools`.
+1. Check out upstream Chromium at the base commit `fb096c0011f9d50f0a264a9376420cdea9c421e3` (version `156.0.8078.80`) with `depot_tools`.
 2. Copy this repository over the Chromium `src/` tree, **except `LICENSE` and `README.md`**: Chromium has files of the same names that must not be overwritten.
 3. Fetch the starter filter list. It is third-party data and is not kept here:
    ```

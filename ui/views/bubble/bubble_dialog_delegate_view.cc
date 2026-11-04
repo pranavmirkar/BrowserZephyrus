@@ -20,6 +20,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/scoped_observation.h"
 #include "base/strings/strcat.h"
 #include "build/build_config.h"
 #include "ui/accessibility/ax_enums.mojom.h"
@@ -215,7 +216,7 @@ class BubbleDialogDelegate::AnchorViewObserver : public ViewObserver {
  public:
   AnchorViewObserver(BubbleDialogDelegate* parent, View* anchor_view)
       : parent_(parent), anchor_view_(anchor_view) {
-    anchor_view_->AddObserver(this);
+    view_observation_.Observe(anchor_view);
     scoped_notify_ = std::make_unique<
         views::View::ScopedNotifyObserversOnVisibleBoundsChanged>(*anchor_view);
     AddToAnchorVector();
@@ -226,7 +227,6 @@ class BubbleDialogDelegate::AnchorViewObserver : public ViewObserver {
 
   ~AnchorViewObserver() override {
     RemoveFromAnchorVector();
-    anchor_view_->RemoveObserver(this);
   }
 
   View* anchor_view() const { return anchor_view_; }
@@ -291,6 +291,9 @@ class BubbleDialogDelegate::AnchorViewObserver : public ViewObserver {
   const raw_ptr<View> anchor_view_;
   bool bubble_widget_visible_ = true;
   bool update_bounds_when_visible_ = false;
+
+  base::ScopedObservation<views::View, views::ViewObserver> view_observation_{
+      this};
 };
 
 // This class is responsible for observing events on a BubbleDialogDelegate's
@@ -469,7 +472,7 @@ BubbleDialogDelegate::BubbleDialogDelegate(BubbleAnchor anchor,
                                            BubbleBorder::Shadow shadow,
                                            bool autosize)
     : arrow_(arrow),
-      shadow_(shadow),
+      shadow_config_({.shadow_type = shadow}),
       autosize_(autosize),
       close_on_deactivate_pins_(std::make_unique<CloseOnDeactivatePin::Pins>()),
       bubble_created_time_(base::TimeTicks::Now()) {
@@ -630,10 +633,19 @@ std::unique_ptr<FrameView> BubbleDialogDelegate::CreateFrameView(
 
   frame->SetFootnoteMargins(margin.footnote);
   frame->SetFootnoteView(DisownFootnoteView());
+  frame->set_use_anchor_window_bounds(use_anchor_window_bounds_);
+  if (available_screen_bounds_callback_) {
+    frame->set_available_screen_bounds_callback(
+        available_screen_bounds_callback_);
+  }
 
   std::unique_ptr<BubbleBorder> border =
       std::make_unique<BubbleBorder>(arrow(), GetShadow());
-  border->SetColor(background_color());
+  border->set_background_color(background_color());
+  if (shadow_config_.elevation.has_value()) {
+    border->set_md_shadow_elevation(shadow_config_.elevation.value());
+  }
+  border->set_avoid_shadow_overlap(shadow_config_.avoid_overlap_shadow);
 
   if (GetParams().round_corners) {
     border->set_rounded_corners(gfx::RoundedCornersF(GetCornerRadius()));
@@ -697,6 +709,7 @@ void BubbleDialogDelegate::OnBubbleWidgetClosing() {
 }
 
 void BubbleDialogDelegate::OnAnchorWidgetDestroying() {
+  anchor_tracked_element_ = nullptr;
   SetAnchorView(nullptr);
 }
 
@@ -726,7 +739,7 @@ BubbleBorder::Shadow BubbleDialogDelegate::GetShadow() const {
   if (!Widget::IsWindowCompositingSupported()) {
     return BubbleBorder::Shadow::NO_SHADOW;
   }
-  return shadow_;
+  return shadow_config_.shadow_type;
 }
 
 View* BubbleDialogDelegate::GetAnchorView() const {
@@ -832,7 +845,7 @@ gfx::Rect BubbleDialogDelegate::GetAnchorRect() const {
   if (anchor_view) {
     anchor_rect_ = anchor_view->GetAnchorBoundsInScreen();
   } else if (anchor_tracked_element_) {
-    anchor_rect_ = anchor_tracked_element_->GetScreenBounds();
+    anchor_rect_ = anchor_tracked_element_.get()->GetScreenBounds();
   } else {
     return anchor_rect_.value_or(gfx::Rect());
   }
@@ -1046,9 +1059,14 @@ gfx::Rect BubbleDialogDelegate::GetBubbleBounds() {
   }
 #endif
 
-  return GetBubbleFrameView()->GetUpdatedWindowBounds(
+  gfx::Rect bounds = GetBubbleFrameView()->GetUpdatedWindowBounds(
       anchor_rect, arrow(), GetWidget()->client_view()->GetPreferredSize({}),
       adjust_to_fix_available_bounds);
+  if (clamp_to_work_area_) {
+    bounds.AdjustToFit(
+        GetBubbleFrameView()->GetAvailableScreenBounds(anchor_rect));
+  }
+  return bounds;
 }
 
 ax::mojom::Role BubbleDialogDelegate::GetAccessibleWindowRole() {
@@ -1086,6 +1104,11 @@ gfx::Rect BubbleDialogDelegate::GetDesiredBubbleBounds() {
   bubble_bounds.set_size(actual_size);
 #endif
 
+  if (clamp_to_work_area_ && GetBubbleFrameView()) {
+    bubble_bounds.AdjustToFit(
+        GetBubbleFrameView()->GetAvailableScreenBounds(GetAnchorRect()));
+  }
+
   return bubble_bounds;
 }
 
@@ -1117,6 +1140,9 @@ void BubbleDialogDelegate::SetAnchorWidget(views::Widget* anchor_widget) {
 }
 
 void BubbleDialogDelegate::SetAnchorView(View* anchor_view) {
+  if (anchor_view) {
+    anchor_tracked_element_ = nullptr;
+  }
   if (anchor_view && anchor_view->GetWidget()) {
     anchor_widget_observer_ =
         std::make_unique<AnchorWidgetObserver>(this, anchor_view->GetWidget());
@@ -1187,6 +1213,7 @@ void BubbleDialogDelegate::SetAnchor(BubbleAnchor anchor) {
     }
   } else {
     CHECK(anchor.IsNull());
+    anchor_tracked_element_ = nullptr;
     SetAnchorView(nullptr);
     SetAnchorRect(gfx::Rect());
   }
@@ -1197,7 +1224,7 @@ BubbleAnchor BubbleDialogDelegate::GetAnchor() const {
     return BubbleAnchor(GetAnchorView());
   }
   if (anchor_tracked_element_) {
-    return BubbleAnchor(anchor_tracked_element_);
+    return BubbleAnchor(anchor_tracked_element_.get());
   }
   return BubbleAnchor();
 }
@@ -1222,8 +1249,17 @@ bool BubbleDialogDelegate::IsSameAnchor(BubbleAnchor anchor) const {
   }
 }
 
+void BubbleDialogDelegate::SetUseAnchorWindowBounds(bool use_anchor_bounds) {
+  use_anchor_window_bounds_ = use_anchor_bounds;
+  if (auto* frame_view = GetBubbleFrameView()) {
+    frame_view->set_use_anchor_window_bounds(use_anchor_bounds);
+  }
+}
+
 void BubbleDialogDelegate::SizeToContents() {
-  GetWidget()->SetBounds(GetDesiredWidgetBounds());
+  if (GetWidget() && !GetWidget()->IsClosed()) {
+    GetWidget()->SetBounds(GetDesiredWidgetBounds());
+  }
 }
 
 std::u16string BubbleDialogDelegate::GetSubtitle() const {
@@ -1270,7 +1306,7 @@ void BubbleDialogDelegate::UpdateFrameColor() {
   // contents are doing.
   const bool contents_layer_opaque =
       layer_type() != ui::LAYER_NOT_DRAWN && contents_view->layer() &&
-      contents_view->layer()->type() != ui::LAYER_NOT_DRAWN &&
+      !contents_view->layer()->AsNotDrawn() &&
       contents_view->layer()->fills_bounds_opaquely();
   if (contents_layer_opaque) {
     CHECK(contents_view->background())

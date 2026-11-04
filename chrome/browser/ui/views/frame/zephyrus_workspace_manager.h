@@ -504,7 +504,6 @@ class ZephyrusWorkspaceManager : public TabStripModelObserver {
       const TabStripSelectionChange& selection) override;
   // Feeds the per-workspace visit index as tabs navigate.
   void OnTabChangedAt(tabs::TabInterface* tab,
-                      int index,
                       TabChangeType change_type) override;
 
  private:

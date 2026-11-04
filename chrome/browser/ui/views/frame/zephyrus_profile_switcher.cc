@@ -33,6 +33,8 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
@@ -210,14 +212,15 @@ void ZephyrusProfileSwitcher::SwapInto(Profile* target, Browser* from) {
   Browser* target_browser = FindWindowForProfile(target);
   if (!target_browser) {
     // Cold profile with no window yet: create one that comes up already sized to
-    // this window's footprint (Browser::CreateParams restores placement during
+    // this window's footprint (BrowserWindowCreateParams restores placement during
     // construction, which would otherwise override a later SetBounds()).
-    Browser::CreateParams params(target, /*user_gesture=*/true);
+    BrowserWindowCreateParams params(target, /*from_user_gesture=*/true);
     params.initial_bounds = bounds;
     params.initial_show_state =
         maximized ? ui::mojom::WindowShowState::kMaximized
                   : ui::mojom::WindowShowState::kNormal;
-    target_browser = Browser::Create(params);
+    target_browser =
+        zephyrus::AsBrowser(CreateBrowserWindow(std::move(params)));
     if (!target_browser) {
       return;
     }

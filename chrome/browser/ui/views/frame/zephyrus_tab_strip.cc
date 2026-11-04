@@ -722,6 +722,14 @@ void ZephyrusTabStrip::SetTopInset(int inset) {
   }
 }
 
+void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
+  // The band between the title bar and the page belongs to no other view: the
+  // frame paints only its own top area, and the page starts below this strip.
+  // Left unpainted it shows whatever the compositor started with (black, or a
+  // debug blue), most visibly in the gaps between tabs and right of "+".
+  canvas->DrawColor(browser_view_->GetZephyrusThemeColor());
+}
+
 void ZephyrusTabStrip::Layout(PassKey key) {
   const int y = top_inset_;
   const int avail = ContentWidth();
@@ -910,7 +918,6 @@ void ZephyrusTabStrip::OnTabStripModelChanged(
 }
 
 void ZephyrusTabStrip::OnTabChangedAt(tabs::TabInterface* tab,
-                                      int index,
                                       TabChangeType change_type) {
   // Loading ticks arrive constantly; only a title or favicon change shows.
   if (change_type == TabChangeType::kLoadingOnly) {

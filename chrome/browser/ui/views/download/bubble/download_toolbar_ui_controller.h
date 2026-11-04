@@ -18,7 +18,7 @@
 #include "chrome/browser/ui/download/download_bubble_row_list_view_info.h"
 #include "chrome/browser/ui/download/download_display.h"
 #include "chrome/browser/ui/immersive/immersive_mode_controller.h"
-#include "chrome/browser/ui/views/download/bubble/download_bubble_contents_view.h"
+#include "chrome/browser/ui/views/download/bubble/download_bubble_mode.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_navigation_handler.h"
 #include "components/offline_items_collection/core/offline_item.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -26,8 +26,6 @@
 #include "ui/events/event_observer.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/widget/widget_observer.h"
-
-enum class GetAnchorFailureReason;
 
 namespace offline_items_collection {
 struct ContentId;
@@ -39,9 +37,11 @@ class Widget;
 }  // namespace views
 
 class BrowserView;
-class DownloadDisplayController;
+class DownloadBubbleContentsView;
 class DownloadBubbleUIController;
+class DownloadDisplayController;
 class ProfileBrowserCollection;
+enum class GetAnchorFailureReason;
 
 // DownloadToolbarUIController is a controller for the downloads button shown in
 // the trusted area of the toolbar. This controller manages state, animations,
@@ -106,6 +106,7 @@ class DownloadToolbarUIController
   void OpenSecuritySubpage(
       const offline_items_collection::ContentId& id) override;
   IconState GetIconState() const override;
+  void OnOfflineItemsInitialized() override;
 
   void UpdateIcon();
 
@@ -148,6 +149,10 @@ class DownloadToolbarUIController
 
   base::RetainingOneShotTimer* auto_close_bubble_timer_for_testing() {
     return &auto_close_bubble_timer_;
+  }
+
+  base::TimeDelta GetAutoCloseDelayForTesting() const {
+    return GetAutoCloseDelay();
   }
 
   bool IsProgressRingInDownloadingStateForTesting();
@@ -224,6 +229,9 @@ class DownloadToolbarUIController
   // been deactivated.
   void AutoClosePartialView();
 
+  // Returns the delay after which the partial view automatically closes.
+  base::TimeDelta GetAutoCloseDelay() const;
+
   // Get the models for the primary view, which may be the full or the partial
   // view.
   std::vector<DownloadUIModel::DownloadUIModelPtr> GetPrimaryViewModels();
@@ -251,10 +259,10 @@ class DownloadToolbarUIController
   // keeps TOP_CENTER.
   std::optional<views::BubbleBorder::Arrow> zephyrus_arrow_;
   raw_ptr<actions::ActionItem> action_item_ = nullptr;
-  // Controller for the DownloadToolbarButton UI.
-  std::unique_ptr<DownloadDisplayController> controller_;
   // Controller for keeping track of items for both main view and partial view.
   std::unique_ptr<DownloadBubbleUIController> bubble_controller_;
+  // Controller for the DownloadToolbarButton UI.
+  std::unique_ptr<DownloadDisplayController> controller_;
   raw_ptr<views::BubbleDialogDelegate> bubble_delegate_ = nullptr;
   raw_ptr<DownloadBubbleContentsView> bubble_contents_ = nullptr;
 

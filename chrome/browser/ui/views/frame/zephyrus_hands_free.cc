@@ -110,7 +110,7 @@ void ZephyrusHandsFree::Start() {
       !g_browser_process) {
     return;
   }
-  Profile* profile = browser_view_->browser()->profile();
+  Profile* profile = browser_view_->browser()->GetProfile();
   started_ = true;
   mic_ = std::make_unique<VoiceInput>(
       g_browser_process->shared_url_loader_factory());
@@ -198,7 +198,7 @@ void ZephyrusHandsFree::OnPrefChanged() {
   // A different microphone was chosen: close the open one so Refresh() opens the
   // new one.
   if (listening_ && browser_view_ && browser_view_->browser() &&
-      browser_view_->browser()->profile()->GetPrefs()->GetString(
+      browser_view_->browser()->GetProfile()->GetPrefs()->GetString(
           kMicDevicePref) != mic_name_) {
     mic_->StopStreaming();
     engine_->Reset();
@@ -223,7 +223,7 @@ void ZephyrusHandsFree::Refresh() {
   if (!started_ || !browser_view_ || !browser_view_->browser()) {
     return;
   }
-  Profile* profile = browser_view_->browser()->profile();
+  Profile* profile = browser_view_->browser()->GetProfile();
   PrefService* prefs = profile->GetPrefs();
   engine_->SetOptions(
       {.lock = prefs->GetBoolean(kVoiceLockPref),
@@ -334,7 +334,7 @@ void ZephyrusHandsFree::OnEncryptor(
     std::string pcm,
     scoped_refptr<os_crypt_async::Encryptor> encryptor) {
   Profile* profile = browser_view_ && browser_view_->browser()
-                         ? browser_view_->browser()->profile()
+                         ? browser_view_->browser()->GetProfile()
                          : nullptr;
   std::optional<VoiceCredentials> credentials =
       encryptor && profile

@@ -301,6 +301,9 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
           </message>
         </else>
       </if>
+      <message name="IDS_APP_MENU_YOUR_CHROME_HEADER" desc="Header title for the Your Chromium section in the main App Menu">
+        Your Chromium
+      </message>
       <if expr="is_win">
         <message name="IDS_SXS_SHORTCUT_NAME" desc="Unused in Zephyrus builds" translateable="false">
         </message>
@@ -348,6 +351,12 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
       <message name="IDS_PRODUCT_LOGO_ENTERPRISE_ALT_TEXT" desc="Alt text for the Zephyrus Enterprise logo image." formatter_data="android_java">
         Zephyrus Enterprise logo
       </message>
+      <message name="IDS_ACCESSIBILITY_TOOLBAR_BTN_IDENTITY_DISC_WITH_NAME_AND_EMAIL_AI_TIER" desc="The content description for a toolbar button displaying user profile picture when the user has an AI subscription. Tapping on this button navigates to Settings page" formatter_data="android_java">
+        Signed in as <ph name="USER_NAME">%1$s<ex>Peter Parker</ex></ph>, <ph name="USER_EMAIL">%2$s<ex>peter.parker@gmail.com</ex></ph>, membership. Open the account menu
+      </message>
+      <message name="IDS_ACCESSIBILITY_TOOLBAR_BTN_IDENTITY_DISC_WITH_NAME_AI_TIER" desc="The content description for a toolbar button displaying user profile picture when the user has an AI subscription, for users who don't have a readable email address. Tapping on this button navigates to Settings page" formatter_data="android_java">
+        Signed in as <ph name="USER_NAME">%s<ex>Bruce Wayne</ex></ph>, membership. Open the account menu
+      </message>
       <if expr="is_macosx or is_chromeos">
         <message name="IDS_TASK_MANAGER_TITLE" desc="The title of the Task Manager window">
           Task Manager
@@ -376,16 +385,16 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
       <message name="IDS_TASK_MANAGER_TASK_KILL_FAIL_ACCESSIBILITY_MESSAGE" desc="The text announced when all tasks in the process could not be killed.">
         Failed to end task(s).
       </message>
-      <message name="IDS_TASK_MANAGER_CATEGORY_TABS_AND_EXTENSIONS_NAME" desc="The title of the 'Tabs and Extensions' filter category.">
+      <message name="IDS_TASK_MANAGER_CATEGORY_TABS_AND_EXTENSIONS_NAME" desc="The title of the 'Tabs and Extensions' filter category." formatter_data="android_java">
         Tabs &amp; extensions
       </message>
       <message name="IDS_TASK_MANAGER_CATEGORY_SYSTEM_NAME" desc="The title of the 'System' filter category on ChromeOS.">
         System
       </message>
-      <message name="IDS_TASK_MANAGER_CATEGORY_BROWSER_NAME" desc="The title of the 'System' filter category on Windows/Mac/Linux.">
+      <message name="IDS_TASK_MANAGER_CATEGORY_BROWSER_NAME" desc="The title of the 'System' filter category on Windows/Mac/Linux/Android desktop." formatter_data="android_java">
         Browser
       </message>
-      <message name="IDS_TASK_MANAGER_CATEGORY_ALL_NAME" desc="The title of the 'All tasks' filter category on Windows/Mac/Linux/ChromeOS.">
+      <message name="IDS_TASK_MANAGER_CATEGORY_ALL_NAME" desc="The title of the 'All tasks' filter category on Windows/Mac/Linux/ChromeOS/Android desktop." formatter_data="android_java">
         All tasks
       </message>
       <message name="IDS_SESSION_CRASHED_VIEW_UMA_OPTIN" desc="Text besides the checkbox to let users optin to UMA in the restore from previous crash bubble.">
@@ -582,12 +591,6 @@ New bookmarks can’t be saved in your account until you delete some. If you sig
         </message>
       </if>
       <!-- Sharing messages -->
-      <message name="IDS_BROWSER_SHARING_CLICK_TO_CALL_DIALOG_HELP_TEXT_NO_DEVICES" desc="The label to be shown as a help text of the dialog when user click on a phone number, if there are no phones to choose from.">
-        To send a number from here to your Android phone, sign in to Zephyrus on both devices.
-      </message>
-      <message name="IDS_BROWSER_SHARING_CLICK_TO_CALL_DIALOG_HELP_TEXT_NO_DEVICES_ORIGIN" desc="The label to be shown as a help text of the dialog when user click on a phone number, if there are no phones to choose from.">
-        To send a number from <ph name="ORIGIN">$1<ex>www.google.com</ex></ph> to your Android phone, sign in to Zephyrus on both devices.
-      </message>
       <message name="IDS_BROWSER_SHARING_ERROR_DIALOG_TEXT_DEVICE_NOT_FOUND" desc="The text to be shown on the dialog when an error occurred because the device is not synced.">
         Make sure you are signed in to Zephyrus on your <ph name="TARGET_DEVICE_NAME">$1<ex>Pixel XL</ex></ph> and then try sending again.
       </message>
@@ -615,13 +618,13 @@ New bookmarks can’t be saved in your account until you delete some. If you sig
           Set Zephyrus as your default browser
         </message>
         <message name="IDS_DEFAULT_BROWSER_VISUAL_GUIDED_SETTER_HEADER_TITLE" desc="Header text of the default browser visual guided setter.">
-          Use Zephyrus recommended browser settings
+          Set Zephyrus as your default browser
         </message>
         <message name="IDS_DEFAULT_BROWSER_VISUAL_GUIDED_SETTER_CONTENT_TITLE" desc="Content title of the default browser visual guided setter.">
           Set Zephyrus as your default browser
         </message>
         <message name="IDS_DEFAULT_BROWSER_VISUAL_GUIDED_SETTER_CONTENT_DESCRIPTION" desc="Body text of the default browser visual guided setter.">
-          Get easy access to the features you know, love, and trust by setting Zephyrus as your default browser.
+          Keep your passwords, bookmarks, and history perfectly synced across devices by setting Zephyrus as your default browser.
         </message>
         <message name="IDS_DEFAULT_BROWSER_VISUAL_GUIDED_SETTER_INSTRUCTION_STEP_2" desc="Instruction step 2 of the default browser visual guided setter. $1 is the bold button name.">
           Click <ph name="BEGIN_BOLD">&lt;strong&gt;</ph>Yes<ph name="END_BOLD">&lt;/strong&gt;</ph> in the Windows notification to pin Zephyrus to your taskbar for quick access.
@@ -795,6 +798,64 @@ Zephyrus is unable to recover your settings.
           Keep in Dock
         </message>
       </if>
+
+            <!-- Pin InfoBar Experimental strings -->
+      <if expr="is_win">
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_MESSAGE_1" translateable="false" desc="Message text for the experimental pin infobar version 1 on Windows">
+          Open Chromium with one click. Pin it for faster access.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_MESSAGE_2" translateable="false" desc="Message text for the experimental pin infobar version 2 on Windows">
+          Launch the web faster. Pin Chromium to your taskbar.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_MESSAGE_3" translateable="false" desc="Message text for the experimental pin infobar version 3 on Windows">
+          Keep Chromium within reach anytime you browse.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_BUTTON_3" translateable="false" desc="Button text for the experimental pin infobar version 3 on Windows">
+          Pin Chromium Now
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_MESSAGE_4" translateable="false" desc="Message text for the experimental pin infobar version 4 on Windows">
+          Optimize your workflow. Add Chromium to your taskbar.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_MESSAGE_6" translateable="false" desc="Message text for the experimental pin infobar version 6 on Windows">
+          Simplify your startup. Pin Chromium to your taskbar.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_BUTTON_8" translateable="false" desc="Button text for the experimental pin infobar version 8 on Windows">
+          Pin Chromium
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_MESSAGE_9" translateable="false" desc="Message text for the experimental pin infobar version 9 on Windows">
+          For a better desktop experience, pin Chromium to your taskbar.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_MESSAGE_10" translateable="false" desc="Message text for the experimental pin infobar version 10 on Windows">
+          Start browsing instantly. Pin Chromium to your taskbar.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_BUTTON_10" translateable="false" desc="Button text for the experimental pin infobar version 10 on Windows">
+          Pin Chromium
+        </message>
+      </if>
+      <if expr="is_macosx">
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_DOCK_MESSAGE_1" translateable="false" desc="Message text for the experimental pin infobar version 1 on Mac">
+          Open Chromium with one click. Keep it in your Dock for faster access.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_DOCK_MESSAGE_2" translateable="false" desc="Message text for the experimental pin infobar version 2 on Mac">
+          Launch the web faster. Keep Chromium in your Dock.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_DOCK_MESSAGE_3" translateable="false" desc="Message text for the experimental pin infobar version 3 on Mac">
+          Keep Chromium within reach anytime you browse.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_DOCK_MESSAGE_4" translateable="false" desc="Message text for the experimental pin infobar version 4 on Mac">
+          Optimize your workflow. Add Chromium to your Dock.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_DOCK_MESSAGE_6" translateable="false" desc="Message text for the experimental pin infobar version 6 on Mac">
+          Simplify your startup. Keep Chromium in your Dock.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_DOCK_MESSAGE_9" translateable="false" desc="Message text for the experimental pin infobar version 9 on Mac">
+          For a better desktop experience, keep Chromium in your Dock.
+        </message>
+        <message name="IDS_PIN_INFOBAR_EXPERIMENTAL_DOCK_MESSAGE_10" translateable="false" desc="Message text for the experimental pin infobar version 10 on Mac">
+          Start browsing instantly. Keep Chromium in your Dock.
+        </message>
+      </if>
+
       <message name="IDS_DEFAULT_BROWSER_INFOBAR_TEXT" desc="Text to show in an infobar when Zephyrus is not the current default browser.">
         Zephyrus isn't your default browser
       </message>
@@ -815,10 +876,10 @@ Zephyrus is unable to recover your settings.
           Set Zephyrus as your default browser
         </message>
         <message name="IDS_DEFAULT_BROWSER_MODAL_BODY_WITHOUT_SETTINGS_ILLUSTRATION" desc="Body text of the default browser modal without settings illustration.">
-          Get easy access to the features you know, love, and trust by setting Zephyrus as your default browser.
+          Keep your passwords, bookmarks, and history perfectly synced across devices. Easily access the features you know and love by updating your default browser to Zephyrus.
         </message>
         <message name="IDS_DEFAULT_BROWSER_MODAL_BODY_WITHOUT_SETTINGS_ILLUSTRATION_UNPINNED" desc="Body text of the default browser modal without settings illustration when Zephyrus is not pinned to the taskbar.">
-          Get easy access to the features you know, love, and trust by setting Zephyrus as your default browser. Zephyrus will be pinned to your taskbar for quick access.
+          Keep your passwords, bookmarks, and history perfectly synced across devices. Easily access the features you know and love by updating your default browser to Zephyrus. Zephyrus will be pinned to your taskbar for quick access.
         </message>
         <message name="IDS_DEFAULT_BROWSER_BUBBLE_DIALOG_TITLE" desc="Title of the dialog prompting the user to set Zephyrus as the default browser.">
           Set Zephyrus as your default browser
@@ -1134,30 +1195,15 @@ Zephyrus is unable to recover your settings.
 
       <!-- Page menu. Android has separate strings for its menu -->
       <if expr="not is_android">
-        <if expr="use_titlecase">
-          <then>
-            <message name="IDS_CUSTOMIZE_CHROME" desc="In Title Case: The text label of the Customize Chrome menu item">
-              C&amp;ustomize Your Zephyrus
-            </message>
-            <message name="IDS_OTHER_CHROME_PROFILES_TITLE" desc="In Title Case: The title of the Other Chrome profiles section">
-              Other Zephyrus Profiles
-            </message>
-            <message name="IDS_MANAGE_CHROME_PROFILES" desc="In Title Case: The text label of the manage chrome profile item">
-              &amp;Manage Zephyrus Profiles
-            </message>
-          </then>
-          <else>
-            <message name="IDS_CUSTOMIZE_CHROME" desc="The text label of the Customize Chrome menu item">
-              C&amp;ustomize your Zephyrus
-            </message>
-            <message name="IDS_OTHER_CHROME_PROFILES_TITLE" desc="The title of the Other Chrome profiles section">
-              Other Zephyrus profiles
-            </message>
-            <message name="IDS_MANAGE_CHROME_PROFILES" desc="The text label of the manage chrome profile item">
-              &amp;Manage Zephyrus profiles
-            </message>
-          </else>
-        </if>
+        <message name="IDS_CUSTOMIZE_CHROME" desc="The text label of the Customize Chrome menu item">
+          C&amp;ustomize your Zephyrus
+        </message>
+        <message name="IDS_OTHER_CHROME_PROFILES_TITLE" desc="The title of the Other Chrome profiles section">
+          Other Zephyrus profiles
+        </message>
+        <message name="IDS_MANAGE_CHROME_PROFILES" desc="The text label of the manage chrome profile item">
+          &amp;Manage Zephyrus profiles
+        </message>
       </if>
 
       <message name="IDS_VIEW_PASSWORDS" desc="Item in the app menu which shows Password Manager page">
@@ -1376,6 +1422,68 @@ Zephyrus is unable to recover your settings.
         <message name="IDS_SIGNIN_DICE_WEB_INTERCEPT_CREATE_BUBBLE_DESC" desc="Body of the web signin interception bubble. It is shown when the user signs in on the web while they already have another account present in the current profile.">
           <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in.  To keep your browsing separate, sign in to Zephyrus in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>foo@gmail.com</ex></ph>.
         </message>
+        <!-- Account Preview Multi-User / Profile Separation Intercept Promo Subtitles -->
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_PASSWORDS_WITH_DEVICE" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access passwords from their other device.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your passwords and more from <ph name="DEVICE">$3<ex>your phone</ex></ph>.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_BOOKMARKS_WITH_DEVICE" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access bookmarks from their other device.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your bookmarks and more from <ph name="DEVICE">$3<ex>your phone</ex></ph>.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_SAVED_INFO_WITH_DEVICE" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access saved info (such as autofill data, addresses, and payment methods) from their other device.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your saved info and more from <ph name="DEVICE">$3<ex>your phone</ex></ph>.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_READING_LIST_WITH_DEVICE" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access reading list from their other device.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your reading list and more from <ph name="DEVICE">$3<ex>your phone</ex></ph>.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_EXTENSIONS_WITH_DEVICE" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access extensions from their computer. Only desktop/computer DEVICE are supported for extensions.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your extensions and more from <ph name="DEVICE">$3<ex>your computer</ex></ph>.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_PASSWORDS" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access passwords on all their devices.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your passwords and more on all your devices.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_BOOKMARKS" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access bookmarks on all their devices.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your bookmarks and more on all your devices.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_SAVED_INFO" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access saved info (such as autofill data, addresses, and payment methods) on all their devices.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your saved info and more on all your devices.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_READING_LIST" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access reading list on all their devices.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your reading list and more on all your devices.
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_PROFILE_SEPARATION_SUBTITLE_EXTENSIONS" desc="Body of the web signin interception bubble with account preview, informing the user they can keep accounts separate and access extensions on all their devices.">
+          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in. To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>bob.beckett@gmail.com</ex></ph>. You’ll also get your extensions and more on all your devices.
+        </message>
+        <!-- Account Preview Settings Signin Promo Subtitles -->
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_PASSWORDS_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their passwords from their other device.">
+          To get your passwords and more from <ph name="DEVICE">$1<ex>your phone</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_BOOKMARKS_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their bookmarks from their other device.">
+          To get your bookmarks and more from <ph name="DEVICE">$1<ex>your phone</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_SAVED_INFO_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their saved info (such as autofill data, addresses, and payment methods) from their other device.">
+          To get your saved info and more from <ph name="DEVICE">$1<ex>your phone</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_READING_LIST_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their reading list from their other device.">
+          To get your reading list and more from <ph name="DEVICE">$1<ex>your phone</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_EXTENSIONS_WITH_DEVICE" desc="Subtitle of a sign-in promo in Settings informing the user they can access their extensions from their computer. Only desktop/computer DEVICE are supported for extensions.">
+          To get your extensions and more from <ph name="DEVICE">$1<ex>your computer</ex></ph>, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_PASSWORDS" desc="Subtitle of a sign-in promo in Settings informing the user they can access their passwords on all their devices.">
+          To get your passwords and more on all your devices, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_BOOKMARKS" desc="Subtitle of a sign-in promo in Settings informing the user they can access their bookmarks on all their devices.">
+          To get your bookmarks and more on all your devices, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_SAVED_INFO" desc="Subtitle of a sign-in promo in Settings informing the user they can access their saved info (such as autofill data, addresses, and payment methods) on all their devices.">
+          To get your saved info and more on all your devices, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_READING_LIST" desc="Subtitle of a sign-in promo in Settings informing the user they can access their reading list on all their devices.">
+          To get your reading list and more on all your devices, sign in to Chromium
+        </message>
+        <message name="IDS_ACCOUNT_PREVIEW_SETTINGS_PROMO_SUBTITLE_EXTENSIONS" desc="Subtitle of a sign-in promo in Settings informing the user they can access their extensions on all their devices.">
+          To get your extensions and more on all your devices, sign in to Chromium
+        </message>
         <message name="IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE" desc="Subtitle of the Zephyrus Signin Bubble intercept that is shown when a signed out user signs in on the web with it's first account.">
           To get your passwords and more on all your devices, sign in to Zephyrus
         </message>
@@ -1535,6 +1643,9 @@ Zephyrus is unable to recover your settings.
       <!-- Sign in on your phone (QR code) strings  -->
       <message name="IDS_QR_CODE_BUBBLE_SIGNIN_ON_PHONE_TITLE" desc="Title of the QR Code bubble showing a code for the user to sign in on their phone.">
         Sign in to Chromium on your phone
+      </message>
+      <message name="IDS_QR_CODE_BUBBLE_SIGNIN_ON_PHONE_QR_CODE_ALT_TEXT" desc="Accessibility label for the QR code image in the cross-device sign-in promo bubble.">
+        QR code to sign in to Chromium as <ph name="USER_NAME">$1<ex>Elisa Beckett</ex></ph>
       </message>
 
       <!-- App list -->
@@ -1861,6 +1972,9 @@ Zephyrus is unable to recover your settings.
       </message>
 
       <!-- Desktop Capture -->
+      <message name="IDS_SEARCHBOX_PICKER_HEADLINE" desc="Title of the searchbox screen or window picker dialog.">
+        Choose what to share with Chromium
+      </message>
       <message name="IDS_DESKTOP_MEDIA_PICKER_SOURCE_TYPE_TAB" desc="Text for the button on the window picker dialog, clicking which takes one to tab sharing">
         Zephyrus Tab
       </message>
@@ -1885,24 +1999,7 @@ Zephyrus is unable to recover your settings.
 
       <!-- Runtime permission strings -->
       <if expr="is_android">
-        <message name="IDS_INFOBAR_MISSING_AR_CAMERA_PERMISSION_TEXT" desc="Text shown in an infobar when a website has requested access to augmented reality capabilities, but Chrome is missing the Android camera permission.">
-          Zephyrus needs permission to access your camera to create a 3D map of your surroundings
-        </message>
-        <message name="IDS_INFOBAR_MISSING_CAMERA_PERMISSION_TEXT" desc="Text shown in an infobar when a website has requested access to the camera capabilities, but Chrome is missing the Android camera permission.">
-          Zephyrus needs permission to access your camera for this site
-        </message>
-        <message name="IDS_INFOBAR_MISSING_HAND_TRACKING_PERMISSION_TEXT" desc="Text shown in an infobar when a website has requested access to hand tracking capabilities, but Chrome is missing the Android hand tracking permission.">
-          Zephyrus needs permission to track your hands
-        </message>
-        <message name="IDS_INFOBAR_MISSING_MICROPHONE_PERMISSION_TEXT" desc="Text shown in an infobar when a website has requested access to the microphone capabilities, but Chrome is missing the Android microphone permission.">
-          Zephyrus needs permission to access your microphone for this site
-        </message>
-        <message name="IDS_INFOBAR_MISSING_MICROPHONE_CAMERA_PERMISSIONS_TEXT" desc="Text shown in an infobar when a website has requested access to the microphone and camera capabilities, but Chrome is missing the Android microphone and camera permissions.">
-          Zephyrus needs permission to access your camera and microphone for this site
-        </message>
-        <message name="IDS_INFOBAR_MISSING_LOCATION_PERMISSION_TEXT" desc="Text shown in an infobar when a website has requested access to the location capabilities, but Chrome is missing the Android location permission.">
-          Zephyrus needs access to your location to share your location with this site
-        </message>
+
         <message name="IDS_MISSING_STORAGE_PERMISSION_DOWNLOAD_EDUCATION_TEXT" desc="Text shown educating the user that Chrome is missing the Android storage permission, which is required to download files.">
           Zephyrus needs storage access to download files
         </message>
@@ -1924,6 +2021,9 @@ Zephyrus is unable to recover your settings.
         </message>
         <message name="IDS_MESSAGE_MISSING_LOCATION_PERMISSION_TEXT" desc="Text shown in a prompt ui when a website has requested access to the location capabilities, but Chrome is missing the Android location permission.">
           Zephyrus needs location permission for this site
+        </message>
+        <message name="IDS_MESSAGE_MISSING_LOCAL_NETWORK_PERMISSION_TEXT" desc="Text shown in a prompt ui when a website has requested access to the local network capabilities, but Chrome is missing the Android local network permission.">
+          Chromium needs access to your local network to discover and use nearby devices
         </message>
         <message name="IDS_MESSAGE_STORAGE_ACCESS_PERMISSION_TEXT" desc="Text shown educating the user that Chrome is missing the Android storage permission, which is required to download files.">
           Zephyrus needs storage access permission to download files
@@ -1985,6 +2085,14 @@ Zephyrus is unable to recover your settings.
 
         <message name="IDS_SIDE_PANEL_CONTEXTUAL_TASKS_PINNABLE_IPH" desc="The body text of the IPH describing that the Contextual Tasks side panel is pinnable.">
           You can pin Contextual Tasks to ask questions as you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH" desc="The body text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Contextual Tasks.">
+          You can reopen Contextual Tasks to ask questions while you browse
+        </message>
+        <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_TOOLBAR_BUTTON_IPH_SCREENREADER"
+          desc="The screen reader text of the IPH describing that the Contextual Tasks ephemeral toolbar button can be used to reopen Contextual Tasks."
+          is_accessibility_with_no_ui="true">
+          From the "Contextual Tasks" button on the toolbar, you can reopen Contextual Tasks to ask questions while you browse
         </message>
         <message name="IDS_TUTORIAL_CONTEXTUAL_TASKS_STEP1" desc="The body text of the first step of the Contextual Tasks tutorial.">
           Open the overflow menu
@@ -2195,16 +2303,6 @@ Zephyrus is unable to recover your settings.
           Search this screenshot
         </message>
 
-        <!-- IPH Strings -->
-        <message name="IDS_LENS_OVERLAY_TRANSLATE_BUTTON_IPH"
-          desc="Text that appears in the IPH toast informing the user about the availability of the new translate screen chip in the Lens Overlay that adds functionality to translate the entire screen.">
-          New! You can translate both text and images on your screen
-        </message>
-        <message name="IDS_LENS_OVERLAY_TRANSLATE_BUTTON_IPH_SCREENREADER"
-          is_accessibility_with_no_ui="true"
-          desc="Text that appears in the IPH toast informing the user about the availability of the new translate screen chip in the Lens Overlay that adds functionality to translate the entire screen.">
-          New! You can translate both text and images on your screen by selecting the "translate screen" button
-        </message>
 
         <message name="IDS_CONTENT_CONTEXT_LENS_OVERLAY"
           desc="The name of the Lens overlay command in the content area context menu">
@@ -2227,55 +2325,56 @@ Zephyrus is unable to recover your settings.
           Search with Image Search
         </message>
 
-        <message name="IDS_LENS_OVERLAY_ENTRYPOINT_LABEL_ALT1"
-          desc="Label for the Lens overlay command, through which the user can ask questions about the page.">
-          Ask about this page
-        </message>
-        <message name="IDS_LENS_OVERLAY_ENTRYPOINT_LABEL_ALT2"
-          desc="Label for the Lens overlay command, through which the user can ask the Image Search service questions about the page.">
-          Ask Image Search about this page
-        </message>
-        <message name="IDS_LENS_OVERLAY_ENTRYPOINT_LABEL_ALT3"
-          desc="Label for the Lens overlay command, through which the page will be searched using the Image Search service.">
-          Search this page with Image Search
-        </message>
-        <message name="IDS_LENS_OVERLAY_IMAGE_ENTRYPOINT_LABEL_ALT1"
-          desc="Label for the Lens overlay command, through which the user can ask questions about the image.">
-          Ask about this image
-        </message>
-        <message name="IDS_LENS_OVERLAY_IMAGE_ENTRYPOINT_LABEL_ALT2"
-          desc="Label for the Lens overlay command, through which the user can ask the Image Search service questions about the image.">
-          Ask Image Search about this image
-        </message>
-        <message name="IDS_LENS_OVERLAY_IMAGE_ENTRYPOINT_LABEL_ALT3"
-          desc="Label for the Lens overlay command, through which the image will be searched using the Image Search service.">
-          Search this image with Image Search
-        </message>
+        <if expr="use_titlecase">
+          <message name="IDS_LENS_OVERLAY_IMAGE_ENTRYPOINT_LABEL_ALT3"
+            desc="In Title Case: Label for the Lens overlay command, through which the image will be searched using the Image Search service.">
+            Search This Image with Image Search
+          </message>
+          <message name="IDS_LENS_OVERLAY_TAB_ENTRYPOINT_LABEL_CONTEXT_MENU"
+            desc="In Title Case: Label for the Lens overlay command in the context menu, through which the current tab will be searched using the Image Search service.">
+            Search This Tab with Image Search
+          </message>
+          <message name="IDS_LENS_OVERLAY_VIDEO_ENTRYPOINT_LABEL_ALT3"
+            desc="In Title Case: Label for the Lens overlay command, through which the video will be searched using the Image Search service.">
+            Search This Video with Image Search
+          </message>
+          <message name="IDS_LENS_OVERLAY_TAB_ENTRYPOINT_LABEL_V2"
+            desc="In Title Case: Label for the Lens overlay command, through which the current tab will be searched using the Image Search service.">
+            Search with Image Search
+          </message>
+        </if>
+        <if expr="not use_titlecase">
+          <message name="IDS_LENS_OVERLAY_IMAGE_ENTRYPOINT_LABEL_ALT3"
+            desc="Label for the Lens overlay command, through which the image will be searched using the Image Search service.">
+            Search this image with Image Search
+          </message>
+          <message name="IDS_LENS_OVERLAY_TAB_ENTRYPOINT_LABEL_CONTEXT_MENU"
+            desc="Label for the Lens overlay command in the context menu, through which the current tab will be searched using the Image Search service.">
+            Search this tab with Image Search
+          </message>
+          <message name="IDS_LENS_OVERLAY_VIDEO_ENTRYPOINT_LABEL_ALT3"
+            desc="Label for the Lens overlay command, through which the video will be searched using the Image Search service.">
+            Search this video with Image Search
+          </message>
+          <message name="IDS_LENS_OVERLAY_TAB_ENTRYPOINT_LABEL_V2"
+            desc="Label for the Lens overlay command, through which the current tab will be searched using the Image Search service.">
+            Search with Image Search
+          </message>
+        </if>
         <message name="IDS_LENS_OVERLAY_TAB_ENTRYPOINT_LABEL"
           desc="Label for the Lens overlay command, through which the current tab will be searched using the Image Search service.">
           Search this tab with Image Search
         </message>
-        <message name="IDS_LENS_OVERLAY_TAB_ENTRYPOINT_LABEL_V2"
-          desc="Label for the Lens overlay command, through which the current tab will be searched using the Image Search service.">
-          Search with Image Search
-        </message>
-        <message name="IDS_LENS_OVERLAY_VIDEO_ENTRYPOINT_LABEL_ALT1"
-          desc="Label for the Lens overlay command, through which the user can ask questions about the video.">
-          Ask about this video
-        </message>
-        <message name="IDS_LENS_OVERLAY_VIDEO_ENTRYPOINT_LABEL_ALT2"
-          desc="Label for the Lens overlay command, through which the user can ask the Image Search service questions about the video.">
-          Ask Image Search about this video
-        </message>
-        <message name="IDS_LENS_OVERLAY_VIDEO_ENTRYPOINT_LABEL_ALT3"
-          desc="Label for the Lens overlay command, through which the video will be searched using the Image Search service.">
-          Search this video with Image Search
-        </message>
       </if>
 
-      <message name="IDS_AI_MODE_ENTRYPOINT_LABEL"
-        desc="The label of the AI mode entrypoint in the omnibox" formatter_data="android_java">
-        AI Mode
+      <!-- Lens Protected Page Error -->
+      <message name="IDS_SIDE_PANEL_LENS_OVERLAY_PROTECTED_PAGE_ERROR_FIRST_LINE"
+          desc="Text shown on the side panel for the Lens feature when there is are no results being loaded due to the page being protected. The texts informs the user the panel can not be loaded.">
+        This page is protected
+      </message>
+      <message name="IDS_SIDE_PANEL_LENS_OVERLAY_PROTECTED_PAGE_ERROR_SECOND_LINE"
+          desc="Text shown on the side panel for the Lens feature when there is are no results being loaded due to the page being protected. The text suggests the user try a different page since the current one can not be read.">
+        Protected pages can't be read. Try a different page.
       </message>
 
       <if expr="not is_android">
@@ -2288,15 +2387,6 @@ Zephyrus is unable to recover your settings.
             desc="Text shown on the side panel for the Lens feature when there is a network or other server error. The texts informs the user the panel can not be loaded.">
           Couldn't load this panel, try again
         </message>
-        <message name="IDS_SIDE_PANEL_LENS_OVERLAY_PROTECTED_PAGE_ERROR_FIRST_LINE"
-            desc="Text shown on the side panel for the Lens feature when there is are no results being loaded due to the page being protected. The texts informs the user the panel can not be loaded.">
-          This page is protected
-        </message>
-        <message name="IDS_SIDE_PANEL_LENS_OVERLAY_PROTECTED_PAGE_ERROR_SECOND_LINE"
-            desc="Text shown on the side panel for the Lens feature when there is are no results being loaded due to the page being protected. The text suggests the user try a different page since the current one can not be read.">
-          Protected pages can't be read. Try a different page.
-        </message>
-
         <!-- Lens Permission Bubble Dialog-->
         <message name="IDS_LENS_PERMISSION_BUBBLE_DIALOG_CANCEL_BUTTON"
           desc="Text on the cancel button in the dialog for choosing not to allow the sending of the Lens screenshot to Google.">
@@ -2404,18 +2494,6 @@ Zephyrus is unable to recover your settings.
           desc="Header in the Lens side panel indicating a new AI Mode search session.">
           New search
         </message>
-
-        <if expr="use_titlecase">
-          <message name="IDS_CONTEXT_MENU_SHOW_AI_MODE_OMNIBOX_BUTTON"
-            desc="In Title Case: The text label of the omnibox context menu option to enable showing 'AI Mode'">
-            Always Show AI Mode
-          </message>
-        </if>
-        <if expr="not use_titlecase">
-        <message name="IDS_CONTEXT_MENU_SHOW_AI_MODE_OMNIBOX_BUTTON" desc="The text label of the omnibox context menu option to enable showing 'AI Mode'">
-          Always show AI Mode
-        </message>
-        </if>
       </if>
 
       <!-- OOBE -->
@@ -2448,6 +2526,9 @@ Zephyrus is unable to recover your settings.
               =0 {Your administrator asks that you relaunch Zephyrus to apply this update}
               =1 {Your administrator asks that you relaunch Zephyrus to apply this update. Your Incognito window won't reopen.}
               other {Your administrator asks that you relaunch Zephyrus to apply this update. Your # Incognito windows won't reopen.}}
+          </message>
+          <message name="IDS_RELAUNCH_RECOMMENDED_SCHEDULED_IDLE_TOAST" desc="Toast notification message shown after scheduling an idle restart." translateable="false">
+            Chromium will restart when you're next idle
           </message>
           <message name="IDS_RELAUNCH_REQUIRED_TITLE_DAYS" desc="The title of a dialog that tells users the browser must be relaunched within two or more days.">
             {0, plural,
@@ -2563,30 +2644,6 @@ Zephyrus is unable to recover your settings.
         <message name="IDS_EXTENSION_PERMISSIONS_BLOCKED_BY_PARENT_PROMPT_MESSAGE" desc="Text for the dialog indicating that a parent has blocked extensions and apps.">
          Your parent has turned off "Permissions for sites, apps and extensions" for Zephyrus
         </message>
-
-        <message name="IDS_EXTENSION_EXTERNAL_INSTALL_PROMPT_TITLE_APP" desc="Titlebar of the prompt window for an externally installed app">
-          Another program on your computer added an app that may change the way Zephyrus works.
-
-<ph name="EXTENSION_NAME">$1<ex>Babylon Toolbar</ex></ph>
-        </message>
-        <message name="IDS_EXTENSION_EXTERNAL_INSTALL_PROMPT_TITLE_EXTENSION" desc="Titlebar of the prompt window for an externally installed extension">
-          Another program on your computer added an extension that may change the way Zephyrus works.
-
-<ph name="EXTENSION_NAME">$1<ex>Babylon Toolbar</ex></ph>
-        </message>
-        <message name="IDS_EXTENSION_EXTERNAL_INSTALL_PROMPT_TITLE_THEME" desc="Titlebar of the prompt window for an externally installed theme">
-          Another program on your computer added a theme that may change the way Zephyrus works.
-
-<ph name="EXTENSION_NAME">$1<ex>Babylon Toolbar</ex></ph>
-        </message>
-        <message name="IDS_EXTENSION_EXTERNAL_INITIAL_INSTALL_PROMPT_TITLE_EXTENSION" desc="">
-          <ph name="PARTNER_NAME">$1<ex>Google</ex></ph> has added an extension that may change the way Zephyrus works.
-
-<ph name="EXTENSION_NAME">$2<ex>Babylon Toolbar</ex></ph>
-        </message>
-        <message name="IDS_EXTENSION_EXTERNAL_INSTALL_PROMPT_ABORT_BUTTON" desc="Button on the external install prompt to remove an extension installed by a third party.">
-          Remove from Zephyrus
-        </message>
       </if>
 
       <if expr="not is_chromeos and not is_android">
@@ -2624,12 +2681,13 @@ Zephyrus is unable to recover your settings.
         </message>
 
         <!-- First Run Experience -->
+        <message name="IDS_FRE_WELCOME_START_BUTTON_LABEL" desc="This string is found on a primary button that takes the user into the main browser experience. It is a verb-based call to action. (CHAR LIMIT = 20)">
+          Start Chromium
+        </message>
+
         <message name="IDS_FRE_SIGN_IN_TITLE_0" meaning="Title"
           desc="This string appears as a heading on a full-page screen that asks the user to sign in to Zephyrus with their Google Account. It appears when the user launches Zephyrus for the first time. When they sign in, they can personalize and customize Zephyrus and remember their settings in their Google Account. The tone should be inviting and alluring.">
           Sign in to Zephyrus
-        </message>
-        <message name="IDS_FRE_GET_YOUR_BROWSER_READY_TITLE" meaning="Title" desc="It appears when the user launches Zephyrus for the first time on the page that is displayed before the sign in page. When they sign in, they can personalize and customize Zephyrus and remember their settings in their Google Account. The tone should be inviting and alluring.">
-          Let's get your Zephyrus ready
         </message>
 
         <!-- Default Browser Promo -->
@@ -2700,9 +2758,15 @@ Zephyrus is unable to recover your settings.
         <message name="IDS_FEATURE_SHOWCASE_LENS_OVERLAY_DISCLOSURE" desc="This is a technical disclosure for the Lens Overlay. It specifies that PDFs are also part of the shared data. The tone should be informative.">
           When you use Image Search on desktop, the page title, URL, and content, including PDFs, are sent to the server
         </message>
+
+        <!-- Feature Showcase - Gemini -->
+        <message name="IDS_FEATURE_SHOWCASE_GEMINI_TITLE" desc="This is the headline for the Gemini (AI assistant) opt-in screen. It introduces the benefit of AI assistance for productivity. (CHAR LIMIT = 60)">
+          Ask anything, right where you are, with Gemini in Chromium
+        </message>
+
       </if>
 
-      <!-- Feature Showcase - Lens Overlay -->
+      <!-- Feature Showcase - Themes -->
       <message name="IDS_FEATURE_SHOWCASE_THEMES_TITLE" desc="This is the headline for a customization onboarding screen. It focuses on personalization and user choice. (CHAR LIMIT = 30)">
         Make Zephyrus yours
       </message>
@@ -3176,20 +3240,99 @@ Zephyrus is unable to recover your settings.
         <message name="IDS_SETTINGS_GLIC_OS_WIDGET_TOGGLE" desc="Name of the toggle that controls whether the Gemini icon is shown in the MacOS menu bar (on Mac only).">
           Show Gemini in Zephyrus in Mac menu bar and turn on keyboard shortcut
         </message>
+        <message name="IDS_SETTINGS_GLIC_OS_WIDGET_TOGGLE_SHORTCUT_EXCLUDED" desc="Name of the toggle that controls whether the Gemini icon is shown in the MacOS menu bar (on Mac only) when local hotkeys can be configured independently.">
+          Show Gemini in Chromium in Mac menu bar
+        </message>
       </if>
       <if expr="is_win or is_linux or is_chromeos">
         <message name="IDS_SETTINGS_GLIC_OS_WIDGET_TOGGLE" desc="Name of the toggle that controls whether the Gemini icon is shown in the system tray (on ChromeOS, Windows and Linux).">
           Show Gemini in Zephyrus in system tray and turn on keyboard shortcut
         </message>
+        <message name="IDS_SETTINGS_GLIC_OS_WIDGET_TOGGLE_SHORTCUT_EXCLUDED" desc="Name of the toggle that controls whether the Gemini icon is shown in the system tray (on ChromeOS, Windows and Linux) when local hotkeys can be configured independently.">
+          Show Gemini in Chromium in system tray
+        </message>
       </if>
-      <message name="IDS_SETTINGS_GLIC_OS_WIDGET_TOGGLE_SUBLABEL" desc="Sublabel of the toggle that controls whether the Gemini icon is shown in the menu bar (on Mac) / system tray (on Windows and Linux).">
+
+      <!-- GEiC (Gemini Enterprise in Zephyrus) settings -->
+      <message name="IDS_SETTINGS_GEIC_SECTION_TITLE" desc="Text of the Gemini Enterprise section header on the AI settings page. Also used as the label of the row button leading to the Gemini Enterprise subpage, and as the title of that subpage.">
+        Gemini Enterprise in Zephyrus
+      </message>
+
+      <if expr="is_macosx">
+        <message name="IDS_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_TOGGLE" desc="In Title Case: Label for the toggle item in the Search in Zephyrus status tray context menu.">
+          Open Search with Zephyrus
+        </message>
+      </if>
+      <if expr="not is_macosx">
+        <message name="IDS_OMNIBOX_EVERYWHERE_STATUS_ICON_MENU_TOGGLE" desc="Label for the toggle item in the Search in Zephyrus status tray context menu.">
+          Open search with Zephyrus
+        </message>
+      </if>
+      <message name="IDS_OMNIBOX_EVERYWHERE_STATUS_ICON_TOOLTIP" desc="Tooltip text for the Search with Zephyrus status tray icon.">
+        Search with Zephyrus
+      </message>
+      <message name="IDS_OMNIBOX_EVERYWHERE_PROFILE_TOOLTIP" desc="Tooltip header for the profile icon in Omnibox Everywhere.">
+        Zephyrus profile
+      </message>
+      <message name="IDS_OMNIBOX_EVERYWHERE_NAME" desc="Name of the desktop search feature (Omnibox Everywhere) used for window titles and shortcuts.">
+        Search with Zephyrus
+      </message>
+      <if expr="is_win">
+        <message name="IDS_OMNIBOX_EVERYWHERE_NAME_BETA" desc="Unused; Zephyrus has no side-by-side channels." translateable="false">
+          Search with Zephyrus Beta
+        </message>
+        <message name="IDS_OMNIBOX_EVERYWHERE_NAME_DEV" desc="Unused; Zephyrus has no side-by-side channels." translateable="false">
+          Search with Zephyrus Dev
+        </message>
+        <message name="IDS_OMNIBOX_EVERYWHERE_NAME_CANARY" desc="Unused; Zephyrus has no side-by-side channels." translateable="false">
+          Search with Zephyrus Canary
+        </message>
+      </if>
+      <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_TITLE" desc="Title of the Omnibox Everywhere section on the search settings page.">
+        Search from desktop
+      </message>
+      <if expr="is_macosx">
+        <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_TOGGLE" desc="Name of the toggle that controls whether Search with Zephyrus is shown in the Mac menu bar (on Mac only).">
+          Show search with Zephyrus in Mac menu bar and turn on keyboard shortcut
+        </message>
+      </if>
+      <if expr="is_win or is_linux or is_chromeos">
+        <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_TOGGLE" desc="Name of the toggle that controls whether Search with Zephyrus is shown in the system tray (on ZephyrusOS, Windows and Linux).">
+          Show search with Zephyrus in system tray and turn on keyboard shortcut
+        </message>
+      </if>
+      <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_TOGGLE_SUBLABEL" desc="Sublabel of the toggle that controls whether Omnibox Everywhere is shown across the device even if Zephyrus is minimized.">
+        Search and ask questions from anywhere, even if Zephyrus is minimized. Allows Zephyrus to run in the background.
+      </message>
+      <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_SHORTCUT_SUBLABEL" desc="Description for the global keyboard shortcut setting to invoke Omnibox Everywhere.">
+        Search with a keyboard shortcut.
+      </message>
+      <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_SHOW_SHORTCUTS_TITLE" desc="Label for the toggle to show shortcuts in Omnibox Everywhere.">
+        Show Zephyrus site shortcuts
+      </message>
+      <message name="IDS_SETTINGS_OMNIBOX_EVERYWHERE_SHOW_SHORTCUTS_SUBLABEL" desc="Description for the toggle to show shortcuts in Omnibox Everywhere.">
+        Easy access to websites below the address bar
+      </message>
+      <message name="IDS_LOOMNIBOX_FRE_TITLE" desc="Title of the First Run Experience (FRE) modal for Loomnibox.">
+        Search with Zephyrus from anywhere
+      </message>
+      <message name="IDS_LOOMNIBOX_FRE_LENS_SECONDARY" desc="Secondary description detailing Google Lens functionality in Loomnibox.">
+        Ask about content outside of Zephyrus, like other apps or files
+      </message>
+      <message name="IDS_LOOMNIBOX_FRE_TO_SEARCH_OR_CUSTOMIZE" desc="Text in the Stage 2 FRE chin following the shortcut dropdown indicating it searches with Zephyrus or customizes in settings.">
+        to search with Zephyrus or customize in <ph name="BEGIN_LINK">&lt;a href="#" class="settings-link"&gt;</ph>Settings<ph name="END_LINK">&lt;/a&gt;</ph>
+      </message>
+      <message name="IDS_LOOMNIBOX_FRE_REMINDER_TO_SEARCH" desc="Label in the Stage 3 reminder FRE chin showing the active shortcut to search with Zephyrus.">
+        to search with Zephyrus.
+      </message>
+      <message name="IDS_SETTINGS_GLIC_OS_WIDGET_TOGGLE_SUBLABEL" desc="Sublabel of the toggle that controls whether the Gemini icon is shown in the menu bar (on Mac) / system tray (on Windows and Linux)." formatter_data="android_java">
         Easy access to use Gemini in Zephyrus across your device, even if Zephyrus is minimized.
       </message>
-      <message name="IDS_SETTINGS_GLIC_KEYBOARD_SHORTCUT_SUBLABEL" desc="Sublabel describing the keyboard shortcut that's used to globally invoke Gemini.">
+      <message name="IDS_SETTINGS_GLIC_KEYBOARD_SHORTCUT_SUBLABEL" desc="Sublabel describing the keyboard shortcut that's used to globally invoke Gemini." formatter_data="android_java">
         Open Gemini in Zephyrus with a keyboard shortcut.
       </message>
-      <message name="IDS_SETTINGS_GLIC_NAVIGATION_SHORTCUT_SUBLABEL" desc="Sublabel describing the keyboard shortcut navigate between Chrome and Gemini.">
-        To leave or return to Gemini in Zephyrus, use keyboard shortcut.
+      <message name="IDS_SETTINGS_GLIC_NAVIGATION_SHORTCUT_SUBLABEL" desc="Sublabel describing the keyboard shortcut navigate between Chrome and Gemini." formatter_data="android_java">
+        Use your keyboard to navigate between Gemini in Zephyrus and your open tab.
       </message>
       <message name="IDS_SETTINGS_GLIC_KEEP_SIDEPANEL_OPEN_ON_NEW_TABS_SUBLABEL" desc="Sublabel describing the setting to keep side panel open when new tabs are opened.">
         If Gemini in Zephyrus is open, the side panel stays open when creating new tabs
@@ -3462,12 +3605,17 @@ If this page isn’t working as expected, try allowing optimization.
         Sign in to Zephyrus
       </message>
 
+      <!-- Contextual Tasks -->
+      <message name="IDS_CONTEXTUAL_TASKS_EPHEMERAL_BUTTON_CONTEXT_MENU_REMOVE" desc="The label of the context menu item for removing the contextual tasks ephemeral toolbar button and hiding the side panel.">
+        Hide side panel
+      </message>
+
       <!-- Enterprise device signals disclaimer -->
       <message name="IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_TITLE" desc="Title of an enterprise device signals collection disclaimer modal dialog. The dialog is shown on Chrome startup to managed Chrome users who have not previously acknowledged device signals collection.">
         Your work secured on Zephyrus
       </message>
       <message name="IDS_ENTERPRISE_DEVICE_SIGNALS_DISCLAIMER_SUBTITLE" desc="Subtitle of an enterprise device signals collection disclaimer modal dialog. The dialog is shown on Chrome startup to managed Chrome users who have not previously acknowledged device signals collection.">
-        To secure your work on Zephyrus, your organization will be able to view or manage certain information
+        To secure your work on Zephyrus, your organization will be able to view or manage certain information when you’re signed-in to Zephyrus.
       </message>
     </messages>
   </release>

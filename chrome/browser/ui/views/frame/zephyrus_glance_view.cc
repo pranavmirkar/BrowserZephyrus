@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
 #include "chrome/browser/ui/views/frame/zephyrus_glance_view.h"
 
 #include <algorithm>
@@ -137,7 +138,7 @@ ZephyrusGlanceView::ZephyrusGlanceView(BrowserView* browser_view)
   animation_.SetTweenType(gfx::Tween::Type::LINEAR);
 
   web_view_ = AddChildView(
-      std::make_unique<views::WebView>(browser_view->browser()->profile()));
+      std::make_unique<views::WebView>(browser_view->browser()->GetProfile()));
   web_view_->SetPaintToLayer();
   web_view_->layer()->SetFillsBoundsOpaquely(false);
   web_view_->SetVisible(false);
@@ -406,7 +407,7 @@ void ZephyrusGlanceView::RevealPage() {
   // rounded, and the renderer's surface is a descendant that clips only if its
   // parent layer does.
   const gfx::RoundedCornersF radii(kCardRadius);
-  web_view_->holder()->SetCornerRadii(radii);
+  web_view_->holder()->SetNativeViewCornerRadii(radii);
   if (ui::Layer* layer = web_view_->layer()) {
     layer->SetRoundedCornerRadius(radii);
     layer->SetIsFastRoundedCorner(true);
@@ -455,7 +456,7 @@ content::WebContents* ZephyrusGlanceView::AddNewContents(
   // window.open and target=_blank. The browser decides (popup blocker, tab or
   // window) exactly as it would for any page, and the glance steps aside.
   content::WebContents* added =
-      static_cast<content::WebContentsDelegate*>(browser_view_->browser())
+      BrowserWebContentsDelegate::From(browser_view_->browser())
           ->AddNewContents(source, std::move(new_contents), target_url,
                            disposition, window_features, user_gesture,
                            was_blocked);

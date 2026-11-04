@@ -222,7 +222,6 @@ class ZephyrusSidebarView : public views::View,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override;
   void OnTabChangedAt(tabs::TabInterface* tab,
-                      int index,
                       TabChangeType change_type) override;
   // Pinning usually reorders the strip (which rebuilds the list), but not when
   // the tab is already in place — so rebuild explicitly.

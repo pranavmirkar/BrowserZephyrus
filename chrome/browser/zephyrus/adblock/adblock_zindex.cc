@@ -1066,12 +1066,13 @@ bool AdblockZIndex::Any(
     }
     // Entity rules (`domain=google.*`): the initiator minus its public suffix,
     // and each parent of that.
-    const size_t registry_length =
-        net::registry_controlled_domains::GetCanonicalHostRegistryLength(
+    const std::optional<std::string_view> registry =
+        net::registry_controlled_domains::GetCanonicalHostRegistry(
             c.initiator_host,
             net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES,
             net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
-    if (registry_length != 0 && registry_length != std::string::npos &&
+    const size_t registry_length = registry ? registry->size() : 0;
+    if (registry_length != 0 &&
         registry_length + 1 < c.initiator_host.size()) {
       const std::string_view stem = c.initiator_host.substr(
           0, c.initiator_host.size() - registry_length - 1);

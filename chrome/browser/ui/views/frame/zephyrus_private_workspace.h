@@ -15,6 +15,7 @@
 #include "ui/views/widget/widget_observer.h"
 
 class Browser;
+class BrowserWindowInterface;
 class Profile;
 
 namespace content {
@@ -97,7 +98,7 @@ class ZephyrusPrivateWorkspace : public base::SupportsUserData::Data,
   void EnterUnlocked(Browser* from);
   // `from` is weak: the prompt is modal and async, and the window behind it can
   // be closed while it is up.
-  void OnAuthComplete(base::WeakPtr<Browser> from,
+  void OnAuthComplete(base::WeakPtr<BrowserWindowInterface> from,
                       base::OnceCallback<void(Browser*)> action,
                       bool success);
 

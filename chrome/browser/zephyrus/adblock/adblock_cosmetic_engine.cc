@@ -28,7 +28,8 @@ bool IsProceduralSelector(std::string_view selector) {
       ":matches-path(",":matches-media(",":min-text-length(",
       ":watch-attr(",  ":contains(",     ":if(",        ":if-not(",
       ":nth-ancestor(",":others(",       ":shadow(",    ":remove-attr(",
-      ":remove-class(",
+      ":remove-class(", ":matches-attr(", ":matches-css-before(",
+      ":matches-css-after(",
   };
   for (std::string_view marker : kMarkers) {
     if (selector.find(marker) != std::string_view::npos) {
@@ -165,14 +166,25 @@ size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
       continue;
     }
 
-    // Locate the cosmetic separator: "##" (hide) or "#@#" (unhide). Skip the
-    // extended variants "#?#", "#$#", "#%#" (procedural / scriptlet / style).
+    // Locate the cosmetic separator: "##" (hide), "#@#" (unhide), and the
+    // extended forms "#?#" / "#@?#" (procedural). "#$#" and "#%#" belong to
+    // other engines and are skipped.
     bool exception = false;
+    [[maybe_unused]] bool extended = false;
     size_t sep = std::string_view::npos;
     size_t sep_len = 0;
-    if (size_t p = raw.find("#@#"); p != std::string_view::npos) {
+    if (size_t p = raw.find("#@?#"); p != std::string_view::npos) {
       exception = true;
+      extended = true;
       sep = p;
+      sep_len = 4;
+    } else if (size_t e = raw.find("#?#"); e != std::string_view::npos) {
+      extended = true;
+      sep = e;
+      sep_len = 3;
+    } else if (size_t u = raw.find("#@#"); u != std::string_view::npos) {
+      exception = true;
+      sep = u;
       sep_len = 3;
     } else if (size_t q = raw.find("##"); q != std::string_view::npos) {
       // Reject "#?#" / "#$#" which also contain "##"? They don't; they use a
@@ -188,8 +200,23 @@ size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
     // Skip scriptlet injections ("##+js(...)") — those belong to the scriptlet
     // engine, and as CSS they are invalid and would (grouped) invalidate the
     // whole element-hiding stylesheet. Also skip empty/procedural selectors.
-    if (selector.empty() || selector.rfind("+js(", 0) == 0 ||
-        IsProceduralSelector(selector)) {
+    if (selector.empty() || selector.rfind("+js(", 0) == 0) {
+      continue;
+    }
+    // Operators CSS cannot express go to the page-side runner. An extended
+    // "#?#" rule with nothing procedural in it is plain CSS (native :has()) and
+    // takes the ordinary path below.
+    // "##^script:has-text()" is HTML filtering (it rewrites the response before
+    // parsing), not a rule about elements. Neither the CSS nor the page-side
+    // path can do it, so it is not kept.
+    if (selector[0] == '^') {
+      continue;
+    }
+    if (IsProceduralSelector(selector)) {
+      if (AddProceduralRule(domains, selector, exception)) {
+        ++rule_count_;
+        ++added;
+      }
       continue;
     }
     std::string sel(selector);
@@ -281,6 +308,101 @@ size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
     ++added;
   }
   return added;
+}
+
+bool AdblockCosmeticEngine::AddProceduralRule(std::string_view domains,
+                                              std::string_view selector,
+                                              bool exception) {
+  // Lists are data from the network: bound what one rule, and all of them, can
+  // cost a page.
+  constexpr size_t kMaxSelectorLength = 4096;
+  constexpr size_t kMaxGeneric = 300;
+  constexpr size_t kMaxPerDomain = 200;
+  if (selector.size() > kMaxSelectorLength) {
+    return false;
+  }
+  std::vector<std::string> included;
+  std::vector<std::string> excluded;
+  for (std::string_view d :
+       base::SplitStringPiece(domains, ",", base::TRIM_WHITESPACE,
+                              base::SPLIT_WANT_NONEMPTY)) {
+    if (d[0] == '~') {
+      if (d.size() > 1) {
+        excluded.push_back(base::ToLowerASCII(d.substr(1)));
+      }
+    } else {
+      included.push_back(base::ToLowerASCII(d));
+    }
+  }
+  const std::string sel(selector);
+  if (included.empty()) {
+    if (exception) {
+      if (!excluded.empty()) {
+        return false;
+      }
+      generic_procedural_exceptions_.insert(sel);
+    } else {
+      if (generic_procedural_.size() >= kMaxGeneric) {
+        return false;
+      }
+      generic_procedural_.push_back(sel);
+      for (const std::string& domain : excluded) {
+        domain_procedural_exceptions_[domain].insert(sel);
+      }
+    }
+    ++procedural_count_;
+    return true;
+  }
+  for (const std::string& domain : included) {
+    if (exception) {
+      domain_procedural_exceptions_[domain].insert(sel);
+    } else {
+      std::vector<std::string>& list = domain_procedural_[domain];
+      if (list.size() < kMaxPerDomain) {
+        list.push_back(sel);
+      }
+    }
+  }
+  if (!exception) {
+    for (const std::string& domain : excluded) {
+      domain_procedural_exceptions_[domain].insert(sel);
+    }
+  }
+  ++procedural_count_;
+  return true;
+}
+
+std::vector<std::string> AdblockCosmeticEngine::GetProceduralSelectorsForUrl(
+    const GURL& url,
+    bool include_specific) const {
+  std::vector<std::string> result;
+  if (!url.SchemeIsHTTPOrHTTPS() || !include_specific) {
+    return result;
+  }
+  const std::vector<std::string> keys = DomainLookupKeys(std::string(url.host()));
+  std::unordered_set<std::string> exceptions = generic_procedural_exceptions_;
+  for (const std::string& key : keys) {
+    const auto it = domain_procedural_exceptions_.find(key);
+    if (it != domain_procedural_exceptions_.end()) {
+      exceptions.insert(it->second.begin(), it->second.end());
+    }
+  }
+  std::unordered_set<std::string> seen;
+  auto add = [&](const std::vector<std::string>& selectors) {
+    for (const std::string& s : selectors) {
+      if (!exceptions.contains(s) && seen.insert(s).second) {
+        result.push_back(s);
+      }
+    }
+  };
+  add(generic_procedural_);
+  for (const std::string& key : keys) {
+    const auto it = domain_procedural_.find(key);
+    if (it != domain_procedural_.end()) {
+      add(it->second);
+    }
+  }
+  return result;
 }
 
 std::unordered_set<std::string> AdblockCosmeticEngine::CollectExceptions(

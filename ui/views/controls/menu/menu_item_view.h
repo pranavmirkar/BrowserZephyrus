@@ -5,6 +5,7 @@
 #ifndef UI_VIEWS_CONTROLS_MENU_MENU_ITEM_VIEW_H_
 #define UI_VIEWS_CONTROLS_MENU_MENU_ITEM_VIEW_H_
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <string>
@@ -51,6 +52,7 @@ class ImageView;
 class MenuController;
 class MenuControllerTest;
 class MenuDelegate;
+class MenuSeparator;
 class Separator;
 class SubmenuView;
 class TestMenuItemView;
@@ -122,11 +124,23 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
 
   // The data structure which is used to paint a background on the menu item.
   struct MenuItemBackground {
-    MenuItemBackground(ui::ColorId background_color_id, int corner_radius)
+    MenuItemBackground(ui::ColorId background_color_id,
+                       int top_radius,
+                       int bottom_radius,
+                       std::optional<int> horizontal_margin = std::nullopt)
         : background_color_id(background_color_id),
-          corner_radius(corner_radius) {}
+          top_radius(top_radius),
+          bottom_radius(bottom_radius),
+          horizontal_margin(horizontal_margin) {}
+    MenuItemBackground(ui::ColorId background_color_id, int corner_radius)
+        : MenuItemBackground(background_color_id,
+                             corner_radius,
+                             corner_radius) {}
+
     ui::ColorId background_color_id;
-    int corner_radius = 0;
+    int top_radius = 0;
+    int bottom_radius = 0;
+    std::optional<int> horizontal_margin = std::nullopt;
   };
 
   // Constructor for use with the top level menu item. This menu is never
@@ -142,6 +156,7 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   std::u16string GetRenderedTooltipText(const gfx::Point& p) const override;
   bool HandleAccessibleAction(const ui::AXActionData& action_data) override;
   FocusBehavior GetFocusBehavior() const override;
+  std::unique_ptr<ActionViewInterface> GetActionViewInterface() override;
 
   // To update the custom tooltip, call this method with the new text.
   void UpdateTooltipText(std::optional<std::u16string> new_text = std::nullopt);
@@ -178,6 +193,25 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   void SetMenuItemBackground(
       std::optional<MenuItemBackground> menu_item_background) {
     menu_item_background_ = menu_item_background;
+  }
+
+  void SetContainerStyle(ui::ColorId background_color_id,
+                         int top_radius = 0,
+                         int bottom_radius = 0,
+                         int top_margin = 8,
+                         int bottom_margin = 8) {
+    SetMenuItemBackground(
+        MenuItemBackground(background_color_id, top_radius, bottom_radius));
+    set_top_margin(top_margin);
+    set_bottom_margin(bottom_margin);
+  }
+
+  void set_top_margin(int top_margin) { top_margin_ = top_margin; }
+  int GetTopMargin() const { return top_margin_.value_or(GetVerticalMargin()); }
+
+  void set_bottom_margin(int bottom_margin) { bottom_margin_ = bottom_margin; }
+  int GetBottomMargin() const {
+    return bottom_margin_.value_or(GetVerticalMargin());
   }
 
   std::optional<MenuItemBackground> GetMenuItemBackground() {
@@ -225,11 +259,16 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
                               const std::u16string& label,
                               const ui::ImageModel& icon = ui::ImageModel());
 
-  // Adds a separator to this menu
-  void AppendSeparator();
+  // Adds a separator to this menu.
+  // The returned pointer is owned by this menu.
+  MenuSeparator* AppendSeparator(
+      ui::MenuSeparatorType type = ui::MenuSeparatorType::NORMAL_SEPARATOR);
 
   // Adds a separator to this menu at the specified position.
-  void AddSeparatorAt(size_t index);
+  // The returned pointer is owned by this menu.
+  MenuSeparator* AddSeparatorAt(
+      size_t index,
+      ui::MenuSeparatorType type = ui::MenuSeparatorType::NORMAL_SEPARATOR);
 
   // All the AppendXXX methods funnel into this.
   MenuItemView* AppendMenuItemImpl(int item_id,
@@ -259,6 +298,14 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   MenuItemView* GetParentMenuItem() { return parent_menu_item_; }
   const MenuItemView* GetParentMenuItem() const { return parent_menu_item_; }
 
+  // Associates this MenuItemView with a child View inside a container
+  // MenuItemView (e.g., a footer button) so MenuController can anchor this
+  // item's submenu to `anchor_view` and route keyboard/mouse submenu
+  // interactions through it.
+  void SetAnchorView(View* anchor_view);
+  View* GetAnchorView() { return anchor_view_; }
+  const View* GetAnchorView() const { return anchor_view_; }
+
   // Sets/Gets the title.
   void SetTitle(const std::u16string& title);
   const std::u16string& title() const { return title_; }
@@ -276,6 +323,9 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
 
   // Sets the minor icon.
   void SetMinorIcon(const ui::ImageModel& minor_icon);
+
+  // Returns the icon that should be displayed to the left of the minor text.
+  ui::ImageModel GetMinorIcon() const;
 
   // Returns the type of this menu.
   const Type& GetType() const { return type_; }
@@ -358,6 +408,9 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
 
   // Returns the earliest horizontal position where content may appear.
   int GetContentStart() const;
+
+  // Returns the trailing horizontal padding after content.
+  int GetTrailingPadding() const;
 
   void set_controller(MenuController* controller) {
     if (controller) {
@@ -471,10 +524,6 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   // Returns the preferred size (and padding) of any children.
   virtual gfx::Size GetChildPreferredSize() const;
 
-  // Returns the various margins.
-  int GetTopMargin() const;
-  int GetBottomMargin() const;
-
  private:
   friend class MenuController;
   friend class internal::MenuRunnerImpl;
@@ -550,9 +599,6 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
 
   // Returns true if the minor text should be rendered as a URL.
   bool GetMinorTextIsUrl() const;
-
-  // Returns the icon that should be displayed to the left of the minor text.
-  ui::ImageModel GetMinorIcon() const;
 
   // Returns the text color for the current state.  |minor| specifies if the
   // minor text or the normal text is desired.
@@ -639,6 +685,7 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   void UpdateAccessibleName();
   void UpdateAccessibleSelection();
   void UpdateAccessibleKeyShortcuts();
+  void UpdateAccessibleDefaultActionVerb();
 
   // The delegate. This is only valid for the root menu item. You shouldn't
   // use this directly, instead use GetDelegate() which walks the tree as
@@ -655,7 +702,7 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   bool zephyrus_wants_nub_ = false;
 
   // Our parent.
-  const raw_ptr<MenuItemView> parent_menu_item_ = nullptr;
+  raw_ptr<MenuItemView> parent_menu_item_ = nullptr;
 
   // Type of menu. NOTE: MenuItemView doesn't itself represent SEPARATOR,
   // that is handled by an entirely different view class.
@@ -775,9 +822,30 @@ class VIEWS_EXPORT MenuItemView : public View, public LayoutDelegate {
   std::optional<ui::ColorId> foreground_color_id_;
   std::optional<MenuItemBackground> menu_item_background_;
   std::optional<ui::ColorId> selected_color_id_;
+  std::optional<int> top_margin_;
+  std::optional<int> bottom_margin_;
 
   base::CallbackListSubscription visible_changed_callback_;
   base::CallbackListSubscription enabled_changed_callback_;
+
+  // Optional child view in a container MenuItemView that anchors this item's
+  // submenu.
+  raw_ptr<View> anchor_view_ = nullptr;
+};
+
+// Property set on a child views::Button inside a container MenuItemView to
+// reference the MenuItemView that owns its submenu.
+VIEWS_EXPORT extern const ui::ClassProperty<MenuItemView*>* const
+    kSubmenuItemKey;
+
+class VIEWS_EXPORT MenuItemActionViewInterface
+    : public BaseActionViewInterface {
+ public:
+  explicit MenuItemActionViewInterface(MenuItemView* action_view);
+  ~MenuItemActionViewInterface() override = default;
+
+  // BaseActionViewInterface:
+  void ActionItemChangedImpl(actions::ActionItem* action_item) override;
 };
 
 // EmptyMenuMenuItem ----------------------------------------------------------
@@ -795,5 +863,7 @@ class VIEWS_EXPORT EmptyMenuMenuItem : public MenuItemView {
 };
 
 }  // namespace views
+
+DECLARE_EXPORTED_UI_CLASS_PROPERTY_TYPE(VIEWS_EXPORT, views::MenuItemView*)
 
 #endif  // UI_VIEWS_CONTROLS_MENU_MENU_ITEM_VIEW_H_

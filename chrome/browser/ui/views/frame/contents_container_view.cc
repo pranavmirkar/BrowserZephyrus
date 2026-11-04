@@ -15,10 +15,8 @@
 #include "chrome/browser/glic/browser_ui/context_sharing_border_view.h"
 #include "chrome/browser/glic/browser_ui/context_sharing_border_view_controller_impl.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ai_overlay_dialog/ai_overlay_dialog_controller.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/read_anything/read_anything_immersive_overlay_view.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/view_ids.h"
@@ -38,7 +36,6 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/color/color_provider.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/rect.h"
@@ -104,7 +101,8 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
   devtools_web_view_ = AddChildView(std::move(devtools_web_view));
 
   devtools_scrim_view_ = AddChildView(std::make_unique<ScrimView>());
-  devtools_scrim_view_->layer()->SetName("DevtoolsScrimView");
+  devtools_scrim_view_->layer()->SetName(
+      "ContentsContainerView:DevtoolsScrimView");
 
   toast_anchor_view_ = AddChildView(std::make_unique<views::View>());
 
@@ -148,15 +146,14 @@ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
     ai_overlay_dialog_view_ = AddChildView(std::move(ai_overlay_dialog_view));
   }
 
-  if (features::IsImmersiveReadAnythingEnabled()) {
-    auto read_anything_immersive_overlay_view =
-        std::make_unique<ReadAnythingImmersiveOverlayView>(contents_view_);
-    read_anything_immersive_overlay_view_ =
-        AddChildView(std::move(read_anything_immersive_overlay_view));
-  }
+  auto read_anything_immersive_overlay_view =
+      std::make_unique<ReadAnythingImmersiveOverlayView>(contents_view_);
+  read_anything_immersive_overlay_view_ =
+      AddChildView(std::move(read_anything_immersive_overlay_view));
 
   contents_scrim_view_ = AddChildView(std::make_unique<ScrimView>());
-  contents_scrim_view_->layer()->SetName("ContentsScrimView");
+  contents_scrim_view_->layer()->SetName(
+      "ContentsContainerView:ContentsScrimView");
 
   if (base::FeatureList::IsEnabled(features::kGlicActorUi) &&
       features::kGlicActorUiOverlay.Get()) {
@@ -283,7 +280,7 @@ void ContentsContainerView::UpdateBorderRoundedCorners() {
 
   // Update devtools rounded corners. Note, devtools exists behind the contents
   // view so all devtools corners are rounded.
-  devtools_web_view_->holder()->SetCornerRadii(all_corners_rounded);
+  devtools_web_view_->holder()->SetNativeViewCornerRadii(all_corners_rounded);
   devtools_scrim_view_->SetRoundedCorners(all_corners_rounded);
 
   const bool devtools_in_upper_left =
@@ -324,7 +321,7 @@ void ContentsContainerView::UpdateBorderRoundedCorners() {
                    : content_rounded_corners;
 
   contents_view_->SetBackgroundRadii(radii);
-  contents_view_->holder()->SetCornerRadii(radii);
+  contents_view_->holder()->SetNativeViewCornerRadii(radii);
   // Zephyrus: and the ContentsWebView's OWN layer. The two calls above round
   // the background the view paints and the native host that carries the
   // renderer's surface, but the surface is a descendant layer and was not
@@ -340,20 +337,20 @@ void ContentsContainerView::UpdateBorderRoundedCorners() {
   contents_scrim_view_->SetRoundedCorners(all_corners_rounded);
 
   if (new_tab_footer_view_) {
-    new_tab_footer_view_->holder()->SetCornerRadii(
+    new_tab_footer_view_->holder()->SetNativeViewCornerRadii(
         content_lower_rounded_corners);
   }
 
   if (actor_overlay_web_view_) {
     // ActorOverlayWebView should use the same radii as the contents view since
     // it acts as a full transparent layer directly over the main web content.
-    actor_overlay_web_view_->holder()->SetCornerRadii(radii);
+    actor_overlay_web_view_->holder()->SetNativeViewCornerRadii(radii);
   }
 
   if (ai_overlay_dialog_view_) {
     // ai_overlay_dialog_view_ should use the same radii as the contents view
     // since it acts as a layer directly over the main web content.
-    ai_overlay_dialog_view_->holder()->SetCornerRadii(radii);
+    ai_overlay_dialog_view_->holder()->SetNativeViewCornerRadii(radii);
   }
 
   if (glic_selection_overlay_view_) {
@@ -368,27 +365,27 @@ void ContentsContainerView::UpdateBorderRoundedCorners() {
 void ContentsContainerView::ClearBorderRoundedCorners() {
   constexpr gfx::RoundedCornersF kNoRoundedCorners = gfx::RoundedCornersF{0};
 
-  devtools_web_view_->holder()->SetCornerRadii(kNoRoundedCorners);
+  devtools_web_view_->holder()->SetNativeViewCornerRadii(kNoRoundedCorners);
   devtools_scrim_view_->SetRoundedCorners(kNoRoundedCorners);
 
   contents_view_->SetBackgroundRadii(kNoRoundedCorners);
   if (ui::Layer* layer = contents_view_->layer()) {
     layer->SetRoundedCornerRadius(kNoRoundedCorners);
   }
-  contents_view_->holder()->SetCornerRadii(kNoRoundedCorners);
+  contents_view_->holder()->SetNativeViewCornerRadii(kNoRoundedCorners);
 
   if (new_tab_footer_view_) {
-    new_tab_footer_view_->holder()->SetCornerRadii(kNoRoundedCorners);
+    new_tab_footer_view_->holder()->SetNativeViewCornerRadii(kNoRoundedCorners);
   }
 
   contents_scrim_view_->SetRoundedCorners(kNoRoundedCorners);
 
   if (actor_overlay_web_view_) {
-    actor_overlay_web_view_->holder()->SetCornerRadii(kNoRoundedCorners);
+    actor_overlay_web_view_->holder()->SetNativeViewCornerRadii(kNoRoundedCorners);
   }
 
   if (ai_overlay_dialog_view_) {
-    ai_overlay_dialog_view_->holder()->SetCornerRadii(kNoRoundedCorners);
+    ai_overlay_dialog_view_->holder()->SetNativeViewCornerRadii(kNoRoundedCorners);
   }
 
   if (glic_selection_overlay_view_) {
@@ -635,13 +632,8 @@ void ContentsContainerView::SetRoundedCorners(
 }
 
 void ContentsContainerView::UpdateContentsClip() {
-  bool changed = false;
-  if (auto* const layer = contents_view_->holder()->GetUILayer()) {
-    if (layer->clip_rect() != contents_clip_rect_) {
-      layer->SetClipRect(contents_clip_rect_);
-      changed = true;
-    }
-  }
+  bool changed =
+      contents_view_->holder()->SetNativeViewClipRect(contents_clip_rect_);
   if (auto* const layer = contents_view_->layer()) {
     if (layer->clip_rect() != contents_clip_rect_) {
       layer->SetClipRect(contents_clip_rect_);
@@ -786,8 +778,7 @@ views::ProposedLayout ContentsContainerView::CalculateProposedLayout(
   }
 
   // Reading Mode overlay view bounds are the same as the contents view.
-  if (features::IsImmersiveReadAnythingEnabled() &&
-      read_anything_immersive_overlay_view_) {
+  if (read_anything_immersive_overlay_view_) {
     layouts.child_layouts.emplace_back(
         read_anything_immersive_overlay_view_.get(),
         read_anything_immersive_overlay_view_->GetVisible(),

@@ -15,6 +15,8 @@
 #include "components/content_settings/core/common/pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -107,7 +109,7 @@ ZephyrusPrivateWorkspace::~ZephyrusPrivateWorkspace() {
 
 // static
 bool ZephyrusPrivateWorkspace::IsPrivate(const Browser* browser) {
-  return browser && browser->profile() && browser->profile()->IsOffTheRecord();
+  return browser && browser->GetProfile() && browser->GetProfile()->IsOffTheRecord();
 }
 
 void ZephyrusPrivateWorkspace::StopObserving(views::Widget* widget) {
@@ -169,12 +171,12 @@ void ZephyrusPrivateWorkspace::RunWhenUnlocked(
   authenticator_->AuthenticateUser(
       l10n_util::GetStringUTF16(IDS_ZEPHYRUS_UNLOCK_PRIVATE_WORKSPACE),
       base::BindOnce(&ZephyrusPrivateWorkspace::OnAuthComplete,
-                     weak_factory_.GetWeakPtr(), from->AsWeakPtr(),
+                     weak_factory_.GetWeakPtr(), from->GetWeakPtr(),
                      std::move(action)));
 }
 
 void ZephyrusPrivateWorkspace::OnAuthComplete(
-    base::WeakPtr<Browser> from,
+    base::WeakPtr<BrowserWindowInterface> from,
     base::OnceCallback<void(Browser*)> action,
     bool success) {
   authenticating_ = false;
@@ -185,7 +187,7 @@ void ZephyrusPrivateWorkspace::OnAuthComplete(
     return;
   }
   locked_ = false;
-  std::move(action).Run(from.get());
+  std::move(action).Run(zephyrus::AsBrowser(from.get()));
 }
 
 void ZephyrusPrivateWorkspace::EnterUnlocked(Browser* from) {
@@ -206,12 +208,13 @@ void ZephyrusPrivateWorkspace::EnterUnlocked(Browser* from) {
     // A new Browser restores its own saved window placement during creation,
     // which lands AFTER any SetBounds() we do here — so the private window came
     // up at its own remembered size instead of taking over this one's.
-    Browser::CreateParams params(otr, /*user_gesture=*/true);
+    BrowserWindowCreateParams params(otr, /*from_user_gesture=*/true);
     params.initial_bounds = bounds;
     params.initial_show_state =
         maximized ? ui::mojom::WindowShowState::kMaximized
                   : ui::mojom::WindowShowState::kNormal;
-    private_browser_ = Browser::Create(params);
+    private_browser_ =
+        zephyrus::AsBrowser(CreateBrowserWindow(std::move(params)));
     if (!private_browser_) {
       return;
     }

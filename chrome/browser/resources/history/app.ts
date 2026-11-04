@@ -31,7 +31,6 @@ import {browserProxyFactory as foreignSessionBrowserProxyFactory} from 'chrome:/
 import type {PageCallbackRouter, QueryResult, QueryState} from 'chrome://resources/cr_components/history/history.mojom-webui.js';
 import type {Suggestion} from 'chrome://resources/cr_components/history_embeddings/filter_chips.js';
 import type {HistoryEmbeddingsMoreActionsClickEvent} from 'chrome://resources/cr_components/history_embeddings/history_embeddings.js';
-import {browserProxyFactory as historyEmbeddingsBrowserProxyFactory} from 'chrome://resources/cr_components/history_embeddings/history_embeddings.mojom-webui.js';
 import {getInstance as getAnnouncerInstance} from 'chrome://resources/cr_elements/cr_a11y_announcer/cr_a11y_announcer.js';
 import type {CrDrawerElement} from 'chrome://resources/cr_elements/cr_drawer/cr_drawer.js';
 import type {CrLazyRenderLitElement} from 'chrome://resources/cr_elements/cr_lazy_render/cr_lazy_render_lit.js';
@@ -44,6 +43,7 @@ import {loadTimeData} from 'chrome://resources/js/load_time_data.js';
 import {hasKeyModifiers} from 'chrome://resources/js/util.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
+import {browserProxyFactory as userEducationProxyFactory} from 'chrome://resources/mojo/components/user_education/webui/user_education.mojom-webui.js';
 
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
@@ -229,8 +229,14 @@ export class HistoryAppElement extends HistoryAppElementBase {
       loadTimeData.getInteger('lastSelectedTab') || 0;
   protected accessor showTabs_: boolean = false;
   protected accessor showHistoryClusters_: boolean = false;
-  protected accessor tabsIcons_: string[] =
-      ['images/list.svg', 'chrome://resources/images/icon_journeys.svg'];
+  protected accessor tabsIcons_: string[] = [
+    (document.documentElement.hasAttribute('webui-rounded-icons') ?
+         'images/list.svg' :
+         'images/list_old.svg'),
+    (document.documentElement.hasAttribute('webui-rounded-icons') ?
+         'chrome://resources/images/icon_journeys.svg' :
+         'chrome://resources/images/icon_journeys_old.svg'),
+  ];
   protected accessor tabsNames_: string[] = [
     loadTimeData.getString('historyListTabLabel'),
     loadTimeData.getString('historyClustersTabLabel'),
@@ -399,8 +405,8 @@ export class HistoryAppElement extends HistoryAppElementBase {
       //    to show the help bubble comes immediately after registering the
       //    anchor.
       setTimeout(() => {
-        historyEmbeddingsBrowserProxyFactory.getInstance()
-            .handler.maybeShowFeaturePromo();
+        userEducationProxyFactory.getInstance().handler.maybeShowFeaturePromo(
+            {featureName: 'IPH_HistorySearch', key: null});
       }, 1000);
     }
   }
@@ -464,6 +470,27 @@ export class HistoryAppElement extends HistoryAppElementBase {
     const searchField = this.$.toolbar.searchField;
     if (!searchField.narrow) {
       searchField.getSearchInput().focus();
+    }
+
+    if (loadTimeData.getBoolean('isCriticalActionsEnabled') &&
+        this.showFilterChips_()) {
+      const filterChipsEl =
+          this.shadowRoot.querySelector<CrLitElement>('#historyFilterChips');
+      if (filterChipsEl) {
+        filterChipsEl.updateComplete.then(() => {
+          const chipEl = filterChipsEl.shadowRoot.querySelector<HTMLElement>(
+              '#actorVisitsChip');
+          if (chipEl) {
+            this.registerHelpBubble(
+                'HistoryUI::kHistoryGeminiFilterChipElementId', chipEl);
+            setTimeout(() => {
+              userEducationProxyFactory.getInstance()
+                  .handler.maybeShowFeaturePromo(
+                      {featureName: 'IPH_CriticalActionFilterChip', key: null});
+            }, 1000);
+          }
+        });
+      }
     }
 
     requestIdleCallback(function() {
@@ -573,26 +600,26 @@ export class HistoryAppElement extends HistoryAppElementBase {
         HistoryResultType.END);
 
     // MetricsHandler uses a 100 bucket limit, so the max index is 99.
-    const maxIndex = 99;
+    const boundary = 100;
     const clampedIndex = Math.min(e.detail.index, 99);
     browserProxy.recordHistogram(
-        'History.SearchResultClicked.Index', clampedIndex, maxIndex);
+        'History.SearchResultClicked.Index', clampedIndex, boundary);
 
     switch (e.detail.resultType) {
       case HistoryResultType.TRADITIONAL:
         browserProxy.recordHistogram(
             'History.SearchResultClicked.Index.Traditional', clampedIndex,
-            maxIndex);
+            boundary);
         break;
       case HistoryResultType.GROUPED:
         browserProxy.recordHistogram(
             'History.SearchResultClicked.Index.Grouped', clampedIndex,
-            maxIndex);
+            boundary);
         break;
       case HistoryResultType.EMBEDDINGS:
         browserProxy.recordHistogram(
             'History.SearchResultClicked.Index.Embeddings', clampedIndex,
-            maxIndex);
+            boundary);
         break;
       case HistoryResultType.END:
         break;

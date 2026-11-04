@@ -75,6 +75,7 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   TemplateURLService* GetTemplateURLService() override;
   const TemplateURLService* GetTemplateURLService() const override;
   GeolocationHeaderService* GetGeolocationHeaderService() const override;
+  void ResetGeolocationPermissionToAsk(const GURL& url) const override;
   DocumentSuggestionsService* GetDocumentSuggestionsService() const override;
   RemoteSuggestionsService* GetRemoteSuggestionsService(
       bool create_if_necessary) const override;
@@ -107,6 +108,7 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   AiModeButtonService* GetAiModeButtonService() const override;
 
   bool IsOffTheRecord() const override;
+  bool IsPrimaryOTRProfileWithRegularParent() const override;
   bool IsIncognitoProfile() const override;
   bool IsGuestSession() const override;
   bool SearchSuggestEnabled() const override;
@@ -139,12 +141,13 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   std::optional<bool> IsPagePaywalled() const override;
   bool ShouldSendContextualUrlSuggestParam() const override;
   bool ShouldSendPageTitleSuggestParam() const override;
-  bool IsOmniboxNextLensSearchChipEnabled() const override;
+  bool IsAskGShowChipEnabled() const override;
   bool IsOmniboxNextAimPopupEnabled() const override;
   bool IsGeminiStarterPackEnabled() const override;
   base::CallbackListSubscription GetLensSuggestInputsWhenReady(
       LensOverlaySuggestInputsCallback callback) const override;
   base::WeakPtr<AutocompleteProviderClient> GetWeakPtr() override;
+  bool IsWebUiNtpEnabledForDesktopAndroid() const override;
 
   // OmniboxAction::Client:
   void OpenSharingHub() override;
@@ -153,11 +156,15 @@ class ChromeAutocompleteProviderClient : public AutocompleteProviderClient {
   void CloseIncognitoWindows() override;
   void PromptPageTranslation() override;
   bool OpenJourneys(const std::string& query) override;
-  void OpenLensOverlay(bool show) override;
+  void OpenLensOverlay(
+      bool show,
+      lens::LensOverlayInvocationSource invocation_source) override;
   bool ShouldOpenCoBrowsePanel() const override;
   void OpenCoBrowsePanel() override;
+  bool ShouldOpenComposeboxForAskG() const override;
+  void OpenComposeboxForAskG() override;
   void IssueContextualSearchRequest(const GURL& destination_url,
-                                    AutocompleteMatchType::Type match_type,
+                                    omnibox::AutocompleteMatchType match_type,
                                     bool is_zero_prefix_suggestion) override;
 
   // For testing.

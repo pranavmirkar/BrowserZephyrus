@@ -144,7 +144,7 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
     SetAcceptCallbackWithClose(base::BindRepeating(
         &ZephyrusAgentSettings::Save, base::Unretained(this)));
 
-    Profile* profile = browser_view_->browser()->profile();
+    Profile* profile = browser_view_->browser()->GetProfile();
     prefs_ = profile->GetPrefs();
     private_ = profile->IsOffTheRecord();
     if (auto* manager = browser_view_->zephyrus_workspace_manager()) {
@@ -402,7 +402,7 @@ class ZephyrusAgentSettings : public views::BubbleDialogDelegateView {
   // dialog is short-lived and the memory is not its to keep.
   zephyrus::agent::LongTermMemory* Memory() {
     Profile* profile = browser_view_ && browser_view_->browser()
-                           ? browser_view_->browser()->profile()
+                           ? browser_view_->browser()->GetProfile()
                            : nullptr;
     return zephyrus::agent::GetLongTermMemory(profile);
   }

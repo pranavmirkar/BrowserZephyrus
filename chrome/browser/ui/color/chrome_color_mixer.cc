@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/color/chrome_color_mixer.h"
 
+#include <optional>
 #include <string>
 
 #include "base/feature_list.h"
@@ -64,23 +65,27 @@ ui::ColorTransform SelectColorBasedOnDarkInputOrMode(
 }
 
 // Determines a color to use for Actor Ui components based on the tab frame
-// color used in custom themes. In the near-white case, we default to use an
-// accent color instead.
-ui::ColorTransform SelectActorUiColorBasedOnNearWhiteInput() {
+// color used in custom themes. In the near-white or near-black case, we default
+// to use `fallback_color_id` instead to ensure visibility.
+ui::ColorTransform SelectActorUiColor(ui::ColorId fallback_color_id) {
   return base::BindRepeating(
-      [](SkColor input_color, const ui::ColorMixer& mixer) {
+      [](ui::ColorId fallback_color_id, SkColor input_color,
+         const ui::ColorMixer& mixer) {
         const SkColor frame_color = mixer.GetResultColor(ui::kColorFrameActive);
 
-        // 1.0f is white. For near-white scenarios, we want to use the accent
-        // color to ensure visibility.
+        // 1.0f is identical contrast. For near-white or near-black scenarios,
+        // we want to use the fallback color to ensure visibility.
         constexpr float kThreshold = 1.1f;
         if (color_utils::GetContrastRatio(frame_color, SK_ColorWHITE) <
-            kThreshold) {
-          return mixer.GetResultColor(ui::kColorAccent);
+                kThreshold ||
+            color_utils::GetContrastRatio(frame_color, SK_ColorBLACK) <
+                kThreshold) {
+          return mixer.GetResultColor(fallback_color_id);
         }
 
         return frame_color;
-      });
+      },
+      fallback_color_id);
 }
 
 // Blend the custom color (based on the tab frame of a custom theme) on
@@ -155,32 +160,48 @@ struct TabGroupColorParams {
   SkColor bookmark_bar_dark, bookmark_bar_light;
 };
 
-TabGroupColorParams CreateColorParams(bool use_alternate_palette,
-                                      ui::ColorId active,
-                                      ui::ColorId inactive,
-                                      ui::ColorId dialog,
-                                      ui::ColorId context,
-                                      ui::ColorId saved_fg,
-                                      ui::ColorId saved_outline,
-                                      ui::ColorId bookmark,
-                                      // Glow up palette
-                                      SkColor alt_dark,
-                                      SkColor alt_light,
-                                      SkColor alt_chip_dark,
-                                      SkColor alt_chip_light,
-                                      // Classic palette
-                                      SkColor base_dark,
-                                      SkColor base_light,
-                                      SkColor fg_dark,
-                                      SkColor fg_light,
-                                      SkColor outline_dark,
-                                      SkColor outline_light,
-                                      SkColor bm_dark,
-                                      SkColor bm_light) {
+TabGroupColorParams CreateColorParams(
+    bool use_alternate_palette,
+    ui::ColorId active,
+    ui::ColorId inactive,
+    ui::ColorId dialog,
+    ui::ColorId context,
+    ui::ColorId saved_fg,
+    ui::ColorId saved_outline,
+    ui::ColorId bookmark,
+    // Glow up palette
+    SkColor alt_dark,
+    SkColor alt_light,
+    SkColor alt_chip_dark,
+    SkColor alt_chip_light,
+    SkColor alt_fg_dark,
+    // Classic palette
+    SkColor base_dark,
+    SkColor base_light,
+    SkColor fg_dark,
+    SkColor fg_light,
+    SkColor outline_dark,
+    SkColor outline_light,
+    SkColor bm_dark,
+    SkColor bm_light,
+    std::optional<SkColor> alt_fg_light = std::nullopt,
+    std::optional<SkColor> alt_outline_light = std::nullopt) {
   if (use_alternate_palette) {
-    return {active,        inactive, dialog,    context,       saved_fg,
-            saved_outline, bookmark, alt_dark,  alt_light,     alt_dark,
-            alt_light,     alt_dark, alt_light, alt_chip_dark, alt_chip_light};
+    return {active,
+            inactive,
+            dialog,
+            context,
+            saved_fg,
+            saved_outline,
+            bookmark,
+            alt_dark,
+            alt_light,
+            alt_fg_dark,
+            alt_fg_light.value_or(alt_light),
+            alt_dark,
+            alt_outline_light.value_or(alt_light),
+            alt_chip_dark,
+            alt_chip_light};
   } else {
     return {active,        inactive,     dialog,        context,    saved_fg,
             saved_outline, bookmark,     base_dark,     base_light, fg_dark,
@@ -269,8 +290,9 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorSavedTabGroupOutlineBlue, kColorTabGroupBookmarkBarBlue,
           gfx::kTabGroupBlueDarkMode, gfx::kTabGroupBlueLightMode,
           gfx::kTabGroupBlueChipDarkMode, gfx::kTabGroupBlueChipLightMode,
-          gfx::kGoogleBlue300, gfx::kGoogleBlue600, gfx::kGoogleBlue100,
-          gfx::kGoogleBlue700, gfx::kGoogleBlue300, gfx::kGoogleBlue700,
+          gfx::kTabGroupBlueTextDarkMode, gfx::kGoogleBlue300,
+          gfx::kGoogleBlue600, gfx::kGoogleBlue100, gfx::kGoogleBlue700,
+          gfx::kGoogleBlue300, gfx::kGoogleBlue700,
           SkColorSetRGB(0x39, 0x43, 0x54), gfx::kGoogleBlue050),
       CreateColorParams(
           use_alternate_palette, kColorTabGroupTabStripFrameActiveCyan,
@@ -279,8 +301,9 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorSavedTabGroupOutlineCyan, kColorTabGroupBookmarkBarCyan,
           gfx::kTabGroupCyanDarkMode, gfx::kTabGroupCyanLightMode,
           gfx::kTabGroupCyanChipDarkMode, gfx::kTabGroupCyanChipLightMode,
-          gfx::kGoogleCyan300, gfx::kGoogleCyan900, gfx::kGoogleCyan100,
-          gfx::kGoogleCyan900, gfx::kGoogleCyan300, gfx::kGoogleCyan900,
+          gfx::kTabGroupCyanTextDarkMode, gfx::kGoogleCyan300,
+          gfx::kGoogleCyan900, gfx::kGoogleCyan100, gfx::kGoogleCyan900,
+          gfx::kGoogleCyan300, gfx::kGoogleCyan900,
           SkColorSetRGB(0x35, 0x4C, 0x51), gfx::kGoogleCyan050),
       CreateColorParams(
           use_alternate_palette, kColorTabGroupTabStripFrameActiveGreen,
@@ -289,8 +312,9 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorSavedTabGroupOutlineGreen, kColorTabGroupBookmarkBarGreen,
           gfx::kTabGroupGreenDarkMode, gfx::kTabGroupGreenLightMode,
           gfx::kTabGroupGreenChipDarkMode, gfx::kTabGroupGreenChipLightMode,
-          gfx::kGoogleGreen300, gfx::kGoogleGreen700, gfx::kGoogleGreen100,
-          gfx::kGoogleGreen800, gfx::kGoogleGreen300, gfx::kGoogleGreen800,
+          gfx::kTabGroupGreenTextDarkMode, gfx::kGoogleGreen300,
+          gfx::kGoogleGreen700, gfx::kGoogleGreen100, gfx::kGoogleGreen800,
+          gfx::kGoogleGreen300, gfx::kGoogleGreen800,
           SkColorSetRGB(0x37, 0x48, 0x3C), gfx::kGoogleGreen050),
       CreateColorParams(
           use_alternate_palette, kColorTabGroupTabStripFrameActiveGrey,
@@ -299,8 +323,9 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorSavedTabGroupOutlineGrey, kColorTabGroupBookmarkBarGrey,
           gfx::kTabGroupGreyDarkMode, gfx::kTabGroupGreyLightMode,
           gfx::kTabGroupGreyChipDarkMode, gfx::kTabGroupGreyChipLightMode,
-          gfx::kGoogleGrey300, gfx::kGoogleGrey700, gfx::kGoogleGrey100,
-          gfx::kGoogleGrey700, gfx::kGoogleGrey300, gfx::kGoogleGrey700,
+          gfx::kTabGroupGreyTextDarkMode, gfx::kGoogleGrey300,
+          gfx::kGoogleGrey700, gfx::kGoogleGrey100, gfx::kGoogleGrey700,
+          gfx::kGoogleGrey300, gfx::kGoogleGrey700,
           SkColorSetRGB(0x4C, 0x4D, 0x4E), gfx::kGoogleGrey100),
       CreateColorParams(
           use_alternate_palette, kColorTabGroupTabStripFrameActiveOrange,
@@ -309,18 +334,21 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorSavedTabGroupOutlineOrange, kColorTabGroupBookmarkBarOrange,
           gfx::kTabGroupOrangeDarkMode, gfx::kTabGroupOrangeLightMode,
           gfx::kTabGroupOrangeChipDarkMode, gfx::kTabGroupOrangeChipLightMode,
-          gfx::kGoogleOrange300, gfx::kGoogleOrange400, gfx::kGoogleOrange100,
-          gfx::kGoogleGrey800, gfx::kGoogleOrange300, gfx::kGoogleOrange800,
-          SkColorSetRGB(0x54, 0x42, 0x33), gfx::kGoogleOrange050),
+          gfx::kTabGroupOrangeTextDarkMode, gfx::kGoogleOrange300,
+          gfx::kGoogleOrange400, gfx::kGoogleOrange100, gfx::kGoogleGrey800,
+          gfx::kGoogleOrange300, gfx::kGoogleOrange800,
+          SkColorSetRGB(0x54, 0x42, 0x33), gfx::kGoogleOrange050,
+          gfx::kTabGroupOrangeTextLightMode),
       CreateColorParams(
           use_alternate_palette, kColorTabGroupTabStripFrameActivePink,
           kColorTabGroupTabStripFrameInactivePink, kColorTabGroupDialogPink,
           kColorTabGroupContextMenuPink, kColorSavedTabGroupForegroundPink,
           kColorSavedTabGroupOutlinePink, kColorTabGroupBookmarkBarPink,
-          gfx::kTabGroupMagentaDarkMode, gfx::kTabGroupMagentaLightMode,
-          gfx::kTabGroupMagentaChipDarkMode, gfx::kTabGroupMagentaChipLightMode,
-          gfx::kGooglePink300, gfx::kGooglePink700, gfx::kGooglePink100,
-          gfx::kGooglePink800, gfx::kGooglePink300, gfx::kGooglePink700,
+          gfx::kTabGroupPinkDarkMode, gfx::kTabGroupPinkLightMode,
+          gfx::kTabGroupPinkChipDarkMode, gfx::kTabGroupPinkChipLightMode,
+          gfx::kTabGroupPinkTextDarkMode, gfx::kGooglePink300,
+          gfx::kGooglePink700, gfx::kGooglePink100, gfx::kGooglePink800,
+          gfx::kGooglePink300, gfx::kGooglePink700,
           SkColorSetRGB(0x55, 0x39, 0x49), gfx::kGooglePink050),
       CreateColorParams(
           use_alternate_palette, kColorTabGroupTabStripFrameActivePurple,
@@ -329,8 +357,9 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorSavedTabGroupOutlinePurple, kColorTabGroupBookmarkBarPurple,
           gfx::kTabGroupPurpleDarkMode, gfx::kTabGroupPurpleLightMode,
           gfx::kTabGroupPurpleChipDarkMode, gfx::kTabGroupPurpleChipLightMode,
-          gfx::kGooglePurple300, gfx::kGooglePurple500, gfx::kGooglePurple100,
-          gfx::kGooglePurple700, gfx::kGooglePurple300, gfx::kGooglePurple700,
+          gfx::kTabGroupPurpleTextDarkMode, gfx::kGooglePurple300,
+          gfx::kGooglePurple500, gfx::kGooglePurple100, gfx::kGooglePurple700,
+          gfx::kGooglePurple300, gfx::kGooglePurple700,
           SkColorSetRGB(0x47, 0x39, 0x54), gfx::kGooglePurple050),
       CreateColorParams(
           use_alternate_palette, kColorTabGroupTabStripFrameActiveRed,
@@ -339,19 +368,23 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
           kColorSavedTabGroupOutlineRed, kColorTabGroupBookmarkBarRed,
           gfx::kTabGroupRedDarkMode, gfx::kTabGroupRedLightMode,
           gfx::kTabGroupRedChipDarkMode, gfx::kTabGroupRedChipLightMode,
-          gfx::kGoogleRed300, gfx::kGoogleRed600, gfx::kGoogleRed100,
-          gfx::kGoogleRed700, gfx::kGoogleRed300, gfx::kGoogleRed700,
-          SkColorSetRGB(0x52, 0x39, 0x37), gfx::kGoogleRed050),
+          gfx::kTabGroupRedTextDarkMode, gfx::kGoogleRed300, gfx::kGoogleRed600,
+          gfx::kGoogleRed100, gfx::kGoogleRed700, gfx::kGoogleRed300,
+          gfx::kGoogleRed700, SkColorSetRGB(0x52, 0x39, 0x37),
+          gfx::kGoogleRed050),
       CreateColorParams(
           use_alternate_palette, kColorTabGroupTabStripFrameActiveYellow,
           kColorTabGroupTabStripFrameInactiveYellow, kColorTabGroupDialogYellow,
           kColorTabGroupContextMenuYellow, kColorSavedTabGroupForegroundYellow,
           kColorSavedTabGroupOutlineYellow, kColorTabGroupBookmarkBarYellow,
-          gfx::kTabGroupLimeDarkMode, gfx::kTabGroupLimeLightMode,
-          gfx::kTabGroupLimeChipDarkMode, gfx::kTabGroupLimeChipLightMode,
-          gfx::kGoogleYellow300, gfx::kGoogleYellow600, gfx::kGoogleYellow100,
-          gfx::kGoogleGrey800, gfx::kGoogleYellow300, gfx::kGoogleYellow600,
-          SkColorSetRGB(0x55, 0x4B, 0x30), gfx::kGoogleYellow050)};
+          gfx::kTabGroupYellowDarkMode, gfx::kTabGroupYellowLightMode,
+          gfx::kTabGroupYellowChipDarkMode, gfx::kTabGroupYellowChipLightMode,
+          gfx::kTabGroupYellowTextDarkMode, gfx::kGoogleYellow300,
+          gfx::kGoogleYellow600, gfx::kGoogleYellow100, gfx::kGoogleGrey800,
+          gfx::kGoogleYellow300, gfx::kGoogleYellow600,
+          SkColorSetRGB(0x55, 0x4B, 0x30), gfx::kGoogleYellow050,
+          gfx::kTabGroupYellowTextLightMode,
+          gfx::kTabGroupYellowOutlineLightMode)};
 
   for (const auto& params : tab_group_color_params_all) {
     mixer[params.active_frame_id] =
@@ -376,18 +409,22 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
     mixer[params.dialog_id] = {params.context_menu_id};
   }
 
+  mixer[kColorActorUiHandoffButtonBackground] = {ui::kColorSysSurface};
   mixer[kColorActorUiHandoffButtonBorder] =
-      SelectActorUiColorBasedOnNearWhiteInput();
-  mixer[kColorActorUiOverlayBorder] = SelectActorUiColorBasedOnNearWhiteInput();
+      SelectActorUiColor(ui::kColorSysActorUiBorder);
+  mixer[kColorActorUiHandoffButtonForeground] = {ui::kColorSysOnSurface};
+  mixer[kColorActorUiOverlayBorder] =
+      SelectActorUiColor(ui::kColorSysActorUiBorder);
   mixer[kColorActorUiOverlayBorderGlow] =
-      SelectActorUiColorBasedOnNearWhiteInput();
+      SelectActorUiColor(ui::kColorSysActorUiGradientEnd);
   mixer[kColorActorUiScrimStart] = GetActorUiScrimColor(
       /*alpha=*/0x66);
   mixer[kColorActorUiScrimMiddle] = GetActorUiScrimColor(
       /*alpha=*/0x00);
   mixer[kColorActorUiScrimEnd] = GetActorUiScrimColor(
       /*alpha=*/0x26);
-  mixer[kColorActorUiMagicCursor] = SelectActorUiColorBasedOnNearWhiteInput();
+  mixer[kColorActorUiMagicCursor] =
+      SelectActorUiColor(ui::kColorSysActorUiBorder);
   mixer[kColorAppMenuHighlightSeverityLow] = AdjustHighlightColorForContrast(
       ui::kColorAlertLowSeverity, kColorToolbar);
   mixer[kColorAppMenuHighlightSeverityHigh] = {
@@ -397,6 +434,22 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorAppMenuHighlightPrimary] = {ui::kColorButtonBackgroundProminent};
   mixer[kColorAppMenuExpandedForegroundPrimary] = {
       ui::kColorButtonForegroundProminent};
+  mixer[kColorAppMenuChipBackground] = {ui::kColorSysTonalContainer};
+  mixer[kColorAppMenuChipBackgroundHovered] = {ui::GetResultingPaintColor(
+      ui::kColorSysStateHoverOnSubtle, kColorAppMenuChipBackground)};
+  mixer[kColorAppMenuChipForeground] = {ui::kColorSysOnTonalContainer};
+  mixer[kColorAppMenuYourChromeBackground] = {ui::kColorSysBaseContainer};
+  mixer[kColorAppMenuToolsAndActionsBackground] = {
+      ui::kColorSysNeutralContainer};
+  mixer[kColorAppMenuBlockButtonBackground] = {ui::kColorSysSurface};
+  mixer[kColorAppMenuBlockButtonBackgroundHovered] = {
+      ui::kColorSysStateHoverOnSubtle};
+  mixer[kColorAppMenuBlockButtonBorder] = {ui::kColorSysInversePrimary};
+  mixer[kColorAppMenuBlockButtonForeground] = {ui::kColorSysPrimary};
+  mixer[kColorAppMenuFooterButtonForeground] = {ui::kColorSysPrimary};
+  mixer[kColorAppMenuFooterButtonForegroundHovered] = {ui::kColorSysPrimary};
+  mixer[kColorAppMenuFooterButtonBackgroundHovered] = {
+      ui::kColorSysStateHoverOnSubtle};
   mixer[kColorAvatarButtonHighlightDefault] =
       AdjustHighlightColorForContrast(ui::kColorAccent, kColorToolbar);
   mixer[kColorAvatarButtonHighlightSyncError] = AdjustHighlightColorForContrast(
@@ -411,10 +464,21 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
       kColorAvatarButtonHighlightDefault};
   mixer[kColorAvatarStroke] = {kColorToolbarButtonIcon};
   mixer[kColorAvatarFillForContrast] = {kColorToolbar};
-  mixer[kColorAiSubscriptionRingGradientStart] = {
-      SkColorSetRGB(0x31, 0x86, 0xFF)};
-  mixer[kColorAiSubscriptionRingGradientEnd] = {
-      SkColorSetRGB(0xA9, 0xA8, 0xFF)};
+  mixer[kColorAvatarRingGradientStart] = {SkColorSetRGB(0x31, 0x86, 0xFF)};
+  mixer[kColorAvatarRingGradientEnd] = {SkColorSetRGB(0xA9, 0xA8, 0xFF)};
+  mixer[kColorAvatarBadgeWaveBase0] = {SkColorSetRGB(0xBB, 0xDF, 0xFF)};
+  mixer[kColorAvatarBadgeWaveBase1] = {SkColorSetRGB(0x7B, 0xC2, 0xFF)};
+  mixer[kColorAvatarBadgeWaveBase2] = {SkColorSetRGB(0xA3, 0xA6, 0xFF)};
+  mixer[kColorAvatarBadgeWaveBase3] = {SkColorSetRGB(0x36, 0x6C, 0xEC)};
+  mixer[kColorAvatarBadgeWaveOverlay0] = {SK_ColorWHITE};
+  mixer[kColorAvatarBadgeWaveOverlay1] = {SkColorSetRGB(0xA4, 0xA7, 0xFF)};
+  mixer[kColorAvatarBadgeWaveOverlay2] = {SkColorSetRGB(0x58, 0x9D, 0xFF)};
+  mixer[kColorAvatarBadgeWaveOverlay3] = {SkColorSetRGB(0x36, 0x6C, 0xEC)};
+  mixer[kColorAvatarBadgeShadow] = {
+      dark_mode ? SkColorSetARGB(0xFF, 0x58, 0x9D, 0xFF)
+                : SkColorSetARGB(0xD9, 0x31, 0x86, 0xFF)};
+  mixer[kColorAvatarBadgeBackground] = {
+      dark_mode ? SkColorSetRGB(0x13, 0x13, 0x14) : SK_ColorWHITE};
   mixer[kColorBookmarkBarBackground] = {kColorToolbar};
   mixer[kColorBookmarkBarForeground] = {kColorToolbarText};
   // Uses the alpha of kColorToolbarButtonIconInactive.
@@ -510,11 +574,8 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
       ui::GetColorWithMaxContrast({ui::kColorFrameActive});
   mixer[kColorFrameCaptionInactive] =
       ui::GetColorWithMaxContrast({ui::kColorFrameInactive});
-  if (dark_mode) {
-    mixer[kColorGlicBackground] = {SkColorSetRGB(0x13, 0x13, 0x14)};
-  } else {
-    mixer[kColorGlicBackground] = {ui::kColorBubbleBackground};
-  }
+  mixer[kColorGlicBackground] = {dark_mode ? SK_ColorBLACK
+                                           : SkColorSetRGB(0xFD, 0xFC, 0xFC)};
   // Invert modal colors w.r.t. Chrome dark mode.
   mixer[kColorGlicModalBackground] = {dark_mode
                                           ? SkColorSetRGB(0xE3, 0xE3, 0xE3)
@@ -522,6 +583,9 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorGlicModalForeground] = {dark_mode
                                           ? SkColorSetRGB(0x30, 0x30, 0x30)
                                           : SkColorSetRGB(0xF2, 0xF2, 0xF2)};
+  mixer[kColorGlicPlaceholderElem] = {dark_mode
+                                          ? SkColorSetRGB(0x33, 0x34, 0x38)
+                                          : SkColorSetRGB(0xEF, 0xF3, 0xFA)};
   // Gradient colors used for underlines on active tabs.
   constexpr color_utils::HSL start{-1.0, -1.0, 0.6};
   constexpr color_utils::HSL end{-1.0, -1.0, 0.4};
@@ -853,6 +917,10 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
       ui::SetAlpha(kColorToolbarInkDrop, std::ceil(0.06f * 255.0f));
   mixer[kColorAppMenuChipInkDropHover] = {kColorToolbarInkDropHover};
   mixer[kColorAppMenuChipInkDropRipple] = {kColorToolbarInkDropRipple};
+  mixer[kColorAppMenuZoomButtonBackground] = {
+      ui::kColorSysBaseContainerElevated};
+  mixer[kColorAppMenuZoomButtonHover] = {ui::kColorSysStateHoverOnSubtle};
+  mixer[kColorAppMenuZoomSeparator] = {ui::kColorSysNeutralOutline};
   mixer[kColorToolbarCloseButtonBackgroundDefault] = {
       ui::kColorSysBaseContainer};
   mixer[kColorToolbarExtensionSeparatorEnabled] = {
@@ -879,6 +947,7 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
   mixer[kColorToolbarTopSeparatorFrameInactive] =
       GetToolbarTopSeparatorColorTransform(kColorToolbar,
                                            ui::kColorFrameInactive);
+  mixer[kColorSettingsWebuiPageBackground] = {ui::kColorSysSurface2};
   mixer[kColorWebContentsBackground] =
       ui::SetAlpha(kColorNewTabPageBackground, SK_AlphaOPAQUE);
   mixer[kColorWebContentsBackgroundLetterboxing] =
@@ -975,6 +1044,15 @@ void AddChromeColorMixer(ui::ColorProvider* provider,
       SkColorSetRGB(18, 74, 115)};
   mixer[kColorReadAnythingPreviousReadAloudHighlightLowContrastDark] = {
       SkColorSetRGB(91, 179, 240)};
+  mixer[kColorReadAnythingAiPlaybackBackground] = {
+      SkColorSetRGB(0xF0, 0xF4, 0xF9)};
+  mixer[kColorReadAnythingAiPlaybackHoverBackground] = {
+      SkColorSetRGB(0xE2, 0xE7, 0xEB)};
+  mixer[kColorReadAnythingAiPlaybackIcon] = {SkColorSetRGB(0x44, 0x47, 0x46)};
+  mixer[kColorReadAnythingAiPlaybackActiveBackground] = {
+      SkColorSetRGB(0x1E, 0x64, 0xD4)};
+  mixer[kColorReadAnythingAiPlaybackActiveIcon] = {
+      SkColorSetRGB(0xFF, 0xFF, 0xFF)};
   mixer[kColorReadAnythingAudioPlayerBackground] = {
       ui::kColorSysTonalContainer};
   mixer[kColorReadAnythingAudioPlayerBackgroundBlue] = {

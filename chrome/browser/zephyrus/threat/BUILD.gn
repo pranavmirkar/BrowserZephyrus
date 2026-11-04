@@ -28,7 +28,7 @@ source_set("index") {
   ]
   deps = [
     "//base",
-    "//components/safe_browsing/core/browser/db:v4_protocol_manager_util",
+    "//components/safe_browsing/core/browser/db:sb_protocol_manager_util",
     "//url",
   ]
 }
@@ -57,7 +57,7 @@ source_set("threat") {
     ":dnswire",
     ":index",
     "//base",
-    "//components/safe_browsing/core/browser/db:v4_local_database_manager",
+    "//components/safe_browsing/core/browser/db:sb_local_database_manager",
     "//url",
   ]
   data_deps = [ ":threat_data" ]

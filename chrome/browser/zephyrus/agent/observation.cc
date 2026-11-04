@@ -535,7 +535,13 @@ void Collect(const ui::AXTree& tree,
   const std::string role = node.IsIgnored() ? std::string() : RoleNameFor(node);
   if (!role.empty()) {
     std::string name = DescribeNode(node);
-    std::string value = node.GetValueForControl();
+    // A non-atomic text field (a contenteditable root) is read below from its
+    // text content. GetValueForControl() would compute the same thing through
+    // an AXPosition, and from 156 that needs an AXTreeManager this bare tree
+    // does not have: a DCHECK here, a null dereference in a Release build.
+    std::string value = node.data().IsNonAtomicTextField()
+                            ? std::string()
+                            : node.GetValueForControl();
     // An editable region rarely has a label. What it says is how a person
     // tells one from another, and an empty one is still somewhere to type --
     // it is where a new block of text goes.

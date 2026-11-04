@@ -10,6 +10,7 @@
 #include <string_view>
 #include <vector>
 
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/zephyrus/agent/lens_eyes.h"
 #include "chrome/browser/zephyrus/agent/lens_geometry.h"
 #include "chrome/browser/zephyrus/agent/lens_math.h"
@@ -370,7 +371,7 @@ class LensModel {
 
   void ResetPoseSprings();
 
-  LensRandom* rng_;
+  raw_ptr<LensRandom> rng_;
   LensState state_ = LensState::kIdle;
   LensMemory mem_;
   LensTargets targets_;

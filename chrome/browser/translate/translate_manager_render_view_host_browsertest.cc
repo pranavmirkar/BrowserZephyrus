@@ -22,8 +22,8 @@
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
 #include "chrome/browser/translate/translate_service.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/toast_features.h"
 #include "chrome/browser/ui/translate/translate_bubble_factory.h"
 #include "chrome/browser/ui/translate/translate_bubble_model.h"
@@ -50,6 +50,7 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "net/dns/mock_host_resolver.h"
 #include "pdf/buildflags.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -372,15 +373,15 @@ class TranslateManagerRenderViewHostNoOverrideTest
 // display names in English locale. To save space, Chrome's copy of ICU
 // does not have the display name for a language unless it's in the
 // Accept-Language list.
-constexpr auto kServerLanguageList = std::to_array<const char*>({
+constexpr auto kServerLanguageList = std::to_array<std::string_view>({
     "ak",
     "af",
     "en-CA",
     "zh",
     "yi",
     "fr-FR",
-    "tl",
-    "iw",
+    "fil",
+    "he",
     "hz",
     "xx",
 });

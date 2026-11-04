@@ -61,7 +61,7 @@ class ShieldDnsChecker {
 
   // Looks up `host` (answered from the cache when it can be) and runs
   // `callback` once, later, never before this function returns.
-  void Check(const std::string& host, Callback callback);
+  void Check(std::string host, Callback callback);
 
   // Whether `host` is a public name worth asking about: not an address, not a
   // single label, not a local or internal name.
@@ -72,26 +72,36 @@ class ShieldDnsChecker {
   static Verdict ParseAnswer(std::string_view json);
 
  private:
-  enum Source { kCloudflare, kQuad9, kSourceCount };
+  // kQuad9Hedge is a second attempt at the same question, on a fresh connection
+  // (see StartHedge); it counts as Quad9 everywhere else.
+  enum Source { kCloudflare, kQuad9, kQuad9Hedge, kSourceCount };
 
   struct Pending {
+    base::TimeTicks deadline;
+    size_t recovery_generation = 0;
     std::array<std::unique_ptr<network::SimpleURLLoader>, kSourceCount> loaders;
-    int outstanding = 0;
+    int outstanding = 0;  // resolvers (not attempts) still to answer
     bool any_unknown = false;
+    bool quad9_done = false;
+    bool quad9_hedge_started = false;
     std::vector<Callback> callbacks;
   };
   struct CacheEntry {
     Verdict verdict;
     base::TimeTicks expires;
+    size_t recovery_generation;
   };
   // Consecutive failures of one resolver, and until when it is left alone.
   struct Health {
     int failures = 0;
     base::TimeTicks muted_until;
+    base::TimeDelta cooldown;
   };
 
   bool IsMuted(Source source) const;
+  bool CanStartLookup(Source source) const;
   void StartRequest(const std::string& host, Source source, Pending& pending);
+  void StartHedge(const std::string& host);
   void OnResponse(const std::string& host,
                   Source source,
                   std::optional<std::string> body);
@@ -101,6 +111,7 @@ class ShieldDnsChecker {
   std::array<Health, kSourceCount> health_;
   std::map<std::string, Pending> pending_;
   std::map<std::string, CacheEntry> cache_;
+  size_t recovery_generation_ = 0;
   // When recent requests were sent, for the per-minute cap.
   std::deque<base::TimeTicks> recent_requests_;
   base::WeakPtrFactory<ShieldDnsChecker> weak_factory_{this};

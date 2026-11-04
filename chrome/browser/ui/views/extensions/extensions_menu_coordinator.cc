@@ -9,13 +9,11 @@
 
 #include "base/check_deref.h"
 #include "base/feature_list.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/extensions/extensions_menu_view_model.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/extensions/extensions_container_views.h"
 #include "chrome/browser/ui/views/extensions/extensions_menu_delegate_desktop.h"
-#include "extensions/browser/permissions_manager.h"
 #include "extensions/common/extension_features.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
@@ -106,8 +104,10 @@ ExtensionsMenuCoordinator::CreateExtensionsMenuBubbleDialogDelegate(
   bubble_delegate->set_fixed_width(
       views::LayoutProvider::Get()->GetDistanceMetric(
           ChromeDistanceMetric::DISTANCE_EXTENSIONS_MENU_WIDTH));
-  // Let anchor view's MenuButtonController handle the highlight.
-  bubble_delegate->set_highlight_button_when_shown(false);
+  if (anchor.GetIfView()) {
+    // Let anchor view's MenuButtonController handle the highlight.
+    bubble_delegate->set_highlight_button_when_shown(false);
+  }
   bubble_delegate->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
   bubble_delegate->SetEnableArrowKeyTraversal(true);
 

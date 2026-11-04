@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/views/frame/zephyrus_tab_switcher.h"
 
 #include <algorithm>
@@ -18,6 +19,7 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_tab_helper.h"
+#include "components/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
@@ -489,7 +491,7 @@ bool ZephyrusTabSwitcher::CycleOrShow(Browser* browser, bool forward) {
 }
 
 bool ZephyrusTabSwitcher::BuildEntries() {
-  Browser* const browser = browser_view_ ? browser_view_->browser() : nullptr;
+  Browser* const browser = browser_view_ ? zephyrus::AsBrowser(browser_view_->browser()) : nullptr;
   TabStripModel* model = browser ? browser->tab_strip_model() : nullptr;
   if (!model) {
     return false;
@@ -599,7 +601,8 @@ void ZephyrusTabSwitcher::EnsureThumbnail(size_t index) {
   }
   Entry& entry = entries_[index];
   entry.thumbnail_requested = true;
-  ThumbnailTabHelper* helper = ThumbnailTabHelper::FromWebContents(entry.contents);
+  tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(entry.contents);
+  ThumbnailTabHelper* helper = tab ? ThumbnailTabHelper::From(tab) : nullptr;
   if (!helper) {
     return;
   }
@@ -817,7 +820,7 @@ void ZephyrusTabSwitcher::OnWindowKeyEvent(ui::KeyEvent* event) {
 void ZephyrusTabSwitcher::Commit() {
   content::WebContents* target =
       selected_ < entries_.size() ? entries_[selected_].contents : nullptr;
-  Browser* browser = browser_view_ ? browser_view_->browser() : nullptr;
+  Browser* browser = browser_view_ ? zephyrus::AsBrowser(browser_view_->browser()) : nullptr;
 
   // Ends the session but does NOT destroy this view, so everything below is
   // safe to touch. The bubble version closed its widget here and had to warn

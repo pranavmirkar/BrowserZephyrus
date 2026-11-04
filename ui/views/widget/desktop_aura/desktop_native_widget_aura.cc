@@ -52,6 +52,7 @@
 #include "ui/views/drag_utils.h"
 #include "ui/views/view_constants_aura.h"
 #include "ui/views/views_delegate.h"
+#include "ui/views/views_features.h"
 #include "ui/views/widget/desktop_aura/desktop_capture_client.h"
 #include "ui/views/widget/desktop_aura/desktop_event_client.h"
 #include "ui/views/widget/desktop_aura/desktop_focus_rules.h"
@@ -60,6 +61,7 @@
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host.h"
 #include "ui/views/widget/desktop_aura/desktop_window_tree_host_platform.h"
 #include "ui/views/widget/focus_manager_event_handler.h"
+#include "ui/views/widget/legacy_window_reorderer.h"
 #include "ui/views/widget/native_widget_aura.h"
 #include "ui/views/widget/root_view.h"
 #include "ui/views/widget/tooltip_manager_aura.h"
@@ -320,6 +322,7 @@ DesktopNativeWidgetAura::~DesktopNativeWidgetAura() {
     // `native_widget_delegate_`'s root view. Reset them before deleting
     // `native_widget_delegate_` to avoid holding a briefly dangling ptr.
     drop_helper_.reset();
+    legacy_window_reorderer_.reset();
     window_reorderer_.reset();
     owned_native_widget_delegate.reset();
   } else {
@@ -379,7 +382,7 @@ void DesktopNativeWidgetAura::OnHostClosed() {
 
   host_->window()->RemovePreTargetHandler(root_window_event_filter_.get());
 
-  host_->RemoveObserver(this);
+  host_observation_.Reset();
   // |drag_drop_client_| holds a raw_ptr on |desktop_window_tree_host_|, so we
   // need to destroy it first.
   drag_drop_client_.reset();
@@ -667,8 +670,8 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
           std::unique_ptr<wm::NativeCursorManager>(native_cursor_manager_));
       cursor_manager_->SetDisplay(
           display::Screen::Get()->GetDisplayNearestWindow(host_->window()));
-      if (features::IsSystemCursorSizeSupported() ||
-          features::ShouldUseCursorEventHook()) {
+      if (::features::IsSystemCursorSizeSupported() ||
+          ::features::ShouldUseCursorEventHook()) {
         native_cursor_manager_->InitSystemCursorObservers(cursor_manager_);
       }
     }
@@ -702,7 +705,7 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
 
   OnHostResized(host());
 
-  host_->AddObserver(this);
+  host_observation_.Observe(host_.get());
 
   window_parenting_client_ =
       std::make_unique<DesktopNativeWidgetAuraWindowParentingClient>(
@@ -740,8 +743,13 @@ void DesktopNativeWidgetAura::InitNativeWidget(Widget::InitParams params) {
 
   OnSizeConstraintsChanged();
 
-  window_reorderer_ = std::make_unique<WindowReorderer>(
-      content_window_, GetWidget()->GetRootView());
+  if (base::FeatureList::IsEnabled(features::kNativeViewHostManagesLayers)) {
+    window_reorderer_ = std::make_unique<WindowReorderer>(
+        content_window_, GetWidget()->GetRootView());
+  } else {
+    legacy_window_reorderer_ = std::make_unique<legacy::WindowReorderer>(
+        content_window_, GetWidget()->GetRootView());
+  }
 }
 
 void DesktopNativeWidgetAura::OnWidgetInitDone() {
@@ -791,7 +799,9 @@ Widget* DesktopNativeWidgetAura::GetTopLevelWidget() {
 }
 
 const ui::Compositor* DesktopNativeWidgetAura::GetCompositor() const {
-  return content_window_ ? content_window_->layer()->GetCompositor() : nullptr;
+  return content_window_ && content_window_->GetHost()
+             ? content_window_->GetHost()->compositor()
+             : nullptr;
 }
 
 const ui::Layer* DesktopNativeWidgetAura::GetLayer() const {
@@ -808,7 +818,11 @@ void DesktopNativeWidgetAura::ReorderNativeViews() {
   // scope rather than after each individual change.
   // https://crbug.com/829918
   aura::WindowOcclusionTracker::ScopedPause pause_occlusion;
-  window_reorderer_->ReorderChildWindows();
+  if (legacy_window_reorderer_) {
+    legacy_window_reorderer_->ReorderChildWindows();
+  } else if (window_reorderer_) {
+    window_reorderer_->ReorderChildWindows();
+  }
 }
 
 void DesktopNativeWidgetAura::ViewRemoved(View* view) {
@@ -1248,6 +1262,19 @@ bool DesktopNativeWidgetAura::IsMoveLoopSupported() const {
   return desktop_window_tree_host_
              ? desktop_window_tree_host_->IsMoveLoopSupported()
              : true;
+}
+
+void DesktopNativeWidgetAura::PrepareForMoveLoop(
+    Widget::MoveLoopSource source) {
+  if (desktop_window_tree_host_) {
+    desktop_window_tree_host_->PrepareForMoveLoop(source);
+  }
+}
+
+void DesktopNativeWidgetAura::SetBypassWindowManager(bool bypass) {
+  if (desktop_window_tree_host_) {
+    desktop_window_tree_host_->SetBypassWindowManager(bypass);
+  }
 }
 
 Widget::MoveLoopResult DesktopNativeWidgetAura::RunMoveLoop(

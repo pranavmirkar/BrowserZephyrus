@@ -11,12 +11,10 @@
 #include "base/check_deref.h"
 #include "base/feature_list.h"
 #include "base/i18n/case_conversion.h"
-#include "base/memory/ptr_util.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/extensions/extension_action_view_model.h"
+#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toolbar/toolbar_action_view_model.h"
 #include "chrome/browser/ui/views/bubble_menu_item_factory.h"
@@ -29,7 +27,6 @@
 #include "chrome/grit/generated_resources.h"
 #include "components/vector_icons/vector_icons.h"
 #include "extensions/common/extension_features.h"
-#include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
@@ -74,14 +71,13 @@ ExtensionMenuItemView* GetAsMenuItemView(views::View* view) {
 }  // namespace
 
 ExtensionsMenuView::ExtensionsMenuView(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     BrowserWindowInterface* browser,
     ExtensionsContainer* extensions_container,
     ExtensionsContainerViews* extensions_container_views)
     // Zephyrus: TOP_CENTER so the popup centres under the extensions button and
     // the nub lands in the middle of its top edge.
-    : BubbleDialogDelegateView(views::BubbleAnchor(anchor_view),
-                               views::BubbleBorder::Arrow::TOP_CENTER),
+    : BubbleDialogDelegateView(anchor, views::BubbleBorder::Arrow::TOP_CENTER),
       browser_(browser),
       extensions_container_(CHECK_DEREF(extensions_container)),
       extensions_container_views_(extensions_container_views),
@@ -99,7 +95,9 @@ ExtensionsMenuView::ExtensionsMenuView(
           IDS_EXTENSIONS_MENU_ACCESSING_SITE_DATA,
           extensions::SitePermissionsHelper::SiteInteraction::kGranted} {
   toolbar_model_observation_.Observe(toolbar_model_.get());
-  browser_->GetTabStripModel()->AddObserver(this);
+  if (!extensions_container_->GetActiveWebContents()) {
+    browser_->GetTabStripModel()->AddObserver(this);
+  }
   set_margins(gfx::Insets(0));
 
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -119,8 +117,10 @@ ExtensionsMenuView::ExtensionsMenuView(
 
   SetEnableArrowKeyTraversal(true);
 
-  // Let anchor view's MenuButtonController handle the highlight.
-  set_highlight_button_when_shown(false);
+  if (anchor.GetIfView()) {
+    // Let anchor view's MenuButtonController handle the highlight.
+    set_highlight_button_when_shown(false);
+  }
 
   set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_BUBBLE_PREFERRED_WIDTH));
@@ -337,8 +337,8 @@ void ExtensionsMenuView::CreateAndInsertNewItem(
 void ExtensionsMenuView::InsertMenuItem(ExtensionMenuItemView* menu_item) {
   DCHECK(!Contains(menu_item))
       << "Trying to insert a menu item that is already added in a section!";
-  auto site_interaction = menu_item->view_model()->GetSiteInteraction(
-      browser_->GetTabStripModel()->GetActiveWebContents());
+  auto site_interaction =
+      menu_item->view_model()->GetSiteInteraction(GetActiveWebContents());
   Section* const section = GetSectionForSiteInteraction(site_interaction);
   // Add the view at the end. Note that this *doesn't* insert the item at the
   // correct spot or ensure the view is visible; it's assumed that any callers
@@ -360,8 +360,7 @@ void ExtensionsMenuView::UpdateSectionVisibility() {
 }
 
 void ExtensionsMenuView::Update() {
-  content::WebContents* const web_contents =
-      browser_->GetTabStripModel()->GetActiveWebContents();
+  content::WebContents* const web_contents = GetActiveWebContents();
   auto move_children_between_sections_if_necessary =
       [this, web_contents](Section* section) {
         // Note: Collect the views to move separately, so that we don't change
@@ -395,8 +394,7 @@ void ExtensionsMenuView::Update() {
 
 void ExtensionsMenuView::SanityCheck() {
 #if DCHECK_IS_ON()
-  content::WebContents* web_contents =
-      browser_->GetTabStripModel()->GetActiveWebContents();
+  content::WebContents* web_contents = GetActiveWebContents();
 
   // Sanity checks: verify that all extensions are properly sorted and in the
   // correct section.
@@ -437,7 +435,6 @@ std::u16string ExtensionsMenuView::GetAccessibleWindowTitle() const {
 }
 
 void ExtensionsMenuView::OnTabChangedAt(tabs::TabInterface* tab,
-                                        int index,
                                         TabChangeType change_type) {
   Update();
 }
@@ -513,7 +510,7 @@ base::AutoReset<bool> ExtensionsMenuView::AllowInstancesForTesting() {
 
 // static
 views::Widget* ExtensionsMenuView::ShowBubble(
-    views::View* anchor_view,
+    views::BubbleAnchor anchor,
     BrowserWindowInterface* browser,
     ExtensionsContainer* extensions_container,
     ExtensionsContainerViews* extensions_container_views) {
@@ -523,7 +520,7 @@ views::Widget* ExtensionsMenuView::ShowBubble(
   DCHECK(!base::FeatureList::IsEnabled(
       extensions_features::kExtensionsMenuAccessControl));
   g_extensions_dialog = new ExtensionsMenuView(
-      anchor_view, browser, extensions_container, extensions_container_views);
+      anchor, browser, extensions_container, extensions_container_views);
   // Zephyrus: 28px corners, matching every other popup.
   zephyrus::ConfigureBubble(g_extensions_dialog);
   views::Widget* widget =
@@ -532,6 +529,13 @@ views::Widget* ExtensionsMenuView::ShowBubble(
   zephyrus::ApplyAnchoredNub(g_extensions_dialog);
   widget->Show();
   return widget;
+}
+
+content::WebContents* ExtensionsMenuView::GetActiveWebContents() const {
+  if (auto* web_contents = extensions_container_->GetActiveWebContents()) {
+    return web_contents;
+  }
+  return browser_->GetTabStripModel()->GetActiveWebContents();
 }
 
 // static

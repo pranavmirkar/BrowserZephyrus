@@ -42,7 +42,7 @@ class LiquidGlassBackground : public Background {
  public:
   explicit LiquidGlassBackground(const LiquidGlassParams& params)
       : params_(params) {
-    SetColor(params.tint_color);
+    set_color(params.tint_color);
   }
   LiquidGlassBackground(const LiquidGlassBackground&) = delete;
   LiquidGlassBackground& operator=(const LiquidGlassBackground&) = delete;

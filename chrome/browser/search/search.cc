@@ -35,6 +35,7 @@
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_ANDROID)
+#include "base/android/device_info.h"
 #include "chrome/browser/flags/android/chrome_feature_list.h"
 #include "chrome/common/webui_url_constants.h"
 #else
@@ -191,7 +192,23 @@ struct NewTabURLDetails {
     return NewTabURLDetails(chrome::ChromeUINewTabPageURLAsGURL(),
                             NEW_TAB_URL_VALID);
 #else
-    const GURL local_url;
+    const bool default_is_google = DefaultSearchProviderIsGoogle(profile);
+
+    const bool is_desktop_android = IsWebUiNtpEnabledForDesktopAndroid();
+    const GURL local_url(
+        is_desktop_android ? chrome::ChromeUINewTabPageURLAsGURL() : GURL());
+    if (is_desktop_android) {
+      if (default_is_google) {
+        return NewTabURLDetails(local_url, NEW_TAB_URL_VALID);
+      } else {
+        // If the WebUI NTP 3PDSE flag is not enabled, then fallback to using
+        // the native Java NTP.
+        if (!base::FeatureList::IsEnabled(chrome::android::kUseWebUiNtp3PDSE)) {
+          return NewTabURLDetails(GURL(chrome::kChromeUINativeNewTabURL),
+                                  NEW_TAB_URL_VALID);
+        }
+      }
+    }
 
     const TemplateURL* template_url =
         GetDefaultSearchProviderTemplateURL(profile);
@@ -316,11 +333,12 @@ bool IsInstantNTPURL(const GURL& url, Profile* profile) {
   return new_tab_url.is_valid() && MatchesOriginAndPath(url, new_tab_url);
 }
 
-bool IsWebUiNtpEnabled() {
+bool IsWebUiNtpEnabledForDesktopAndroid() {
 #if BUILDFLAG(IS_ANDROID)
-  return base::FeatureList::IsEnabled(chrome::android::kUseWebUiNtpAndroid);
+  return base::android::device_info::is_desktop() &&
+         base::FeatureList::IsEnabled(chrome::android::kUseWebUiNtpAndroid);
 #else
-  return true;
+  return false;
 #endif
 }
 

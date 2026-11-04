@@ -42,6 +42,8 @@ class ScriptedModel : public mojom::AgentModel {
       : responses_(std::move(responses)) {}
 
   mojo::PendingRemote<mojom::AgentModel> Bind() {
+    // A resumed task binds the same fake again; 156 DCHECKs on a bound receiver.
+    receiver_.reset();
     return receiver_.BindNewPipeAndPassRemote();
   }
 
@@ -68,6 +70,8 @@ class ScriptedModel : public mojom::AgentModel {
 class FakeToolRunner : public mojom::ToolRunner {
  public:
   mojo::PendingRemote<mojom::ToolRunner> Bind() {
+    // A resumed task binds the same fake again; 156 DCHECKs on a bound receiver.
+    receiver_.reset();
     return receiver_.BindNewPipeAndPassRemote();
   }
 
@@ -1232,6 +1236,8 @@ class FakeTransport : public mojom::ModelTransport {
       : answers_(std::move(answers)) {}
 
   mojo::PendingRemote<mojom::ModelTransport> Bind() {
+    // A resumed task binds the same fake again; 156 DCHECKs on a bound receiver.
+    receiver_.reset();
     return receiver_.BindNewPipeAndPassRemote();
   }
 

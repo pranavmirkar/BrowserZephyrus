@@ -1,9 +1,39 @@
 # Shield DNS: what it catches, what it misses, how we know
 
-Status: PRELIMINARY (2026-11-03). First probe and false-positive test are in; the +1h/+3h/+6h/+24h
-re-probes and the multi-day rounds are still running. Numbers marked (n=...) carry their sample size.
+Status: UPDATED 2026-11-04 (see "Update" below). First-sight recall and false positives are settled; the
+credential-trap comparison is a tie so far and the sampling rounds are still adding to it. Numbers marked (n=...) carry their sample size.
 Everything here is reproducible with `research/shield_bench.py`, `shield_bench_content.py`,
 `shield_bench_rounds.py` and `shield_bench_final.py`.
+
+## Update 2026-11-04: 1,857 links, four sampling rounds
+
+Same method, more data (`shield_bench_final.py`, 95% Wilson intervals, a lead is claimed only when they do not
+overlap):
+
+| feed | n | Brave (Google) | Cloudflare | Quad9 | **Shield DNS** |
+|---|---|---|---|---|---|
+| OpenPhish | 626 | 43.3% (39.5-47.2) | 62.5% | 39.8% | **85.8% (82.8-88.3)** |
+| PhishTank | 87 | 66.7% (56.2-75.7) | 58.6% | 88.5% | **92.0% (84.3-96.0)** |
+| urlscan.io | 1,144 | 6.0% | 3.8% | 2.8% | 5.3% (no clear difference) |
+| **credential traps**, OpenPhish + PhishTank | 74 | 67.6% (56.3-77.1) | 62.2% | 31.1% | 71.6% (60.5-80.6) |
+| **credential traps**, every feed | 118 | 46.6% (37.9-55.6) | 45.8% | 22.0% | 51.7% (42.8-60.5) |
+
+What this says, in the order it should be trusted:
+
+* **Independent ground truth is a tie.** On pages that really ask for a password the point estimate favours
+  Shield DNS (71.6% vs 67.6%) but the intervals overlap by a wide margin. Do not claim a lead here.
+* **First-sight recall on the two phishing feeds is a clear lead** (85.8% vs 43.3%, 92.0% vs 66.7%). The caveat
+  stands: Cloudflare reads OpenPhish and Quad9 reads PhishTank, and Google reads neither, so these rows
+  favour us by construction. They show we catch fresh links that Google's lists have not yet, not that we are
+  "safer".
+* Brave's first-sight recall on OpenPhish fell from 58.5% (n=395) to 43.3% (n=626) as newer links came in: its
+  lists lag the newest campaigns. That is a property of the lists, not of the method.
+* Quad9 alone is a weak complement to Cloudflare on the independent traps (31.1%); on those it adds about nine
+  points over Cloudflare alone (71.6% vs 62.2%).
+
+Claim wording that survives this data: "Shield DNS (opt-in) blocks about 86% of fresh OpenPhish links and 92% of
+PhishTank links at first sight, where Safe Browsing's lists blocked 43% and 67%, and on pages that really ask for
+a password the two are level." Never: "safer than Google or Brave".
 
 ## What Shield DNS is now
 

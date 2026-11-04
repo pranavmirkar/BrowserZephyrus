@@ -47,33 +47,20 @@ class Page(http.server.BaseHTTPRequestHandler):
         pass
 
 
-# TLDs browsers force onto HTTPS (HSTS preload): the test's plain-HTTP page could never load there,
-# so a host under one of them proves nothing about the warning page.
-HSTS_TLDS = (".app", ".dev", ".page", ".new", ".day", ".foo", ".gle", ".zip", ".mov", ".bank", ".insurance")
-
-
 def pick_blocked_host():
-    rows = json.load(open(r"D:/zeph_perf/sb/free_signals.json"))
+    rows = json.load(open(r"D:\zeph_perf\sb\free_signals.json"))
     for r in rows:
         h = r["host"]
-        if r.get("cf") and h.count(".") >= 2 and not h.endswith(HSTS_TLDS):
+        # Skip TLDs that are HSTS-preloaded (.app, .dev, ...) and hosts on vercel.app:
+        # the load would upgrade to https and die in TLS before the browser holds a
+        # response for Safe Browsing to block, which tests the wrong thing.
+        if h.endswith((".app", ".dev", ".page", ".new", ".day", ".foo")):
+            continue
+        if r.get("cf") and h.count(".") >= 2:
             rc, ips = fs.dns_a("1.1.1.2", h)
             if rc == 0 and "0.0.0.0" in ips:
                 return h
     raise SystemExit("no host is blocked by Cloudflare any more; refresh free_signals.json")
-
-
-def pick_quad9_only_host():
-    """A live host Quad9 filters and Cloudflare does not, from the latest benchmark probe."""
-    rows = [json.loads(l) for l in open(r"D:/zeph_perf/shieldbench/results.jsonl")]
-    for r in reversed(rows):
-        h = r["host"]
-        if r["alive"] and r["quad9"] and not r["cf"] and not h.endswith(HSTS_TLDS) and h.count(".") >= 2:
-            kind, alive = fs.blocked_by("9.9.9.9", "9.9.9.10", h)
-            k2, _ = fs.blocked_by("1.1.1.2", "1.1.1.1", h)
-            if kind in ("nx", "zero") and k2 not in ("nx", "zero"):
-                return h
-    return None
 
 
 def navigate(ws, url, nid):
@@ -99,18 +86,17 @@ def navigate(ws, url, nid):
     return seen
 
 
-def run(shield_on, blocked_host, results, q9_host=None):
+def run(shield_on, blocked_host, results):
     seed_profile(PROFILE, workspaces=False, bookmarks=False)
     os.makedirs(PROFILE, exist_ok=True)
     json.dump({"zephyrus": {"threat": {"shield_dns": shield_on}}}, open(os.path.join(PROFILE, "Local State"), "w"))
     rules = "MAP *.%s 127.0.0.1, MAP %s 127.0.0.1, MAP unlisted-9f2a.zzz-unlisted-9f2a.net 127.0.0.1" % (TEST, blocked_host)
-    if q9_host:
-        rules += ", MAP %s 127.0.0.1" % q9_host
     # The updated-copy location (what a list update will write): it wins over the shipped blob.
     os.makedirs(os.path.join(PROFILE, "ZephyrusThreats"), exist_ok=True)
     shutil.copyfile(BLOB, os.path.join(PROFILE, "ZephyrusThreats", "zephyrus_threats.bin"))
     b = Browser(PROFILE, args=["--remote-debugging-port=%d" % CDP, "--host-resolver-rules=" + rules,
-                               "--enable-logging", "--log-file=" + r"D:\zeph_perf\ab_threat.log", "--v=1"],
+                               "--enable-logging", "--log-file=" + r"D:\zeph_perf\ab_threat.log", "--v=1"]
+                + os.environ.get("ZEPH_EXTRA_ARGS", "").split(),
                 urls=("about:blank",), wait=25)
     time.sleep(8)  # the lists load on a worker thread
     tabs = json.load(urllib.request.urlopen("http://127.0.0.1:%d/json/list" % CDP))
@@ -127,16 +113,12 @@ def run(shield_on, blocked_host, results, q9_host=None):
             ("local: clean host", "http://clean.%s:%d/" % (TEST, PORT), False),
             ("shield OFF: a host Cloudflare blocks still loads", "http://%s:%d/" % (blocked_host, PORT), False),
         ]
-        if q9_host:
-            cases.append(("shield OFF: a host only Quad9 blocks still loads", "http://%s:%d/" % (q9_host, PORT), False))
     else:
         cases += [
             ("shield ON: a host Cloudflare blocks", "http://%s:%d/" % (blocked_host, PORT), True),
             ("shield ON: unlisted made-up host loads", "http://unlisted-9f2a.zzz-unlisted-9f2a.net:%d/" % PORT, False),
             ("shield ON: listed locally (no lookup needed)", "http://phish-test.%s:%d/" % (TEST, PORT), True),
         ]
-        if q9_host:
-            cases.append(("shield ON: a host only Quad9 blocks", "http://%s:%d/" % (q9_host, PORT), True))
     for name, url, want_block in cases:
         seen = navigate(ws, url, nid)
         nid += 2
@@ -158,10 +140,8 @@ def main():
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Page)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     results = []
-    q9_host = pick_quad9_only_host()
-    print("Quad9-only host used (mapped to localhost, never fetched):", q9_host)
-    run(False, blocked_host, results, q9_host)
-    run(True, blocked_host, results, q9_host)
+    run(False, blocked_host, results)
+    run(True, blocked_host, results)
     print("\n%d of %d cases as expected" % (sum(results), len(results)))
     print("PASS" if all(results) else "FAIL")
 

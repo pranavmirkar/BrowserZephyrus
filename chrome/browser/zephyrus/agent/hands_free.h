@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/memory/raw_ptr.h"
 #include "chrome/browser/zephyrus/agent/voice_lock.h"
 
 namespace zephyrus::agent::voice {
@@ -100,7 +101,7 @@ class HandsFreeEngine {
   void DeliverCommand(size_t start, bool follow_up);
   void ToIdle();
 
-  Delegate* const delegate_;
+  const raw_ptr<Delegate> delegate_;
   Options options_;
   std::vector<VoiceProfile> profiles_;
 

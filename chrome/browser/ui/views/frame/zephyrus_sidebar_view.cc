@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/views/frame/zephyrus_sidebar_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
 
@@ -1903,7 +1904,7 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   // information in half the space.
   compact_controls_row_ =
       compact_chrome_->AddChildView(std::make_unique<ZephyrusControlRow>());
-  containers_pref_.Init(browser_view_->browser()->profile()->GetPrefs());
+  containers_pref_.Init(browser_view_->browser()->GetProfile()->GetPrefs());
   containers_pref_.Add(
       "zephyrus.appearance.m3_containers",
       base::BindRepeating(&ZephyrusSidebarView::OnContainersChanged,
@@ -2494,11 +2495,11 @@ void ZephyrusSidebarView::OnTabPinnedStateChanged(tabs::TabInterface* tab,
 }
 
 void ZephyrusSidebarView::OnTabChangedAt(tabs::TabInterface* tab,
-                                         int index,
                                          TabChangeType change_type) {
   if (!revealed_) {
     return;
   }
+  const int index = tab_strip_model_->GetIndexOfTab(tab);
   // Update only the affected row's favicon/title in place. Rebuilding the whole
   // list here would destroy the row under the cursor on every loading tick,
   // causing the hover background and close button to flicker.
@@ -2527,7 +2528,7 @@ void ZephyrusSidebarView::RebuildFavorites() {
   favorites_container_->RemoveAllChildViews();
   bookmarks::BookmarkModel* model =
       BookmarkModelFactory::GetForBrowserContext(
-          browser_view_->browser()->profile());
+          browser_view_->browser()->GetProfile());
   if (!model || !model->loaded()) {
     return;
   }
@@ -2594,7 +2595,7 @@ void ZephyrusSidebarView::ParkBorrowedNewTabButton() {
 // The panel's own add-workspace button: created once, and always the last
 // thing in the foot bar so nothing can push it off the end.
 void ZephyrusSidebarView::ShowDownloads(const ui::Event& event) {
-  Browser* browser = browser_view_ ? browser_view_->browser() : nullptr;
+  Browser* browser = browser_view_ ? zephyrus::AsBrowser(browser_view_->browser()) : nullptr;
   if (!browser) {
     return;
   }
@@ -2754,7 +2755,7 @@ void ZephyrusSidebarView::OnCompactModeChanged() {
 // the panel. Hidden ones go to a zero-size holder so they still have a parent
 // to be reclaimed from.
 bool ZephyrusSidebarView::ContainersOn() const {
-  return browser_view_->browser()->profile()->GetPrefs()->GetBoolean(
+  return browser_view_->browser()->GetProfile()->GetPrefs()->GetBoolean(
       "zephyrus.appearance.m3_containers");
 }
 
@@ -3823,7 +3824,7 @@ int ZephyrusSidebarView::GetSidebarWidth() const {
   // regular and private windows, which is what a user resizing a panel
   // expects.
   const PrefService* prefs =
-      browser_view_->browser()->profile()->GetOriginalProfile()->GetPrefs();
+      browser_view_->browser()->GetProfile()->GetOriginalProfile()->GetPrefs();
   // Clamped on READ, not just on write. The pref is a plain integer in
   // Preferences that a user can edit, sync can deliver, and an older build
   // could have written under a different range -- and a sidebar stuck at 2px
@@ -3859,14 +3860,14 @@ void ZephyrusSidebarView::OnResizeFinished() {
   // value from here on; leaving it set would pin the width to a drag that is
   // over, and the next pref change would not be reflected.
   drag_width_.reset();
-  browser_view_->browser()->profile()->GetOriginalProfile()->GetPrefs()->SetInteger(
+  browser_view_->browser()->GetProfile()->GetOriginalProfile()->GetPrefs()->SetInteger(
       kWidthPrefName, final_width);
   browser_view_->InvalidateLayout();
 }
 
 void ZephyrusSidebarView::ResetWidthToDefault() {
   drag_width_.reset();
-  browser_view_->browser()->profile()->GetOriginalProfile()->GetPrefs()->SetInteger(
+  browser_view_->browser()->GetProfile()->GetOriginalProfile()->GetPrefs()->SetInteger(
       kWidthPrefName, kDefaultSidebarWidth);
   browser_view_->InvalidateLayout();
 }

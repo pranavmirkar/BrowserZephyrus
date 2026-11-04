@@ -575,7 +575,7 @@ views::MdTextButton* AddOpenButton(views::View* into,
 }
 
 void BuildAgentContent(views::View* into, BrowserView* browser_view) {
-  Profile* profile = browser_view->browser()->profile();
+  Profile* profile = browser_view->browser()->GetProfile();
   PrefService* prefs = profile->GetPrefs();
   const bool bundled = agent::HasBundledKey(agent::kBundledDefaultKind);
 
@@ -767,7 +767,7 @@ std::u16string DefaultBrowserLine(shell_integration::DefaultWebClientState state
 }
 
 void BuildPrivacyContent(views::View* into, BrowserView* browser_view) {
-  Profile* profile = browser_view->browser()->profile();
+  Profile* profile = browser_view->browser()->GetProfile();
   PrefService* prefs = profile->GetPrefs();
 
   // -- Blocking: the two switches the adblock service watches live.
@@ -1177,7 +1177,7 @@ void ZephyrusOnboarding::ShowIfDue() {
     return;
   }
   // Setup belongs to the persistent profile, not a temporary private session.
-  Profile* profile = browser_view_->browser()->profile();
+  Profile* profile = browser_view_->browser()->GetProfile();
   if (profile->IsOffTheRecord() || profile->IsGuestSession()) {
     return;
   }
@@ -1263,7 +1263,7 @@ void ZephyrusOnboarding::ShowStep() {
   step_content_->RemoveAllChildViews();
   Profile* profile =
       browser_view_ && browser_view_->browser()
-          ? browser_view_->browser()->profile()
+          ? browser_view_->browser()->GetProfile()
           : nullptr;
   switch (flow_.step()) {
     case agent::OnboardingStep::kWelcome:
@@ -1383,7 +1383,7 @@ void ZephyrusOnboarding::OnSkyTick() {
   }
   // Zep is the look the person has chosen, and only if they want Zep at all.
   if (browser_view_ && browser_view_->browser()) {
-    const PrefService& prefs = *browser_view_->browser()->profile()->GetPrefs();
+    const PrefService& prefs = *browser_view_->browser()->GetProfile()->GetPrefs();
     flyer_->Advance(seconds, agent::ReadMascotLook(prefs),
                     prefs.GetBoolean(agent::kMascotPref));
   }
@@ -1418,7 +1418,7 @@ void ZephyrusOnboarding::Finish() {
   }
   if (browser_view_ && browser_view_->browser()) {
     agent::MarkOnboardingDone(
-        *browser_view_->browser()->profile()->GetPrefs());
+        *browser_view_->browser()->GetProfile()->GetPrefs());
   }
 }
 

@@ -21,7 +21,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/core/browser/db/v4_local_database_manager.h"
+#include "components/safe_browsing/core/browser/db/sb_local_database_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -173,8 +173,8 @@ ServicesDelegateDesktop::CreateIncidentReportingService() {
 
 void ServicesDelegateDesktop::StartOnUIThread(
     scoped_refptr<network::SharedURLLoaderFactory> browser_url_loader_factory,
-    const V4ProtocolConfig& v4_config) {
-  database_manager_->StartOnUIThread(browser_url_loader_factory, v4_config);
+    const SBProtocolConfig& config) {
+  database_manager_->StartOnUIThread(browser_url_loader_factory, config);
 }
 
 void ServicesDelegateDesktop::StopOnUIThread(bool shutdown) {

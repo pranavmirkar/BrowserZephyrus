@@ -28,8 +28,7 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
   int GetZephyrusTabStripHeight() const override;
   double GetZephyrusSidebarRevealAmount() const override;
 
-  bool ShouldDrawTabStrip() const override;
-  bool ShouldDrawVerticalTabStrip() const override;
+  TabStripType GetTabStripType() const override;
   bool IsVerticalTabStripCollapsed() const override;
   bool ShouldDrawWebAppFrameToolbar() const override;
   bool GetUnframedModeEnabled() const override;
@@ -44,7 +43,9 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
   bool IsActiveTabSplit() const override;
   bool IsActiveTabAtLeadingWindowEdge() const override;
   const ImmersiveModeController* GetImmersiveModeController() const override;
+  BrowserAnimationController* GetAnimationController() const override;
   ExclusiveAccessBubbleViews* GetExclusiveAccessBubble() const override;
+  OrganizerPanelLocation GetOrganizerPanelLocation() const override;
   bool IsTopControlsSlideBehaviorEnabled() const override;
   float GetTopControlsSlideBehaviorShownRatio() const override;
   gfx::NativeView GetHostViewForAnchoring() const override;
@@ -55,7 +56,9 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
       const gfx::Rect& available_titlebar_area) override;
   bool ShouldLayoutTabStrip() const override;
   int GetExtraInfobarOffset() const override;
-  bool IsProjectsPanelVisible() const override;
+  base::CallbackListSubscription AddOnGlassModeChangedCallback(
+      base::RepeatingCallback<void(bool)> callback,
+      bool* current_state_out) override;
 
  protected:
   BrowserView& browser_view() { return browser_view_.get(); }

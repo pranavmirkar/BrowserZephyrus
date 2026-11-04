@@ -18,7 +18,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "chrome/browser/page_load_metrics/observers/top_chrome_webui_metrics_observer.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
 #include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
@@ -34,7 +33,6 @@
 #include "chrome/browser/ui/views/omnibox/rounded_omnibox_results_frame.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
 #include "components/omnibox/common/omnibox_feature_configs.h"
-#include "components/omnibox/common/omnibox_features.h"
 #include "components/omnibox/common/omnibox_metrics_utils.h"
 #include "components/viz/common/frame_timing_details.h"
 #include "ui/accessibility/ax_node_data.h"
@@ -67,17 +65,17 @@ BASE_FEATURE(kOmniboxRemovePopupWidgetSoftwareCompositing,
 std::optional<gfx::Rect> GetDebugWidgetBounds(
     LocationBarView* location_bar_view,
     int popup_results_height) {
-  Browser* browser = location_bar_view->browser();
+  BrowserWindowInterface* browser = location_bar_view->browser();
   if (!browser) {
     return std::nullopt;
   }
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
-  if (!browser_view || !browser_view->contents_web_view()) {
+  if (!browser_view || !browser_view->GetContentsView()) {
     return std::nullopt;
   }
 
   gfx::Rect contents_bounds =
-      browser_view->contents_web_view()->GetBoundsInScreen();
+      browser_view->GetContentsView()->GetBoundsInScreen();
   int frame_width = contents_bounds.width() / 2;
   int frame_height = popup_results_height;
 
@@ -308,7 +306,8 @@ gfx::Image OmniboxPopupViewViews::GetMatchIcon(
 void OmniboxPopupViewViews::SetSelectedIndex(size_t index) {
   DCHECK(HasMatchAt(index));
   if (index != controller()->edit_model()->GetPopupSelection().line) {
-    OmniboxPopupSelection::LineState line_state = OmniboxPopupSelection::NORMAL;
+    OmniboxPopupSelection::LineState line_state =
+        OmniboxPopupSelection::LineState::kNormal;
     controller()->edit_model()->SetPopupSelection(
         OmniboxPopupSelection(index, line_state));
     OnPropertyChanged(controller()->edit_model(),
@@ -500,7 +499,7 @@ void OmniboxPopupViewViews::ProvideButtonFocusHint(size_t line) {
     // The accessible selection cannot be in both the button and the result
     // view. When the button gets selected and is active, remove the selected
     // state from the result view. This is so that if a subsequent action
-    // creates a OmniboxPopupSelection::NORMAL we fire the event.
+    // creates a OmniboxPopupSelection::LineState::kNormal we fire the event.
     result_view_at(line)->GetViewAccessibility().SetIsSelected(false);
     FireAXEventsForNewActiveDescendant(active_button);
   }
@@ -773,7 +772,7 @@ gfx::Rect OmniboxPopupViewViews::GetTargetBounds() const {
   content_rect.set_height(popup_height);
 
   if (omnibox::IsWebUIOmniboxPopupEnabled() &&
-      !omnibox::IsWebUIOmniboxFullPopupEnabled() &&
+      !location_bar_view_->is_full_webui_omnibox() &&
       !omnibox::IsAimPopupFeatureEnabled() &&
       base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxPopupDebug) &&
       omnibox::kWebUIOmniboxPopupDebugSxSParam.Get()) {
@@ -888,7 +887,7 @@ std::u16string OmniboxPopupViewViews::UpdateRowView(
     const AutocompleteMatch& match,
     const std::u16string& previous_row_header) {
   std::u16string current_row_header =
-      controller()->edit_model()->GetSuggestionGroupHeaderText(
+      controller()->autocomplete_controller()->GetSuggestionGroupHeaderText(
           match.suggestion_group_id);
   // Show the header if it's distinct from the previous match's header.
   if (!current_row_header.empty() &&

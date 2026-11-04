@@ -80,7 +80,7 @@ ZephyrusGlanceController::~ZephyrusGlanceController() {
 
 glance::Config ZephyrusGlanceController::ReadConfig() const {
   glance::Config config;
-  const PrefService* prefs = browser_view_->browser()->profile()->GetPrefs();
+  const PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
   config.enabled = prefs->GetBoolean(glance::kEnabledPref);
   config.trigger =
       glance::TriggerFromName(prefs->GetString(glance::kTriggerPref));

@@ -5,23 +5,19 @@
 #include "chrome/browser/ui/views/frame/opaque_browser_frame_view_layout.h"
 
 #include <algorithm>
-#include <string>
+#include <ranges>
 #include <vector>
 
-#include "base/command_line.h"
-#include "base/containers/adapters.h"
 #include "base/i18n/rtl.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
-#include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
-#include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
-#include "ui/gfx/font.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/window/caption_button_layout_constants.h"
+#include "ui/views/window/client_view.h"
 #include "ui/views/window/frame_buttons.h"
 #include "ui/views/window/frame_caption_button.h"
 
@@ -304,7 +300,7 @@ void OpaqueBrowserFrameViewLayout::LayoutWindowControls() {
       std::erase(buttons_not_shown, button);
     }
 
-    for (const auto& button : base::Reversed(trailing_buttons_)) {
+    for (const auto& button : std::views::reverse(trailing_buttons_)) {
       ConfigureButton(button, ButtonAlignment::kAlignTrailing);
       std::erase(buttons_not_shown, button);
     }

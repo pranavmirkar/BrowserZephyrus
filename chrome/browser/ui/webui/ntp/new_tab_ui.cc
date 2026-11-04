@@ -60,6 +60,8 @@ bool NewTabUIConfig::IsWebUIEnabled(content::BrowserContext* browser_context) {
       [[fallthrough]];
     case NTPResourceCache::GUEST:
       [[fallthrough]];
+    case NTPResourceCache::ISOLATED:
+      [[fallthrough]];
     case NTPResourceCache::NON_PRIMARY_OTR:
       return true;
   }
@@ -91,10 +93,12 @@ NewTabUI::NewTabUI(content::WebUI* web_ui) : content::WebUIController(web_ui) {
   // Zephyrus sidebar actually read — not the page's HTML <title> — so the
   // rename to "Private" has to happen here. Zephyrus: off-the-record is Private
   // Workspace, not Incognito.
-  const int title_resource_id =
-      profile->IsOffTheRecord() && !profile->IsGuestSession()
-          ? IDS_ZEPHYRUS_NEW_PRIVATE_TAB
-          : IDS_NEW_TAB_TITLE;
+  int title_resource_id = IDS_NEW_TAB_TITLE;
+  if (profile->IsEnterpriseIsolatedModeProfile()) {
+    title_resource_id = IDS_NEW_ISOLATED_TAB_TITLE;
+  } else if (profile->IsIncognitoProfile()) {
+    title_resource_id = IDS_ZEPHYRUS_NEW_PRIVATE_TAB;
+  }
   web_ui->OverrideTitle(l10n_util::GetStringUTF16(title_resource_id));
 
   if (!profile->IsGuestSession()) {

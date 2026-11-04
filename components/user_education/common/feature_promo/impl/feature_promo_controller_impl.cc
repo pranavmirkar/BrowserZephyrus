@@ -177,14 +177,14 @@ FeaturePromoControllerImpl::FeaturePromoControllerImpl(
     UserEducationStorageService* storage_service,
     FeaturePromoSessionPolicy* session_policy,
     TutorialService* tutorial_service,
-    ProductMessagingController* messaging_controller)
+    ProductMessagingController& messaging_controller)
     : registry_(registry),
       feature_engagement_tracker_(feature_engagement_tracker),
       bubble_factory_registry_(help_bubble_registry),
       storage_service_(storage_service),
       session_policy_(session_policy),
       tutorial_service_(tutorial_service),
-      product_messaging_controller_(*messaging_controller),
+      product_messaging_controller_(messaging_controller),
       demo_feature_name_(GetFeatureEngagementDemoFeatureName()) {
   DCHECK(feature_engagement_tracker_);
   DCHECK(bubble_factory_registry_);
@@ -746,7 +746,8 @@ void FeaturePromoControllerImpl::AddDemoPreconditionProviders(
                 ptr->current_promo() &&
                 ptr->current_promo()->iph_feature() == spec.feature();
             list.AddPrecondition(std::make_unique<AnchorElementPrecondition>(
-                spec, context->GetElementContext(), pre_increment));
+                spec, context->GetElementContext(),
+                context->GetDefaultElementFilter(), pre_increment));
           }
           return list;
         },
@@ -807,7 +808,8 @@ void FeaturePromoControllerImpl::AddPreconditionProviders(
                 std::make_unique<ForwardingFeaturePromoPrecondition>(
                     ptr->private_->get_tracker_precondition()));
             list.AddPrecondition(std::make_unique<AnchorElementPrecondition>(
-                spec, context->GetElementContext(), false));
+                spec, context->GetElementContext(),
+                context->GetDefaultElementFilter(), false));
             // Wait-for state *does* take the current promo into account, since
             // a higher-weight promo might block a lower-weight promo.
             list.AddPrecondition(std::make_unique<SessionPolicyPrecondition>(
@@ -1170,6 +1172,8 @@ void FeaturePromoControllerImpl::OnTutorialStarted(
   tutorial_promo_handle_ = CloseBubbleAndContinuePromoWithReason(
       *iph_feature, FeaturePromoClosedReason::kAction);
   DCHECK(tutorial_promo_handle_.is_valid());
+  CHECK(tutorial_service_) << "Attempted to start a tutorial IPH in a context "
+                              "with no tutorial service.";
   if (auto actual_context = ResolveContext(context, bubble_context)) {
     tutorial_service_->StartTutorial(
         tutorial_id, context->GetElementContext(),

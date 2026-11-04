@@ -21,6 +21,7 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
+#include "ui/compositor/layer_solid_color.h"
 #include "ui/compositor/layer_type.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/background.h"
@@ -87,7 +88,7 @@ void ZephyrusCustomizePanel::EnsureContent() {
     return;
   }
   auto* web_view = AddChildView(
-      std::make_unique<views::WebView>(browser_view_->browser()->profile()));
+      std::make_unique<views::WebView>(browser_view_->browser()->GetProfile()));
   web_view_ = web_view;
 
   // A LAYER, on the WebView itself -- copied from ContentsWebView, which is
@@ -193,7 +194,7 @@ void ZephyrusCustomizePanel::RoundWebContents() {
   // gone, so it takes the container's own radius and is concentric by
   // definition. (With the border it sat 1px inside, and concentricity would
   // have asked for 11 -- 16.5 device pixels at 1.5x, which renders blurry.)
-  web_view_->holder()->SetCornerRadii(radii);
+  web_view_->holder()->SetNativeViewCornerRadii(radii);
   if (ui::Layer* layer = web_view_->layer()) {
     layer->SetRoundedCornerRadius(radii);
     layer->SetIsFastRoundedCorner(true);
@@ -275,7 +276,9 @@ void ZephyrusCustomizePanel::ApplyPalette() {
   // so a views::Background here would be dead code -- the layer's own colour
   // is the fill.
   if (ui::Layer* layer = web_view_->layer()) {
-    layer->SetColor(ground);
+    if (ui::LayerSolidColor* solid = layer->AsSolidColor()) {
+      solid->SetColor(SkColor4f::FromColor(ground));
+    }
   }
 
   // And the renderer's own fill, so the page does not flash a default white

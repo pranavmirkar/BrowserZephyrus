@@ -108,12 +108,12 @@ class ConditionParser {
 // "a.b.example.co.in" -> "a.b.example": the host minus its public suffix, or
 // empty when it has none (an IP, a bare suffix, an unknown TLD).
 std::string_view StripRegistry(std::string_view host) {
-  const size_t registry =
-      net::registry_controlled_domains::GetCanonicalHostRegistryLength(
+  const std::optional<std::string_view> suffix =
+      net::registry_controlled_domains::GetCanonicalHostRegistry(
           host, net::registry_controlled_domains::EXCLUDE_UNKNOWN_REGISTRIES,
           net::registry_controlled_domains::EXCLUDE_PRIVATE_REGISTRIES);
-  if (registry == 0 || registry == std::string::npos ||
-      registry + 1 >= host.size()) {
+  const size_t registry = suffix ? suffix->size() : 0;
+  if (registry == 0 || registry + 1 >= host.size()) {
     return std::string_view();
   }
   return host.substr(0, host.size() - registry - 1);

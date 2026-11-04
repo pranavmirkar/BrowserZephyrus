@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_CUSTOM_CORNERS_BACKGROUND_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_CUSTOM_CORNERS_BACKGROUND_H_
 
+#include <tuple>
 #include <variant>
 #include <vector>
 
@@ -14,6 +15,8 @@
 #include "ui/base/interaction/safe_castable.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_variant.h"
+#include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/background.h"
 #include "ui/views/view.h"
 
@@ -80,6 +83,7 @@ class CustomCornersBackground : public views::Background, public CustomCorners {
 
   // Sets whether the background should be painted.
   void SetVisible(bool visible);
+  bool is_visible() const { return visible_; }
 
   // Sets the color to paint the primary area of the view.
   void SetPrimaryColor(ColorChoiceWithAlpha primary_color);
@@ -108,7 +112,12 @@ class CustomCornersBackground : public views::Background, public CustomCorners {
   // as they may be different on some platforms.
   Corner GetWindowCorner(bool upper) const;
 
-  bool visible_for_testing() const { return visible_; }
+  // Sets whether to create an artificial glass effect behind the background.
+  // Has no effect if glass is disabled or if artificial glass is set to opaque.
+  // Setting to true requires the following:
+  //  - Host view has a layer.
+  //  - Corners have already been updated for the current frame.
+  void SetUseBackgroundBlur(bool use_background_blur);
 
   // Takes the inverse of a view with a CustomCornersBackground - i.e. it cuts
   // out the corners, not the background area.
@@ -125,10 +134,18 @@ class CustomCornersBackground : public views::Background, public CustomCorners {
   using Cutout = std::variant<InverseOf, const views::View*>;
   using Cutouts = std::vector<Cutout>;
 
+  [[nodiscard]] inline SkPath GetBackgroundPath() const {
+    return GetBackgroundPath(view_->GetLocalBounds(), nullptr);
+  }
+
   // Cuts `cutouts` out of `this`. Works for views with a
   // `CustomCornersBackground` as well as for `CustomFloatingCorner`. Empty
   // clears the cutout.
   void SetCutoutFrom(const Cutouts& cutouts);
+
+  // Does a best effort to clip `view` to this background. The view must be in
+  // the same hierarchy and ideally a descendant of this background's host view.
+  void ClipViewToBackground(views::View* view) const;
 
   // views::Background:
   void Paint(gfx::Canvas* canvas, views::View* view) const override;
@@ -143,9 +160,6 @@ class CustomCornersBackground : public views::Background, public CustomCorners {
   int default_radius() const { return default_radius_; }
 
  private:
-  // Hide this as it should not be used directly.
-  using Background::SetColor;
-
   using VisualCorners = CornerMapT<VisualCorner, Corner>;
 
   // Returns a path containing the entire painted background region.

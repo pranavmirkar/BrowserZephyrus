@@ -41,6 +41,7 @@
 #include "third_party/blink/renderer/modules/webaudio/audio_listener.h"
 #include "third_party/blink/renderer/modules/webaudio/deferred_task_handler.h"
 #include "third_party/blink/renderer/modules/webaudio/offline_audio_completion_event.h"
+#include "third_party/blink/renderer/modules/webaudio/offline_audio_destination_handler.h"
 #include "third_party/blink/renderer/modules/webaudio/offline_audio_destination_node.h"
 #include "third_party/blink/renderer/platform/audio/audio_utilities.h"
 #include "third_party/blink/renderer/platform/bindings/exception_messages.h"
@@ -187,7 +188,7 @@ OfflineAudioContext::OfflineAudioContext(LocalDOMWindow* window,
                        render_quantum_frames),
       total_render_frames_(number_of_frames) {
   destination_node_ = OfflineAudioDestinationNode::Create(
-      this, number_of_channels, number_of_frames, sample_rate);
+      this, number_of_channels, sample_rate);
   Initialize();
 }
 
@@ -202,6 +203,11 @@ void OfflineAudioContext::Trace(Visitor* visitor) const {
   visitor->Trace(complete_resolver_);
   visitor->Trace(scheduled_suspends_);
   BaseAudioContext::Trace(visitor);
+}
+
+OfflineAudioDestinationNode* OfflineAudioContext::destinationNode() const {
+  return static_cast<OfflineAudioDestinationNode*>(
+      BaseAudioContext::destinationNode());
 }
 
 ScriptPromise<AudioBuffer> OfflineAudioContext::startOfflineRendering(
@@ -243,6 +249,7 @@ ScriptPromise<AudioBuffer> OfflineAudioContext::startOfflineRendering(
 
   complete_resolver_ = MakeGarbageCollected<ScriptPromiseResolver<AudioBuffer>>(
       script_state, exception_state.GetContext());
+  complete_resolver_->SuppressDetachCheck();
 
   // Allocate the AudioBuffer to hold the rendered result.
   float sample_rate = DestinationHandler().SampleRate();
@@ -261,19 +268,13 @@ ScriptPromise<AudioBuffer> OfflineAudioContext::startOfflineRendering(
     return EmptyPromise();
   }
 
-  DestinationHandler().InitializeOfflineRenderThread(render_target);
-  if (HasAllocationFailed()) {
-    exception_state.ThrowDOMException(
-        DOMExceptionCode::kNotSupportedError,
-        "The offline audio context could not be initialized due to memory "
-        "limitations.");
-    return EmptyPromise();
-  }
+  DestinationHandler().EnsureOfflineRenderThreadInitialized();
+  DestinationHandler().SetSharedRenderTarget(render_target);
 
   // Start rendering and return the promise.
   is_rendering_started_ = true;
   SetContextState(V8AudioContextState::Enum::kRunning);
-  static_cast<OfflineAudioDestinationNode*>(destination())
+  destinationNode()
       ->SetDestinationBuffer(render_target);
   DestinationHandler().StartRendering();
   return complete_resolver_->Promise();
@@ -319,11 +320,10 @@ ScriptPromise<IDLUndefined> OfflineAudioContext::suspendContext(
   }
 
   // Find the sample frame and round up to the nearest render quantum
-  // boundary.  This assumes the render quantum is a power of two.
+  // boundary.
   size_t frame = when * sampleRate();
-  frame = GetDeferredTaskHandler().RenderQuantumFrames() *
-          ((frame + GetDeferredTaskHandler().RenderQuantumFrames() - 1) /
-           GetDeferredTaskHandler().RenderQuantumFrames());
+  frame = audio_utilities::RoundUpToMultiple(
+      frame, GetDeferredTaskHandler().RenderQuantumFrames());
 
   // The specified suspend time is in the past; reject the promise.
   if (frame < CurrentSampleFrame()) {
@@ -361,6 +361,16 @@ ScriptPromise<IDLUndefined> OfflineAudioContext::suspendContext(
 
     auto* resolver = MakeGarbageCollected<ScriptPromiseResolver<IDLUndefined>>(
         script_state, exception_state.GetContext());
+
+    // When an OfflineAudioContext that has not started rendering is garbage
+    // collected, it may be collected in the same cycle as its pending
+    // suspend resolvers. In some GC configurations, the resolver's
+    // pre-finalizer may run before the context's, triggering a DCHECK that
+    // the resolver was not detached. Since OfflineAudioContext explicitly
+    // detaches these resolvers in its own Dispose/DetachPendingResolvers
+    // paths, it is safe to suppress this check.
+    resolver->SuppressDetachCheck();
+
     promise = resolver->Promise();
 
     scheduled_suspends_.insert(frame, resolver);
@@ -476,7 +486,7 @@ void OfflineAudioContext::FireCompletionEvent() {
   // Avoid firing the event if the document has already gone away.
   if (GetExecutionContext()) {
     AudioBuffer* rendered_buffer =
-        static_cast<OfflineAudioDestinationNode*>(destination())
+        destinationNode()
             ->DestinationBuffer();
     DCHECK(rendered_buffer);
     if (!rendered_buffer) {
@@ -489,11 +499,13 @@ void OfflineAudioContext::FireCompletionEvent() {
     // promise too.
     DispatchEvent(*OfflineAudioCompletionEvent::Create(rendered_buffer));
     complete_resolver_->Resolve(rendered_buffer);
+    complete_resolver_ = nullptr;
   } else {
     // The resolver should be rejected when the execution context is gone.
     complete_resolver_->Reject(MakeGarbageCollected<DOMException>(
         DOMExceptionCode::kInvalidStateError,
         "the execution context does not exist"));
+    complete_resolver_ = nullptr;
   }
 
   is_rendering_started_ = false;
@@ -540,8 +552,7 @@ void OfflineAudioContext::HandlePostRenderTasks() {
 }
 
 OfflineAudioDestinationHandler& OfflineAudioContext::DestinationHandler() {
-  return static_cast<OfflineAudioDestinationHandler&>(
-      destination()->GetAudioDestinationHandler());
+  return destinationNode()->GetAudioDestinationHandler();
 }
 
 void OfflineAudioContext::ResolveSuspendOnMainThread(size_t frame) {
@@ -598,6 +609,27 @@ void OfflineAudioContext::RejectPendingResolvers() {
   }
 
   BaseAudioContext::RejectPendingResolvers();
+}
+
+void OfflineAudioContext::DetachPendingResolvers() {
+  DCHECK(IsMainThread());
+
+  {
+    base::AutoLock locker(suspend_frames_lock_);
+    scheduled_suspend_frames_.clear();
+  }
+
+  for (auto& entry : scheduled_suspends_) {
+    entry.value->SuppressDetachCheck();
+  }
+  scheduled_suspends_.clear();
+
+  if (complete_resolver_) {
+    complete_resolver_->SuppressDetachCheck();
+    complete_resolver_ = nullptr;
+  }
+
+  BaseAudioContext::DetachPendingResolvers();
 }
 
 bool OfflineAudioContext::IsPullingAudioGraph() const {

@@ -46,6 +46,15 @@ LocationBarModelImpl::LocationBarModelImpl(LocationBarModelDelegate* delegate,
   DCHECK(delegate_);
 }
 
+LocationBarModelImpl::LocationBarModelImpl(ui::UnownedUserDataHost& host,
+                                           LocationBarModelDelegate* delegate,
+                                           size_t max_url_display_chars)
+    : LocationBarModel(host),
+      delegate_(delegate),
+      max_url_display_chars_(max_url_display_chars) {
+  DCHECK(delegate_);
+}
+
 LocationBarModelImpl::~LocationBarModelImpl() = default;
 
 // LocationBarModelImpl Implementation.
@@ -292,6 +301,11 @@ std::u16string LocationBarModelImpl::GetSecureDisplayText() const {
           visible_security_state->malicious_content_status ==
               security_state::MALICIOUS_CONTENT_STATUS_MANAGED_POLICY_WARN) {
         return std::u16string();
+      }
+
+      if (visible_security_state->malicious_content_status ==
+          security_state::MALICIOUS_CONTENT_STATUS_WARNABLE_SUSPICIOUS_SITE) {
+        return l10n_util::GetStringUTF16(IDS_SUSPICIOUS_VERBOSE_STATE);
       }
 
       bool fails_malware_check =

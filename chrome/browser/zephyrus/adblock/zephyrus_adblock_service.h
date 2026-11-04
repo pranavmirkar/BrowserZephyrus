@@ -20,6 +20,7 @@
 #include "base/timer/timer.h"
 #include "chrome/browser/zephyrus/adblock/adblock_cosmetic_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
+#include "chrome/browser/zephyrus/adblock/adblock_csp_filter.h"
 #include "chrome/browser/zephyrus/adblock/adblock_param_filter.h"
 #include "chrome/browser/zephyrus/adblock/adblock_regex_matcher.h"
 #include "chrome/browser/zephyrus/adblock/adblock_scriptlet_engine.h"
@@ -174,6 +175,14 @@ class ZephyrusAdblockService : public KeyedService {
                               bool blocked);
   int total_urls_skipped() const { return total_urls_skipped_; }
 
+  // `$csp=` rules (see AdblockCspFilter): the Content-Security-Policy headers to
+  // add to the response of this page or frame load. Empty (almost always) when
+  // no rule matches, the feature or the blocker is off, or the site is on the
+  // allowlist.
+  std::vector<std::string> CspPoliciesFor(const GURL& url,
+                                          const GURL& initiator,
+                                          ResourceType type) const;
+
   int total_blocked() const { return total_blocked_; }
   size_t rule_count() const { return rule_count_; }
 
@@ -193,6 +202,7 @@ class ZephyrusAdblockService : public KeyedService {
     scoped_refptr<const AdblockRegexMatcher> regex;
     std::unique_ptr<AdblockParamFilter> params;
     std::unique_ptr<AdblockUrlSkipFilter> urlskip;
+    std::unique_ptr<AdblockCspFilter> csp;
     // Identifies the network rules' list text; 0 when the compiled index is
     // off or no list could be read.
     uint64_t list_key = 0;
@@ -252,6 +262,8 @@ class ZephyrusAdblockService : public KeyedService {
   int total_params_stripped_ = 0;
   // `$urlskip=` rules; built with the lists and replaced with them.
   std::unique_ptr<const AdblockUrlSkipFilter> urlskip_;
+  // `$csp=` rules; built with the lists and replaced with them.
+  std::unique_ptr<const AdblockCspFilter> csp_filter_;
   int total_urls_skipped_ = 0;
 
   // Shared with the thread that is building the index from it.

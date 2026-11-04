@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/views/frame/zephyrus_privacy_popup.h"
 
 #include <algorithm>
@@ -81,6 +82,7 @@
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/controls/webview/webview.h"
 
 namespace zephyrus_privacy {
 namespace {
@@ -456,7 +458,7 @@ class PrivacyPanel : public views::View {
   METADATA_HEADER(PrivacyPanel, views::View)
 
  public:
-  PrivacyPanel(base::WeakPtr<Browser> browser,
+  PrivacyPanel(base::WeakPtr<BrowserWindowInterface> browser,
                PrivacyIntelligenceService::PageAnalysis analysis,
                PrivacyIntelligenceService::PageSignals signals,
                std::u16string site,
@@ -853,7 +855,7 @@ class PrivacyPanel : public views::View {
     // wholly wrong: the panel showed the right site name the whole time.
     zephyrus_adblock::ZephyrusAdblockService* adblock =
         zephyrus_adblock::ZephyrusAdblockServiceFactory::GetForBrowserContext(
-            zephyrus::ActiveProfile(browser_.get()));
+            zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_.get())));
     if (!adblock) {
       return;
     }
@@ -865,7 +867,7 @@ class PrivacyPanel : public views::View {
     }
 
     content::WebContents* contents =
-        browser_->tab_strip_model()->GetActiveWebContents();
+        browser_->GetTabStripModel()->GetActiveWebContents();
     if (!contents) {
       return;
     }
@@ -875,7 +877,7 @@ class PrivacyPanel : public views::View {
     if (allow) {
       if (PrivacyIntelligenceService* service =
               PrivacyIntelligenceServiceFactory::GetForBrowserContext(
-                  zephyrus::ActiveProfile(browser_.get()))) {
+                  zephyrus::ActiveProfile(zephyrus::AsBrowser(browser_.get())))) {
         service->RecordUserAllowedSite(contents->GetLastCommittedURL());
       }
     }
@@ -1099,7 +1101,7 @@ class PrivacyPanel : public views::View {
 
   // Weak: the hop from a click to a reload passes through the sheet's own
   // teardown, and the window can be closed under it.
-  base::WeakPtr<Browser> browser_;
+  base::WeakPtr<BrowserWindowInterface> browser_;
   PrivacyIntelligenceService::PageAnalysis analysis_;
   PrivacyIntelligenceService::PageSignals signals_;
   std::u16string site_;
@@ -1463,7 +1465,7 @@ class PrivacySideSheet : public views::View,
     // there.
     views::FocusManager* const focus_manager = GetFocusManager();
     if (focus_manager && Contains(focus_manager->GetFocusedView())) {
-      if (views::View* contents = browser_view_->contents_web_view()) {
+      if (views::View* contents = browser_view_->GetActiveContentsWebView()) {
         contents->RequestFocus();
       }
     }
@@ -1586,7 +1588,7 @@ PrivacySideSheet* FindSheet(BrowserView* browser_view) {
 }
 
 // Second half of ShowPrivacyPopup, once the analysis comes back.
-void ShowWithAnalysis(base::WeakPtr<Browser> browser,
+void ShowWithAnalysis(base::WeakPtr<BrowserWindowInterface> browser,
                       PrivacyIntelligenceService::PageSignals signals,
                       std::u16string site,
                       bool blocking_off,
@@ -1698,7 +1700,7 @@ void ShowPrivacyPopup(Browser* browser, views::View* anchor) {
 
   service->AnalyzeCurrentPage(
       page_url, std::move(rows), totals,
-      base::BindOnce(&ShowWithAnalysis, browser->AsWeakPtr(),
+      base::BindOnce(&ShowWithAnalysis, browser->GetWeakPtr(),
                      service->GetPageSignals(page_url), site, blocking_off,
                      /*can_allow=*/adblock != nullptr));
 }

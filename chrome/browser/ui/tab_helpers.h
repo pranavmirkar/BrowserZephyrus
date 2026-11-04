@@ -62,7 +62,6 @@ class TabHelpers {
   friend class TabAndroid;
   friend class android::TabWebContentsDelegateAndroid;
 #else
-  friend class Browser;
   friend class chrome::BrowserTabStripModelDelegate;
   friend class tabs::TabModel;
 #endif  // BUILDFLAG(IS_ANDROID)
@@ -92,7 +91,8 @@ class TabHelpers {
   // all the associated tab helpers that are needed for the WebContents to
   // serve in that role. It is safe to call this on a WebContents that was
   // already adopted.
-  static void AttachTabHelpers(content::WebContents* web_contents);
+  static void AttachTabHelpers(content::WebContents* web_contents,
+                               bool enable_browser_autofill = true);
 };
 
 #endif  // CHROME_BROWSER_UI_TAB_HELPERS_H_

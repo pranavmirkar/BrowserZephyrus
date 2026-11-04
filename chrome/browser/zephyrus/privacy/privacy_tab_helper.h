@@ -144,6 +144,7 @@ class PrivacyTabHelper
   void ResourceLoadComplete(
       content::RenderFrameHost* render_frame_host,
       const content::GlobalRequestID& request_id,
+      const GURL& original_url,
       const blink::mojom::ResourceLoadInfo& resource_load_info) override;
 
   // §6.3's tracking-cookie input and §6.6's "Tracking cookies" category.

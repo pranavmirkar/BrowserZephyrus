@@ -20,6 +20,7 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
+#include "chrome/browser/zephyrus/adblock/adblock_procedural_script.h"
 #include "chrome/browser/zephyrus/adblock/adblock_redirect_resources.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_updater.h"
 #include "chrome/common/chrome_paths.h"
@@ -425,7 +426,12 @@ ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
     // Only uBlock Origin's own sections may redirect; see AdblockUrlSkipFilter.
     urlskip->AddRules(contents, /*trust_unsectioned=*/false);
   }
+  auto csp = std::make_unique<AdblockCspFilter>();
+  if (read) {
+    csp->AddRules(contents);
+  }
   ZephyrusAdblockService::BuiltEngines built;
+  built.csp = std::move(csp);
   built.urlskip = std::move(urlskip);
   built.params = std::move(params);
   built.network = std::move(network);
@@ -829,6 +835,11 @@ void ZephyrusAdblockService::OnFullFilterListLoaded(BuiltEngines built) {
             << built.urlskip->untrusted_count() << " from untrusted lists)";
     urlskip_ = std::move(built.urlskip);
   }
+  if (built.csp) {
+    VLOG(1) << "[Zephyrus] adblock: csp rules: " << built.csp->rule_count()
+            << " (" << built.csp->skipped_count() << " skipped)";
+    csp_filter_ = std::move(built.csp);
+  }
   if (built.params) {
     VLOG(1) << "[Zephyrus] adblock: tracking-parameter rules: "
             << built.params->rule_count() << " ("
@@ -1045,11 +1056,25 @@ std::string ZephyrusAdblockService::GetGenericCosmeticCss(
 
 std::string ZephyrusAdblockService::GetScriptletInjection(
     const GURL& url) const {
-  if (!enabled_ || !scriptlet_engine_ || IsAllowlisted(url) ||
-      (DocumentExceptions(url) & kExceptDocument)) {
+  if (!enabled_ || IsAllowlisted(url)) {
     return std::string();
   }
-  return scriptlet_engine_->BuildInjectionScriptForUrl(url);
+  const uint32_t exceptions = DocumentExceptions(url);
+  if (exceptions & kExceptDocument) {
+    return std::string();
+  }
+  std::string script;
+  if (scriptlet_engine_) {
+    script = scriptlet_engine_->BuildInjectionScriptForUrl(url);
+  }
+  // Procedural cosmetic filters run as page script too: CSS cannot say
+  // "the container whose text mentions Sponsored".
+  if (cosmetic_engine_ && !(exceptions & (kExceptElemHide | kExceptSpecificHide)) &&
+      base::FeatureList::IsEnabled(kZephyrusAdblockProceduralCosmetic)) {
+    script += BuildProceduralScript(
+        cosmetic_engine_->GetProceduralSelectorsForUrl(url));
+  }
+  return script;
 }
 
 bool ZephyrusAdblockService::WouldBlockRequest(const GURL& url,
@@ -1106,6 +1131,20 @@ std::optional<GURL> ZephyrusAdblockService::SkipUrl(const GURL& url,
     ++total_urls_skipped_;
   }
   return target;
+}
+
+std::vector<std::string> ZephyrusAdblockService::CspPoliciesFor(
+    const GURL& url,
+    const GURL& initiator,
+    ResourceType type) const {
+  if (!enabled_ || !csp_filter_ ||
+      !base::FeatureList::IsEnabled(kZephyrusAdblockCsp)) {
+    return {};
+  }
+  if (IsAllowlisted(type == kTypeDocument ? url : initiator)) {
+    return {};
+  }
+  return csp_filter_->PoliciesFor(url, initiator, type);
 }
 
 bool ZephyrusAdblockService::ShouldBlockPopup(const GURL& url,

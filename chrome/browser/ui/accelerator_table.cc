@@ -35,6 +35,10 @@ static_assert(!BUILDFLAG(IS_ANDROID));
 
 namespace {
 
+// IMPORTANT: Before adding, modifying, or retiring any keyboard shortcut in
+// Chrome, please review the Chrome Keyboard Shortcut Guidelines:
+// //docs/ui/learn/keyboard_shortcuts.md
+//
 // For ChromeOS only: If you plan on adding a new accelerator and want it
 // displayed in the Shortcuts app, please follow the instructions at:
 // `ash/webui/shortcut_customization_ui/backend/accelerator_layout_table.h`.
@@ -88,10 +92,10 @@ const AcceleratorMapping kAcceleratorMap[] = {
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
     // Control modifier is rarely used on Mac, so we allow it only in several
     // specific cases.
-    {ui::VKEY_TAB, ui::EF_CONTROL_DOWN, IDC_SELECT_NEXT_TAB},
+    {ui::VKEY_TAB, ui::EF_CONTROL_DOWN, IDC_CYCLE_TO_NEXT_TAB},
     {ui::VKEY_NEXT, ui::EF_CONTROL_DOWN, IDC_SELECT_NEXT_TAB},
     {ui::VKEY_TAB, ui::EF_SHIFT_DOWN | ui::EF_CONTROL_DOWN,
-     IDC_SELECT_PREVIOUS_TAB},
+     IDC_CYCLE_TO_PREV_TAB},
     {ui::VKEY_PRIOR, ui::EF_CONTROL_DOWN, IDC_SELECT_PREVIOUS_TAB},
     // Zephyrus: workspace switching. Ctrl+Shift+Down/Up cycle next/previous,
     // Ctrl+Shift+1..8 jump directly to a workspace by position. (Ctrl+Alt combos
@@ -315,12 +319,15 @@ constexpr AcceleratorMapping kUIDebugAcceleratorMap[] = {
     {ui::VKEY_T, kDebugModifier, IDC_DEBUG_TOGGLE_TABLET_MODE},
     {ui::VKEY_V, kDebugModifier, IDC_DEBUG_PRINT_VIEW_TREE},
     {ui::VKEY_M, kDebugModifier, IDC_DEBUG_PRINT_VIEW_TREE_DETAILS},
+    {ui::VKEY_W, kDebugModifier, IDC_DEBUG_PRINT_WINDOW_HIERARCHY},
+    {ui::VKEY_L, kDebugModifier, IDC_DEBUG_PRINT_LAYER_HIERARCHY},
 };
 
 const int kRepeatableCommandIds[] = {
     IDC_FIND_NEXT,           IDC_FIND_PREVIOUS,       IDC_FOCUS_NEXT_PANE,
     IDC_FOCUS_PREVIOUS_PANE, IDC_MOVE_TAB_NEXT,       IDC_MOVE_TAB_PREVIOUS,
-    IDC_SELECT_NEXT_TAB,     IDC_SELECT_PREVIOUS_TAB,
+    IDC_SELECT_NEXT_TAB,     IDC_SELECT_PREVIOUS_TAB, IDC_CYCLE_TO_NEXT_TAB,
+    IDC_CYCLE_TO_PREV_TAB,
 };
 
 std::vector<AcceleratorMapping>* GetAcceleratorsPointer() {

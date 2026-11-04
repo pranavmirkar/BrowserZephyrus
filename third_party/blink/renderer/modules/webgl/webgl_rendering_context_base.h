@@ -77,8 +77,9 @@ class VideoFrameSharedImageCache;
 namespace blink {
 
 class AcceleratedStaticBitmapImage;
-class CanvasNon2DResourceProviderSharedImage;
+class CanvasNon2DResourceProvider;
 struct CanvasSnapshotInfo;
+class CanvasToneMapping;
 class EXTDisjointTimerQuery;
 class EXTDisjointTimerQueryWebGL2;
 class V8UnionElementOrElementImage;
@@ -171,6 +172,8 @@ class MODULES_EXPORT WebGLRenderingContextBase
   void setDrawingBufferColorSpace(ScriptState*,
                                   const V8PredefinedColorSpace& color_space,
                                   ExceptionState&);
+  CanvasToneMapping* drawingBufferToneMapping(
+      const CanvasToneMapping* tone_mapping = nullptr);
 
   V8PredefinedColorSpace unpackColorSpace(ScriptState*) const;
   void setUnpackColorSpace(ScriptState*,
@@ -431,6 +434,14 @@ class MODULES_EXPORT WebGLRenderingContextBase
                          const WebGLCopyElementImageConfig* config,
                          ExceptionState& exception_state);
 
+  void texElementSubImage2D(GLenum target,
+                            GLint level,
+                            GLint xoffset,
+                            GLint yoffset,
+                            const V8UnionElementOrElementImage* element,
+                            const WebGLCopyElementImageConfig* config,
+                            ExceptionState& exception_state);
+
   void texParameterf(GLenum target, GLenum pname, GLfloat param);
   void texParameteri(GLenum target, GLenum pname, GLint param);
 
@@ -656,7 +667,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
   // JavaScript cannot allocate bigger ArrayBuffers anyways. Only with
   // WebAssembly it is possible to allocate bigger ArrayBuffers.
   static constexpr size_t kMaximumSupportedArrayBufferSize =
-      ::partition_alloc::internal::MaxDirectMapped();
+      ::partition_alloc::MaxAllocationSize();
 
  protected:
   // Implementation helpers.
@@ -705,7 +716,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
       const Platform::WebGLContextInfo&);
   void SetupFlags();
   bool CopyRenderingResultsFromDrawingBufferAccelerated(
-      CanvasNon2DResourceProviderSharedImage*,
+      CanvasNon2DResourceProvider*,
       SourceDrawingBuffer);
 
   // CanvasRenderingContext implementation.
@@ -780,6 +791,12 @@ class MODULES_EXPORT WebGLRenderingContextBase
       has_been_drawn_to_ = true;
       RecordUKMCanvasDrawnToRenderingAPI();
       RecordANGLEImplementation();
+    }
+  }
+
+  void MaybeEndPixelLocalStorageImplicit() const {
+    if (has_activated_pixel_local_storage_) {
+      ContextGL()->EndPixelLocalStorageImplicitANGLE();
     }
   }
 
@@ -895,19 +912,19 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   // Fixed-size cache of reusable snapshot providers for image and video
   // texImage2D calls.
-  class LRUCanvasResourceProviderCache {
+  class LRUCanvasNon2DResourceProviderCache {
    public:
-    LRUCanvasResourceProviderCache(wtf_size_t capacity);
+    LRUCanvasNon2DResourceProviderCache(wtf_size_t capacity);
     // The pointer returned is owned by the image buffer map.
-    CanvasNon2DResourceProviderSharedImage* GetCanvasResourceProvider(
+    CanvasNon2DResourceProvider* GetCanvasNon2DResourceProvider(
         const CanvasSnapshotInfo& info);
 
    private:
     void BubbleToFront(wtf_size_t idx);
     const wtf_size_t capacity_;
-    Vector<std::unique_ptr<CanvasNon2DResourceProviderSharedImage>> providers_;
+    Vector<std::unique_ptr<CanvasNon2DResourceProvider>> providers_;
   };
-  LRUCanvasResourceProviderCache generated_video_cache_{4};
+  LRUCanvasNon2DResourceProviderCache generated_video_cache_{4};
 
   GLint max_texture_size_;
   GLint max_cube_map_texture_size_;
@@ -1972,7 +1989,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
   scoped_refptr<ExternalCanvasResource> ExportLowLatencyCanvasResource(
       SourceDrawingBuffer source_buffer);
 
-  CanvasNon2DResourceProviderSharedImage* GetSharedImageResourceProvider();
+  CanvasNon2DResourceProvider* GetSharedImageResourceProvider();
 
   // Attempts to copy the most recent rendering results from the drawing buffer
   // into a CanvasResource. Returns the resource if the copy succeeded;
@@ -2008,7 +2025,10 @@ class MODULES_EXPORT WebGLRenderingContextBase
   void Dispose() override;
 
   void TexElementImage2DInternal(GLenum target,
-                                 GLenum internalformat,
+                                 std::optional<GLenum> internalformat,
+                                 GLint level,
+                                 GLint xoffset,
+                                 GLint yoffset,
                                  std::optional<GLfloat> sx,
                                  std::optional<GLfloat> sy,
                                  std::optional<GLfloat> swidth,
@@ -2020,7 +2040,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   // Used to provide accelerated snapshots and CanvasResources holding the
   // current content.
-  std::unique_ptr<CanvasNon2DResourceProviderSharedImage> resource_provider_;
+  std::unique_ptr<CanvasNon2DResourceProvider> resource_provider_;
 
   // If PaintRenderingResultsToSnapshot() is unable to create
   // `resource_provider_`, it will attempt to create an unaccelerated snapshot
@@ -2061,6 +2081,7 @@ class MODULES_EXPORT WebGLRenderingContextBase
 
   PredefinedColorSpace drawing_buffer_color_space_ =
       PredefinedColorSpace::kSRGB;
+  gfx::HDRMetadata drawing_buffer_tone_mapping_hdr_metadata_;
   PredefinedColorSpace unpack_color_space_ = PredefinedColorSpace::kSRGB;
 };
 

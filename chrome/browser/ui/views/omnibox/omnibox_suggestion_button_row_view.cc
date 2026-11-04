@@ -28,22 +28,18 @@
 #include "components/strings/grit/components_strings.h"
 #include "components/vector_icons/vector_icons.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
-#include "ui/accessibility/ax_node_data.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
-#include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/ink_drop.h"
-#include "ui/views/animation/ink_drop_highlight.h"
 #include "ui/views/background.h"
-#include "ui/views/controls/button/label_button_border.h"
 #include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/highlight_path_generator.h"
@@ -483,8 +479,8 @@ void OmniboxSuggestionButtonRowView::BuildViews() {
       omnibox::kSparkIcon));
 
   {
-    OmniboxPopupSelection selection(model_index_,
-                                    OmniboxPopupSelection::KEYWORD_MODE);
+    OmniboxPopupSelection selection(
+        model_index_, OmniboxPopupSelection::LineState::kKeywordMode);
     keyword_button_ = AddChildView(std::make_unique<OmniboxSuggestionRowButton>(
         base::BindRepeating(&OmniboxSuggestionButtonRowView::ButtonPressed,
                             base::Unretained(this), selection),
@@ -499,7 +495,7 @@ void OmniboxSuggestionButtonRowView::BuildViews() {
   for (size_t action_index = 0; action_index < match().actions.size();
        action_index++) {
     OmniboxPopupSelection selection(
-        model_index_, OmniboxPopupSelection::FOCUSED_BUTTON_ACTION,
+        model_index_, OmniboxPopupSelection::LineState::kFocusedButtonAction,
         action_index);
     auto* button = AddChildView(std::make_unique<OmniboxSuggestionRowButton>(
         base::BindRepeating(&OmniboxSuggestionButtonRowView::ButtonPressed,
@@ -539,15 +535,15 @@ void OmniboxSuggestionButtonRowView::UpdateFromModel() {
     BuildViews();
   }
 
-  embeddings_chip_->SetVisible(match().type ==
-                               AutocompleteMatchType::HISTORY_EMBEDDINGS);
+  embeddings_chip_->SetVisible(
+      match().type == omnibox::AutocompleteMatchType::kHistoryEmbeddings);
 
   if (match().HasInstantKeyword(
           popup_view_->controller()->client()->GetTemplateURLService())) {
     keyword_button_->SetVisible(false);
   } else {
     SetPillButtonVisibility(keyword_button_,
-                            OmniboxPopupSelection::KEYWORD_MODE);
+                            OmniboxPopupSelection::LineState::kKeywordMode);
     if (keyword_button_->GetVisible()) {
       CHECK(!match().associated_keyword.empty());
       const auto names = SelectedKeywordView::GetKeywordLabelNames(
@@ -560,8 +556,8 @@ void OmniboxSuggestionButtonRowView::UpdateFromModel() {
   }
 
   for (const auto& action_button : action_buttons_) {
-    SetPillButtonVisibility(action_button,
-                            OmniboxPopupSelection::FOCUSED_BUTTON_ACTION);
+    SetPillButtonVisibility(
+        action_button, OmniboxPopupSelection::LineState::kFocusedButtonAction);
     if (action_button->GetVisible()) {
       const OmniboxAction* action =
           match().actions[action_button->selection().action_index].get();
@@ -661,7 +657,7 @@ void OmniboxSuggestionButtonRowView::SetPillButtonVisibility(
 void OmniboxSuggestionButtonRowView::ButtonPressed(
     const OmniboxPopupSelection selection,
     const ui::Event& event) {
-  if (selection.state == OmniboxPopupSelection::KEYWORD_MODE) {
+  if (selection.state == OmniboxPopupSelection::LineState::kKeywordMode) {
     // Note: Since keyword mode logic depends on state of the edit model, the
     // selection must first be set to prepare for keyword mode before accepting.
     popup_view_->controller()->edit_model()->SetPopupSelection(selection);

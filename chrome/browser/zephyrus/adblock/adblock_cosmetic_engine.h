@@ -68,6 +68,16 @@ class AdblockCosmeticEngine {
       bool include_generic = true,
       bool include_specific = true) const;
 
+  // Procedural selectors (`:has-text()`, `:upward()`, `:xpath()` ...) for `url`:
+  // the ones CSS cannot express, which the page-side runner evaluates
+  // (adblock_procedural_script.h). Exceptions are applied. Empty when the lists
+  // grant the page $specifichide.
+  std::vector<std::string> GetProceduralSelectorsForUrl(
+      const GURL& url,
+      bool include_specific = true) const;
+
+  size_t procedural_count() const { return procedural_count_; }
+
   size_t rule_count() const { return rule_count_; }
   size_t generic_count() const { return generic_selectors_.size(); }
   // Generic selectors reachable through the token index. The remainder are
@@ -76,6 +86,11 @@ class AdblockCosmeticEngine {
   size_t indexed_generic_count() const { return indexed_generic_count_; }
 
  private:
+  // Stores one procedural rule; false when it is refused (too long, over a cap).
+  bool AddProceduralRule(std::string_view domains,
+                         std::string_view selector,
+                         bool exception);
+
   // Generic + every parent-domain exception that applies to `host`.
   std::unordered_set<std::string> CollectExceptions(
       const std::string& host) const;
@@ -104,6 +119,15 @@ class AdblockCosmeticEngine {
   // a rule nobody scoped.
   std::vector<std::string> injected_style_rules_;
   std::unordered_map<std::string, std::vector<std::string>> domain_style_rules_;
+
+  // Procedural selectors, kept as the list wrote them. Generic ones are few and
+  // run on every page, so they are capped; per-domain ones are capped per site.
+  std::vector<std::string> generic_procedural_;
+  std::unordered_set<std::string> generic_procedural_exceptions_;
+  std::unordered_map<std::string, std::vector<std::string>> domain_procedural_;
+  std::unordered_map<std::string, std::unordered_set<std::string>>
+      domain_procedural_exceptions_;
+  size_t procedural_count_ = 0;
 
   size_t rule_count_ = 0;
   size_t indexed_generic_count_ = 0;

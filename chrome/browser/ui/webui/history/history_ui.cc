@@ -9,78 +9,50 @@
 #include <utility>
 #include <vector>
 
-#include "base/command_line.h"
 #include "base/functional/bind.h"
-#include "base/functional/callback_helpers.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/weak_ptr.h"
-#include "base/strings/utf_string_conversions.h"
-#include "base/values.h"
 #include "build/build_config.h"
-#include "chrome/browser/bookmarks/bookmark_model_factory.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/feature_engagement/tracker_factory.h"
-#include "chrome/browser/glic/glic_pref_names.h"
-#include "chrome/browser/glic/public/glic_enabling.h"
-#include "chrome/browser/glic/public/glic_keyed_service.h"
-#include "chrome/browser/history/history_service_factory.h"
-#include "chrome/browser/history_embeddings/history_embeddings_utils.h"
+#include "build/buildflag.h"
 #include "chrome/browser/page_image_service/image_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_avatar_icon_util.h"
-#include "chrome/browser/sessions/session_restore.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/signin_ui_util.h"
-#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/cr_components/history/history_util.h"
-#include "chrome/browser/ui/webui/cr_components/history_clusters/history_clusters_util.h"
-#include "chrome/browser/ui/webui/cr_components/history_embeddings/history_embeddings_handler.h"
-#include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/history/browsing_history_handler.h"
-#include "chrome/browser/ui/webui/history/foreign_session_handler.h"
-#include "chrome/browser/ui/webui/history/history_identity_state_watcher.h"
 #include "chrome/browser/ui/webui/history/history_login_handler.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
+#include "chrome/browser/ui/webui/history/history_ui_platform_handlers.h"
 #include "chrome/browser/ui/webui/history/navigation_handler.h"
-#include "chrome/browser/ui/webui/history_clusters/history_clusters_handler.h"
-#include "chrome/browser/ui/webui/managed_ui_handler.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
-#include "chrome/browser/ui/webui/page_not_available_for_guest/page_not_available_for_guest_ui.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/grit/history_resources.h"
 #include "chrome/grit/history_resources_map.h"
+#include "components/critical_actions/core/browser/features.h"
 #include "components/grit/components_scaled_resources.h"
 #include "components/history/core/browser/features.h"
-#include "components/history/core/common/pref_names.h"
 #include "components/tabs/public/tab_interface.h"
-#include "components/history_clusters/core/config.h"
-#include "components/history_clusters/core/features.h"
-#include "components/history_clusters/core/history_clusters_prefs.h"
-#include "components/history_embeddings/core/history_embeddings_features.h"
 #include "components/page_image_service/image_service.h"
 #include "components/page_image_service/image_service_handler.h"
-#include "components/prefs/pref_service.h"
-#include "components/sessions/core/session_types.h"
-#include "components/signin/public/base/signin_buildflags.h"
-#include "components/signin/public/base/signin_pref_names.h"
-#include "components/signin/public/base/signin_switches.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync/base/features.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/resource/resource_bundle.h"
-#include "ui/base/webui/web_ui_util.h"
 #include "ui/webui/tracked_element/tracked_element_handler_document_singleton.h"
 #include "ui/webui/webui_util.h"
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-#include "chrome/browser/ui/webui/history/history_cross_device_signin_promo_handler.h"
-#endif
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/cr_components/history_embeddings/history_embeddings_handler.h"
+#include "chrome/browser/ui/webui/history_clusters/history_clusters_handler.h"
+#include "chrome/browser/ui/webui/page_not_available_for_guest/page_not_available_for_guest_ui.h"  // nogncheck
+#include "components/tabs/public/tab_interface.h"
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 namespace {
 
@@ -94,7 +66,7 @@ content::WebUIDataSource* CreateAndAddHistoryUIHTMLSource(Profile* profile) {
 #if !BUILDFLAG(IS_CHROMEOS)
   source->AddBoolean("unoPhase2FollowUp",
                      base::FeatureList::IsEnabled(syncer::kUnoPhase2FollowUp));
-#endif  // BUILDFLAG!(IS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
   HistoryUtil::PopulateCommonSourceForHistory(source, profile);
 
@@ -129,10 +101,12 @@ content::WebUIDataSource* CreateAndAddHistoryUIHTMLSource(Profile* profile) {
   source->AddString("accountPictureUrl",
                     profiles::GetPlaceholderAvatarIconUrl());
 
-  // The history page footer can display messages about other forms of
-  // browsing history, linking to Google My Activity (GMA) and/or
-  // Gemini Apps Activity (GAA). At most one message is shown, depending on
-  // the user's settings.
+  const bool is_critical_actions_enabled = base::FeatureList::IsEnabled(
+      critical_actions::features::kCriticalActionHistory);
+  const bool is_critical_actions_chat_linkouts_enabled =
+      is_critical_actions_enabled &&
+      critical_actions::features::kEnableChatLinkouts.Get();
+
   source->AddString(
       "sidebarFooterGMAOnly",
       l10n_util::GetStringFUTF16(IDS_HISTORY_OTHER_FORMS_OF_HISTORY_GMA_ONLY,
@@ -143,57 +117,15 @@ content::WebUIDataSource* CreateAndAddHistoryUIHTMLSource(Profile* profile) {
                                  chrome::kMyActivityGeminiAppsUrl));
   source->AddString(
       "sidebarFooterGMAAndGAA",
-      l10n_util::GetStringFUTF16(IDS_HISTORY_OTHER_FORMS_OF_HISTORY_GMA_AND_GAA,
-                                 chrome::kMyActivityUrlInHistory,
-                                 chrome::kMyActivityGeminiAppsUrl));
-  // Links that are used in the messages above.
+      l10n_util::GetStringFUTF16(
+          is_critical_actions_enabled
+              ? IDS_HISTORY_OTHER_FORMS_OF_HISTORY_GMA_AND_GAA_CRITICAL_ACTIONS
+              : IDS_HISTORY_OTHER_FORMS_OF_HISTORY_GMA_AND_GAA,
+          chrome::kMyActivityUrlInHistory, chrome::kMyActivityGeminiAppsUrl));
   source->AddString("sidebarFooterGMALink", chrome::kMyActivityUrlInHistory);
   source->AddString("sidebarFooterGAALink", chrome::kMyActivityGeminiAppsUrl);
 
-  const bool is_glic_enabled =
-      glic::GlicEnabling::ShouldShowSettingsPage(profile);
-  auto* glic_service = glic::GlicKeyedService::Get(profile);
-  const bool is_glic_web_actuation_available =
-      glic::GlicEnabling::IsEnabledAndConsentForProfile(profile) &&
-      glic_service && glic_service->enabling().GetUserEnabledActuationOnWeb();
-
-  source->AddBoolean("isGlicEnabled", is_glic_enabled);
-  source->AddBoolean("isGlicWebActuationAvailable",
-                     is_glic_web_actuation_available);
-
-#if BUILDFLAG(IS_CHROMEOS)
-  source->AddLocalizedString("turnOnSyncButton",
-                             IDS_HISTORY_TURN_ON_SYNC_BUTTON);
-#else
-  signin::IdentityManager* identity_manager =
-      IdentityManagerFactory::GetForProfile(profile);
-  bool has_primary_account =
-      identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
-  AccountInfo account_info =
-      signin_ui_util::GetSingleAccountForPromos(identity_manager);
-  source->AddString(
-      "historySyncPromoBodySignedIn",
-      l10n_util::GetStringFUTF16(IDS_HISTORY_SYNC_PROMO_BODY_SIGNED_IN,
-                                 base::UTF8ToUTF16(account_info.GetEmail())));
-  source->AddString(
-      "turnOnSignedInSyncHistoryPromoBodySignInSyncOff",
-      l10n_util::GetStringFUTF16(
-          IDS_RECENT_TABS_SYNC_HISTORY_PROMO_BODY_SIGNED_IN_SYNC_OFF,
-          base::UTF8ToUTF16(account_info.GetEmail())));
-  source->AddString("accountName", account_info.GetFullName().value_or(""));
-  source->AddString("accountEmail", account_info.GetEmail());
-  if (!has_primary_account && !account_info.IsEmpty()) {
-    source->AddString(
-        "turnOnSyncButton",
-        l10n_util::GetStringFUTF16(
-            IDS_PROFILES_DICE_WEB_ONLY_SIGNIN_BUTTON,
-            base::UTF8ToUTF16(account_info.GetGivenName().value_or(
-                account_info.GetEmail()))));
-  } else {
-    source->AddLocalizedString("turnOnSyncButton",
-                               IDS_HISTORY_TURN_ON_SYNC_BUTTON);
-  }
-
+#if !BUILDFLAG(IS_CHROMEOS)
   static constexpr webui::LocalizedString kHistorySyncStrings[] = {
       {"historySyncPromoTitle", IDS_HISTORY_SYNC_PROMO_TITLE},
       {"historySyncPromoBodySignedOut", IDS_HISTORY_SYNC_PROMO_BODY_SIGNED_OUT},
@@ -203,38 +135,20 @@ content::WebUIDataSource* CreateAndAddHistoryUIHTMLSource(Profile* profile) {
        IDS_HISTORY_SYNC_PROMO_BODY_SIGN_IN_PENDING_SYNC_HISTORY_ON},
   };
   source->AddLocalizedStrings(kHistorySyncStrings);
-#endif  // BUILDFLAG(IS_CHROMEOS)
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
-  bool enable_history_embeddings =
-      history_embeddings::IsHistoryEmbeddingsEnabledForProfile(profile);
-  source->AddBoolean("enableHistoryEmbeddings", enable_history_embeddings);
-  source->AddBoolean(
-      "maybeShowEmbeddingsIph",
-      history_embeddings::IsHistoryEmbeddingsSettingVisible(profile) &&
-          !enable_history_embeddings);
-
-  static constexpr webui::LocalizedString kHistoryEmbeddingsStrings[] = {
-      {"historyEmbeddingsPromoLabel", IDS_HISTORY_EMBEDDINGS_PROMO_LABEL},
-      {"historyEmbeddingsPromoClose", IDS_HISTORY_EMBEDDINGS_PROMO_CLOSE},
-      {"historyEmbeddingsPromoHeading", IDS_HISTORY_EMBEDDINGS_PROMO_HEADING},
-      {"historyEmbeddingsPromoBody", IDS_HISTORY_EMBEDDINGS_PROMO_BODY},
-      {"historyEmbeddingsAnswersPromoHeading",
-       IDS_HISTORY_EMBEDDINGS_ANSWERS_PROMO_HEADING},
-      {"historyEmbeddingsAnswersPromoBody",
-       IDS_HISTORY_EMBEDDINGS_ANSWERS_PROMO_BODY},
-      {"historyEmbeddingsPromoSettingsLinkText",
-       IDS_HISTORY_EMBEDDIGNS_PROMO_SETTINGS_LINK_TEXT},
-  };
-  source->AddLocalizedStrings(kHistoryEmbeddingsStrings);
   source->AddBoolean("isBrowsingHistoryActorIntegrationM3Enabled",
                      history::IsBrowsingHistoryActorIntegrationM3Enabled());
+  source->AddBoolean("isCriticalActionsEnabled", is_critical_actions_enabled);
+  source->AddBoolean("isCriticalActionsChatLinkoutsEnabled",
+                     is_critical_actions_chat_linkouts_enabled);
 
   source->AddString("webuiRefresh2026", features::IsWebuiRefresh2026Enabled()
                                             ? "webui-refresh-2026"
                                             : "");
 
-  // History clusters
-  HistoryClustersUtil::PopulateSource(source, profile, /*in_side_panel=*/false);
+  // Platform-specific data sources (e.g. history clusters, embeddings).
+  history::PopulatePlatformDataSource(source, profile);
 
   return source;
 }
@@ -249,11 +163,13 @@ HistoryUIConfig::~HistoryUIConfig() = default;
 std::unique_ptr<content::WebUIController>
 HistoryUIConfig::CreateWebUIController(content::WebUI* web_ui,
                                        const GURL& url) {
+#if !BUILDFLAG(IS_ANDROID)
   Profile* profile = Profile::FromWebUI(web_ui);
   if (profile->IsGuestSession()) {
     return std::make_unique<PageNotAvailableForGuestUI>(
         web_ui, chrome::kChromeUIHistoryHost);
   }
+#endif  // !BUILDFLAG(IS_ANDROID)
   return std::make_unique<HistoryUI>(web_ui);
 }
 
@@ -262,36 +178,39 @@ HistoryUI::HistoryUI(content::WebUI* web_ui)
   Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* data_source =
       CreateAndAddHistoryUIHTMLSource(profile);
-  ManagedUIHandler::Initialize(web_ui, data_source);
-
-  pref_change_registrar_.Init(profile->GetPrefs());
-  pref_change_registrar_.Add(history_clusters::prefs::kVisible,
-                             base::BindRepeating(&HistoryUI::UpdateDataSource,
-                                                 base::Unretained(this)));
+  history::InitializePlatformHandlers(web_ui, data_source);
+  history::InitializePlatformRegistrars(
+      pref_change_registrar_, profile,
+      base::BindRepeating(&HistoryUI::UpdateDataSource,
+                          base::Unretained(this)));
 
   web_ui->AddMessageHandler(std::make_unique<webui::NavigationHandler>());
   web_ui->AddMessageHandler(std::make_unique<MetricsHandler>());
-
   web_ui->AddMessageHandler(
       std::make_unique<HistoryLoginHandler>(base::BindRepeating(
           &HistoryUI::UpdateDataSource, base::Unretained(this))));
 
   ui::TrackedElementHandlerDocumentSingleton::Register(
-      this, std::vector<ui::ElementIdentifier>{kHistorySearchInputElementId});
+      this,
+      std::vector<ui::ElementIdentifier>{kHistorySearchInputElementId,
+                                         kHistoryGeminiFilterChipElementId});
 }
 
 HistoryUI::~HistoryUI() = default;
 
 WEB_UI_CONTROLLER_TYPE_IMPL(HistoryUI)
 
+DEFINE_CLASS_ELEMENT_IDENTIFIER_VALUE(HistoryUI,
+                                      kHistoryGeminiFilterChipElementId);
+
 // static
-base::RefCountedMemory* HistoryUI::GetFaviconResourceBytes(
+scoped_refptr<base::RefCountedMemory> HistoryUI::GetFaviconResourceBytes(
     ui::ResourceScaleFactor scale_factor) {
-  return static_cast<base::RefCountedMemory*>(
-      ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
-          IDR_HISTORY_FAVICON, scale_factor));
+  return ui::ResourceBundle::GetSharedInstance().LoadDataResourceBytesForScale(
+      IDR_HISTORY_FAVICON, scale_factor);
 }
 
+#if !BUILDFLAG(IS_ANDROID)
 void HistoryUI::BindInterface(
     mojo::PendingReceiver<history_embeddings::mojom::PageHandlerFactory>
         pending_page_handler_factory) {
@@ -310,54 +229,6 @@ void HistoryUI::CreatePageHandler(
 }
 
 void HistoryUI::BindInterface(
-    mojo::PendingReceiver<history::mojom::PageHandler> pending_page_handler) {
-  browsing_history_handler_ = std::make_unique<BrowsingHistoryHandler>(
-      std::move(pending_page_handler), Profile::FromWebUI(web_ui()),
-      web_ui()->GetWebContents());
-}
-
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-void HistoryUI::BindInterface(
-    mojo::PendingReceiver<history_cross_device_signin_promo::mojom::
-                              HistoryCrossDeviceSigninPromoHandler>
-        pending_receiver) {
-  history_cross_device_signin_promo_handler_ =
-      std::make_unique<HistoryCrossDeviceSigninPromoHandler>(
-          std::move(pending_receiver), web_ui()->GetWebContents());
-}
-#endif
-
-void HistoryUI::BindInterface(
-    mojo::PendingReceiver<history::mojom::ForeignSessionPageHandlerFactory>
-        pending_receiver) {
-  foreign_session_page_handler_factory_receiver_.reset();
-  foreign_session_page_handler_factory_receiver_.Bind(
-      std::move(pending_receiver));
-}
-
-void HistoryUI::CreateForeignSessionPageHandler(
-    mojo::PendingRemote<history::mojom::ForeignSessionPage> page,
-    mojo::PendingReceiver<history::mojom::ForeignSessionPageHandler> receiver) {
-  foreign_session_handler_ =
-      std::make_unique<browser_sync::ForeignSessionHandler>(
-          std::move(receiver), std::move(page), Profile::FromWebUI(web_ui()),
-          web_ui()->GetWebContents(),
-          base::BindRepeating([](content::WebContents* source_web_contents,
-                                 const ::sessions::SessionTab& tab,
-                                 WindowOpenDisposition disposition) {
-            SessionRestore::RestoreForeignSessionTab(source_web_contents, tab,
-                                                     disposition);
-          }),
-          base::BindRepeating(
-              [](Profile* profile,
-                 const std::vector<const ::sessions::SessionWindow*>& windows) {
-                SessionRestore::RestoreForeignSessionWindows(
-                    profile, windows.begin(), windows.end(), base::DoNothing());
-              }),
-          /*side_panel_ui=*/nullptr);
-}
-
-void HistoryUI::BindInterface(
     mojo::PendingReceiver<history_clusters::mojom::PageHandlerFactory>
         pending_page_handler_factory) {
   history_clusters_handler_factory_receiver_.reset();
@@ -368,7 +239,7 @@ void HistoryUI::BindInterface(
 void HistoryUI::CreatePageHandler(
     mojo::PendingRemote<history_clusters::mojom::Page> page,
     mojo::PendingReceiver<history_clusters::mojom::PageHandler> receiver) {
-  // Zephyrus: chrome://history is not always in a tab — the centralized
+  // Zephyrus: chrome://history is not always in a tab -- the centralized
   // settings popup hosts it in a plain WebView. Upstream looked the tab up
   // unconditionally (GetFromContents CHECKs), crashing the browser the moment
   // the "By group" view bound this handler. Fall back to the window-scoped
@@ -387,6 +258,38 @@ void HistoryUI::CreatePageHandler(
             web_contents, webui::GetBrowserWindowInterface(web_contents));
   }
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+void HistoryUI::BindInterface(
+    mojo::PendingReceiver<history::mojom::PageHandler> pending_page_handler) {
+  browsing_history_handler_ = std::make_unique<BrowsingHistoryHandler>(
+      std::move(pending_page_handler), Profile::FromWebUI(web_ui()),
+      web_ui()->GetWebContents());
+}
+
+void HistoryUI::BindInterface(
+    mojo::PendingReceiver<history_cross_device_signin_promo::mojom::
+                              HistoryCrossDeviceSigninPromoHandler>
+        pending_receiver) {
+  history_cross_device_signin_promo_handler_ =
+      history::CreateCrossDeviceSigninPromoHandler(std::move(pending_receiver),
+                                                   web_ui());
+}
+
+void HistoryUI::BindInterface(
+    mojo::PendingReceiver<history::mojom::ForeignSessionPageHandlerFactory>
+        pending_receiver) {
+  foreign_session_page_handler_factory_receiver_.reset();
+  foreign_session_page_handler_factory_receiver_.Bind(
+      std::move(pending_receiver));
+}
+
+void HistoryUI::CreateForeignSessionPageHandler(
+    mojo::PendingRemote<history::mojom::ForeignSessionPage> page,
+    mojo::PendingReceiver<history::mojom::ForeignSessionPageHandler> receiver) {
+  foreign_session_handler_ = history::CreateForeignSessionPageHandler(
+      std::move(page), std::move(receiver), web_ui());
+}
 
 void HistoryUI::BindInterface(
     mojo::PendingReceiver<page_image_service::mojom::PageImageServiceHandler>
@@ -404,22 +307,7 @@ void HistoryUI::BindInterface(
 
 void HistoryUI::UpdateDataSource() {
   CHECK(web_ui());
-
-  Profile* profile = Profile::FromWebUI(web_ui());
-
-  base::DictValue update;
-
-  const bool is_managed = profile->GetPrefs()->IsManagedPreference(
-      history_clusters::prefs::kVisible);
-  // History clusters are always visible unless the visibility prefs
-  // is set to false by policy.
-  update.Set(
-      kIsHistoryClustersVisibleKey,
-      profile->GetPrefs()->GetBoolean(history_clusters::prefs::kVisible) ||
-          !is_managed);
-
-  content::WebUIDataSource::Update(profile, chrome::kChromeUIHistoryHost,
-                                   std::move(update));
+  history::UpdatePlatformDataSource(web_ui());
 }
 
 void HistoryUI::BindInterface(
@@ -438,4 +326,19 @@ void HistoryUI::CreateHelpBubbleHandler(
       std::move(handler), std::move(client),
       ui::TrackedElementHandlerDocumentSingleton::GetOrCreate(
           web_ui()->GetRenderFrameHost()));
+}
+
+void HistoryUI::BindInterface(
+    mojo::PendingReceiver<
+        user_education::mojom::UserEducationMixedTrustHandlerFactory>
+        pending_receiver) {
+  user_education_handler_factory_receiver_.reset();
+  user_education_handler_factory_receiver_.Bind(std::move(pending_receiver));
+}
+
+void HistoryUI::CreateUserEducationMixedTrustHandler(
+    mojo::PendingReceiver<user_education::mojom::UserEducationMixedTrustHandler>
+        receiver) {
+  user_education_handler_ = history::CreateUserEducationMixedTrustHandler(
+      std::move(receiver), web_ui());
 }

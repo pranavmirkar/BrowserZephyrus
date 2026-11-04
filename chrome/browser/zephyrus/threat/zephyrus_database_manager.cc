@@ -45,7 +45,9 @@ scoped_refptr<ZephyrusDatabaseManager> ZephyrusDatabaseManager::Create(
     base::FilePath assets_dir,
     base::FilePath data_dir,
     base::RepeatingCallback<bool()> shield_dns_enabled) {
-  return base::WrapRefCounted(new ZephyrusDatabaseManager(
+  // 156's refcounting starts a new object "needing adoption"; WrapRefCounted on
+  // a fresh pointer trips a DCHECK, so adopt it.
+  return base::AdoptRef(new ZephyrusDatabaseManager(
       base_path, std::move(extended_reporting_level_callback),
       std::move(ui_task_runner), std::move(io_task_runner),
       std::move(assets_dir), std::move(data_dir),
@@ -61,7 +63,7 @@ ZephyrusDatabaseManager::ZephyrusDatabaseManager(
     base::FilePath assets_dir,
     base::FilePath data_dir,
     base::RepeatingCallback<bool()> shield_dns_enabled)
-    : V4LocalDatabaseManager(base_path,
+    : SBLocalDatabaseManager(base_path,
                              std::move(extended_reporting_level_callback),
                              std::move(ui_task_runner),
                              std::move(io_task_runner),
@@ -74,21 +76,21 @@ ZephyrusDatabaseManager::~ZephyrusDatabaseManager() = default;
 
 void ZephyrusDatabaseManager::StartOnUIThread(
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
-    const safe_browsing::V4ProtocolConfig& config) {
+    const safe_browsing::SBProtocolConfig& config) {
   shield_ = std::make_unique<ShieldDnsChecker>(url_loader_factory);
   if (!data_) {
     LoadThreatData(assets_dir_, data_dir_,
                    base::BindOnce(&ZephyrusDatabaseManager::OnDataLoaded,
                                   weak_factory_.GetWeakPtr()));
   }
-  V4LocalDatabaseManager::StartOnUIThread(std::move(url_loader_factory), config);
+  SBLocalDatabaseManager::StartOnUIThread(std::move(url_loader_factory), config);
 }
 
 void ZephyrusDatabaseManager::StopOnUIThread(bool shutdown) {
   shield_.reset();
   ours_pending_.clear();
   weak_factory_.InvalidateWeakPtrs();
-  V4LocalDatabaseManager::StopOnUIThread(shutdown);
+  SBLocalDatabaseManager::StopOnUIThread(shutdown);
 }
 
 void ZephyrusDatabaseManager::OnDataLoaded(
@@ -113,7 +115,7 @@ bool ZephyrusDatabaseManager::CheckBrowseUrl(
   const std::optional<SBThreatType> report = ThreatToReport(threat_types);
   if (!report || !CanCheckUrl(url) ||
       check_type != safe_browsing::CheckBrowseUrlType::kHashDatabase) {
-    return V4LocalDatabaseManager::CheckBrowseUrl(url, threat_types, client,
+    return SBLocalDatabaseManager::CheckBrowseUrl(url, threat_types, client,
                                                   check_type);
   }
 
@@ -125,42 +127,44 @@ bool ZephyrusDatabaseManager::CheckBrowseUrl(
   }
 
   // 2. Shield DNS, if the user turned it on and the site is not a popular one.
-  if (ShouldAskShield(url)) {
+  if (client->CanUseShieldDns() && ShouldAskShield(url)) {
     ours_pending_.insert(client);
     shield_->Check(
         std::string(url.host()),
         base::BindOnce(&ZephyrusDatabaseManager::OnShieldVerdict,
-                       weak_factory_.GetWeakPtr(), client, url, threat_types,
+                       weak_factory_.GetWeakPtr(), reinterpret_cast<uintptr_t>(client), url,
+                       threat_types,
                        check_type, *report));
     return false;
   }
 
-  return V4LocalDatabaseManager::CheckBrowseUrl(url, threat_types, client,
+  return SBLocalDatabaseManager::CheckBrowseUrl(url, threat_types, client,
                                                 check_type);
 }
 
 void ZephyrusDatabaseManager::OnShieldVerdict(
-    Client* client,
+    uintptr_t client_address,
     GURL url,
     SBThreatTypeSet threat_types,
     safe_browsing::CheckBrowseUrlType check_type,
     SBThreatType threat_if_blocked,
     ShieldDnsChecker::Verdict verdict) {
+  // The address, not a bound pointer: the client destroys itself inside its own
+  // result callback, which a bound pointer would report as dangling.
+  Client* const client = reinterpret_cast<Client*>(client_address);
   if (ours_pending_.erase(client) == 0) {
     return;  // cancelled while the answer was on its way
   }
   if (verdict == ShieldDnsChecker::Verdict::kBlocked) {
     VLOG(1) << "Zephyrus Shield DNS blocked: " << url.host();
-    client->OnCheckBrowseUrlResult(url, threat_if_blocked,
-                                   safe_browsing::ThreatMetadata());
+    client->OnCheckBrowseUrlResult(url, threat_if_blocked);
     return;
   }
   // Not blocked (or no answer): the stock manager gets its turn, so a build with
   // Google's lists loses nothing by also having ours.
-  if (V4LocalDatabaseManager::CheckBrowseUrl(url, threat_types, client,
+  if (SBLocalDatabaseManager::CheckBrowseUrl(url, threat_types, client,
                                              check_type)) {
-    client->OnCheckBrowseUrlResult(url, SBThreatType::SB_THREAT_TYPE_SAFE,
-                                   safe_browsing::ThreatMetadata());
+    client->OnCheckBrowseUrlResult(url, SBThreatType::SB_THREAT_TYPE_SAFE);
   }
 }
 
@@ -170,23 +174,27 @@ void ZephyrusDatabaseManager::ReportLater(Client* client,
   ours_pending_.insert(client);
   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&ZephyrusDatabaseManager::Deliver,
-                                weak_factory_.GetWeakPtr(), client, url, type));
+                                weak_factory_.GetWeakPtr(), reinterpret_cast<uintptr_t>(client), url,
+                     type));
 }
 
-void ZephyrusDatabaseManager::Deliver(Client* client,
+void ZephyrusDatabaseManager::Deliver(uintptr_t client_address,
                                       const GURL& url,
                                       SBThreatType type) {
+  // The address, not a bound pointer: the client destroys itself inside its own
+  // result callback, which a bound pointer would report as dangling.
+  Client* const client = reinterpret_cast<Client*>(client_address);
   if (ours_pending_.erase(client) == 0) {
     return;
   }
-  client->OnCheckBrowseUrlResult(url, type, safe_browsing::ThreatMetadata());
+  client->OnCheckBrowseUrlResult(url, type);
 }
 
 void ZephyrusDatabaseManager::CancelCheck(Client* client) {
   if (ours_pending_.erase(client) > 0) {
     return;  // never reached the stock manager
   }
-  V4LocalDatabaseManager::CancelCheck(client);
+  SBLocalDatabaseManager::CancelCheck(client);
 }
 
 }  // namespace zephyrus_threat

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
 
 #include <optional>
@@ -892,7 +893,7 @@ void ZephyrusAgentPanel::Open() {
   // queues behind it as it did before.
   if (browser_view_ && browser_view_->browser()) {
     DevModelClient::WarmUp(
-        browser_view_->browser()->profile()->GetURLLoaderFactory());
+        browser_view_->browser()->GetProfile()->GetURLLoaderFactory());
   }
 
   if (is_open_) {
@@ -1017,7 +1018,7 @@ void ZephyrusAgentPanel::StartTask(const std::string& task) {
                       : base::StrCat({memory->continuing,
                                       " (the user's answer: ", task, ")"});
   Profile* profile = browser_view_ && browser_view_->browser()
-                         ? browser_view_->browser()->profile()
+                         ? browser_view_->browser()->GetProfile()
                          : nullptr;
   if (profile && profile->GetPrefs()->GetBoolean(kMemoryPref)) {
     if (LongTermMemory* store = GetLongTermMemory(profile)) {
@@ -1035,7 +1036,7 @@ void ZephyrusAgentPanel::StartTask(const std::string& task) {
   // and the Observation for one task's lifetime, and reusing one across tasks
   // would carry the last task's page knowledge into the next.
   controller_ = std::make_unique<ZephyrusAgentTaskController>(
-      browser_view_ ? browser_view_->browser() : nullptr);
+      browser_view_ ? zephyrus::AsBrowser(browser_view_->browser()) : nullptr);
   controller_->SetDelegate(this);
   // The chat was read above, before this task's controller existed; it goes
   // to the controller now that there is one.
@@ -1662,7 +1663,7 @@ void ZephyrusAgentPanel::OnVoiceKey(
   const bool release_pending = std::exchange(release_pending_, false);
   const bool release_was_tap = release_was_tap_;
   Profile* profile = browser_view_ && browser_view_->browser()
-                         ? browser_view_->browser()->profile()
+                         ? browser_view_->browser()->GetProfile()
                          : nullptr;
   std::optional<std::string> key =
       encryptor && profile

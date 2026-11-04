@@ -564,3 +564,25 @@ reference vector, Shield DNS parsing and the request cap, the shipped blob findi
 sampled feed URLs through Chromium's own canonicaliser); the blob loader fuzzed 213,000 runs under
 ASan; and a real-browser test of 9 cases (`research/ab_threat.py`: listed host, subdomain, exact
 address, other path, clean host, Shield on and off) that all pass.
+
+## Update 2026-11-04: rules Brave's parser keeps and ours keeps (156 build)
+
+Measured with `research/brave_compare` (bin `parity`: adblock-rust 0.13.5's own `parse_filter`) against this
+engine, on the list the updater downloads (240,965 lines). "Keeps" means the line is understood, not that its
+effect has been compared; where an effect was compared it is stated.
+
+| rule family | lines | Brave's parser keeps | Zephyrus keeps | effect checked |
+|---|---|---|---|---|
+| procedural cosmetic (`#?#`, `:has-text`, `:upward`, `:xpath`, `:matches-css`, `:matches-attr`, `:not`/`:has`, `:remove`, `:style` ...; HTML filtering `##^` excluded) | 1,235 | 1,226 | **1,234** | live, 3 runs incl. kill switch and exception: `research/ab_proc.py`, PASS on the Release build |
+| `$csp=` | 97 | 85 (12 refused as "csp with content type") | **96** (1 refused: a `report-uri` policy) | live, page and frame, kill switch, exception: `research/ab_csp.py`, PASS on Release |
+
+How the two families work here: procedural selectors are evaluated by a page-side runner (no `eval`, regex
+patterns refused when they could backtrack catastrophically, a 30 ms budget per pass, never hides `<html>` or
+`<body>`); `$csp` adds a Content-Security-Policy header to a page or frame load a rule names, refusing any policy
+with a reporting directive. Both have kill switches (`ZephyrusAdblockProceduralCosmetic`, `ZephyrusAdblockCsp`).
+
+Not done, said plainly: HTML filtering (`##^`, 329 lines) is unsupported by both engines; `$replace` (87),
+`$header` (54), `$ipaddress` (53) and `$uritransform` (20) are still unsupported here; Brave's parser refuses all four
+too ("unrecognised option", checked line by line).
+`$csp` on a redirect target is not applied (the loader follows redirects without asking the factory again).
+Nothing here is compared for speed yet.

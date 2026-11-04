@@ -348,7 +348,7 @@ cr-button {
 }
 
 #incognito {
-  -webkit-mask-image: url(images/incognito_marker.svg);
+  -webkit-mask-image: url(images/incognito_marker_old.svg);
   background-color: var(--cr-secondary-text-color);
   height: 16px;
   margin-block-end: 20px;
@@ -427,5 +427,11 @@ cr-button {
   & #quick-show-in-folder {
     --cr-icon-button-fill-color: var(--color-sys-on-secondary-container);
     background: var(--color-sys-secondary-container);
+  }
+}
+
+:host-context([webui-rounded-icons]) {
+  #incognito {
+    -webkit-mask-image: url(images/incognito_marker.svg);
   }
 }

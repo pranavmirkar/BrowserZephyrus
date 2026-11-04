@@ -19,7 +19,6 @@
 #include "chrome/browser/profiles/profiles_state.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
-#include "chrome/browser/sync/sync_service_factory.h"
 #include "chrome/browser/ui/profiles/profile_customization_util.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
 #include "chrome/common/chrome_switches.h"
@@ -27,7 +26,6 @@
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
-#include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
@@ -61,44 +59,7 @@ bool IsFirstRunEligibleProcess() {
       switches::kNoFirstRun);
 }
 
-enum class PolicyEffect {
-  // The First Run experience can proceed unaffected.
-  kNone,
-
-  // The First Run experience should not run.
-  kDisabled,
-};
-
-PolicyEffect ComputeDevicePolicyEffect(Profile& profile) {
-  const PrefService* const local_state = g_browser_process->local_state();
-  if (!local_state->GetBoolean(prefs::kPromotionsEnabled)) {
-    // Corresponding policy: PromotionsEnabled=false
-    return PolicyEffect::kDisabled;
-  }
-
-  if (!SyncServiceFactory::IsSyncAllowed(&profile)) {
-    // Corresponding policy: SyncDisabled=true
-    return PolicyEffect::kDisabled;
-  }
-
-  if (signin_util::IsForceSigninEnabled()) {
-    // Corresponding policy: BrowserSignin=2
-    // Debugging note: On Linux this policy is not supported and does not get
-    // translated to the prefs (see crbug.com/41455343), but we still respond to
-    // `prefs::kForceBrowserSignin` being set (e.g. if manually edited).
-    return PolicyEffect::kDisabled;
-  }
-
-  if (!profile.GetPrefs()->GetBoolean(prefs::kSigninAllowed) ||
-      !profile.GetPrefs()->GetBoolean(prefs::kSigninAllowedOnNextStartup)) {
-    // Corresponding policy: BrowserSignin=0
-    return PolicyEffect::kDisabled;
-  }
-
-  return PolicyEffect::kNone;
-}
-
-void SetFirstRunFinished(FirstRunService::FinishedReason reason) {
+void SetFirstRunFinished(ProfilePicker::FirstRunFinishReason reason) {
   PrefService* local_state = g_browser_process->local_state();
   local_state->SetBoolean(prefs::kFirstRunFinished, true);
   base::UmaHistogramEnumeration("ProfilePicker.FirstRun.FinishReason", reason);
@@ -138,6 +99,16 @@ void FirstRunService::TryMarkFirstRunAlreadyFinished(
   // The method has multiple exit points, this ensures `callback` gets called.
   base::ScopedClosureRunner scoped_closure_runner(std::move(callback));
 
+  // If `IsPreFirstRunDesktopRefreshEnabled` holds, we should NOT skip the First
+  // Run. It contains a Welcome screen (e.g. with metrics enabling opt-in) that
+  // should always be presented to users.
+  //
+  // Policy evaluation (to whether the rest of the flow should be skipped) will
+  // be evaluated in `FirstRunFlowController`.
+  if (switches::IsPreFirstRunDesktopRefreshEnabled()) {
+    return;
+  }
+
   // If the FRE is already open, it is obviously not finished and we also don't
   // want to preemptively mark it completed. Skip all the below, the profile
   // picker can handle being called while already shown.
@@ -145,35 +116,10 @@ void FirstRunService::TryMarkFirstRunAlreadyFinished(
     return;
   }
 
-  auto policy_effect = ComputeDevicePolicyEffect(*profile_);
-  // This check should be done prior to the profile already set up check below,
-  // to include the case where the feature `kForceSigninFlowInProfilePicker` is
-  // enabled which would cause the profile to be signed in already at this
-  // point.
-  if (policy_effect != PolicyEffect::kNone &&
-      signin_util::IsForceSigninEnabled()) {
-    // When ForceSignin is enabled and the flows are going through the profile
-    // picker, the final profile setup should not yet be reached. The
-    // rest of the flow is still happening within the Profile Picker, either
-    // the management acceptance screen for Managed accounts, or the Sync
-    // Confirmation screen for Consumer accounts.
-    FinishFirstRun(FinishedReason::kForceSignin);
-    return;
-  }
-
-  bool has_set_up_profile =
-      // The Dice FRE focuses on identity and offering the user to sign in. If
-      // the profile already has an account (e.g. the sentinel file was deleted
-      // or `--force-first-run` was passed), this ensures we still skip it and
-      // avoid having to handle too strange states later.
-      identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin);
-  if (has_set_up_profile) {
-    FinishFirstRun(FinishedReason::kProfileAlreadySetUp);
-    return;
-  }
-
-  if (policy_effect != PolicyEffect::kNone) {
-    FinishFirstRun(FinishedReason::kSkippedByPolicies);
+  if (const std::optional<ProfilePicker::FirstRunFinishReason> skip_reason =
+          ProfilePicker::ComputeFirstRunSkipReason(*profile_);
+      skip_reason.has_value()) {
+    FinishFirstRun(*skip_reason);
     return;
   }
 
@@ -187,7 +133,8 @@ void FirstRunService::TryMarkFirstRunAlreadyFinished(
 // that `resume_task_callback_` will be called with `proceed` set to false,
 // otherwise it will be called with true.
 void FirstRunService::OnFirstRunHasExited(
-    ProfilePicker::FirstRunExitStatus status) {
+    ProfilePicker::FirstRunExitStatus status,
+    ProfilePicker::FirstRunFinishReason finish_reason) {
   if (!resume_task_callback_) {
     return;
   }
@@ -216,20 +163,22 @@ void FirstRunService::OnFirstRunHasExited(
   if (should_mark_fre_finished) {
     // The user got to the last step, we can mark the FRE as finished, whether
     // we eventually proceed with the original intent or not.
-    FinishFirstRun(FinishedReason::kFinishedFlow);
+    FinishFirstRun(finish_reason);
   }
 
   base::UmaHistogramEnumeration("ProfilePicker.FirstRun.ExitStatus", status);
   std::move(resume_task_callback_).Run(proceed);
 }
 
-void FirstRunService::FinishFirstRun(FinishedReason reason) {
+void FirstRunService::FinishFirstRun(
+    ProfilePicker::FirstRunFinishReason reason) {
   SetFirstRunFinished(reason);
 
-  // If the reason is `FinishedReason::kForceSignin` the profile is already
-  // signed in and finalized. It should not finish the setup again.
+  // If the reason is `ProfilePicker::FirstRunFinishReason::kForceSignin` the
+  // profile is already signed in and finalized. It should not finish the setup
+  // again.
   if (identity_manager_->HasPrimaryAccount(signin::ConsentLevel::kSignin) &&
-      reason != FinishedReason::kForceSignin) {
+      reason != ProfilePicker::FirstRunFinishReason::kForceSignin) {
     // Noting that we expect that the name should already be available, as
     // after sign-in, the extended info is fetched and used for the sync
     // opt-in screen.
@@ -238,7 +187,8 @@ void FirstRunService::FinishFirstRun(FinishedReason reason) {
                                       signin::ConsentLevel::kSignin));
     profile_name_resolver_->RunWithProfileName(base::BindOnce(
         &FirstRunService::FinishProfileSetUp, weak_ptr_factory_.GetWeakPtr()));
-  } else if (reason == FinishedReason::kSkippedByPolicies) {
+  } else if (reason ==
+             ProfilePicker::FirstRunFinishReason::kSkippedByPolicies) {
     // TODO(crbug.com/40256886): Try to get a domain name if available.
     FinishProfileSetUp(
         profiles::GetDefaultNameForNewEnterpriseProfile(std::string()));
@@ -255,7 +205,8 @@ void FirstRunService::FinishProfileSetUp(std::u16string profile_name) {
 }
 
 void FirstRunService::OpenFirstRunIfNeeded(ResumeTaskCallback callback) {
-  OnFirstRunHasExited(ProfilePicker::FirstRunExitStatus::kAbortTask);
+  OnFirstRunHasExited(ProfilePicker::FirstRunExitStatus::kAbortTask,
+                      ProfilePicker::FirstRunFinishReason::kFinishedFlow);
   resume_task_callback_ = std::move(callback);
   TryMarkFirstRunAlreadyFinished(base::BindOnce(
       &FirstRunService::OpenFirstRunInternal, weak_ptr_factory_.GetWeakPtr()));
@@ -277,7 +228,8 @@ void FirstRunService::FinishFirstRunWithoutResumeTask() {
   }
 
   DCHECK(ProfilePicker::IsFirstRunOpen());
-  OnFirstRunHasExited(ProfilePicker::FirstRunExitStatus::kAbandonedFlow);
+  OnFirstRunHasExited(ProfilePicker::FirstRunExitStatus::kAbandonedFlow,
+                      ProfilePicker::FirstRunFinishReason::kFinishedFlow);
   ProfilePicker::Hide();
 }
 

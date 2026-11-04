@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "base/memory/raw_ref.h"
 #include "chrome/browser/zephyrus/agent/voice_lock.h"
 
 #include <algorithm>
@@ -96,7 +97,7 @@ class Reader {
  public:
   explicit Reader(const std::string& bytes) : bytes_(bytes) {}
   bool ok() const { return ok_; }
-  bool done() const { return pos_ == bytes_.size(); }
+  bool done() const { return pos_ == bytes_->size(); }
 
   uint32_t U32() {
     if (!Have(4)) {
@@ -104,7 +105,7 @@ class Reader {
     }
     uint32_t v = 0;
     for (int i = 0; i < 4; ++i) {
-      v |= static_cast<uint32_t>(static_cast<uint8_t>(bytes_[pos_ + i]))
+      v |= static_cast<uint32_t>(static_cast<uint8_t>((*bytes_)[pos_ + i]))
            << (8 * i);
     }
     pos_ += 4;
@@ -116,7 +117,7 @@ class Reader {
     }
     uint64_t v = 0;
     for (int i = 0; i < 8; ++i) {
-      v |= static_cast<uint64_t>(static_cast<uint8_t>(bytes_[pos_ + i]))
+      v |= static_cast<uint64_t>(static_cast<uint8_t>((*bytes_)[pos_ + i]))
            << (8 * i);
     }
     pos_ += 8;
@@ -136,21 +137,21 @@ class Reader {
       ok_ = false;
       return std::string();
     }
-    std::string s = bytes_.substr(pos_, n);
+    std::string s = bytes_->substr(pos_, n);
     pos_ += n;
     return s;
   }
 
  private:
   bool Have(size_t n) {
-    if (!ok_ || bytes_.size() - pos_ < n) {
+    if (!ok_ || bytes_->size() - pos_ < n) {
       ok_ = false;
       return false;
     }
     return true;
   }
 
-  const std::string& bytes_;
+  const raw_ref<const std::string> bytes_;
   size_t pos_ = 0;
   bool ok_ = true;
 };

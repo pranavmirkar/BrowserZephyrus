@@ -8,6 +8,8 @@
 #include <utility>
 
 #include "build/build_config.h"
+#include "chrome/common/request_header_integrity/buildflags.h"
+#include "chrome/services/file_util/buildflags.h"
 #include "chrome/services/speech/buildflags/buildflags.h"
 #include "components/on_device_translation/buildflags/buildflags.h"
 #include "components/paint_preview/buildflags/buildflags.h"
@@ -24,12 +26,17 @@
 #include "components/user_data_importer/mojom/bookmark_html_parser.mojom.h"
 #include "content/public/utility/utility_thread.h"
 #include "extensions/buildflags/buildflags.h"
+#include "media/media_buildflags.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/service_factory.h"
 #include "pdf/buildflags.h"
 #include "printing/buildflags/buildflags.h"
 #include "services/passage_embeddings/passage_embeddings_service.h"
 #include "ui/accessibility/accessibility_features.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/services/readaloud/read_aloud_playback_controller.h"  // nogncheck
+#endif  // BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_WIN)
 #include "chrome/services/system_signals/win/win_system_signals_service.h"
@@ -68,6 +75,10 @@
 #include "services/screen_ai/screen_ai_service_impl.h"  // nogncheck
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(ENABLE_MEDIA_REMOTING_REDIRECTION)
+#include "chrome/services/redirection/redirection_service.h"
+#endif  // BUILDFLAG(ENABLE_MEDIA_REMOTING_REDIRECTION)
+
 #if BUILDFLAG(ENABLE_BROWSER_SPEECH_SERVICE)
 #include "chrome/services/speech/speech_recognition_service_impl.h"  // nogncheck
 #include "media/mojo/mojom/speech_recognition_service.mojom.h"  // nogncheck
@@ -75,7 +86,7 @@
 
 #if (BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && \
      !BUILDFLAG(IS_ANDROID)) ||                      \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(ENABLE_EXTRACTORS)
 #include "chrome/services/file_util/file_util_service.h"  // nogncheck
 #endif
 
@@ -86,7 +97,12 @@
 
 #if BUILDFLAG(ENABLE_EXTENSIONS) || BUILDFLAG(IS_ANDROID)
 #include "chrome/services/media_gallery_util/media_parser_factory.h"
-#include "chrome/services/media_gallery_util/public/mojom/media_parser.mojom.h"
+#include "components/media_gallery_util/public/mojom/media_parser.mojom.h"
+#endif
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY) && !BUILDFLAG(IS_ANDROID)
+#include "chrome/common/request_header_integrity/platform_runtime.mojom.h"  // nogncheck
+#include "chrome/services/platform_runtime/platform_runtime_service_impl.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW) || \
@@ -161,6 +177,8 @@ auto RunCSVPasswordParser(
 auto ContentBookmarkParser(
     mojo::PendingReceiver<user_data_importer::mojom::BookmarkHtmlParser>
         receiver) {
+  // The bookmarks parser requires Blink for handling favicon images.
+  content::UtilityThread::Get()->EnsureBlinkInitialized();
   return std::make_unique<
       user_data_importer::ContentBookmarkParserInUtilityProcess>(
       std::move(receiver));
@@ -253,6 +271,13 @@ auto RunMirroringService(
 
 #endif  // !BUILDFLAG(IS_ANDROID)
 
+#if BUILDFLAG(ENABLE_MEDIA_REMOTING_REDIRECTION)
+auto RunRedirectionService(
+    mojo::PendingReceiver<redirection::mojom::RedirectionService> receiver) {
+  return std::make_unique<redirection::RedirectionService>(std::move(receiver));
+}
+#endif  // BUILDFLAG(ENABLE_MEDIA_REMOTING_REDIRECTION)
+
 auto RunPassageEmbeddingsService(
     mojo::PendingReceiver<passage_embeddings::mojom::PassageEmbeddingsService>
         receiver) {
@@ -291,7 +316,7 @@ auto RunZephyrusAgentKernelService(
 
 #if (BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && \
      !BUILDFLAG(IS_ANDROID)) ||                      \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(ENABLE_EXTRACTORS)
 auto RunFileUtil(
     mojo::PendingReceiver<chrome::mojom::FileUtilService> receiver) {
   return std::make_unique<FileUtilService>(std::move(receiver));
@@ -315,6 +340,15 @@ auto RunMediaParserFactory(
 #if BUILDFLAG(IS_CHROMEOS)
 auto RunPdfService(mojo::PendingReceiver<pdf::mojom::PdfService> receiver) {
   return std::make_unique<pdf::PdfService>(std::move(receiver));
+}
+#endif
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY) && !BUILDFLAG(IS_ANDROID)
+auto RunPlatformRuntimeService(
+    mojo::PendingReceiver<
+        request_header_integrity::mojom::PlatformRuntimeService> receiver) {
+  return std::make_unique<platform_runtime::PlatformRuntimeServiceImpl>(
+      std::move(receiver));
 }
 #endif
 
@@ -445,6 +479,19 @@ auto RunBabelOrcaTachyonParsingService(
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
+#if BUILDFLAG(IS_ANDROID)
+std::unique_ptr<readaloud::ReadAloudPlaybackController>
+RunReadAloudPlaybackControllerFactory(
+    mojo::PendingReceiver<
+        read_aloud::mojom::ReadAloudPlaybackControllerFactory> receiver) {
+  if (!features::IsReadAloudNativeEnabled()) {
+    return nullptr;
+  }
+  return std::make_unique<readaloud::ReadAloudPlaybackController>(
+      std::move(receiver));
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
 }  // namespace
 
 void RegisterElevatedMainThreadServices(mojo::ServiceFactory& services) {
@@ -464,6 +511,10 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
   services.Add(RunPassageEmbeddingsService);
   services.Add(RunOakSessionService);
 
+#if BUILDFLAG(IS_ANDROID)
+  services.Add(RunReadAloudPlaybackControllerFactory);
+#endif  // BUILDFLAG(IS_ANDROID)
+
 #if !BUILDFLAG(IS_ANDROID)
   services.Add(RunProfileImporter);
   services.Add(RunMirroringService);
@@ -471,6 +522,10 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
   services.Add(RunScreenAIServiceFactory);
   services.Add(RunZephyrusAgentKernelService);
 #endif  // !BUILDFLAG(IS_ANDROID)
+
+#if BUILDFLAG(ENABLE_MEDIA_REMOTING_REDIRECTION)
+  services.Add(RunRedirectionService);
+#endif  // BUILDFLAG(ENABLE_MEDIA_REMOTING_REDIRECTION)
 
 #if BUILDFLAG(ENABLE_BROWSER_SPEECH_SERVICE)
   services.Add(RunSpeechRecognitionService);
@@ -493,7 +548,7 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
 
 #if (BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION) && \
      !BUILDFLAG(IS_ANDROID)) ||                      \
-    BUILDFLAG(IS_CHROMEOS)
+    BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(ENABLE_EXTRACTORS)
   services.Add(RunFileUtil);
 #endif
 
@@ -508,6 +563,10 @@ void RegisterMainThreadServices(mojo::ServiceFactory& services) {
 
 #if BUILDFLAG(IS_CHROMEOS)
   services.Add(RunPdfService);
+#endif
+
+#if BUILDFLAG(ENABLE_REQUEST_HEADER_INTEGRITY) && !BUILDFLAG(IS_ANDROID)
+  services.Add(RunPlatformRuntimeService);
 #endif
 
 #if BUILDFLAG(ENABLE_PRINT_PREVIEW) || \

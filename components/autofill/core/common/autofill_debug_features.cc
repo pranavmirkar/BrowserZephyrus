@@ -11,9 +11,20 @@
 
 namespace autofill::features::debug {
 
+// When enabled, SPII data is not removed from AtMemory search results when the
+// client does not support device reauth.
+BASE_FEATURE(kAtMemoryNoDeviceReauthCheck, base::FEATURE_DISABLED_BY_DEFAULT);
+
 // Bypasses the eligibility checks (PersonalContext, Gemini subscription tier
 // and other) for local testing and teamfooding.
-BASE_FEATURE(kAtMemorySkipEligibilityChecks, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAtMemorySkipEnablementChecks, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// If enabled, all checks in ShouldShowPrivateInferenceNotice are skipped
+// (except triggering field being an Autofill AI type and
+// kAutofillAiUsePrivateAi being enabled) and the notice is forced to show for
+// testing.
+BASE_FEATURE(kAutofillAiAlwaysShowPrivateAiNotice,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // When enabled, Wallet private passes are supported on devices without re-auth.
 BASE_FEATURE(kAutofillAiDisableReauthRequirement,
@@ -22,11 +33,6 @@ BASE_FEATURE(kAutofillAiDisableReauthRequirement,
 // When enabled, the user will be considered to be opted-in to Autofill AI by
 // default. Used for development purposes.
 BASE_FEATURE(kAutofillAiForceOptIn, base::FEATURE_DISABLED_BY_DEFAULT);
-
-// When enabled, all ambient autofill eligibility checks will be overridden and
-// return true. Used for development purposes.
-BASE_FEATURE(kAutofillAmbientAutofillSkipEligibilityChecks,
-             base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Testing tool that collects metrics during a run of the captured site tests
 // and dumps the collected metrics into a specified output directory.
@@ -81,7 +87,13 @@ BASE_FEATURE(kAutofillDisableSuggestionStrikeDatabase,
 
 // When enabled `ChromeAutofillClient` will always behave as if there is an
 // active `ActorTask`.
-BASE_FEATURE(kAutofillForceActorMode, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kAutofillForceActorMode,
+// Use the iOS build flag to prevent a cross-platform default.
+#if BUILDFLAG(IS_IOS)
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#else
+             base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_IOS)
 
 // Enables logging the content of chrome://autofill-internals to the terminal.
 BASE_FEATURE(kAutofillLogToTerminal, base::FEATURE_DISABLED_BY_DEFAULT);
@@ -146,6 +158,18 @@ BASE_FEATURE_PARAM(std::string,
 // addresses, cards and passwords are unaffected — they were always local.
 // Guarded by PrivacyNoUploadTest.AutofillCrowdsourcingIsDisabled.
 BASE_FEATURE(kAutofillServerCommunication, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// When set to a non-zero value, the value is attached as an experiment ID to
+// all predictions requests to the Autofill server, as if it were an active GWS
+// experiment. Note that the same result can be archived using
+// --force-variation-ids. Using this flag parameter has the advantage that it
+// can be tied to Chrome flags and that it can be rolled out without a
+// GWS-visible experiment.
+BASE_FEATURE_PARAM(int,
+                   kAutofillServerCommunicationExperimentId,
+                   &kAutofillServerCommunication,
+                   "experiment_id",
+                   0);
 
 // Controls attaching the autofill type predictions to their respective
 // element in the DOM.

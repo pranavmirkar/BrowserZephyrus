@@ -10,6 +10,7 @@
 #include <set>
 #include <utility>
 
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
@@ -441,7 +442,7 @@ std::vector<std::string> LongTermMemory::Recall(const std::string& context,
   const std::set<std::string> wanted = Tokens(context);
   const base::Time now = base::Time::Now();
   struct Scored {
-    Fact* fact;
+    RAW_PTR_EXCLUSION Fact* fact;  // lives on the stack for one call
     double score;
     size_t shared;
   };

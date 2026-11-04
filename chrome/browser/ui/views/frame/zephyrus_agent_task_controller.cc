@@ -146,9 +146,9 @@ void ZephyrusAgentTaskController::Begin() {
   // What the agent asks to have remembered goes to this profile's long-term
   // memory, for this workspace -- unless the person has switched memory off, and
   // a private profile's memory has no file to write to.
-  if (browser_ && browser_->profile() &&
-      browser_->profile()->GetPrefs()->GetBoolean(kMemoryPref)) {
-    Profile* profile = browser_->profile();
+  if (browser_ && browser_->GetProfile() &&
+      browser_->GetProfile()->GetPrefs()->GetBoolean(kMemoryPref)) {
+    Profile* profile = browser_->GetProfile();
     LongTermMemory* store = GetLongTermMemory(profile);
     const int workspace = workspace_id_;
     const bool persist = !profile->IsOffTheRecord();
@@ -190,7 +190,7 @@ ZephyrusAgentTaskController::StartTaskWithConfiguredModel(
     uint32_t max_steps,
     int workspace_id,
     FinishedCallback done) {
-  Profile* profile = browser_ ? browser_->profile() : nullptr;
+  Profile* profile = browser_ ? browser_->GetProfile() : nullptr;
   std::optional<CloudModelConfig> cloud =
       profile ? ReadCloudModelConfig(*profile->GetPrefs()) : std::nullopt;
 
@@ -222,7 +222,7 @@ ZephyrusAgentTaskController::StartTaskWithConfiguredModel(
   }
 
   dev_model_ = DevModelClient::CreateIfConfigured(
-      browser_->profile()->GetURLLoaderFactory());
+      browser_->GetProfile()->GetURLLoaderFactory());
   if (!dev_model_) {
     return StartResult::kNoModel;
   }
@@ -237,7 +237,7 @@ void ZephyrusAgentTaskController::OnEncryptorForTask(
     return;  // Cancelled while the keystore was answering.
   }
   std::optional<std::string> key =
-      encryptor ? LoadApiKey(*browser_->profile()->GetPrefs(), *encryptor,
+      encryptor ? LoadApiKey(*browser_->GetProfile()->GetPrefs(), *encryptor,
                              cloud_config_->kind)
                 : std::nullopt;
   // The system network context: no Workspace's cookies or cache, whichever
@@ -304,8 +304,8 @@ void ZephyrusAgentTaskController::Run(mojom::PendingApprovalPtr approved) {
     // the provider itself, through the transport.
     model_receivers_.Clear();
     model_for_run.reset();
-    if (browser_->profile()->IsOffTheRecord() ||
-        !IsCloudAllowedInWorkspace(*browser_->profile()->GetPrefs(),
+    if (browser_->GetProfile()->IsOffTheRecord() ||
+        !IsCloudAllowedInWorkspace(*browser_->GetProfile()->GetPrefs(),
                                    workspace_id_)) {
       Finish(FailedOutcome(
           "stopped: the cloud model was turned off for this workspace", 0));
@@ -424,7 +424,7 @@ void ZephyrusAgentTaskController::ShowApproval(
           .Build();
 
   constrained_window::ShowBrowserModal(
-      std::move(model), browser_->window()->GetNativeWindow());
+      std::move(model), browser_->GetWindow()->GetNativeWindow());
 }
 
 void ZephyrusAgentTaskController::OnAnswered(bool approved) {

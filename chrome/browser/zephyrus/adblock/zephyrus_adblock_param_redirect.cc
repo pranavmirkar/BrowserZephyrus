@@ -87,9 +87,9 @@ void ZephyrusAdblockParamRedirect::SendRedirect(const GURL& cleaned_url) {
   head->headers = base::MakeRefCounted<net::HttpResponseHeaders>(
       net::HttpUtil::AssembleRawHeaders(headers));
   head->encoded_data_length = 0;
-  // The redirect comes from the browser itself, not from the site, so the
-  // renderer's checks on a server's redirect do not apply.
-  head->bypass_redirect_checks = true;
+  // 156 removed the per-response bypass of the redirect-safety checks. None is
+  // needed: the target is the same URL with tracking parameters removed, so scheme,
+  // host and port are unchanged and the check for an unsafe target passes.
   redirect_info_ = redirect_info;
   client_->OnReceiveRedirect(redirect_info, std::move(head));
 }

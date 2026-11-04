@@ -896,7 +896,7 @@ class ZephyrusWorkspaceEditor : public views::View,
     if (!manager || !browser_view_ || !browser_view_->GetWidget()) {
       return;
     }
-    Profile* profile = browser_view_->browser()->profile();
+    Profile* profile = browser_view_->browser()->GetProfile();
     gfx::NativeWindow parent = browser_view_->GetWidget()->GetNativeWindow();
     base::WeakPtr<ZephyrusWorkspaceManager> weak = manager->GetWeakPtr();
     const int id = workspace_id_;

@@ -20,6 +20,7 @@
 #include "chrome/browser/zephyrus/privacy/privacy_intelligence_service.h"
 #include "chrome/browser/zephyrus/privacy/privacy_intelligence_service_factory.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_cname_harvester.h"
+#include "chrome/browser/zephyrus/adblock/zephyrus_csp_injector.h"
 #include "chrome/browser/zephyrus/privacy/privacy_tab_helper.h"
 #include "content/public/browser/render_frame_host.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
@@ -279,6 +280,16 @@ void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
   // not — so the steady state attaches nothing and the request path is
   // unchanged. See PrivacyCnameCache.
   mojo::PendingRemote<network::mojom::URLLoaderClient> forwarded = std::move(client);
+  // `$csp=` rules: a page or frame a rule names gets its extra policy. Only
+  // those loads are routed through the browser process, a handful of sites.
+  if (service_ && (type == kTypeDocument || type == kTypeSubdocument)) {
+    std::vector<std::string> policies =
+        service_->CspPoliciesFor(request.url, initiator, type);
+    if (!policies.empty()) {
+      forwarded = ZephyrusCspInjector::Create(std::move(forwarded), request.url,
+                                              std::move(policies));
+    }
+  }
   if (privacy_cname_cache_) {
     const std::string_view host =
         zephyrus_privacy::CanonicalHostForHash(request.url.host());

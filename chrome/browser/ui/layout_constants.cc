@@ -110,6 +110,10 @@ int GetLayoutConstant(LayoutConstant constant) {
       return touch_ui ? 24 : 20;
     case LayoutConstant::kTabPreTitlePadding:
       return 8;
+    case LayoutConstant::kTabVerticalPadding:
+      return 6;
+    case LayoutConstant::kTabHorizontalPadding:
+      return 8;
     case LayoutConstant::kTabStackDistance:
       return touch_ui ? 4 : 6;
     case LayoutConstant::kTabstripToolbarOverlap:
@@ -145,6 +149,8 @@ int GetLayoutConstant(LayoutConstant constant) {
       return touch_ui ? 0 : 4;
     case LayoutConstant::kToolbarIconDefaultMargin:
       return touch_ui ? 0 : 2;
+    case LayoutConstant::kToolbarButtonRefreshExpandedMargin:
+      return 5;
     case LayoutConstant::kLocationBarMargin:
       return touch_ui ? 12 : 9;
     case LayoutConstant::kSidePanelInset:
@@ -209,7 +215,10 @@ gfx::Insets GetLayoutInsets(LayoutInset inset) {
       return touch_ui ? gfx::Insets::VH(5, 10) : gfx::Insets::VH(4, 4);
 
     case LOCATION_BAR_PAGE_ACTION_ICON_PADDING:
-      return touch_ui ? gfx::Insets::VH(5, 10) : gfx::Insets::VH(2, 2);
+      return touch_ui ? gfx::Insets::VH(5, 10)
+                      : (features::IsPageActionsElevatedToolbarEnabled()
+                             ? gfx::Insets::VH(3, 3)
+                             : gfx::Insets::VH(2, 2));
 
     case TOOLBAR_ACTION_VIEW: {
       // TODO(afakhry): Unify all toolbar button sizes on all platforms.

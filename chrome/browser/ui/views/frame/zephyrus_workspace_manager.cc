@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "content/public/browser/navigation_controller.h"
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
 
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_image.h"
@@ -811,7 +813,7 @@ int ZephyrusWorkspaceStore::WorkspaceForNewWindow() {
           return true;
         }
         const auto it = window_current_workspace_.find(
-            browser->GetBrowserForMigrationOnly());
+            zephyrus::AsBrowser(browser));
         if (it == window_current_workspace_.end()) {
           return true;  // Itself, most likely: not registered yet.
         }
@@ -1181,7 +1183,7 @@ bool ZephyrusWorkspaceStore::LoadState() {
 ZephyrusWorkspaceManager::ZephyrusWorkspaceManager(Browser* browser)
     : browser_(browser),
       tab_strip_model_(browser->tab_strip_model()),
-      store_(ZephyrusWorkspaceStore::GetForProfile(browser->profile())) {
+      store_(ZephyrusWorkspaceStore::GetForProfile(browser->GetProfile())) {
   // GetForProfile returns null only for a null profile; bail rather than
   // dereference, since every method below assumes the store exists.
   if (!store_) {
@@ -1190,7 +1192,7 @@ ZephyrusWorkspaceManager::ZephyrusWorkspaceManager(Browser* browser)
   // A window being RESTORED gets its saved workspace; any other new window
   // (Ctrl+N, "Open link in new window", a popup) opens on the workspace of the
   // window it came from.
-  current_workspace_id_ = SessionRestore::IsRestoring(browser->profile())
+  current_workspace_id_ = SessionRestore::IsRestoring(browser->GetProfile())
                               ? store_->default_workspace_id()
                               : store_->WorkspaceForNewWindow();
   // Registered NOW, before any tab exists. The navigator picks a new tab's
@@ -1451,7 +1453,7 @@ void ZephyrusWorkspaceManager::DeleteWorkspace(int workspace_id) {
   // per deleted workspace, forever.
   if (!it->image.empty()) {
     store_->ForgetImage(it->image);
-    zephyrus::DeleteWorkspaceImage(browser_->profile(), it->image);
+    zephyrus::DeleteWorkspaceImage(browser_->GetProfile(), it->image);
   }
   // Its stored data goes too -- the cookies and logins that were only ever
   // reachable through this workspace. Deleting the workspace while leaving them
@@ -1478,7 +1480,7 @@ void ZephyrusWorkspaceManager::DeleteWorkspace(int workspace_id) {
   // orphans, still running in the partition that is about to be wiped below.
   GlobalBrowserCollection::GetInstance()->ForEach(
       [&](BrowserWindowInterface* other) {
-        if (!other || other->GetProfile() != browser_->profile()) {
+        if (!other || other->GetProfile() != browser_->GetProfile()) {
           return true;
         }
         TabStripModel* model = other->GetTabStripModel();
@@ -1532,7 +1534,7 @@ void ZephyrusWorkspaceManager::DeleteWorkspace(int workspace_id) {
   // partition while tabs are still using it would race them, and doing it
   // before the pref write would risk a crash in between leaving a workspace
   // whose data is already gone.
-  zephyrus::ClearWorkspacePartition(browser_->profile(), doomed_partition);
+  zephyrus::ClearWorkspacePartition(browser_->GetProfile(), doomed_partition);
 }
 
 void ZephyrusWorkspaceManager::SetWorkspaceColor(int workspace_id,
@@ -1556,7 +1558,7 @@ void ZephyrusWorkspaceManager::SetWorkspaceEmoji(int workspace_id,
       // See SetWorkspaceImage() for why they are exclusive.
       if (!workspace.image.empty()) {
         store_->ForgetImage(workspace.image);
-        zephyrus::DeleteWorkspaceImage(browser_->profile(), workspace.image);
+        zephyrus::DeleteWorkspaceImage(browser_->GetProfile(), workspace.image);
         workspace.image.clear();
       }
       NotifyChanged();
@@ -1585,7 +1587,7 @@ void ZephyrusWorkspaceManager::SetWorkspaceImage(int workspace_id,
     // else can name it, so it goes now rather than accumulating in the profile.
     if (!workspace.image.empty()) {
       store_->ForgetImage(workspace.image);
-      zephyrus::DeleteWorkspaceImage(browser_->profile(), workspace.image);
+      zephyrus::DeleteWorkspaceImage(browser_->GetProfile(), workspace.image);
     }
     workspace.image = image;
     if (!image.empty()) {
@@ -1689,7 +1691,7 @@ void ZephyrusWorkspaceManager::RebuildContentsInWorkspace(
     return;
   }
 
-  Profile* const profile = browser_ ? browser_->profile() : nullptr;
+  Profile* const profile = browser_ ? browser_->GetProfile() : nullptr;
   if (!profile) {
     return;
   }
@@ -2084,7 +2086,6 @@ void ZephyrusWorkspaceManager::OnTabStripModelChanged(
 }
 
 void ZephyrusWorkspaceManager::OnTabChangedAt(tabs::TabInterface* tab,
-                                              int index,
                                               TabChangeType change_type) {
   // Fires as a tab commits a navigation, which is where the visit index learns
   // which workspace a URL was opened in. kLoadingOnly / kAttentionOnly /
@@ -2093,6 +2094,7 @@ void ZephyrusWorkspaceManager::OnTabChangedAt(tabs::TabInterface* tab,
   if (change_type != TabChangeType::kAll) {
     return;
   }
+  const int index = tab_strip_model_->GetIndexOfTab(tab);
   if (index < 0 || index >= tab_strip_model_->count()) {
     return;
   }
@@ -2106,7 +2108,7 @@ void ZephyrusWorkspaceManager::OnTabChangedAt(tabs::TabInterface* tab,
   // tab would write private URLs to disk. The private window's own manager
   // records into the OTR store (in-memory, dies with the session), so scoping
   // still works inside Private Workspace itself.
-  if (contents->GetBrowserContext() != browser_->profile()) {
+  if (contents->GetBrowserContext() != browser_->GetProfile()) {
     return;
   }
   store_->RecordVisit(GetWorkspaceForContents(contents),
@@ -2139,7 +2141,7 @@ void ZephyrusWorkspaceManager::NotifyLocalObservers() {
 }
 
 bool ZephyrusWorkspaceManager::IsWindowActive() const {
-  return browser_ && browser_->window() && browser_->window()->IsActive();
+  return browser_ && browser_->GetWindow() && browser_->GetWindow()->IsActive();
 }
 
 void ZephyrusWorkspaceManager::OnWindowActivated() {
@@ -2158,7 +2160,7 @@ void ZephyrusWorkspaceManager::UpdateWindowLook() {
   // Only a window showing a workspace OTHER than the mirrored one needs its own
   // colours; the mirrored one follows the live theme, which is also what lets a
   // Customize Chrome edit show up immediately.
-  if (!browser_->profile()->IsOffTheRecord() &&
+  if (!browser_->GetProfile()->IsOffTheRecord() &&
       current_workspace_id_ != store_->mirrored_workspace_id()) {
     if (std::optional<ZephyrusWorkspaceLook> recorded =
             store_->GetLook(current_workspace_id_)) {
@@ -2259,7 +2261,7 @@ int ZephyrusWorkspaceManager::WorkspaceIdForInsertedContents(
   // opened in dev, invisible in dev, showing up in another workspace. Once
   // restore is done, drain the queue so no later tab can inherit from it.
   if (store_->has_pending_restore()) {
-    if (browser_ && SessionRestore::IsRestoring(browser_->profile())) {
+    if (browser_ && SessionRestore::IsRestoring(browser_->GetProfile())) {
       if (const int id = store_->TakePendingRestoreId(); id != 0) {
         return id;
       }

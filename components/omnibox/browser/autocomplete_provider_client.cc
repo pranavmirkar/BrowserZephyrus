@@ -89,7 +89,8 @@ bool AutocompleteProviderClient::in_background_state() const {
   return false;
 }
 
-bool AutocompleteProviderClient::IsOmniboxNextLensSearchChipEnabled() const {
+
+bool AutocompleteProviderClient::IsAskGShowChipEnabled() const {
   return false;
 }
 
@@ -105,3 +106,19 @@ base::WeakPtr<AutocompleteProviderClient>
 AutocompleteProviderClient::GetWeakPtr() {
   return nullptr;
 }
+
+bool AutocompleteProviderClient::IsWebUiNtpEnabledForDesktopAndroid() const {
+  return false;
+}
+
+bool AutocompleteProviderClient::ShouldOpenCoBrowsePanel() const {
+  return false;
+}
+
+void AutocompleteProviderClient::OpenCoBrowsePanel() {}
+
+bool AutocompleteProviderClient::ShouldOpenComposeboxForAskG() const {
+  return false;
+}
+
+void AutocompleteProviderClient::OpenComposeboxForAskG() {}

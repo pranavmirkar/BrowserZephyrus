@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/views/frame/zephyrus_browser_compat.h"
 #include "chrome/browser/ui/views/frame/zephyrus_settings_popup.h"
 
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -331,8 +332,8 @@ END_METADATA
 
 // static
 bool ZephyrusSettingsPopup::MaybeShow(Browser* browser, Section section) {
-  if (!browser || !browser->is_type_normal() ||
-      browser->profile()->IsOffTheRecord()) {
+  if (!browser || !zephyrus::IsTypeNormal(browser) ||
+      browser->GetProfile()->IsOffTheRecord()) {
     return false;
   }
   Show(browser, section);
@@ -364,7 +365,7 @@ void ZephyrusSettingsPopup::Show(Browser* browser, Section section) {
   ZephyrusSettingsPopup* popup_ptr = popup.get();
   views::WebView* web_view = popup->web_view_;
   views::Widget* widget = constrained_window::CreateBrowserModalDialogViews(
-      std::move(popup), browser->window()->GetNativeWindow());
+      std::move(popup), browser->GetWindow()->GetNativeWindow());
   popup_ptr->widget_ = widget;
   // No DWM corner preference here any more: the compositor rounds the frame at
   // the designed 20px again (see set_use_round_corners in the constructor), and
@@ -374,7 +375,7 @@ void ZephyrusSettingsPopup::Show(Browser* browser, Section section) {
   // Center over the browser window; the default browser-modal placement pins
   // the dialog to the top edge, which looks misaligned in the Zephyrus
   // frameless UI.
-  const gfx::Rect browser_bounds = browser->window()->GetBounds();
+  const gfx::Rect browser_bounds = browser->GetWindow()->GetBounds();
   gfx::Rect bounds = widget->GetWindowBoundsInScreen();
   bounds.set_origin(gfx::Point(
       browser_bounds.x() + (browser_bounds.width() - bounds.width()) / 2,
@@ -414,7 +415,7 @@ void ZephyrusSettingsPopup::Show(Browser* browser, Section section) {
     // attached to the widget: NativeViewHostAura::ApplyRoundedCorners() is a
     // silent no-op without an attached native view, and the layer can be
     // recreated during widget initialization, dropping radii applied earlier.
-    web_view->holder()->SetCornerRadii(
+    web_view->holder()->SetNativeViewCornerRadii(
         gfx::RoundedCornersF(0, kPopupCornerRadius, kPopupCornerRadius, 0));
     web_view->RequestFocus();
   }
@@ -449,8 +450,8 @@ ZephyrusSettingsPopup::ZephyrusSettingsPopup(Browser* browser,
   // Size to the browser window, capped so the popup keeps a floating,
   // palette-like feel.
   gfx::Size size(980, 680);
-  if (browser_->window()) {
-    const gfx::Rect bounds = browser_->window()->GetBounds();
+  if (browser_->GetWindow()) {
+    const gfx::Rect bounds = browser_->GetWindow()->GetBounds();
     size = gfx::Size(std::min(1080, bounds.width() - 120),
                      std::min(720, bounds.height() - 100));
     size.SetToMax(gfx::Size(760, 480));
@@ -583,11 +584,11 @@ std::unique_ptr<views::View> ZephyrusSettingsPopup::BuildContentsView(
 
   // ---- Right: embedded WebUI ----------------------------------------------
   auto* web_view =
-      root->AddChildView(std::make_unique<views::WebView>(browser_->profile()));
+      root->AddChildView(std::make_unique<views::WebView>(browser_->GetProfile()));
   web_view_ = web_view;
   root_layout->SetFlexForView(web_view, 1);
   // Clip the native web contents to the popup's rounded right corners.
-  web_view->holder()->SetCornerRadii(
+  web_view->holder()->SetNativeViewCornerRadii(
       gfx::RoundedCornersF(0, kPopupCornerRadius, kPopupCornerRadius, 0));
   contents->set_web_view(web_view);
   // A base under the page, so opening the popup and switching sections never

@@ -132,10 +132,10 @@ Profile* ActiveProfile(Browser* browser) {
   content::WebContents* contents =
       model ? model->GetActiveWebContents() : nullptr;
   if (!contents) {
-    return browser->profile();
+    return browser->GetProfile();
   }
   Profile* profile = Profile::FromBrowserContext(contents->GetBrowserContext());
-  return profile ? profile : browser->profile();
+  return profile ? profile : browser->GetProfile();
 }
 
 void ClearWorkspacePartition(content::BrowserContext* context,

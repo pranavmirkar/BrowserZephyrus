@@ -341,6 +341,7 @@ class BrowserToolSurface::FetchWatcher : public content::WebContentsObserver {
   void ResourceLoadComplete(
       content::RenderFrameHost*,
       const content::GlobalRequestID&,
+      const GURL&,
       const blink::mojom::ResourceLoadInfo&) override {
     last_fetch_at_ = base::TimeTicks::Now();
   }
@@ -759,9 +760,9 @@ void BrowserToolSurface::OnSnapshot(ObserveCallback callback,
   Observation observation = BuildObservation(
       update, url, title, find_query_.empty() ? max_elements_ : 5000,
       max_text_length_);
-  if (!download_watcher_ && browser_ && browser_->profile()) {
+  if (!download_watcher_ && browser_ && browser_->GetProfile()) {
     if (content::DownloadManager* manager =
-            browser_->profile()->GetDownloadManager()) {
+            browser_->GetProfile()->GetDownloadManager()) {
       download_watcher_ = std::make_unique<DownloadWatcher>(manager, this);
     }
   }
@@ -1188,7 +1189,7 @@ void BrowserToolSurface::DescribeScreenshot(Observation observation,
   if (!vision_checked_) {
     vision_checked_ = true;
     vision_ = LocalVisionClient::CreateIfConfigured(
-        browser_->profile()->GetURLLoaderFactory());
+        browser_->GetProfile()->GetURLLoaderFactory());
   }
 
   if (!vision_ || observation.screenshot_jpeg.empty()) {

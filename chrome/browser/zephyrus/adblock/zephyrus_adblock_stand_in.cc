@@ -137,9 +137,9 @@ void ZephyrusAdblockStandIn::Respond(const network::ResourceRequest& request,
   client_->OnReceiveResponse(std::move(head), std::move(consumer),
                              std::nullopt);
   network::URLLoaderCompletionStatus status(net::OK);
-  status.encoded_data_length = static_cast<int64_t>(body.size());
-  status.encoded_body_length = static_cast<int64_t>(body.size());
-  status.decoded_body_length = static_cast<int64_t>(body.size());
+  status.encoded_data_length = base::ByteSize(body.size());
+  status.encoded_body_length = base::ByteSize(body.size());
+  status.decoded_body_length = base::ByteSize(body.size());
   client_->OnComplete(status);
 }
 

@@ -27,6 +27,7 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/hats/hats_service.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/pref_names.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
@@ -144,18 +145,14 @@ void HatsServiceDesktop::DelayedSurveyTask::Launch() {
     return;
   }
 
-  BrowserWindowInterface* browser_interface =
+  BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
           web_contents());
-  Browser* browser = browser_interface
-                         ? browser_interface->GetBrowserForMigrationOnly()
-                         : nullptr;
 
-  LaunchError error = hats_service_->ShowSurvey(
+  hats_service_->ShowSurvey(
       browser, trigger_, std::move(success_callback_),
       std::move(failure_callback_), product_specific_bits_data_,
       product_specific_string_data_, supplied_trigger_id_);
-  std::ignore = error;
 
   hats_service_->RemoveTask(*this);
 }
@@ -235,10 +232,8 @@ HatsService::LaunchError HatsServiceDesktop::LaunchSurveyForWebContents(
 
   BrowserWindowInterface* browser =
       GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
-  Browser* raw_browser =
-      browser ? browser->GetBrowserForMigrationOnly() : nullptr;
 
-  return ShowSurvey(raw_browser, trigger, std::move(success_callback),
+  return ShowSurvey(browser, trigger, std::move(success_callback),
                     std::move(failure_callback), product_specific_bits_data,
                     product_specific_string_data, supplied_trigger_id);
 }
@@ -432,10 +427,10 @@ bool HatsServiceDesktop::HasPendingTasks() {
 }
 
 bool HatsServiceDesktop::CanShowSurvey(const std::string& trigger) const {
-  return GetCommonLaunchError(trigger) == LaunchError::kNone;
+  return RunCommonLaunchChecks(trigger) == LaunchError::kNone;
 }
 
-HatsService::LaunchError HatsServiceDesktop::GetCommonLaunchError(
+HatsService::LaunchError HatsServiceDesktop::RunCommonLaunchChecks(
     const std::string& trigger) const {
   // Survey should not be loaded if the corresponding survey config is
   // unavailable.
@@ -642,15 +637,16 @@ void HatsServiceDesktop::RemoveTask(const DelayedSurveyTask& task) {
   pending_tasks_.erase(task);
 }
 
-HatsService::LaunchError HatsServiceDesktop::GetLaunchError(
-    Browser* browser,
+HatsService::LaunchError HatsServiceDesktop::RunLaunchChecks(
+    BrowserWindowInterface* browser,
     const std::string& trigger) const {
-  LaunchError error = GetCommonLaunchError(trigger);
+  LaunchError error = RunCommonLaunchChecks(trigger);
   if (error != LaunchError::kNone) {
     return error;
   }
 
-  if (!browser || browser->IsAttemptingToCloseBrowser()) {
+  if (!browser ||
+      UnloadController::From(browser)->is_attempting_to_close_browser()) {
     return LaunchError::kError;
   }
 
@@ -662,7 +658,7 @@ HatsService::LaunchError HatsServiceDesktop::GetLaunchError(
     return LaunchError::kWrongBrowserType;
   }
 
-  if (IncognitoModePrefs::GetAvailability(profile()->GetPrefs()) ==
+  if (IncognitoModePrefs::GetAvailability(profile()) ==
       policy::IncognitoModeAvailability::kDisabled) {
     UMA_HISTOGRAM_ENUMERATION(kHatsShouldShowSurveyReasonHistogram,
                               ShouldShowSurveyReasons::kNoIncognitoDisabled);
@@ -685,10 +681,11 @@ HatsService::LaunchError HatsServiceDesktop::GetLaunchError(
 }
 
 bool HatsServiceDesktop::IsRightBrowserType(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     hats::SurveyConfig::RequestedBrowserType requested_browser_type) const {
   if (!browser ||
-      (!browser->is_type_normal() && !browser->is_type_devtools())) {
+      (browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL &&
+       browser->GetType() != BrowserWindowInterface::Type::TYPE_DEVTOOLS)) {
     return false;
   }
 
@@ -696,19 +693,19 @@ bool HatsServiceDesktop::IsRightBrowserType(
     case hats::SurveyConfig::RequestedBrowserType::kRegular:
       return profiles::IsRegularOrGuestSession(browser);
     case hats::SurveyConfig::RequestedBrowserType::kIncognito:
-      return browser->profile()->IsIncognitoProfile();
+      return browser->GetProfile()->IsIncognitoProfile();
   }
 }
 
 HatsService::LaunchError HatsServiceDesktop::ShowSurvey(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const std::string& trigger,
     base::OnceClosure success_callback,
     base::OnceClosure failure_callback,
     const SurveyBitsData& product_specific_bits_data,
     const SurveyStringData& product_specific_string_data,
     const std::optional<std::string_view>& supplied_trigger_id) {
-  LaunchError error = GetLaunchError(browser, trigger);
+  LaunchError error = RunLaunchChecks(browser, trigger);
   if (error != LaunchError::kNone) {
     if (!failure_callback.is_null()) {
       std::move(failure_callback).Run();

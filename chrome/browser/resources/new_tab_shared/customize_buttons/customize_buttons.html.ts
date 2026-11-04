@@ -17,7 +17,7 @@ export function getHtml(this: CustomizeButtonsElement) {
   <cr-button id="customizeButton" class="customize-button"
       @click="${this.onCustomizeClick_}" title="$i18n{customizeThisPage}"
       aria-pressed="${this.showCustomize}">
-    <cr-icon class="customize-icon" slot="prefix-icon" icon="ntp:pencil">
+    <cr-icon class="customize-icon" slot="prefix-icon" icon="ntp:pencil-custom">
     </cr-icon>
     <div id="customizeText" class="customize-text"
         ?hidden="${!this.showCustomizeChromeText}">

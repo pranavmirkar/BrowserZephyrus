@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <random>
+#include <string_view>
 #include <variant>
 #include <vector>
 
@@ -123,7 +124,8 @@ std::vector<std::unique_ptr<TemplateURLData>> GetOverriddenTemplateURLData(
 
 std::unique_ptr<TemplateURLData> FindPrepopulatedEngineInternal(
     PrefService& prefs,
-    const std::vector<const PrepopulatedEngine*>& regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
     int prepopulated_id,
     bool use_first_as_fallback) {
   // This could be more efficient. We load all URLs but keep only one.
@@ -157,8 +159,9 @@ std::unique_ptr<TemplateURLData> FindPrepopulatedEngineInternal(
 template <typename EngineMatcher>
 constexpr const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInDataImpl(
     EngineMatcher engine_matcher,
-    const std::vector<const PrepopulatedEngine*>&
-        regional_prepopulated_engines) {
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants) {
   // Locate region-specific search engine first to avoid more thorough
   // scanning. In most cases this should offer the correct match.
   if (auto iter =
@@ -167,8 +170,13 @@ constexpr const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInDataImpl(
     return *iter;
   }
 
+  // Check regional variants next.
+  if (auto iter = std::ranges::find_if(regional_variants, engine_matcher);
+      iter != regional_variants.end()) {
+    return *iter;
+  }
+
   // Fallback: just grab the first matching entry from the complete list.
-  // This is fine as keywords are unique.
   const auto& all_engines = regional_capabilities::GetAllPrepopulatedEngines();
   if (auto iter = std::ranges::find_if(all_engines, engine_matcher);
       iter != all_engines.end()) {
@@ -202,7 +210,7 @@ int GetDataVersion(PrefService* prefs) {
 
 std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
     PrefService& prefs,
-    const std::vector<const PrepopulatedEngine*>&
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines) {
   // If there is a set of search engines in the preferences file, it overrides
   // the built-in set.
@@ -225,7 +233,8 @@ std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
 
 std::unique_ptr<TemplateURLData> GetPrepopulatedEngine(
     PrefService& prefs,
-    const std::vector<const PrepopulatedEngine*>& regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
     int prepopulated_id) {
   return FindPrepopulatedEngineInternal(prefs, regional_prepopulated_engines,
                                         prepopulated_id,
@@ -253,32 +262,37 @@ std::vector<std::unique_ptr<TemplateURLData>> GetLocalPrepopulatedEngines(
 
 const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
     int prepopulated_id,
-    const std::vector<const PrepopulatedEngine*>&
-        regional_prepopulated_engines) {
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants) {
   return GetPrepopulatedEngineFromBuiltInDataImpl(
       [prepopulated_id](const PrepopulatedEngine* engine) {
         return engine->id == prepopulated_id;
       },
-      regional_prepopulated_engines);
+      regional_prepopulated_engines, regional_variants);
 }
 
 const PrepopulatedEngine* GetPrepopulatedEngineFromBuiltInData(
     std::u16string_view keyword,
-    const std::vector<const PrepopulatedEngine*>&
-        regional_prepopulated_engines) {
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants) {
   return GetPrepopulatedEngineFromBuiltInDataImpl(
       [keyword](const PrepopulatedEngine* engine) {
         return keyword == engine->keyword;
       },
-      regional_prepopulated_engines);
+      regional_prepopulated_engines, regional_variants);
 }
 
 std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
     PrefService& prefs,
-    const std::vector<const PrepopulatedEngine*>& regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants,
     int prepopulated_id) {
-  // TODO(crbug.com/40940777): Refactor to better share code with
-  // `GetPrepopulatedEngine()`.
+  // TODO(crbug.com/530597465): Refactor to better share code with
+  // `GetPrepopulatedEngine()` once the SearchProvidersOverride logic is
+  // removed.
 
   // If there is a set of search engines in the preferences file, we look for
   // the ID there first.
@@ -293,7 +307,35 @@ std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
     return ZepSearchData();
   }
   if (auto* matched_engine = GetPrepopulatedEngineFromBuiltInData(
-          prepopulated_id, regional_prepopulated_engines);
+          prepopulated_id, regional_prepopulated_engines, regional_variants);
+      matched_engine) {
+    return PrepopulatedEngineToTemplateURLData(matched_engine);
+  }
+
+  return {};
+}
+
+std::unique_ptr<TemplateURLData> GetPrepopulatedEngineFromFullList(
+    PrefService& prefs,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
+        regional_prepopulated_engines,
+    const std::vector<raw_ptr<const PrepopulatedEngine>>& regional_variants,
+    std::u16string_view keyword) {
+  // TODO(crbug.com/530597465): Refactor to better share code with
+  // `GetPrepopulatedEngine()` once the SearchProvidersOverride logic is
+  // removed.
+
+  // If there is a set of search engines in the preferences file, we look for
+  // the keyword there first.
+  for (std::unique_ptr<TemplateURLData>& data :
+       GetOverriddenTemplateURLData(prefs)) {
+    if (data->keyword() == keyword) {
+      return std::move(data);
+    }
+  }
+
+  if (auto* matched_engine = GetPrepopulatedEngineFromBuiltInData(
+          keyword, regional_prepopulated_engines, regional_variants);
       matched_engine) {
     return PrepopulatedEngineToTemplateURLData(matched_engine);
   }
@@ -312,9 +354,13 @@ void ClearPrepopulatedEnginesInPrefs(PrefService* prefs) {
 
 std::unique_ptr<TemplateURLData> GetPrepopulatedFallbackSearch(
     PrefService& prefs,
-    const std::vector<const PrepopulatedEngine*>&
+    const std::vector<raw_ptr<const PrepopulatedEngine>>&
         regional_prepopulated_engines) {
-  return ZepSearchData();
+  // Zephyrus: DuckDuckGo is the default search engine of a new profile, in every
+  // region. It is built straight from its definition rather than looked up in
+  // the regional list, so it holds even where that list does not carry it. A
+  // choice the user has made is untouched: this is only the fallback.
+  return PrepopulatedEngineToTemplateURLData(&duckduckgo);
 }
 
 }  // namespace TemplateURLPrepopulateData
