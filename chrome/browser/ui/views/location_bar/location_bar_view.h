@@ -73,6 +73,7 @@ class Profile;
 class SelectedKeywordView;
 class PrefChangeRegistrar;
 class ZephyrusEnginePill;
+class ZephyrusOmniboxShield;
 
 namespace page_actions {
 class PageActionContainerView;
@@ -313,6 +314,8 @@ class LocationBarView
   // LocationIconView::Delegate:
   const LocationBarModel* GetLocationBarModel() const override;
   bool IsEditingOrEmpty() const override;
+  // The shield takes the leading spot on a settled page with no warning.
+  bool ShouldShowZephyrusShield() const;
   void OnLocationIconGestureEvent(ui::GestureEvent* event) override;
   void OnLocationIconPressed(const ui::MouseEvent& event) override;
   void OnLocationIconDragged(const ui::MouseEvent& event) override;
@@ -596,6 +599,11 @@ class LocationBarView
   // after the leading icon; see zephyrus_engine_pill.h for why it is a separate
   // control rather than a click handler on the magnifier.
   raw_ptr<ZephyrusEnginePill> zephyrus_engine_pill_ = nullptr;
+
+  // The Shield, in the page-info icon's old place at the leading end: shown on
+  // a settled ordinary page, and what opens the Shield popup (which holds the
+  // site info now).
+  raw_ptr<ZephyrusOmniboxShield> zephyrus_shield_ = nullptr;
 
   // Views to show inline autocompletion when an IME is active.  In this case,
   // we shouldn't change the text or selection inside the OmniboxView itself,

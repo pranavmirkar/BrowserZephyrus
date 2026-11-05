@@ -65,6 +65,7 @@
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/zephyrus_engine_pill.h"
+#include "chrome/browser/ui/views/location_bar/zephyrus_omnibox_shield.h"
 #include "components/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/views/frame/zephyrus_search_engine_picker.h"
 #include "chrome/browser/ui/views/location_bar/content_setting_image_view.h"
@@ -448,6 +449,15 @@ void LocationBarView::Init() {
     zephyrus_engine_pill_ =
         AddChildView(std::make_unique<ZephyrusEnginePill>(profile_));
   }
+
+  // Zephyrus: the Shield, in the page-info icon's old place.
+  zephyrus_shield_ = AddChildView(std::make_unique<ZephyrusOmniboxShield>(
+      base::BindRepeating(
+          [](LocationBarView* bar, const ui::Event&) {
+            bar->ShowPageInfoDialog();
+          },
+          base::Unretained(this))));
+  zephyrus_shield_->SetVisible(false);
 
   // Zephyrus: the loading ring. Added now so it is the topmost child, and
   // hidden until a page is loading. See ZephyrusLoadingRingView.
@@ -993,6 +1003,10 @@ void LocationBarView::Layout(PassKey) {
     }
   }
 
+  // Hidden unless the branch below chooses it.
+  if (zephyrus_shield_) {
+    zephyrus_shield_->SetVisible(false);
+  }
   if (ShouldShowKeywordBubble()) {
     location_icon_view_->SetVisible(false);
     leading_decorations.AddDecoration(
@@ -1015,13 +1029,25 @@ void LocationBarView::Layout(PassKey) {
     // that end only when it shares the circle's centre -- the rule the engine
     // mark at the other end follows too. A fixed 5dp inset put it off-centre,
     // and further again once the popup's indent kicked in.
-    location_icon_view_->SetVisible(true);
+    //
+    // THE SHIELD takes this spot on a settled page with no warning; while the
+    // field is edited the magnifier is back, and a security warning keeps its
+    // own glyph (it opens the Shield popup too).
+    const bool shield = ShouldShowZephyrusShield();
+    location_icon_view_->SetVisible(!shield);
+    views::View* leading = location_icon_view_;
+    if (shield) {
+      zephyrus_shield_->SetPreferredSize(location_icon_view_->GetPreferredSize());
+      zephyrus_shield_->SetInk(GetIconLabelBubbleSurroundingForegroundColor());
+      zephyrus_shield_->SetVisible(true);
+      leading = zephyrus_shield_;
+    }
     // Even margin: the gap to the edge equals the gap above and below.
     const int cap_inset = std::max(
         4, (height() - location_icon_view_->GetPreferredSize().width()) / 2);
     leading_decorations.AddDecoration(vertical_padding, location_height, false,
                                       0, /*intra_item_padding=*/0, cap_inset,
-                                      location_icon_view_);
+                                      leading);
   } else {
     location_icon_view_->SetVisible(false);
   }
@@ -1257,6 +1283,9 @@ void LocationBarView::Update(WebContents* contents) {
   RefreshPageActionIconViews();
   location_icon_view_->Update(
       /*suppress_animations=*/contents, GetOmniboxController()->IsPopupOpen());
+  if (zephyrus_shield_) {
+    zephyrus_shield_->SetContents(contents ? contents : GetWebContents());
+  }
 
   if (contents) {
     omnibox_view_->OnTabChanged(contents);
@@ -2728,6 +2757,15 @@ SkColor LocationBarView::GetSecurityChipColor(
   return GetColorProvider()->GetColor(id);
 }
 
+bool LocationBarView::ShouldShowZephyrusShield() const {
+  if (!zephyrus_shield_ || IsEditingOrEmpty()) {
+    return false;
+  }
+  const security_state::SecurityLevel level =
+      GetLocationBarModel()->GetSecurityLevel();
+  return level == security_state::SECURE || level == security_state::NONE;
+}
+
 bool LocationBarView::ShowPageInfoDialog() {
   WebContents* contents = GetWebContents();
   if (!contents) {
@@ -2740,6 +2778,21 @@ bool LocationBarView::ShowPageInfoDialog() {
   }
 
   DCHECK(GetWidget());
+
+  // Zephyrus: the page-info bubble is retired. What it showed (the connection,
+  // cookies and site data, permissions, site settings) is in the Shield popup,
+  // which this opens, under whichever of the shield and the warning glyph is on
+  // screen.
+  if (browser_) {
+    if (BrowserView* browser_view =
+            BrowserView::GetBrowserViewForBrowser(browser_)) {
+      views::View* anchor = zephyrus_shield_ && zephyrus_shield_->GetVisible()
+                                ? static_cast<views::View*>(zephyrus_shield_)
+                                : static_cast<views::View*>(location_icon_view_);
+      browser_view->toolbar()->ShowZephyrusAdblockBubble(anchor);
+      return true;
+    }
+  }
 
   std::unique_ptr<PageInfoBubbleSpecification> specification =
       PageInfoBubbleSpecification::Builder(views::BubbleAnchor(this),

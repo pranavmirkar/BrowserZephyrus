@@ -4233,6 +4233,10 @@ void ToolbarView::AddZephyrusAdblockButton() {
   } else if (zephyrus_new_tab_button_) {
     index = GetIndexOf(zephyrus_new_tab_button_).value() + 1;
   }
+  // Hidden: the Shield lives in the omnibox now (ZephyrusOmniboxShield). The
+  // button stays as the owner of the count and of the title bar's layout slots,
+  // so nothing that counts on it has to change.
+  shield->SetVisible(false);
   zephyrus_adblock_button_ = AddChildViewAt(std::move(shield), index);
 }
 
@@ -4272,9 +4276,10 @@ void AnimateZephyrusBubbleIn(views::Widget* widget) {
 
 }  // namespace
 
-void ToolbarView::ShowZephyrusAdblockBubble() {
-  if (!zephyrus_adblock_button_ ||
-      zephyrus::ConsumeReopenSuppression(zephyrus_adblock_button_)) {
+void ToolbarView::ShowZephyrusAdblockBubble(views::View* anchor) {
+  views::View* const anchor_view =
+      anchor ? anchor : zephyrus_adblock_button_.get();
+  if (!anchor_view || zephyrus::ConsumeReopenSuppression(anchor_view)) {
     return;
   }
   zephyrus_adblock::ZephyrusAdblockService* service =
@@ -4506,7 +4511,7 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
   // land on it. Anchoring by a corner put the popup off to one side and the nub
   // wherever the corner happened to be.
   auto bubble = std::make_unique<views::BubbleDialogDelegate>(
-      zephyrus_adblock_button_, views::BubbleBorder::TOP_CENTER,
+      anchor_view, views::BubbleBorder::TOP_CENTER,
       views::BubbleBorder::STANDARD_SHADOW, /*autosize=*/true);
   bubble->SetShowCloseButton(false);
   bubble->SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));

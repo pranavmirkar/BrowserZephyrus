@@ -298,7 +298,9 @@ class ToolbarView : public views::AccessiblePaneView,
 
   // Zephyrus: ad-block shield button + statistics popup.
   void AddZephyrusAdblockButton();
-  void ShowZephyrusAdblockBubble();
+  // `anchor` is where the popup hangs; by default the title-bar shield, which is
+  // now hidden (the omnibox shield opens it under itself).
+  void ShowZephyrusAdblockBubble(views::View* anchor = nullptr);
 
   // Zephyrus: Privacy Intelligence panel (§6.1/§6.2), opened from the Shield
   // panel. Public because it is posted as a task from that panel's button.

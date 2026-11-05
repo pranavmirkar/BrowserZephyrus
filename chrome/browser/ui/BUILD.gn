@@ -3588,6 +3588,8 @@ static_library("ui") {
       "views/frame/zephyrus_search_engine_picker.h",
       "views/location_bar/zephyrus_engine_pill.cc",
       "views/location_bar/zephyrus_engine_pill.h",
+      "views/location_bar/zephyrus_omnibox_shield.cc",
+      "views/location_bar/zephyrus_omnibox_shield.h",
       "views/frame/zephyrus_search_overlay.cc",
       "views/frame/zephyrus_search_overlay.h",
       "views/frame/zephyrus_tab_switcher.cc",
