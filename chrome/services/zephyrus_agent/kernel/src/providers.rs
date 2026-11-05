@@ -700,7 +700,7 @@ mod tests {
     #[test]
     fn every_tool_gets_a_distinct_safe_wire_name_that_maps_back() {
         let table = table();
-        assert_eq!(table.tools().len(), 26);
+        assert_eq!(table.tools().len(), 28);
         for tool in table.tools() {
             assert!(is_wire_safe(&tool.wire), "{}", tool.wire);
             assert_eq!(table.contract_name(&tool.wire), Some(tool.name.as_str()));
@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(body["system"][0]["text"], "RULES");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["messages"][0]["content"], "PAGE AND TASK");
-        assert_eq!(body["tools"].as_array().unwrap().len(), 25);
+        assert_eq!(body["tools"].as_array().unwrap().len(), 27);
         assert!(body["tools"][0]["input_schema"].is_object());
     }
 
@@ -784,7 +784,7 @@ mod tests {
         let body: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
         let declarations = body["tools"][0]["functionDeclarations"].as_array().unwrap();
-        assert_eq!(declarations.len(), 25);
+        assert_eq!(declarations.len(), 27);
     }
 
     #[test]

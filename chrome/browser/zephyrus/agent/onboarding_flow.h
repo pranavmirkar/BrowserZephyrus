@@ -109,10 +109,13 @@ FlightPoint FlightPathAt(double seconds);
 FlightPoint FlightPathAt(double seconds, double cx, double cy, double rx,
                          double ry);
 
-// The five first-run screens ship enabled. Both the installer's Launch button
-// and a later shortcut launch use this gate; no developer switch is needed.
-// The per-profile done pref prevents completed or skipped setup from repeating.
-inline constexpr bool kOnboardingEnabled = true;
+// The five first-run screens are OFF (2026-11-05): they came up on every fresh
+// profile, which is every test run and every new user. Flip this back to true
+// to bring them back; nothing else changes. The dev switch still forces them
+// (see ShouldShowOnboarding), so they can be developed and checked while off.
+// When on, the per-profile done pref stops completed or skipped setup from
+// repeating.
+inline constexpr bool kOnboardingEnabled = false;
 
 // Whether the first-run screens should show: forced by the dev switch, or the
 // feature is on and they have not been seen. `forced` is computed by the caller

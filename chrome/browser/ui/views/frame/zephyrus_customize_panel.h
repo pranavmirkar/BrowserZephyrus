@@ -114,6 +114,9 @@ class ZephyrusCustomizePanel : public views::View,
 
   const raw_ptr<BrowserView> browser_view_;
   raw_ptr<views::WebView> web_view_ = nullptr;
+  // A square, solid layer in the window's ground colour behind the rounded
+  // content: what shows in the corner cut-outs. See the constructor.
+  raw_ptr<views::View> ground_ = nullptr;
 
   // Open means "the user wants it", which is true from the moment the slide
   // starts and false from the moment the slide out starts. `slide_` is where

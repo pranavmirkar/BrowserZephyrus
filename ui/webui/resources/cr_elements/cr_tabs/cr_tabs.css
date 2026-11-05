@@ -1,0 +1,224 @@
+/* Copyright 2024 The Chromium Authors
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file. */
+
+/* #css_wrapper_metadata_start
+ * #type=style-lit
+ * #import=../cr_shared_vars.css.js
+ * #import=../cr_hidden_style_lit.css.js
+ * #scheme=relative
+ * #include=cr-hidden-style-lit
+ * #css_wrapper_metadata_end */
+
+:host {
+  cursor: pointer;
+  display: flex;
+  flex-direction: row;
+  font-size: var(--cr-tabs-font-size, 14px);
+  font-weight: 500;
+  height: var(--cr-tabs-height, 48px);
+  user-select: none;
+}
+
+:host-context([webui-refresh-2026]) {
+  &:host {
+    --cr-tabs-selected-color: var(--color-tab-nav-item-selected,
+        var(--google-blue-600));
+  }
+
+  @media (prefers-color-scheme: dark) {
+    &:host {
+      --cr-tabs-selected-color: var(--color-tab-nav-item-selected,
+          var(--google-blue-300));
+    }
+  }
+
+  /* Zephyrus, M3 Expressive: an opt-in CONNECTED BUTTON GROUP (set the
+     zephyrus-segmented attribute on a cr-tabs). Single-select: the selected
+     segment is a filled secondaryContainer PILL, the others are surfaceContainer
+     chips whose inner corners are small, and the group's two outer ends are full
+     (20 = half the 40dp height). The selection moves by morphing the corner
+     radius, not by sliding an underline, so the indicator bars are gone. Opt-in
+     because other pages (extensions' activity log, internals) keep underline
+     tabs. */
+
+  &:host([zephyrus-segmented]) {
+    --cr-tabs-icon-margin-end: 8px;
+    --cr-tabs-icon-size: 18px;
+    align-items: center;
+    box-sizing: border-box;
+    gap: 2px;
+    height: 56px;
+    /* 24: the History list's cards start 24px in, so the chips and the first
+       card share a left edge. */
+    padding-inline: 24px;
+  }
+
+  &:host([zephyrus-segmented]) .tab {
+    background: var(--color-zephyrus-surface-container-high);
+    border-radius: 8px;
+    color: var(--color-zephyrus-on-surface-variant);
+    flex: none;
+    height: 40px;
+    padding: 0 16px;
+    transition: border-radius 200ms cubic-bezier(.2, 0, 0, 1),
+        background-color 200ms cubic-bezier(.2, 0, 0, 1);
+  }
+
+  &:host([zephyrus-segmented]) .tab:first-child {
+    border-end-start-radius: 20px;
+    border-start-start-radius: 20px;
+  }
+
+  &:host([zephyrus-segmented]) .tab:last-child {
+    border-end-end-radius: 20px;
+    border-start-end-radius: 20px;
+  }
+
+  &:host([zephyrus-segmented]) .tab.selected {
+    background: var(--color-zephyrus-secondary-container);
+    border-radius: 20px;
+    color: var(--color-zephyrus-on-secondary-container);
+  }
+
+  &:host([zephyrus-segmented]) .tab .tab-icon,
+  &:host([zephyrus-segmented]) .tab.selected .tab-icon {
+    background-color: currentColor;
+  }
+
+  &:host([zephyrus-segmented]) .tab-indicator,
+  &:host([zephyrus-segmented]) .tab-indicator-background {
+    display: none;
+  }
+
+  /* The keyboard ring (drawn by the rule above for every refresh tab) sits
+     2px OUTSIDE a 40dp chip rather than 4px inside it. */
+  &:host([zephyrus-segmented]) .tab:focus {
+    outline-offset: 2px;
+  }
+}
+
+.tab {
+  align-items: center;
+  color: var(--cr-secondary-text-color);
+  display: flex;
+  flex: var(--cr-tabs-flex, auto);
+  height: 100%;
+  justify-content: center;
+  opacity: 1;
+  outline: none;
+  padding: 0 var(--cr-tabs-tab-inline-padding, 0);
+  position: relative;
+  transition: opacity 100ms cubic-bezier(.4, 0, 1, 1);
+}
+
+:host-context(.focus-outline-visible) .tab:focus {
+  outline: var(--cr-tabs-focus-outline, auto);
+  outline-offset: var(--cr-tabs-focus-outline-offset, 0);
+}
+
+/* Zephyrus: the keyboard focus ring was a square drawn on the tab's own edge,
+   so on a page hosted in the settings popup (tabs start flush against the
+   rail) it touched the rail and the divider. A rounded ring drawn 4px inside
+   the tab: a 12px tab radius less the 4px inset gives the ring an 8px radius,
+   concentric with the tab. */
+:host-context([webui-refresh-2026]) .tab {
+  border-radius: 12px;
+}
+
+:host-context([webui-refresh-2026].focus-outline-visible) .tab:focus {
+  outline: 2px solid var(--cr-focus-outline-color);
+  outline-offset: -4px;
+}
+
+.selected {
+  color: var(--cr-tabs-selected-color, var(--google-blue-600));
+  opacity: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .selected {
+    color: var(--cr-tabs-selected-color, var(--google-blue-300));
+  }
+}
+
+.tab-icon {
+  -webkit-mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-size: var(--cr-tabs-icon-size, var(--cr-icon-size));
+  background-color: var(--cr-secondary-text-color);
+  display: none;
+  height: var(--cr-tabs-icon-size, var(--cr-icon-size));
+  margin-inline-end: var(--cr-tabs-icon-margin-end, var(--cr-icon-size));
+  width: var(--cr-tabs-icon-size, var(--cr-icon-size));
+}
+
+.selected .tab-icon {
+  background-color: var(--cr-tabs-selected-color, var(--google-blue-600));
+}
+
+@media (prefers-color-scheme: dark) {
+  .selected .tab-icon {
+    background-color: var(--cr-tabs-selected-color, var(--google-blue-300));
+  }
+}
+
+.tab-indicator,
+.tab-indicator-background {
+  bottom: 0;
+  height: var(--cr-tabs-selection-bar-width, 2px);
+  left: var(--cr-tabs-tab-inline-padding, 0);
+  position: absolute;
+  right: var(--cr-tabs-tab-inline-padding, 0);
+}
+
+.tab-indicator {
+  border-top-left-radius: var(--cr-tabs-selection-bar-radius,
+      var(--cr-tabs-selection-bar-width, 2px));
+  border-top-right-radius: var(--cr-tabs-selection-bar-radius,
+      var(--cr-tabs-selection-bar-width, 2px));
+  opacity: 0;
+  transform-origin: left center;
+  transition: transform;
+}
+
+.selected .tab-indicator {
+  background: var(--cr-tabs-selected-color, var(--google-blue-600));
+  opacity: 1;
+}
+
+.tab-indicator.expand {
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(.4, 0, 1, 1);
+}
+
+.tab-indicator.contract {
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0, 0, .2, 1);
+}
+
+.tab-indicator-background {
+  background: var(--cr-tabs-unselected-color, var(--google-blue-600));
+  opacity: var(--cr-tabs-selection-bar-unselected-opacity, 0);
+  z-index: -1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .tab-indicator-background {
+    background: var(--cr-tabs-unselected-color, var(--google-blue-300));
+  }
+
+  .selected .tab-indicator {
+    background: var(--cr-tabs-selected-color, var(--google-blue-300));
+  }
+}
+
+@media (forced-colors: active) {
+  .tab-indicator-background {
+    background: SelectedItem;
+  }
+
+  .selected .tab-indicator {
+    background: SelectedItem;
+  }
+}

@@ -80,6 +80,22 @@ class ToolSurface {
   virtual bool SwitchToTab(int tab_id) = 0;
   virtual bool CloseTab(int tab_id) = 0;
 
+  // Sets: named groups of tabs, shown in the sidebar. Current workspace only,
+  // like ListTabs.
+  struct SetInfo {
+    std::string name;
+    std::string icon;
+    std::vector<int> tab_ids;
+  };
+  virtual std::vector<SetInfo> ListSets();
+  // Puts the tabs into the set called `name`, making it if there is none, and
+  // gives it `icon` if that is a known one. Returns "" on success, otherwise
+  // what stopped it, in words the model can act on. Out of line, with a default
+  // that refuses, so a surface that has no sets says so instead of pretending.
+  virtual std::string GroupTabs(const std::vector<int>& tab_ids,
+                                const std::string& name,
+                                const std::string& icon);
+
   // Takes a fresh look at the active page. Asynchronous because it goes to the
   // renderer.
   // Looks at the page for the MODEL.

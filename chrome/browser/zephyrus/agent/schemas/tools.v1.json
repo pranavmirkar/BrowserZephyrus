@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "frozen": true,
   "description": "The V1 Zephyrus browser tool contract. This file is the single source of truth for what a model may ask the browser to do. The benchmark harness validates against it today; the Rust tool runtime will validate against it later. Neither may define its own copy.",
   "conventions": {
@@ -124,6 +124,51 @@
         },
         "required": [
           "tab_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "sets.list",
+      "description": "List the sets (named groups of tabs in the sidebar) in the current workspace, with each one's name, icon and tab ids. Tabs in no set are not listed here; tabs.list shows every tab.",
+      "risk": "R0",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "sets.group",
+      "description": "Put tabs into a set, a named group in the sidebar. If a set with this name exists the tabs join it, otherwise it is made. A tab is in one set at a time, so this moves it out of another. Pinned tabs cannot join. Take tab ids from tabs.list. Name a set for what its tabs share (Shopping, Trip to Goa). Icon is optional: work, study, code, design, shopping, travel, finance, media, music, gaming, reading, social, mail, research, health, home, news, video or ai.",
+      "risk": "R1",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "description": "The set's name, up to 32 characters."
+          },
+          "tab_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "minItems": 1,
+            "maxItems": 40,
+            "description": "The tabs' ids, from tabs.list."
+          },
+          "icon": {
+            "type": "string",
+            "description": "Optional icon name from the list above."
+          }
+        },
+        "required": [
+          "name",
+          "tab_ids"
         ],
         "additionalProperties": false
       }

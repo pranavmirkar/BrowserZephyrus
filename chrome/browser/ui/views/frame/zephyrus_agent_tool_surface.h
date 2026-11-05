@@ -97,6 +97,10 @@ class BrowserToolSurface : public ToolSurface {
   bool OpenTab(const GURL& url) override;
   bool SwitchToTab(int tab_id) override;
   bool CloseTab(int tab_id) override;
+  std::vector<SetInfo> ListSets() override;
+  std::string GroupTabs(const std::vector<int>& tab_ids,
+                        const std::string& name,
+                        const std::string& icon) override;
   void Observe(ObserveCallback callback) override;
   void ObserveForFind(const std::string& query, ObserveCallback callback) override;
   void ObserveForCheck(ObserveCallback callback) override;

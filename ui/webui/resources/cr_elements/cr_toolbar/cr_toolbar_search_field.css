@@ -204,12 +204,20 @@ input[type='search']::-webkit-search-cancel-button {
         var(--cr-fallback-color-surface4)));
   }
 
-  /* Zephyrus: the M3 search bar. Taller, bodyLarge type, and no ring merely
+  /* Zephyrus: the M3 search bar. bodyLarge type, and no ring merely
      for having focus -- every page autofocuses this field, so the old
      outline was drawn on every load and read as an error state. Keyboard
-     focus still gets one, below. */
+     focus still gets one, below.
+
+     40px tall, not 48. The settings popup hosts this bar flush against its
+     top-right corner (28px radius), and a pill nests in a corner only when
+     its radius is the corner's minus its distance from the edges: 40px in
+     the 56px bar is 8px from the top (28 - 8 = 20 = the pill's radius), and
+     the bar's right padding is 8px for the same reason (see cr_toolbar.css).
+     At 48px the pill sat 4px from the top and 12px from the side, which is
+     not concentric on either axis. */
   &:host(:not([narrow])) {
-    height: 48px;
+    height: 40px;
     padding: 0 10px;
   }
 

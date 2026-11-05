@@ -269,6 +269,122 @@ constexpr WorkspaceIcon kIcons[] = {
     {"inbox", u"Inbox", Shape::kSquircle, Effect::kShimmer, 240,
      "M3.6 14.4h4.3l1.3 2.4h5.6l1.3-2.4h4.3"
          "M3.6 14.4 6 6.3a2.2 2.2 0 0 1 2.1-1.5h7.8A2.2 2.2 0 0 1 18 6.3l2.4 8.1v3.2a2.2 2.2 0 0 1-2.2 2.2H5.8a2.2 2.2 0 0 1-2.2-2.2v-3.2Z"},
+    {"video", u"Videos", Shape::kSquircle, Effect::kBounce, 18,
+     "M5.4 6.6H12.6A2.6 2.6 0 0 1 15.2 9.2V14.8A2.6 2.6 0 0 1 12.6 17.4H5.4A2.6 2.6 0 0 1 2.8 14.8V9.2A2.6 2.6 0 0 1 5.4 6.6Z"
+         "M15.2 10.4 19.9 7.7c.5-.3 1.1 0 1.1.6v7.4c0 .6-.6.9-1.1.6L15.2 13.6"},
+    {"news", u"News", Shape::kSquircle, Effect::kStagger, 30,
+     "M5 4.8h11.2A1.8 1.8 0 0 1 18 6.6V19H6.8A1.8 1.8 0 0 1 5 17.2Z"
+         "M18 9h1.4A1.6 1.6 0 0 1 21 10.6v6.8a1.6 1.6 0 0 1-1.6 1.6H18"
+         "M8.5 8.5h6 M8.5 12h6 M8.5 15.5h3.5"},
+    {"bookmark", u"Bookmark", Shape::kGem, Effect::kBounce, 220,
+     "M7 4.5h10A1.5 1.5 0 0 1 18.5 6v14L12 16 5.5 20V6A1.5 1.5 0 0 1 7 4.5Z"},
+    {"message", u"Messages", Shape::kCookie, Effect::kWiggle, 160,
+     "M5 5h14a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H10l-4.5 3.5V17.5H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"},
+    {"place", u"Places", Shape::kBurst, Effect::kBounce, 350,
+     "M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z"
+         "M9.3 10A2.7 2.7 0 1 0 14.7 10A2.7 2.7 0 1 0 9.3 10Z"},
+    {"compass", u"Explore", Shape::kCircle, Effect::kOrbit, 200,
+     "M3.5 12A8.5 8.5 0 1 0 20.5 12A8.5 8.5 0 1 0 3.5 12Z"
+         "M15.6 8.4l-1.8 4.6-4.6 1.8 1.8-4.6Z"},
+    {"rocket", u"Launch", Shape::kTriangle, Effect::kJitter, 15,
+     "M12 3c3 1.6 5 4.6 5 8.4V15l-2.3 2.3H9.3L7 15v-3.6C7 7.6 9 4.6 12 3Z"
+         "M10.4 10.2A1.6 1.6 0 1 0 13.6 10.2A1.6 1.6 0 1 0 10.4 10.2Z"
+         "M10 19.5c.4 1 1 1.6 2 2 1-.4 1.6-1 2-2"
+         "M7 12.5 4.5 15v3L7 16.5 M17 12.5 19.5 15v3L17 16.5"},
+    {"idea", u"Ideas", Shape::kClover, Effect::kPulse, 52,
+     "M9 18h6 M10 21h4"
+         "M12 3.5a5.7 5.7 0 0 0-3.4 10.3c.6.5 1 1.2 1 2V16.2h4.8v-.4c0-.8.4-1.5 1-2A5.7 5.7 0 0 0 12 3.5Z"},
+    {"wallet", u"Money", Shape::kSquircle, Effect::kBounce, 140,
+     "M5 7.5A2.5 2.5 0 0 1 7.5 5H18v3.5"
+         "M5 7.5V17a2.5 2.5 0 0 0 2.5 2.5h11A1.5 1.5 0 0 0 20 18V10a1.5 1.5 0 0 0-1.5-1.5H7.5A2.5 2.5 0 0 1 5 6"
+         "M16 14h.01"},
+    {"tag", u"Deals", Shape::kPentagon, Effect::kWiggle, 40,
+     "M3.5 11.6V5.5A1.5 1.5 0 0 1 5 4h6.1a1.5 1.5 0 0 1 1.06.44l7.4 7.4a1.5 1.5 0 0 1 0 2.12l-6.1 6.1a1.5 1.5 0 0 1-2.12 0l-7.4-7.4A1.5 1.5 0 0 1 3.5 11.6Z"
+         "M8.3 8.3h.01"},
+    {"gift", u"Gifts", Shape::kCookie, Effect::kJitter, 330,
+     "M4.5 11h15v8.5a1.5 1.5 0 0 1-1.5 1.5H6a1.5 1.5 0 0 1-1.5-1.5Z"
+         "M3.5 7.5h17V11h-17Z M12 7.5V21"
+         "M12 7.5C10 7.5 8 6.8 8 5.3A1.8 1.8 0 0 1 12 6 M12 7.5c2 0 4-.7 4-2.2A1.8 1.8 0 0 0 12 6"},
+    {"coffee", u"Coffee", Shape::kSquircle, Effect::kBreathe, 25,
+     "M5 9h11v5.5A4.5 4.5 0 0 1 11.5 19h-2A4.5 4.5 0 0 1 5 14.5Z"
+         "M16 10h1.5a2.5 2.5 0 0 1 0 5H15.8"
+         "M8 3.5v2 M11 3.5v2 M14 3.5v2"},
+    {"food", u"Food", Shape::kCookie, Effect::kWiggle, 20,
+     "M7 3.5v7a2 2 0 0 0 2 2v8 M5 3.5v5 M9 3.5v5"
+         "M17.5 20.5V3.5c-2.2 1.3-3.5 3.8-3.5 7 0 1.5 1 2.5 3.5 2.5"},
+    {"fitness", u"Fitness", Shape::kHexagon, Effect::kBounce, 120,
+     "M6.5 8v8 M17.5 8v8 M3.5 10v4 M20.5 10v4 M6.5 12h11"},
+    {"leaf", u"Nature", Shape::kClover, Effect::kBreathe, 110,
+     "M5 19c0-8 5-13 14-14 0 9-5 14-13 14Z M5 19l7-7"},
+    {"car", u"Cars", Shape::kSquircle, Effect::kJitter, 210,
+     "M5 15.5V12l1.8-4.5A1.5 1.5 0 0 1 8.2 6.5h7.6a1.5 1.5 0 0 1 1.4 1L19 12v3.5"
+         "M3.8 12h16.4"
+         "M5 15.5h14v2a1 1 0 0 1-1 1h-1.5a1 1 0 0 1-1-1v-.5h-7v.5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1Z"
+         "M7.5 14.2h.01 M16.5 14.2h.01"},
+    {"terminal", u"Terminal", Shape::kSquircle, Effect::kDraw, 135,
+     "M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5Z"
+         "M7 10l3 2.5L7 15 M12.5 15h4.5"},
+    {"lock", u"Security", Shape::kGem, Effect::kBounce, 250,
+     "M6.5 11h11a1.5 1.5 0 0 1 1.5 1.5v6.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 5 19v-6.5A1.5 1.5 0 0 1 6.5 11Z"
+         "M8 11V8a4 4 0 0 1 8 0v3 M12 15v1.8"},
+    {"bell", u"Alerts", Shape::kBurst, Effect::kWiggle, 45,
+     "M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15Z M10.2 20.5a2 2 0 0 0 3.6 0"},
+    {"trophy", u"Goals", Shape::kPentagon, Effect::kShimmer, 48,
+     "M7.5 4h9v5.5a4.5 4.5 0 0 1-9 0Z"
+         "M7.5 6H4.5v1.5A3 3 0 0 0 7.5 10.5 M16.5 6h3v1.5A3 3 0 0 1 16.5 10.5"
+         "M12 14v3.5 M9.5 17.5h5v3h-5Z"},
+    {"flag", u"Flag", Shape::kTriangle, Effect::kWiggle, 5,
+     "M5.5 21V4 M5.5 5h11.5l-2 3.5 2 3.5H5.5"},
+    {"sun", u"Weather", Shape::kBurst, Effect::kOrbit, 55,
+     "M8.4 12A3.6 3.6 0 1 0 15.6 12A3.6 3.6 0 1 0 8.4 12Z"
+         "M12 3.5v1.8 M12 18.7v1.8 M3.5 12h1.8 M18.7 12h1.8"
+         "M6 6l1.3 1.3 M16.7 16.7 18 18 M18 6l-1.3 1.3 M7.3 16.7 6 18"},
+    {"headphones", u"Listen", Shape::kCircle, Effect::kPulse, 290,
+     "M4.5 14v-2a7.5 7.5 0 0 1 15 0v2"
+         "M4.5 14h2.5a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H6a1.5 1.5 0 0 1-1.5-1.5Z"
+         "M19.5 14H17a1 1 0 0 0-1 1v3a1 1 0 0 0 1 1h1a1.5 1.5 0 0 0 1.5-1.5Z"},
+    {"tv", u"Shows", Shape::kSquircle, Effect::kShimmer, 275,
+     "M5 7h14a1.5 1.5 0 0 1 1.5 1.5v8A1.5 1.5 0 0 1 19 18H5a1.5 1.5 0 0 1-1.5-1.5v-8A1.5 1.5 0 0 1 5 7Z"
+         "M8.5 3.5 12 7l3.5-3.5 M8 20.5h8"},
+    {"laptop", u"Laptop", Shape::kSquircle, Effect::kBounce, 205,
+     "M6 6h12a1.5 1.5 0 0 1 1.5 1.5V15h-15V7.5A1.5 1.5 0 0 1 6 6Z"
+         "M3 18h18l-1.2 1.5H4.2Z"},
+    {"clock", u"Time", Shape::kCircle, Effect::kOrbit, 190,
+     "M3.5 12A8.5 8.5 0 1 0 20.5 12A8.5 8.5 0 1 0 3.5 12Z"
+         "M12 7.5V12l3 1.8"},
+    {"layers", u"Layers", Shape::kGem, Effect::kStagger, 235,
+     "M12 4 3.5 8.5 12 13l8.5-4.5Z"
+         "M3.5 12.5 12 17l8.5-4.5 M3.5 16 12 20.5 20.5 16"},
+    {"pie", u"Reports", Shape::kCircle, Effect::kOrbit, 300,
+     "M12 3.5a8.5 8.5 0 1 0 8.5 8.5H12Z"
+         "M14.5 3.8A8.5 8.5 0 0 1 20.2 9.5H14.5Z"},
+    {"key", u"Keys", Shape::kGem, Effect::kJitter, 60,
+     "M4.2 15A3.8 3.8 0 1 0 11.8 15A3.8 3.8 0 1 0 4.2 15Z"
+         "M10.7 12.3 19.5 3.5 M16 7l2.5 2.5 M13.5 9.5 15.5 11.5"},
+    {"brush", u"Art", Shape::kCookie, Effect::kWiggle, 315,
+     "M4.5 19.5c1.8 0 3-1 3-2.6 0-1.4 1.1-2.4 2.5-2.4l1 1c0 1.4-1 2.5-2.4 2.5-.3 1.6-1.5 2.5-4.1 2.5Z"
+         "M10.5 14.5 19 6a1.4 1.4 0 0 0-2-2l-8.5 8.5"},
+    {"wifi", u"Network", Shape::kCircle, Effect::kPulse, 180,
+     "M3.5 9a12 12 0 0 1 17 0 M6.3 12a8 8 0 0 1 11.4 0 M9.1 15a4 4 0 0 1 5.8 0 M12 18.4h.01"},
+    {"download", u"Downloads", Shape::kSquircle, Effect::kBounce, 150,
+     "M12 4v11 M7.5 10.5 12 15l4.5-4.5 M5 19.5h14"},
+    {"mic", u"Voice", Shape::kSquircle, Effect::kPulse, 345,
+     "M12 3.5a3 3 0 0 0-3 3V12a3 3 0 0 0 6 0V6.5a3 3 0 0 0-3-3Z"
+         "M6 11.5a6 6 0 0 0 12 0 M12 17.5v3 M9 20.5h6"},
+    {"drop", u"Water", Shape::kGem, Effect::kBounce, 195,
+     "M12 3.5s6 6.2 6 10.5a6 6 0 0 1-12 0C6 9.7 12 3.5 12 3.5Z"},
+    {"building", u"Business", Shape::kSquircle, Effect::kStagger, 225,
+     "M6 20.5V4.5A1 1 0 0 1 7 3.5h10a1 1 0 0 1 1 1v16 M3.5 20.5h17"
+         "M9.5 7.5h1 M13.5 7.5h1 M9.5 11.5h1 M13.5 11.5h1 M10.5 20.5v-3.5h3v3.5"},
+    {"phone", u"Phone", Shape::kSquircle, Effect::kBounce, 215,
+     "M7.5 3.5h9a1.5 1.5 0 0 1 1.5 1.5v14a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 6 19V5a1.5 1.5 0 0 1 1.5-1.5Z M11 18h2"},
+    {"link", u"Links", Shape::kPentagon, Effect::kDraw, 170,
+     "M10 14a4 4 0 0 0 5.6 0l3-3a4 4 0 0 0-5.6-5.6l-1 1"
+         "M14 10a4 4 0 0 0-5.6 0l-3 3a4 4 0 0 0 5.6 5.6l1-1"},
+    {"clipboard", u"Tasks", Shape::kSquircle, Effect::kStagger, 100,
+     "M9 4.5h6a1 1 0 0 1 1 1v1H8v-1a1 1 0 0 1 1-1Z"
+         "M8 6.5H6.5A1.5 1.5 0 0 0 5 8v11a1.5 1.5 0 0 0 1.5 1.5h11A1.5 1.5 0 0 0 19 19V8a1.5 1.5 0 0 0-1.5-1.5H16"
+         "M8.5 12h7 M8.5 15.5h5"},
     {"ai", u"AI", Shape::kBurst, Effect::kPulse, 294,
      "M0 0m10.4 3.8 1.6 4.3 4.3 1.6-4.3 1.6-1.6 4.3-1.6-4.3L4.5 9.7l4.3-1.6 1.6-4.3Z"
          "M0 0m17.4 14.2.9 2.5 2.5.9-2.5.9-.9 2.5-.9-2.5-2.5-.9 2.5-.9.9-2.5Z"},

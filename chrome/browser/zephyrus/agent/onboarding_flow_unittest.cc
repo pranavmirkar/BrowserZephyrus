@@ -162,10 +162,10 @@ TEST_F(OnboardingPrefTest, ShowsUntilItIsDoneThenNeverAgain) {
 
 TEST_F(OnboardingPrefTest, InstalledBrowserShowsOnboardingWithoutDevSwitches) {
   EXPECT_TRUE(ShouldShowOnboarding(prefs_, /*forced=*/false,
-                                 kOnboardingEnabled));
+                                 /*enabled=*/true));
   MarkOnboardingDone(prefs_);
   EXPECT_FALSE(ShouldShowOnboarding(prefs_, /*forced=*/false,
-                                  kOnboardingEnabled));
+                                  /*enabled=*/true));
 }
 
 TEST_F(OnboardingPrefTest, TheDevSwitchShowsItAgainWhateverTheProfileSays) {
@@ -178,7 +178,7 @@ TEST_F(OnboardingPrefTest, RunSetupAgainBringsItBack) {
   MarkOnboardingDone(prefs_);
   ResetOnboarding(prefs_);
   EXPECT_TRUE(ShouldShowOnboarding(prefs_, /*forced=*/false,
-                                 kOnboardingEnabled));
+                                 /*enabled=*/true));
 }
 
 TEST_F(OnboardingPrefTest, SwitchedOffItNeverShowsByItself) {

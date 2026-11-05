@@ -34,7 +34,10 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/color/zephyrus_color_mixer.h"
+#include "cc/paint/paint_flags.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "ui/gfx/geometry/insets_f.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_settings.h"
@@ -82,6 +85,9 @@ namespace {
 // Everything in the sheet sits this far in from its edges -- M3's side sheet
 // inset.
 constexpr int kInset = 16;
+// How far the panel's bounds reach left of the sheet: 1dp, set in
+// BrowserView::UpdateZephyrusAgentPanelBounds. Keep the two equal.
+constexpr int kEdgeOverlap = 1;
 constexpr int kLineGap = 12;
 
 // An M3 standard icon button: a 40dp target around a 24dp icon.
@@ -567,12 +573,21 @@ END_METADATA
 ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
     : browser_view_(browser_view) {
   SetVisible(false);
+  // Its own layer, above the page's. Painted into the window's root layer, the
+  // rounded corners' cut-outs showed the PAGE's colour (a red page put a red
+  // wedge in the panel's top-left corner, and wallpaper pages a line down its
+  // left edge); see OnPaintBackground.
+  SetPaintToLayer();
+  layer()->SetFillsBoundsOpaquely(false);
 
   // Children carry their own horizontal inset where they need one: the log's
   // scrollbar should reach the sheet's edge, the bubbles should not.
+  // The left inset is the 1dp the bounds reach past the page's edge
+  // (BrowserView::UpdateZephyrusAgentPanelBounds): the sheet is drawn from
+  // there, the ground behind it from the bounds' edge.
   auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical,
-      gfx::Insets::TLBR(0, 0, kInset, 0), 0));
+      gfx::Insets::TLBR(0, kEdgeOverlap, kInset, 0), 0));
   layout->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kStretch);
 
@@ -702,6 +717,14 @@ ZephyrusAgentPanel::ZephyrusAgentPanel(BrowserView* browser_view)
                             base::Unretained(this), base::UTF16ToUTF8(text)),
         text, 16)));
   }
+  // Sorting the open tabs into sets (the sets.group tool). The label is short;
+  // what the agent is asked says what to leave alone.
+  chips_.push_back(chips->AddChildView(MakeM3Button(
+      base::BindRepeating(
+          &ZephyrusAgentPanel::StartTask, base::Unretained(this),
+          std::string("Sort my open tabs into sets by topic. Leave pinned tabs "
+                      "alone and don't close or open any tabs.")),
+      u"Organise my tabs into sets", 16)));
   // Hands-free is opt-in and has to be set up (a voice recorded) before it does
   // anything, so the way in is here, where a first-time user is looking.
   chips_.push_back(chips->AddChildView(MakeM3Button(
@@ -1522,6 +1545,22 @@ void ZephyrusAgentPanel::OnThemeChanged() {
   ApplyRoles();
 }
 
+void ZephyrusAgentPanel::OnPaintBackground(gfx::Canvas* canvas) {
+  // The window's ground under the rounded sheet, so the corner cut-outs and the
+  // anti-aliased edge show the ground and not whatever the page leaves there.
+  // Not under the DWM backdrop, where the glass IS the ground.
+  if (browser_view_ && !zephyrus::HasWindowBackdrop(GetWidget())) {
+    canvas->DrawColor(browser_view_->GetZephyrusThemeColor());
+  }
+  // The sheet itself, from the overlap in.
+  cc::PaintFlags flags;
+  flags.setAntiAlias(true);
+  flags.setColor(sheet_color_);
+  gfx::RectF sheet(GetLocalBounds());
+  sheet.Inset(gfx::InsetsF::TLBR(0, kEdgeOverlap, 0, 0));
+  canvas->DrawRoundRect(sheet, zephyrus::kRadiusCard, flags);
+}
+
 void ZephyrusAgentPanel::ApplyRoles() {
   // M3 ROLES, read from this view: it is in the browser window's Widget
   // whenever this runs (OnThemeChanged, or SetTaskRunning after a check).
@@ -1534,9 +1573,8 @@ void ZephyrusAgentPanel::ApplyRoles() {
   // A docked side sheet on surfaceContainerLow, shaped like the page card
   // beside it. No outline: M3 separates surfaces by tone, and the hairline
   // this used to carry was the retired language.
-  SetBackground(views::CreateRoundedRectBackground(
-      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerLow),
-      zephyrus::kRadiusCard));
+  sheet_color_ = zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerLow);
+  SchedulePaint();
   SetBorder(nullptr);
 
   header_icon_->SetImage(

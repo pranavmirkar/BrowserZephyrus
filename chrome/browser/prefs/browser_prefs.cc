@@ -1909,6 +1909,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   // ToolbarView observes it and repaints live. Literal for the layering reason
   // above; mirrored by kZephyrusContainersPref in toolbar_view.cc.
   registry->RegisterBooleanPref("zephyrus.appearance.m3_containers", true);
+  // Sets (tab groups): each one's icon, whether it is pinned to the top and
+  // whether it is closed, keyed by the group's token; and the order the user
+  // keeps them in. Literals, as above.
+  registry->RegisterDictionaryPref("zephyrus.sets");
+  registry->RegisterListPref("zephyrus.sets_order");
   // Whether entering Private Workspace requires an OS unlock. Registered on the
   // REGULAR profile deliberately: the private profile is destroyed every
   // session, so a setting stored there would silently forget itself — and a

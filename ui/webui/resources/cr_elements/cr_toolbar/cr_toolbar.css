@@ -78,6 +78,14 @@ cr-icon-button {
   padding-inline-end: 12px;
 }
 
+/* Zephyrus: 8px, not 12. The settings popup hosts this bar against its
+   top-right corner (28px radius); a 40px pill (radius 20) is concentric with
+   that corner at 8px (inner radius = outer radius - padding). At 12px it was
+   not. */
+:host-context([webui-refresh-2026]) #rightSpacer {
+  padding-inline-end: 8px;
+}
+
 :host([narrow]) #centeredContent {
   justify-content: flex-end;
 }

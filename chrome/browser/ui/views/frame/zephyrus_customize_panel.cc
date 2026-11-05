@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
+#include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/render_widget_host_view.h"
@@ -29,6 +30,7 @@
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/view_class_properties.h"
 #include "url/gurl.h"
 
 namespace zephyrus {
@@ -66,6 +68,17 @@ ZephyrusCustomizePanel::ZephyrusCustomizePanel(BrowserView* browser_view)
   slide_.SetSlideDuration(kSlideDuration);
   slide_.SetTweenType(
       zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
+
+  // The ground under the rounded corners. Painted into the window's root layer
+  // the corner cut-outs showed the PAGE's colour (measured: a wedge of it at
+  // the top-left, and a hairline down the left edge on a wallpaper page), and
+  // the panel itself cannot have a layer (above). So a SIBLING of the WebView:
+  // a plain solid-colour layer, first child so it sits behind the WebView's
+  // own, ignored by the layout and sized to the panel in OnBoundsChanged.
+  ground_ = AddChildView(std::make_unique<views::View>());
+  ground_->SetPaintToLayer(ui::LAYER_SOLID_COLOR);
+  ground_->SetCanProcessEventsWithinSubtree(false);
+  ground_->SetProperty(views::kViewIgnoredByLayoutKey, true);
 
   // Closed until asked for, and costing nothing until then.
   SetVisible(false);
@@ -203,6 +216,9 @@ void ZephyrusCustomizePanel::RoundWebContents() {
 
 void ZephyrusCustomizePanel::OnBoundsChanged(const gfx::Rect& previous_bounds) {
   views::View::OnBoundsChanged(previous_bounds);
+  if (ground_) {
+    ground_->SetBoundsRect(GetLocalBounds());
+  }
   // Re-round on every resize.
   //
   // MEASURED: the call made in EnsureContent() SUCCEEDS -- it returns true --
@@ -265,7 +281,21 @@ void ZephyrusCustomizePanel::ApplyPalette() {
   const SkColor ground =
       zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainer);
   SetBackground(views::CreateRoundedRectBackground(ground, kRadiusCard));
-  SetBorder(nullptr);
+  if (ground_) {
+    // Not under the DWM backdrop, where the glass is the ground.
+    const bool backdrop = zephyrus::HasWindowBackdrop(GetWidget());
+    ground_->SetVisible(!backdrop);
+    if (browser_view_ && ground_->layer()) {
+      if (ui::LayerSolidColor* solid = ground_->layer()->AsSolidColor()) {
+        solid->SetColor(
+            SkColor4f::FromColor(browser_view_->GetZephyrusThemeColor()));
+      }
+    }
+  }
+  // Left inset: the 1dp the bounds reach past the page's edge
+  // (BrowserView::UpdateZephyrusCustomizePanelBounds). The ground layer behind
+  // fills the bounds; the WebView, inside the inset, is the visible card.
+  SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(0, 1, 0, 0)));
 
   if (!web_view_) {
     return;

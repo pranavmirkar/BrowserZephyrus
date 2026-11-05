@@ -32,6 +32,16 @@ void ToolSurface::ObserveQuick(ObserveCallback callback) {
   ObserveForCheck(std::move(callback));
 }
 
+std::vector<ToolSurface::SetInfo> ToolSurface::ListSets() {
+  return {};
+}
+
+std::string ToolSurface::GroupTabs(const std::vector<int>& tab_ids,
+                                   const std::string& name,
+                                   const std::string& icon) {
+  return "this browser cannot group tabs";
+}
+
 bool ToolSurface::TypeIntoFocus(const std::string& text) {
   return false;
 }

@@ -30,7 +30,9 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_sidebar_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_workspace_manager.h"
+#include "base/strings/string_number_conversions.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/navigation_handle.h"
@@ -628,6 +630,48 @@ bool BrowserToolSurface::CloseTab(int tab_id) {
   return true;
 }
 
+
+std::vector<ToolSurface::SetInfo> BrowserToolSurface::ListSets() {
+  std::vector<SetInfo> sets;
+  BrowserView* view = BrowserView::GetBrowserViewForBrowser(browser_);
+  ZephyrusSidebarView* sidebar = view ? FindZephyrusSidebar(view) : nullptr;
+  if (!sidebar) {
+    return sets;
+  }
+  for (const ZephyrusSidebarView::SetSummary& summary :
+       sidebar->SummariseSets()) {
+    SetInfo info;
+    info.name = base::UTF16ToUTF8(summary.name);
+    info.icon = summary.icon;
+    for (content::WebContents* contents : summary.tabs) {
+      info.tab_ids.push_back(TabIdFor(contents));
+    }
+    sets.push_back(std::move(info));
+  }
+  return sets;
+}
+
+std::string BrowserToolSurface::GroupTabs(const std::vector<int>& tab_ids,
+                                          const std::string& name,
+                                          const std::string& icon) {
+  BrowserView* view = BrowserView::GetBrowserViewForBrowser(browser_);
+  ZephyrusSidebarView* sidebar = view ? FindZephyrusSidebar(view) : nullptr;
+  if (!sidebar) {
+    return "this window has no sidebar to hold sets";
+  }
+  std::vector<content::WebContents*> tabs;
+  for (int id : tab_ids) {
+    // The current workspace only, as for every tab tool: a task is bound to one
+    // workspace.
+    content::WebContents* contents = FindTabInCurrentWorkspace(id);
+    if (!contents) {
+      return "tab " + base::NumberToString(id) +
+             " is not open in this workspace; call tabs.list again";
+    }
+    tabs.push_back(contents);
+  }
+  return sidebar->GroupTabsIntoSet(tabs, base::UTF8ToUTF16(name), icon);
+}
 
 void BrowserToolSurface::EnsureAccessibility() {
   content::WebContents* contents = ActiveContents();

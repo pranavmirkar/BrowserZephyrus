@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
 #include "chrome/browser/zephyrus/agent/agent_kernel_client.h"
@@ -96,6 +97,25 @@ class FakeToolSurface : public ToolSurface {
   }
   bool SwitchToTab(int tab_id) override { return HasTab(tab_id); }
   bool CloseTab(int tab_id) override { return HasTab(tab_id); }
+
+  // Sets: what the executor asked for, and an error a test can make come back.
+  std::vector<SetInfo> sets;
+  std::vector<int> grouped_ids;
+  std::string grouped_name;
+  std::string grouped_icon;
+  std::string group_error;
+  std::vector<SetInfo> ListSets() override { return sets; }
+  std::string GroupTabs(const std::vector<int>& tab_ids,
+                        const std::string& name,
+                        const std::string& icon) override {
+    if (!group_error.empty()) {
+      return group_error;
+    }
+    grouped_ids = tab_ids;
+    grouped_name = name;
+    grouped_icon = icon;
+    return std::string();
+  }
 
   // A check look. The fake records it separately so a test can assert that a
   // verification did not disturb what the model is compared against.
@@ -529,6 +549,61 @@ TEST_F(ToolExecutorTest, AnUnknownToolReachesNothing) {
   ToolExecutor::Result result = Run("browser.exfiltrate", "{}");
   EXPECT_EQ(result.status, Status::kDenied);
   EXPECT_TRUE(surface_.navigated_to.is_empty());
+}
+
+// --- sets ---------------------------------------------------------------
+
+TEST_F(ToolExecutorTest, GroupsTabsIntoASetByName) {
+  ToolExecutor::Result result = Run(
+      "sets.group", R"({"name":"  Shopping ","tab_ids":[1,2],"icon":"shopping"})");
+  ASSERT_EQ(result.status, Status::kOk) << result.message;
+  EXPECT_EQ(surface_.grouped_name, "Shopping");
+  EXPECT_EQ(surface_.grouped_ids, (std::vector<int>{1, 2}));
+  EXPECT_EQ(surface_.grouped_icon, "shopping");
+}
+
+TEST_F(ToolExecutorTest, ReportsWhyATabCouldNotBeGrouped) {
+  surface_.group_error = "tab 7 is pinned";
+  ToolExecutor::Result result = Run("sets.group", R"({"name":"Work","tab_ids":[7]})");
+  EXPECT_EQ(result.status, Status::kFailed);
+  EXPECT_EQ(result.message, "tab 7 is pinned");
+}
+
+TEST_F(ToolExecutorTest, RefusesASetItCannotMake) {
+  // The kernel only checks that the arguments are present; what they hold is
+  // the executor's to refuse, and nothing reaches the browser when it does.
+  for (const char* arguments : {
+           R"({"name":"   ","tab_ids":[1]})",
+           R"({"name":"Work","tab_ids":[]})",
+           R"({"name":"Work","tab_ids":["one"]})",
+           R"({"name":"Work","tab_ids":[-1]})",
+           R"({"name":"Work","tab_ids":[1.5]})",
+           R"({"name":"A set name that is far too long to fit","tab_ids":[1]})",
+       }) {
+    EXPECT_EQ(Run("sets.group", arguments).status, Status::kFailed) << arguments;
+  }
+  EXPECT_TRUE(surface_.grouped_ids.empty());
+
+  std::string many = "[0";
+  for (int i = 1; i < 41; ++i) {
+    many += "," + base::NumberToString(i);
+  }
+  many += "]";
+  EXPECT_EQ(Run("sets.group", R"({"name":"Work","tab_ids":)" + many + "}").status,
+            Status::kFailed);
+  EXPECT_TRUE(surface_.grouped_ids.empty());
+}
+
+TEST_F(ToolExecutorTest, ListsSets) {
+  ToolSurface::SetInfo set;
+  set.name = "Study";
+  set.icon = "study";
+  set.tab_ids = {4, 5};
+  surface_.sets.push_back(set);
+  ToolExecutor::Result result = Run("sets.list", "{}");
+  ASSERT_EQ(result.status, Status::kOk);
+  EXPECT_EQ(result.value_json,
+            R"([{"icon":"study","name":"Study","tab_ids":[4,5]}])");
 }
 
 // --- the world moved between deciding and acting ------------------------

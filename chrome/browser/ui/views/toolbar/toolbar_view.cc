@@ -4876,16 +4876,18 @@ class ZephyrusIconPicker : public views::BubbleDialogDelegateView {
     // because it is the slower path -- it opens a file dialog, and everything
     // above it is one click. Putting a dialog-opening control in the middle of
     // a grid of instant ones makes the grid feel inconsistent.
-    auto* photo = AddChildView(std::make_unique<views::LabelButton>(
-        base::BindRepeating(
-            [](ZephyrusIconPicker* self, const ui::Event&) {
-              self->ChoosePhoto();
-            },
-            base::Unretained(this)),
-        u"Choose a photo…"));
-    photo->SetHorizontalAlignment(gfx::ALIGN_CENTER);
-    photo->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(10, 0, 0, 0));
-    StyleAsM3TextButton(photo, primary);
+    if (on_choose_photo_) {
+      auto* photo = AddChildView(std::make_unique<views::LabelButton>(
+          base::BindRepeating(
+              [](ZephyrusIconPicker* self, const ui::Event&) {
+                self->ChoosePhoto();
+              },
+              base::Unretained(this)),
+          u"Choose a photo…"));
+      photo->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+      photo->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(10, 0, 0, 0));
+      StyleAsM3TextButton(photo, primary);
+    }
 
     // Clearing is a first-class choice: a workspace that went back to being
     // "3" should not require deleting and recreating it.
@@ -4895,7 +4897,7 @@ class ZephyrusIconPicker : public views::BubbleDialogDelegateView {
               self->Pick(std::u16string());
             },
             base::Unretained(this)),
-        u"Use the number instead"));
+        on_choose_photo_ ? u"Use the number instead" : u"Use the default icon"));
     clear->SetHorizontalAlignment(gfx::ALIGN_CENTER);
     clear->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(4, 0, 0, 0));
     StyleAsM3TextButton(clear, primary);
@@ -5981,6 +5983,25 @@ void ToolbarView::ConfirmZephyrusWorkspaceDelete(int workspace_id) {
           },
           browser_, workspace_id));
 }
+
+namespace zephyrus {
+
+views::Widget* ShowIconPicker(
+    views::View* anchor,
+    base::RepeatingCallback<void(const std::u16string&)> on_pick) {
+  if (!anchor) {
+    return nullptr;
+  }
+  // No photo route for a set, and the clear button says what it does here.
+  auto picker = std::make_unique<ZephyrusIconPicker>(
+      anchor, std::move(on_pick), base::RepeatingClosure());
+  views::Widget* widget =
+      views::BubbleDialogDelegateView::CreateBubble(std::move(picker));
+  widget->Show();
+  return widget;
+}
+
+}  // namespace zephyrus
 
 void ToolbarView::ShowZephyrusIconPicker(int workspace_id) {
   if (!zephyrus_workspace_strip_) {

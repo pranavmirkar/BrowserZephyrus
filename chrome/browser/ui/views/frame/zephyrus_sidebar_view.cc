@@ -12,8 +12,10 @@
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #include "base/task/sequenced_task_runner.h"
@@ -29,7 +31,19 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "chrome/common/webui_url_constants.h"
+#include "chrome/browser/ui/views/frame/zephyrus_workspace_icons.h"
+#include "components/prefs/pref_service.h"
+#include "components/prefs/scoped_user_pref_update.h"
+#include "ui/views/controls/textfield/textfield.h"
+#include "ui/views/controls/textfield/textfield_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "components/tab_groups/tab_group_color.h"
+#include "components/tab_groups/tab_group_visual_data.h"
+#include "components/tabs/public/tab_group.h"
+#include "ui/views/layout/flex_layout_view.h"
 #include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_interface.h"
@@ -104,7 +118,9 @@
 #include "ui/views/layout/fill_layout.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
+#include "ui/gfx/animation/linear_animation.h"
 #include "ui/gfx/animation/slide_animation.h"
+#include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/shadow_value.h"
 #include "ui/gfx/skia_paint_util.h"
 #include "ui/views/masked_targeter_delegate.h"
@@ -151,6 +167,8 @@ constexpr int kFaviconSize = 16;
 // shape language the redesigned WebUI pages use, and it is what gives the
 // panel a body -- before this the sidebar was six titles over empty dark.
 constexpr int kRowSpacing = 2;
+// Compact mode: the gap from the address bar to the first tab card.
+constexpr int kCompactListGap = 14;
 constexpr int kSegmentInnerRadius = 4;
 
 // Gap between the title bar's controls once they are in the panel. The bar
@@ -463,6 +481,18 @@ constexpr int kPinTabCommand = 3;
 constexpr int kPinSidebarCommand = 4;
 constexpr int kResetSidebarWidthCommand = 5;
 constexpr int kMoveToWorkspaceBase = 100;  // + workspace index
+// Sets. Below kMoveToWorkspaceBase except the base, which is handled before the
+// workspace range is.
+constexpr int kNewSetCommand = 6;
+constexpr int kRemoveFromSetCommand = 7;
+constexpr int kAddToSetSubmenu = 8;
+constexpr int kUngroupSetCommand = 9;
+constexpr int kRenameSetCommand = 10;
+constexpr int kChangeSetIconCommand = 11;
+constexpr int kPinSetCommand = 12;
+constexpr int kNewTabInSetCommand = 13;
+constexpr int kCloseSetCommand = 14;
+constexpr int kAddToSetBase = 1000;  // + position in context_menu_set_ids_
 // Springy asymmetric slide: the entrance decelerates PAST the resting point
 // (overshoot) and settles back — an under-damped spring, the iOS-sheet feel —
 // while the exit clears out quickly with no bounce (exits never spring).
@@ -514,7 +544,7 @@ bool IsNewTabPage(content::WebContents* contents) {
 
 gfx::ImageSkia GetTabFavicon(content::WebContents* contents) {
   // The new tab page's own favicon is a greyed browser logo that read as an
-  // unknown site. It shows the tinted search mark instead (GetTabFallbackIcon).
+  // unknown site. It shows the tinted Zephyrus mark instead (GetTabFallbackIcon).
   if (IsNewTabPage(contents)) {
     return gfx::ImageSkia();
   }
@@ -526,10 +556,10 @@ gfx::ImageSkia GetTabFavicon(content::WebContents* contents) {
 }
 
 // The tinted mark a row shows when the page has no favicon of its own. The new
-// tab page gets the search glyph, which is what the page is; anything else the
-// globe.
+// tab page gets the Zephyrus mark (the ribbon from inside the browser's logo);
+// anything else the globe.
 const gfx::VectorIcon& GetTabFallbackIcon(content::WebContents* contents) {
-  return IsNewTabPage(contents) ? vector_icons::kSearchIcon
+  return IsNewTabPage(contents) ? kZephyrusMarkIcon
                                 : vector_icons::kGlobeIcon;
 }
 
@@ -669,40 +699,71 @@ END_METADATA
 //
 // Tonal rather than a full primary fill: the active tab is the loudest thing
 // in this column and has to stay that way.
-class ZephyrusNewTabButton : public views::LabelButton {
-  METADATA_HEADER(ZephyrusNewTabButton, views::LabelButton)
+class ZephyrusNewTabButton : public views::Button {
+  METADATA_HEADER(ZephyrusNewTabButton, views::Button)
 
  public:
-  explicit ZephyrusNewTabButton(PressedCallback callback)
-      : views::LabelButton(std::move(callback), u"New tab") {
-    SetHorizontalAlignment(gfx::ALIGN_CENTER);
-    SetImageLabelSpacing(8);
-    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 16)));
-    label()->SetSubpixelRenderingEnabled(false);
-    label()->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelMedium,
-                                            /*emphasized=*/true));
+  // Icon only: the plus says it, and the card is as wide as the list above it,
+  // so the whole width is the target.
+  //   Hover: the plus turns a quarter turn on M3's fast-spatial spring.
+  //   Press: it shrinks to 82% while held.
+  //   Click: it spins another quarter turn with a small pop, ~140ms, and THEN
+  //          opens the tab. The action is posted, bound to a weak pointer,
+  //          never run from the animation callback.
+  // Reduced motion: no animation, and the click acts at once.
+  explicit ZephyrusNewTabButton(base::RepeatingClosure on_new_tab)
+      : views::Button(base::BindRepeating(&ZephyrusNewTabButton::OnClicked,
+                                          base::Unretained(this))),
+        on_new_tab_(std::move(on_new_tab)),
+        hover_(&animation_delegate_),
+        press_(&animation_delegate_),
+        click_(&animation_delegate_) {
+    hover_.SetTweenType(gfx::Tween::LINEAR);
+    hover_.SetSlideDuration(base::Milliseconds(260));
+    press_.SetTweenType(gfx::Tween::LINEAR);
+    press_.SetSlideDuration(base::Milliseconds(100));
+    click_.SetTweenType(gfx::Tween::LINEAR);
+    click_.SetSlideDuration(base::Milliseconds(140));
     GetViewAccessibility().SetName(u"New tab");
     SetTooltipText(u"New tab");
+    SetFocusBehavior(FocusBehavior::ALWAYS);
+    views::FocusRing::Install(this);
+    views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
+                                                  kCornerRadius);
   }
+  ZephyrusNewTabButton(const ZephyrusNewTabButton&) = delete;
+  ZephyrusNewTabButton& operator=(const ZephyrusNewTabButton&) = delete;
+  ~ZephyrusNewTabButton() override = default;
 
-  // views::LabelButton:
+  // views::Button:
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override {
-    return gfx::Size(0, 40);
+    return gfx::Size(bare_ ? kHeight : 0, kHeight);
   }
 
   void OnThemeChanged() override {
-    views::LabelButton::OnThemeChanged();
-    const SkColor ink = zephyrus::m3::Role(*this, kColorZephyrusPrimary);
-    for (auto state : {views::Button::STATE_NORMAL,
-                       views::Button::STATE_HOVERED,
-                       views::Button::STATE_PRESSED}) {
-      SetTextColor(state, ink);
-    }
-    SetImageModel(views::Button::STATE_NORMAL,
-                  ui::ImageModel::FromVectorIcon(vector_icons::kAdd2Icon, ink,
-                                                 20));
+    views::Button::OnThemeChanged();
     SchedulePaint();
+  }
+
+  void StateChanged(views::Button::ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    if (acting_) {
+      return;
+    }
+    const views::Button::ButtonState state = GetState();
+    Retarget(hover_, state == STATE_HOVERED || state == STATE_PRESSED);
+    Retarget(press_, state == STATE_PRESSED);
+  }
+
+  // The plus inside a set: no card, only the plus (a state layer circle under
+  // the pointer), as the set's design has it.
+  void SetBare(bool bare) {
+    if (bare_ != bare) {
+      bare_ = bare;
+      PreferredSizeChanged();
+      SchedulePaint();
+    }
   }
 
   // Settings > Appearance > containers. Off, it is a text button: bare at
@@ -715,6 +776,21 @@ class ZephyrusNewTabButton : public views::LabelButton {
   }
 
   void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (bare_) {
+      if (GetState() == views::Button::STATE_HOVERED ||
+          GetState() == views::Button::STATE_PRESSED) {
+        cc::PaintFlags flags;
+        flags.setAntiAlias(true);
+        flags.setColor(zephyrus::m3::StateLayer(
+            zephyrus::m3::Role(*this, kColorZephyrusPrimary),
+            GetState() == views::Button::STATE_PRESSED
+                ? zephyrus::m3::kPressed
+                : zephyrus::m3::kHover));
+        canvas->DrawCircle(gfx::PointF(GetLocalBounds().CenterPoint()),
+                           GetLocalBounds().height() / 2.0f, flags);
+      }
+      return;
+    }
     // A NEUTRAL container with brand-coloured ink, not a brand-filled slab.
     // Filled with primary-container it was the loudest thing in the panel --
     // louder than the active tab, which is the one row that has to win.
@@ -740,12 +816,108 @@ class ZephyrusNewTabButton : public views::LabelButton {
     flags.setAntiAlias(true);
     flags.setStyle(cc::PaintFlags::kFill_Style);
     flags.setColor(fill);
-    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kSegmentEndRadius,
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kCornerRadius,
                           flags);
   }
 
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    const gfx::RectF bounds(GetLocalBounds());
+    const float hover = zephyrus::m3::Curve(zephyrus::m3::Spring::kFastSpatial)
+                            .Solve(hover_.GetCurrentValue());
+    const float press = zephyrus::m3::Curve(zephyrus::m3::Spring::kFastEffects)
+                            .Solve(press_.GetCurrentValue());
+    const double click_t = click_.GetCurrentValue();
+    const float click = zephyrus::m3::Curve(zephyrus::m3::Spring::kFastEffects)
+                            .Solve(click_t);
+    const float degrees = 90.0f * hover + 90.0f * click;
+    // The pop: up to 125% at the middle of the click, back to 100% at its end.
+    const float pop = 0.25f * static_cast<float>(std::sin(M_PI * click_t));
+    const float scale = (1.0f - 0.18f * press) * (1.0f + pop);
+    canvas->Save();
+    cc::PaintCanvas* const paint = canvas->sk_canvas();
+    paint->translate(bounds.width() / 2.0f, bounds.height() / 2.0f);
+    paint->rotate(degrees);
+    paint->scale(scale, scale);
+    paint->translate(-kIconSize / 2.0f, -kIconSize / 2.0f);
+    gfx::PaintVectorIcon(canvas, vector_icons::kAdd2Icon, kIconSize,
+                         zephyrus::m3::Role(*this, kColorZephyrusPrimary));
+    canvas->Restore();
+  }
+
  private:
+  // Shorter than a tab row would suggest, a quiet footer to the list: 32, not
+  // 40. The corners drop from 16 to 12 with it, or a 32dp card would be a
+  // capsule.
+  static constexpr int kHeight = 32;
+  static constexpr int kCornerRadius = 12;
+  static constexpr int kIconSize = 20;
+
+  // views::Button is itself a gfx::AnimationDelegate, so ours cannot be the
+  // button: it is this.
+  class AnimationForwarder final : public gfx::AnimationDelegate {
+   public:
+    explicit AnimationForwarder(ZephyrusNewTabButton* owner) : owner_(owner) {}
+    void AnimationProgressed(const gfx::Animation*) override {
+      owner_->SchedulePaint();
+    }
+    void AnimationEnded(const gfx::Animation* animation) override {
+      owner_->OnAnimationEnded(animation);
+    }
+
+   private:
+    raw_ptr<ZephyrusNewTabButton> owner_;
+  };
+
+  void OnAnimationEnded(const gfx::Animation* animation) {
+    SchedulePaint();
+    if (animation != &click_) {
+      return;
+    }
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&ZephyrusNewTabButton::RunAction,
+                                  weak_factory_.GetWeakPtr()));
+  }
+
+  void Retarget(gfx::SlideAnimation& animation, bool show) {
+    if (!gfx::Animation::ShouldRenderRichAnimation()) {
+      animation.Reset(show ? 1.0 : 0.0);
+      SchedulePaint();
+    } else if (show) {
+      animation.Show();
+    } else {
+      animation.Hide();
+    }
+  }
+
+  void OnClicked() {
+    if (acting_) {
+      return;
+    }
+    acting_ = true;
+    if (!gfx::Animation::ShouldRenderRichAnimation()) {
+      RunAction();
+      return;
+    }
+    click_.Show();
+  }
+
+  void RunAction() {
+    // Re-armed first: the list may not be rebuilt (and this button replaced)
+    // by what the action does.
+    acting_ = false;
+    click_.Reset(0.0);
+    on_new_tab_.Run();
+  }
+
+  base::RepeatingClosure on_new_tab_;
+  AnimationForwarder animation_delegate_{this};
+  gfx::SlideAnimation hover_;
+  gfx::SlideAnimation press_;
+  gfx::SlideAnimation click_;
   bool contained_ = true;
+  bool acting_ = false;
+  bool bare_ = false;
+  base::WeakPtrFactory<ZephyrusNewTabButton> weak_factory_{this};
 };
 
 BEGIN_METADATA(ZephyrusNewTabButton)
@@ -830,6 +1002,1046 @@ BEGIN_METADATA(ZephyrusSectionHeader)
 END_METADATA
 
 
+// A set's name as its chip and menu entries show it.
+std::u16string GetSetTitle(TabStripModel* model,
+                           const tab_groups::TabGroupId& id) {
+  const tab_groups::TabGroupVisualData* data =
+      model->group_model()->GetTabGroup(id)->visual_data();
+  return data && !data->title().empty() ? data->title() : u"Set";
+}
+
+// ---- Sets ------------------------------------------------------------------
+//
+// A SET is a Chromium tab group, shown the way the design shows it: a header
+// (icon, name, pin, chevron) that opens and closes a body of the set's tab
+// cards. The title and colour live in the group's own visual data (which the
+// session saves); the icon, whether it is pinned to the top, and whether it is
+// closed live in the profile prefs, keyed by the group's token, because a tab
+// group has nowhere to keep them.
+
+constexpr int kSetHeaderHeight = 32;
+constexpr char kSetsPref[] = "zephyrus.sets";
+constexpr char kSetsOrderPref[] = "zephyrus.sets_order";
+constexpr char kDefaultSetIcon[] = "files";
+constexpr size_t kMaxSetNameLength = 32;
+
+struct SetMeta {
+  std::string icon;
+  bool pinned = false;
+  bool collapsed = false;
+};
+
+SetMeta ReadSetMeta(PrefService* prefs, const tab_groups::TabGroupId& id) {
+  SetMeta meta;
+  if (const base::DictValue* dict =
+          prefs->GetDict(kSetsPref).FindDict(id.ToString())) {
+    if (const std::string* icon = dict->FindString("icon")) {
+      meta.icon = *icon;
+    }
+    meta.pinned = dict->FindBool("pinned").value_or(false);
+    meta.collapsed = dict->FindBool("collapsed").value_or(false);
+  }
+  return meta;
+}
+
+void WriteSetMeta(PrefService* prefs,
+                  const tab_groups::TabGroupId& id,
+                  const SetMeta& meta) {
+  ScopedDictPrefUpdate update(prefs, kSetsPref);
+  base::DictValue* dict = update->EnsureDict(id.ToString());
+  dict->Set("icon", meta.icon);
+  dict->Set("pinned", meta.pinned);
+  dict->Set("collapsed", meta.collapsed);
+}
+
+// Appended once, when the set is made, so a set keeps its place.
+void AppendToSetOrder(PrefService* prefs, const tab_groups::TabGroupId& id) {
+  const std::string token = id.ToString();
+  ScopedListPrefUpdate update(prefs, kSetsOrderPref);
+  for (const base::Value& value : update.Get()) {
+    if (value.is_string() && value.GetString() == token) {
+      return;
+    }
+  }
+  update->Append(token);
+}
+
+void ForgetSet(PrefService* prefs, const tab_groups::TabGroupId& id) {
+  const std::string token = id.ToString();
+  {
+    ScopedDictPrefUpdate update(prefs, kSetsPref);
+    update->Remove(token);
+  }
+  ScopedListPrefUpdate update(prefs, kSetsOrderPref);
+  update->EraseIf([&](const base::Value& value) {
+    return value.is_string() && value.GetString() == token;
+  });
+}
+
+// `sets` in the order the user keeps them; sets with no stored place go last.
+std::vector<tab_groups::TabGroupId> OrderedSets(
+    PrefService* prefs,
+    std::vector<tab_groups::TabGroupId> sets) {
+  const base::ListValue& order = prefs->GetList(kSetsOrderPref);
+  auto rank = [&](const tab_groups::TabGroupId& id) {
+    const std::string token = id.ToString();
+    for (size_t i = 0; i < order.size(); ++i) {
+      if (order[i].is_string() && order[i].GetString() == token) {
+        return i;
+      }
+    }
+    return order.size();
+  };
+  std::stable_sort(sets.begin(), sets.end(),
+                   [&](const tab_groups::TabGroupId& a,
+                       const tab_groups::TabGroupId& b) {
+                     return rank(a) < rank(b);
+                   });
+  return sets;
+}
+
+// Motion shared by the small icons of a set, in the way of the M3 Expressive
+// set: a spring on hover, a dip while pressed, and a pop on click. Owned by the
+// view that paints the icon, which reads Hover()/Press()/ClickProgress() when
+// it paints and is told to repaint when any of them moves.
+class SetIconMotion : public gfx::AnimationDelegate {
+ public:
+  explicit SetIconMotion(base::RepeatingClosure on_change)
+      : on_change_(std::move(on_change)),
+        hover_(this),
+        press_(this),
+        click_(this) {
+    hover_.SetTweenType(gfx::Tween::LINEAR);
+    hover_.SetSlideDuration(base::Milliseconds(260));
+    press_.SetTweenType(gfx::Tween::LINEAR);
+    press_.SetSlideDuration(base::Milliseconds(100));
+    click_.SetTweenType(gfx::Tween::LINEAR);
+    click_.SetSlideDuration(base::Milliseconds(260));
+  }
+  SetIconMotion(const SetIconMotion&) = delete;
+  SetIconMotion& operator=(const SetIconMotion&) = delete;
+  ~SetIconMotion() override = default;
+
+  void SetHovered(bool hovered) { Retarget(hover_, hovered); }
+  void SetPressed(bool pressed) { Retarget(press_, pressed); }
+  void Click() {
+    if (gfx::Animation::ShouldRenderRichAnimation()) {
+      click_.Reset(0.0);
+      click_.Show();
+    }
+  }
+  // 0..1, springing (it overshoots a little).
+  float Hover() const {
+    return zephyrus::m3::Curve(zephyrus::m3::Spring::kFastSpatial)
+        .Solve(hover_.GetCurrentValue());
+  }
+  float Press() const {
+    return zephyrus::m3::Curve(zephyrus::m3::Spring::kFastEffects)
+        .Solve(press_.GetCurrentValue());
+  }
+  // 0 -> 1 over a click; sin(pi * this) is the pop.
+  float Pop() const {
+    return std::sin(static_cast<float>(M_PI) *
+                    static_cast<float>(click_.GetCurrentValue()));
+  }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    on_change_.Run();
+  }
+
+ private:
+  void Retarget(gfx::SlideAnimation& animation, bool show) {
+    if (!gfx::Animation::ShouldRenderRichAnimation()) {
+      animation.Reset(show ? 1.0 : 0.0);
+      on_change_.Run();
+    } else if (show) {
+      animation.Show();
+    } else {
+      animation.Hide();
+    }
+  }
+
+  base::RepeatingClosure on_change_;
+  gfx::SlideAnimation hover_;
+  gfx::SlideAnimation press_;
+  gfx::SlideAnimation click_;
+};
+
+// A set's icon, drawn from the workspace icon set (stroked, so it takes any
+// ink). Still: it does not animate on hover, press or click.
+class ZephyrusSetGlyph : public views::View {
+  METADATA_HEADER(ZephyrusSetGlyph, views::View)
+
+ public:
+  explicit ZephyrusSetGlyph(const std::string& key) {
+    icon_ = zephyrus::FindWorkspaceIcon(key);
+    if (!icon_) {
+      icon_ = zephyrus::FindWorkspaceIcon(std::string_view(kDefaultSetIcon));
+    }
+    SetCanProcessEventsWithinSubtree(false);
+  }
+  ZephyrusSetGlyph(const ZephyrusSetGlyph&) = delete;
+  ZephyrusSetGlyph& operator=(const ZephyrusSetGlyph&) = delete;
+  ~ZephyrusSetGlyph() override = default;
+
+  void SetColor(SkColor color) {
+    if (color_ != color) {
+      color_ = color;
+      SchedulePaint();
+    }
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(20, 20);
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    if (icon_) {
+      zephyrus::PaintWorkspaceGlyph(canvas, *icon_,
+                                    gfx::RectF(GetLocalBounds()), color_, 1.8f);
+    }
+  }
+
+ private:
+  raw_ptr<const zephyrus::WorkspaceIcon> icon_ = nullptr;
+  SkColor color_ = SK_ColorGRAY;
+};
+
+BEGIN_METADATA(ZephyrusSetGlyph)
+END_METADATA
+
+// The pin beside a set's header: shown while the header is hovered, and always
+// once the set is pinned. Hover tips it and enlarges it, pressed it dips, and a
+// click swings it before the set moves.
+class ZephyrusSetPinButton : public views::Button {
+  METADATA_HEADER(ZephyrusSetPinButton, views::Button)
+
+ public:
+  ZephyrusSetPinButton(base::RepeatingClosure toggle,
+                       base::RepeatingClosure on_hover_changed)
+      : views::Button(base::BindRepeating(&ZephyrusSetPinButton::OnPressed,
+                                          base::Unretained(this))),
+        toggle_(std::move(toggle)),
+        on_hover_changed_(std::move(on_hover_changed)),
+        motion_(base::BindRepeating(&views::View::SchedulePaint,
+                                    base::Unretained(this))) {
+    SetFocusBehavior(FocusBehavior::NEVER);
+    SetShown(false, false);
+  }
+  ZephyrusSetPinButton(const ZephyrusSetPinButton&) = delete;
+  ZephyrusSetPinButton& operator=(const ZephyrusSetPinButton&) = delete;
+  ~ZephyrusSetPinButton() override = default;
+
+  void SetShown(bool shown, bool pinned) {
+    shown_ = shown;
+    pinned_ = pinned;
+    // Invisible means not clickable: a click on the empty spot must not pin.
+    SetEnabled(shown || pinned);
+    const std::u16string name = pinned ? u"Unpin from top" : u"Pin to top";
+    GetViewAccessibility().SetName(name);
+    SetTooltipText(name);
+    SchedulePaint();
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(kSize, kSize);
+  }
+
+  void StateChanged(views::Button::ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    const views::Button::ButtonState state = GetState();
+    motion_.SetHovered(state == STATE_HOVERED || state == STATE_PRESSED);
+    motion_.SetPressed(state == STATE_PRESSED);
+    if (on_hover_changed_) {
+      on_hover_changed_.Run();
+    }
+    SchedulePaint();
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    if ((!shown_ && !pinned_) || GetState() != views::Button::STATE_HOVERED) {
+      return;
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(zephyrus::m3::StateLayer(
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+        zephyrus::m3::kHover));
+    canvas->DrawCircle(gfx::PointF(GetLocalBounds().CenterPoint()),
+                       GetLocalBounds().width() / 2.0f, flags);
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    if (!shown_ && !pinned_) {
+      return;
+    }
+    const float hover = motion_.Hover();
+    const float press = motion_.Press();
+    const float pop = motion_.Pop();
+    canvas->Save();
+    cc::PaintCanvas* const paint = canvas->sk_canvas();
+    paint->translate(kSize / 2.0f, kSize / 2.0f);
+    paint->rotate(-16.0f * hover + 26.0f * pop);
+    const float scale = 1.0f + 0.14f * hover - 0.14f * press + 0.22f * pop;
+    paint->scale(scale, scale);
+    paint->translate(-kIconSize / 2.0f, -kIconSize / 2.0f);
+    gfx::PaintVectorIcon(
+        canvas, kKeepIcon, kIconSize,
+        zephyrus::m3::Role(*this, pinned_ ? kColorZephyrusPrimary
+                                          : kColorZephyrusOnSurfaceVariant));
+    canvas->Restore();
+  }
+
+ private:
+  static constexpr int kSize = 24;
+  static constexpr int kIconSize = 16;
+
+  void OnPressed(const ui::Event& event) {
+    motion_.Click();
+    // After the swing, not before: pinning moves the set and rebuilds the list.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&ZephyrusSetPinButton::RunToggle,
+                       weak_factory_.GetWeakPtr()),
+        base::Milliseconds(170));
+  }
+  void RunToggle() { toggle_.Run(); }
+
+  base::RepeatingClosure toggle_;
+  base::RepeatingClosure on_hover_changed_;
+  bool shown_ = false;
+  bool pinned_ = false;
+  SetIconMotion motion_;
+  base::WeakPtrFactory<ZephyrusSetPinButton> weak_factory_{this};
+};
+
+BEGIN_METADATA(ZephyrusSetPinButton)
+END_METADATA
+
+// The plus in a set's header: a new tab in that set. It turns on hover, dips
+// while pressed, and spins and pops on click (the tab opens just after, since
+// opening it rebuilds the list).
+class ZephyrusSetPlusButton : public views::Button {
+  METADATA_HEADER(ZephyrusSetPlusButton, views::Button)
+
+ public:
+  explicit ZephyrusSetPlusButton(base::RepeatingClosure new_tab)
+      : views::Button(base::BindRepeating(&ZephyrusSetPlusButton::OnPressed,
+                                          base::Unretained(this))),
+        new_tab_(std::move(new_tab)),
+        motion_(base::BindRepeating(&views::View::SchedulePaint,
+                                    base::Unretained(this))) {
+    SetFocusBehavior(FocusBehavior::NEVER);
+    GetViewAccessibility().SetName(u"New tab in set");
+    SetTooltipText(u"New tab in set");
+  }
+  ZephyrusSetPlusButton(const ZephyrusSetPlusButton&) = delete;
+  ZephyrusSetPlusButton& operator=(const ZephyrusSetPlusButton&) = delete;
+  ~ZephyrusSetPlusButton() override = default;
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(kSize, kSize);
+  }
+
+  void StateChanged(views::Button::ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    const views::Button::ButtonState state = GetState();
+    motion_.SetHovered(state == STATE_HOVERED || state == STATE_PRESSED);
+    motion_.SetPressed(state == STATE_PRESSED);
+    SchedulePaint();
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (GetState() != views::Button::STATE_HOVERED &&
+        GetState() != views::Button::STATE_PRESSED) {
+      return;
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(zephyrus::m3::StateLayer(
+        zephyrus::m3::Role(*this, kColorZephyrusPrimary),
+        GetState() == views::Button::STATE_PRESSED ? zephyrus::m3::kPressed
+                                                   : zephyrus::m3::kHover));
+    canvas->DrawCircle(gfx::PointF(GetLocalBounds().CenterPoint()),
+                       GetLocalBounds().width() / 2.0f, flags);
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    const float hover = motion_.Hover();
+    const float press = motion_.Press();
+    const float pop = motion_.Pop();
+    canvas->Save();
+    cc::PaintCanvas* const paint = canvas->sk_canvas();
+    paint->translate(kSize / 2.0f, kSize / 2.0f);
+    paint->rotate(90.0f * hover + 90.0f * pop);
+    const float scale = 1.0f - 0.14f * press + 0.2f * pop;
+    paint->scale(scale, scale);
+    paint->translate(-kIconSize / 2.0f, -kIconSize / 2.0f);
+    gfx::PaintVectorIcon(canvas, vector_icons::kAdd2Icon, kIconSize,
+                         zephyrus::m3::Role(*this, kColorZephyrusPrimary));
+    canvas->Restore();
+  }
+
+ private:
+  static constexpr int kSize = 24;
+  static constexpr int kIconSize = 16;
+
+  void OnPressed(const ui::Event& event) {
+    motion_.Click();
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&ZephyrusSetPlusButton::RunNewTab,
+                       weak_factory_.GetWeakPtr()),
+        base::Milliseconds(150));
+  }
+  void RunNewTab() { new_tab_.Run(); }
+
+  base::RepeatingClosure new_tab_;
+  SetIconMotion motion_;
+  base::WeakPtrFactory<ZephyrusSetPlusButton> weak_factory_{this};
+};
+
+BEGIN_METADATA(ZephyrusSetPlusButton)
+END_METADATA
+
+// The dropdown control: the chevron in a round container of its own, at the
+// end of the header's capsule. Concentric with it (Rule 2): the capsule is 32dp
+// tall, so its end has a radius of 16, and the container sits 4dp inside that
+// end -- a 24dp circle, radius 16 - 4 = 12. Clicking it opens or closes the
+// set. The container shows hover as a state layer; the chevron itself has no
+// hover motion, dips while pressed and pops on a click.
+class ZephyrusSetToggleButton : public views::Button {
+  METADATA_HEADER(ZephyrusSetToggleButton, views::Button)
+
+ public:
+  static constexpr int kSize = 24;
+
+  explicit ZephyrusSetToggleButton(base::RepeatingClosure toggle)
+      : views::Button(base::BindRepeating(&ZephyrusSetToggleButton::OnPressed,
+                                          base::Unretained(this))),
+        toggle_(std::move(toggle)),
+        motion_(base::BindRepeating(&views::View::SchedulePaint,
+                                    base::Unretained(this))) {
+    SetFocusBehavior(FocusBehavior::ALWAYS);
+    views::FocusRing::Install(this);
+    views::InstallCircleHighlightPathGenerator(this);
+    SetExpanded(true);
+  }
+  ZephyrusSetToggleButton(const ZephyrusSetToggleButton&) = delete;
+  ZephyrusSetToggleButton& operator=(const ZephyrusSetToggleButton&) = delete;
+  ~ZephyrusSetToggleButton() override = default;
+
+  void SetAngle(float degrees) {
+    if (angle_ != degrees) {
+      angle_ = degrees;
+      SchedulePaint();
+    }
+  }
+  void SetColor(SkColor color) {
+    if (color_ != color) {
+      color_ = color;
+      SchedulePaint();
+    }
+  }
+  void SetExpanded(bool expanded) {
+    const std::u16string name = expanded ? u"Close set" : u"Open set";
+    GetViewAccessibility().SetName(name);
+    SetTooltipText(name);
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(kSize, kSize);
+  }
+
+  void StateChanged(views::Button::ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    motion_.SetPressed(GetState() == STATE_PRESSED);
+    SchedulePaint();
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    // The content ink as a wash, so it reads on the capsule whatever its tone.
+    uint8_t alpha = 0x1F;
+    if (GetState() == views::Button::STATE_PRESSED) {
+      alpha = 0x3D;
+    } else if (GetState() == views::Button::STATE_HOVERED) {
+      alpha = 0x33;
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(SkColorSetA(color_, alpha));
+    canvas->DrawCircle(gfx::PointF(GetLocalBounds().CenterPoint()),
+                       GetLocalBounds().width() / 2.0f, flags);
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    const float press = motion_.Press();
+    const float pop = motion_.Pop();
+    canvas->Save();
+    cc::PaintCanvas* const paint = canvas->sk_canvas();
+    paint->translate(kSize / 2.0f, kSize / 2.0f);
+    paint->rotate(angle_);
+    const float scale = 1.0f - 0.16f * press + 0.18f * pop;
+    paint->scale(scale, scale);
+    paint->translate(-kIconSize / 2.0f, -kIconSize / 2.0f);
+    gfx::PaintVectorIcon(canvas, kZephyrusExpandMoreIcon, kIconSize, color_);
+    canvas->Restore();
+  }
+
+ private:
+  static constexpr int kIconSize = 16;
+
+  void OnPressed(const ui::Event& event) {
+    motion_.Click();
+    toggle_.Run();
+  }
+
+  base::RepeatingClosure toggle_;
+  float angle_ = 0.0f;
+  SkColor color_ = SK_ColorGRAY;
+  SetIconMotion motion_;
+};
+
+BEGIN_METADATA(ZephyrusSetToggleButton)
+END_METADATA
+
+// The name's editor while a set is being renamed. Commits when it loses focus.
+class ZephyrusSetRenameField : public views::Textfield {
+  METADATA_HEADER(ZephyrusSetRenameField, views::Textfield)
+
+ public:
+  explicit ZephyrusSetRenameField(base::RepeatingClosure on_blur)
+      : on_blur_(std::move(on_blur)) {}
+  ZephyrusSetRenameField(const ZephyrusSetRenameField&) = delete;
+  ZephyrusSetRenameField& operator=(const ZephyrusSetRenameField&) = delete;
+  ~ZephyrusSetRenameField() override = default;
+
+  void OnBlur() override {
+    views::Textfield::OnBlur();
+    if (on_blur_) {
+      on_blur_.Run();
+    }
+  }
+
+ private:
+  base::RepeatingClosure on_blur_;
+};
+
+BEGIN_METADATA(ZephyrusSetRenameField)
+END_METADATA
+
+// A set's header, as designed: a capsule that hugs its contents -- the set's
+// icon, its name, the pin, a new tab, a chevron -- centred above the cards.
+// Click to open or close; F2 or the menu to rename.
+class ZephyrusSetHeader : public views::Button,
+                          public views::TextfieldController {
+  METADATA_HEADER(ZephyrusSetHeader, views::Button)
+
+ public:
+  struct Callbacks {
+    base::RepeatingCallback<void(const std::u16string&)> rename;
+    base::RepeatingCallback<void(bool)> rename_active;
+    base::RepeatingClosure toggle_pin;
+    base::RepeatingClosure new_tab;
+    // The header is dragged: where in it it was taken, and the cursor.
+    base::RepeatingCallback<void(const gfx::Point&, const gfx::Point&)> drag;
+    // The drag ended; true if it was cancelled.
+    base::RepeatingCallback<void(bool)> drag_end;
+    // The icon was double-clicked: open the icon picker.
+    base::RepeatingClosure change_icon;
+  };
+
+  ZephyrusSetHeader(const tab_groups::TabGroupId& id,
+                    const std::u16string& title,
+                    const std::string& icon_key,
+                    bool pinned,
+                    bool has_active,
+                    base::RepeatingClosure toggle,
+                    Callbacks callbacks)
+      : views::Button(views::Button::PressedCallback()),
+        id_(id),
+        has_active_(has_active),
+        toggle_(std::move(toggle)),
+        callbacks_(std::move(callbacks)) {
+    // Stays hovered while the pointer is over the pin or the plus inside it.
+    SetNotifyEnterExitOnChild(true);
+    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal,
+        gfx::Insets::TLBR(0, 12, 0, 4), 6));
+    layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+    layout->set_minimum_cross_axis_size(kSetHeaderHeight);
+    glyph_ = AddChildView(std::make_unique<ZephyrusSetGlyph>(icon_key));
+    label_ = AddChildView(std::make_unique<views::Label>(title));
+    // Smaller than the old 14px, and the one flexible child: a long name gives
+    // way (and elides) instead of pushing the buttons out of the capsule.
+    label_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelMedium));
+    label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    label_->SetElideBehavior(gfx::ELIDE_TAIL);
+    label_->SetAutoColorReadabilityEnabled(false);
+    label_->SetSubpixelRenderingEnabled(false);
+    label_->SetCanProcessEventsWithinSubtree(false);
+    editor_ = AddChildView(std::make_unique<ZephyrusSetRenameField>(
+        base::BindRepeating(&ZephyrusSetHeader::EndRename,
+                            base::Unretained(this), true)));
+    editor_->set_controller(this);
+    editor_->SetVisible(false);
+    editor_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelMedium));
+    editor_->SetDefaultWidthInChars(7);
+    editor_->GetViewAccessibility().SetName(u"Set name");
+    pin_ = AddChildView(std::make_unique<ZephyrusSetPinButton>(
+        callbacks_.toggle_pin, base::RepeatingClosure()));
+    pin_->SetShown(true, pinned);
+    plus_ = AddChildView(
+        std::make_unique<ZephyrusSetPlusButton>(callbacks_.new_tab));
+    // The dropdown control, in its own container at the capsule's end.
+    chevron_ = AddChildView(std::make_unique<ZephyrusSetToggleButton>(toggle_));
+    layout->SetFlexForView(label_, 1);
+    layout->SetFlexForView(editor_, 1);
+    GetViewAccessibility().SetName(title);
+    // The whole name, for when it is cut short.
+    SetTooltipText(title);
+    views::FocusRing::Install(this);
+    views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(),
+                                                  kSetHeaderHeight / 2);
+  }
+  ZephyrusSetHeader(const ZephyrusSetHeader&) = delete;
+  ZephyrusSetHeader& operator=(const ZephyrusSetHeader&) = delete;
+  ~ZephyrusSetHeader() override = default;
+
+  const tab_groups::TabGroupId& set_id() const { return id_; }
+
+  // 1 open, 0 closed. Turns the chevron.
+  void SetExpansion(double value) {
+    expansion_ = value;
+    chevron_->SetAngle(static_cast<float>(-90.0 * (1.0 - value)));
+    chevron_->SetExpanded(value > 0.5);
+    ApplyColors();
+    SchedulePaint();
+  }
+
+  void BeginRename() {
+    if (renaming_) {
+      return;
+    }
+    renaming_ = true;
+    editor_->SetText(label_->GetText());
+    label_->SetVisible(false);
+    editor_->SetVisible(true);
+    callbacks_.rename_active.Run(true);
+    editor_->RequestFocus();
+    editor_->SelectAll(true);
+  }
+
+  void OnThemeChanged() override {
+    views::Button::OnThemeChanged();
+    ApplyColors();
+  }
+
+  bool OnKeyPressed(const ui::KeyEvent& event) override {
+    if (event.key_code() == ui::VKEY_F2) {
+      BeginRename();
+      return true;
+    }
+    return views::Button::OnKeyPressed(event);
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    // No hover or press layer: the capsule is not the control, the container
+    // at its end is.
+    const bool lit = (has_active_ && expansion_ < 0.5) || drop_highlight_;
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(zephyrus::m3::Role(
+        *this, lit ? kColorZephyrusSecondaryContainer
+                   : kColorZephyrusSurfaceContainerHighest));
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kSetHeaderHeight / 2.0f,
+                          flags);
+    if (drop_highlight_) {
+      // The ring that says "drop here".
+      cc::PaintFlags ring;
+      ring.setAntiAlias(true);
+      ring.setStyle(cc::PaintFlags::kStroke_Style);
+      ring.setStrokeWidth(2);
+      ring.setColor(zephyrus::m3::Role(*this, kColorZephyrusPrimary));
+      gfx::RectF bounds(GetLocalBounds());
+      bounds.Inset(1.0f);
+      canvas->DrawRoundRect(bounds, kSetHeaderHeight / 2.0f - 1.0f, ring);
+    }
+  }
+
+  // A tab being dragged is over this set: it lights up.
+  void SetDropHighlight(bool on) {
+    if (drop_highlight_ != on) {
+      drop_highlight_ = on;
+      SchedulePaint();
+    }
+  }
+  std::u16string GetTitle() const { return std::u16string(label_->GetText()); }
+
+  // Dragging the header (by the capsule, not by the buttons in it) moves the
+  // set in the list.
+  bool OnMousePressed(const ui::MouseEvent& event) override {
+    press_point_ = event.location();
+    // Double-click the name to rename it in place, the icon to change it.
+    if (!renaming_ && event.IsOnlyLeftMouseButton() &&
+        event.GetClickCount() == 2) {
+      auto hit = [&](const views::View* view) {
+        gfx::Rect bounds = view->bounds();
+        bounds.Inset(-3);
+        return view->GetVisible() && bounds.Contains(event.location());
+      };
+      if (callbacks_.change_icon && hit(glyph_)) {
+        callbacks_.change_icon.Run();
+        return true;
+      }
+      if (hit(label_)) {
+        BeginRename();
+        return true;
+      }
+    }
+    return views::Button::OnMousePressed(event);
+  }
+  bool OnMouseDragged(const ui::MouseEvent& event) override {
+    constexpr int kDragThreshold = 6;
+    if (renaming_ || !callbacks_.drag ||
+        (!dragging_ && (event.location() - press_point_).Length() <
+                           kDragThreshold)) {
+      return views::Button::OnMouseDragged(event);
+    }
+    if (!dragging_) {
+      dragging_ = true;
+      // The drag travels over the page; capture keeps the events coming here.
+      if (GetWidget()) {
+        GetWidget()->SetCapture(this);
+      }
+    }
+    callbacks_.drag.Run(press_point_,
+                        display::Screen::Get()->GetCursorScreenPoint());
+    return true;
+  }
+  void OnMouseReleased(const ui::MouseEvent& event) override {
+    if (!dragging_) {
+      views::Button::OnMouseReleased(event);
+      return;
+    }
+    dragging_ = false;
+    if (GetWidget()) {
+      GetWidget()->ReleaseCapture();
+    }
+    if (callbacks_.drag_end) {
+      callbacks_.drag_end.Run(false);
+    }
+  }
+  void OnMouseCaptureLost() override {
+    if (!dragging_) {
+      views::Button::OnMouseCaptureLost();
+      return;
+    }
+    dragging_ = false;
+    if (callbacks_.drag_end) {
+      callbacks_.drag_end.Run(true);
+    }
+  }
+
+  // views::TextfieldController:
+  bool HandleKeyEvent(views::Textfield* sender,
+                      const ui::KeyEvent& key_event) override {
+    if (key_event.type() != ui::EventType::kKeyPressed) {
+      return false;
+    }
+    if (key_event.key_code() == ui::VKEY_RETURN) {
+      EndRename(true);
+      return true;
+    }
+    if (key_event.key_code() == ui::VKEY_ESCAPE) {
+      EndRename(false);
+      return true;
+    }
+    return false;
+  }
+
+ private:
+  void ApplyColors() {
+    if (!GetWidget()) {
+      return;
+    }
+    const bool lit = has_active_ && expansion_ < 0.5;
+    const SkColor ink = zephyrus::m3::Role(
+        *this, lit ? kColorZephyrusOnSecondaryContainer
+                   : kColorZephyrusOnSurface);
+    const SkColor variant = zephyrus::m3::Role(
+        *this, lit ? kColorZephyrusOnSecondaryContainer
+                   : kColorZephyrusOnSurfaceVariant);
+    glyph_->SetColor(variant);
+    label_->SetEnabledColor(ink);
+    editor_->SetColor(ink);
+    chevron_->SetColor(variant);
+  }
+
+  void EndRename(bool commit) {
+    if (!renaming_) {
+      return;
+    }
+    renaming_ = false;
+    std::u16string text;
+    base::TrimWhitespace(editor_->GetText(), base::TRIM_ALL, &text);
+    if (text.size() > kMaxSetNameLength) {
+      text.resize(kMaxSetNameLength);
+    }
+    editor_->SetVisible(false);
+    label_->SetVisible(true);
+    // The editor held focus; without this the header takes it and shows a
+    // keyboard ring around itself.
+    if (GetFocusManager()) {
+      GetFocusManager()->ClearFocus();
+    }
+    callbacks_.rename_active.Run(false);
+    if (commit && !text.empty() && text != label_->GetText()) {
+      label_->SetText(text);
+      GetViewAccessibility().SetName(text);
+      SetTooltipText(text);
+      callbacks_.rename.Run(text);
+    }
+  }
+
+  const tab_groups::TabGroupId id_;
+  bool has_active_;
+  double expansion_ = 1.0;
+  bool renaming_ = false;
+  bool dragging_ = false;
+  bool drop_highlight_ = false;
+  gfx::Point press_point_;
+  base::RepeatingClosure toggle_;
+  Callbacks callbacks_;
+  raw_ptr<ZephyrusSetGlyph> glyph_ = nullptr;
+  raw_ptr<views::Label> label_ = nullptr;
+  raw_ptr<ZephyrusSetRenameField> editor_ = nullptr;
+  raw_ptr<ZephyrusSetPinButton> pin_ = nullptr;
+  raw_ptr<ZephyrusSetPlusButton> plus_ = nullptr;
+  raw_ptr<ZephyrusSetToggleButton> chevron_ = nullptr;
+};
+
+BEGIN_METADATA(ZephyrusSetHeader)
+END_METADATA
+
+// The tab cards under a header. Its height follows how far the set is open, and
+// it clips what is not showing yet.
+class ZephyrusSetBody : public views::BoxLayoutView {
+  METADATA_HEADER(ZephyrusSetBody, views::BoxLayoutView)
+
+ public:
+  ZephyrusSetBody() {
+    SetOrientation(views::BoxLayout::Orientation::kVertical);
+    SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kStretch);
+    SetBetweenChildSpacing(kRowSpacing);
+    // The gap under the header, inside the body so it opens and closes with it.
+    SetInsideBorderInsets(gfx::Insets::TLBR(6, 0, 0, 0));
+    SetPaintToLayer();
+    layer()->SetFillsBoundsOpaquely(false);
+    layer()->SetMasksToBounds(true);
+  }
+  ZephyrusSetBody(const ZephyrusSetBody&) = delete;
+  ZephyrusSetBody& operator=(const ZephyrusSetBody&) = delete;
+  ~ZephyrusSetBody() override = default;
+
+  void SetProgress(double progress) {
+    if (progress_ == progress) {
+      return;
+    }
+    progress_ = progress;
+    SetVisible(progress_ > 0.001);
+    PreferredSizeChanged();
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    gfx::Size size = views::BoxLayoutView::CalculatePreferredSize(available_size);
+    size.set_height(base::ClampRound(size.height() * progress_));
+    return size;
+  }
+
+ private:
+  double progress_ = 1.0;
+};
+
+BEGIN_METADATA(ZephyrusSetBody)
+END_METADATA
+
+// One set in the list, laid out as designed: the header centred and only as
+// wide as its contents, the cards full width beneath it. It owns the animation
+// that opens and closes the body, and the one that plays when the set is first
+// made.
+class ZephyrusSetSection : public views::View, public gfx::AnimationDelegate {
+  METADATA_HEADER(ZephyrusSetSection, views::View)
+
+ public:
+  struct Callbacks {
+    base::RepeatingCallback<void(bool)> collapsed_changed;
+    base::RepeatingClosure toggle_pin;
+    base::RepeatingCallback<void(const std::u16string&)> rename;
+    base::RepeatingCallback<void(bool)> rename_active;
+    base::RepeatingClosure new_tab;
+    base::RepeatingCallback<void(const gfx::Point&, const gfx::Point&)> drag;
+    base::RepeatingCallback<void(bool)> drag_end;
+    base::RepeatingClosure change_icon;
+  };
+
+  ZephyrusSetSection(const tab_groups::TabGroupId& id,
+                     const std::u16string& title,
+                     const std::string& icon_key,
+                     bool pinned,
+                     bool collapsed,
+                     bool has_active,
+                     int count,
+                     Callbacks callbacks)
+      : id_(id),
+        expanded_(!collapsed),
+        collapsed_changed_(callbacks.collapsed_changed),
+        anim_(this) {
+    header_ = AddChildView(std::make_unique<ZephyrusSetHeader>(
+        id, title, icon_key, pinned, has_active,
+        base::BindRepeating(&ZephyrusSetSection::Toggle,
+                            base::Unretained(this)),
+        ZephyrusSetHeader::Callbacks{callbacks.rename, callbacks.rename_active,
+                                     callbacks.toggle_pin, callbacks.new_tab,
+                                     callbacks.drag, callbacks.drag_end,
+                                     callbacks.change_icon}));
+    body_ = AddChildView(std::make_unique<ZephyrusSetBody>());
+    anim_.SetTweenType(gfx::Tween::EASE_OUT);
+    anim_.SetSlideDuration(base::Milliseconds(220));
+    anim_.Reset(expanded_ ? 1.0 : 0.0);
+    Apply(anim_.GetCurrentValue());
+  }
+  ZephyrusSetSection(const ZephyrusSetSection&) = delete;
+  ZephyrusSetSection& operator=(const ZephyrusSetSection&) = delete;
+  ~ZephyrusSetSection() override = default;
+
+  const tab_groups::TabGroupId& set_id() const { return id_; }
+  ZephyrusSetHeader* header() { return header_; }
+  ZephyrusSetBody* body() { return body_; }
+  void SetDropHighlight(bool on) { header_->SetDropHighlight(on); }
+
+  // The set was just made: open from nothing.
+  void PlayCreation() {
+    if (!gfx::Animation::ShouldRenderRichAnimation() || !expanded_) {
+      return;
+    }
+    anim_.Reset(0.0);
+    Apply(0.0);
+    anim_.Show();
+  }
+
+  // views::View:
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(0,
+                     kSetHeaderHeight + body_->GetPreferredSize().height());
+  }
+
+  void Layout(PassKey) override {
+    const int width = this->width();
+    // Half the cards' width at least, as designed; wider for a long name.
+    const int header_width =
+        std::clamp(header_->GetPreferredSize().width(), width / 2, width);
+    header_->SetBounds((width - header_width) / 2, 0, header_width,
+                       kSetHeaderHeight);
+    body_->SetBounds(0, kSetHeaderHeight, width,
+                     body_->GetPreferredSize().height());
+  }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    Apply(animation->GetCurrentValue());
+  }
+
+ private:
+  void Toggle() {
+    expanded_ = !expanded_;
+    if (gfx::Animation::ShouldRenderRichAnimation()) {
+      if (expanded_) {
+        anim_.Show();
+      } else {
+        anim_.Hide();
+      }
+    } else {
+      anim_.Reset(expanded_ ? 1.0 : 0.0);
+      Apply(anim_.GetCurrentValue());
+    }
+    collapsed_changed_.Run(!expanded_);
+  }
+
+  void Apply(double value) {
+    body_->SetProgress(value);
+    header_->SetExpansion(value);
+  }
+
+  const tab_groups::TabGroupId id_;
+  bool expanded_;
+  base::RepeatingCallback<void(bool)> collapsed_changed_;
+  gfx::SlideAnimation anim_;
+  raw_ptr<ZephyrusSetHeader> header_ = nullptr;
+  raw_ptr<ZephyrusSetBody> body_ = nullptr;
+};
+
+BEGIN_METADATA(ZephyrusSetSection)
+END_METADATA
+
+// The rounded rule between the sets and the loose tabs under them.
+class ZephyrusRoundedDivider : public views::View {
+  METADATA_HEADER(ZephyrusRoundedDivider, views::View)
+
+ public:
+  ZephyrusRoundedDivider() { SetCanProcessEventsWithinSubtree(false); }
+  ZephyrusRoundedDivider(const ZephyrusRoundedDivider&) = delete;
+  ZephyrusRoundedDivider& operator=(const ZephyrusRoundedDivider&) = delete;
+  ~ZephyrusRoundedDivider() override = default;
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(0, kSpaceAbove + kThickness + kSpaceBelow);
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(
+        zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant));
+    // Half the list's width, centred.
+    const int line_width = width() / 2;
+    canvas->DrawRoundRect(
+        gfx::RectF((width() - line_width) / 2, kSpaceAbove, line_width,
+                   kThickness),
+        kThickness / 2.0f, flags);
+  }
+
+ private:
+  static constexpr int kThickness = 3;
+  // The set above carries an 8dp bottom margin and the list spaces its children
+  // 2dp apart, so the gaps are made equal here: 8 + 2 above, 8 + 2 below.
+  static constexpr int kSpaceAbove = 0;
+  static constexpr int kSpaceBelow = 8;
+};
+
+BEGIN_METADATA(ZephyrusRoundedDivider)
+END_METADATA
+
+ZephyrusSetSection* FindSetSection(views::View* container,
+                                   const tab_groups::TabGroupId& id) {
+  for (views::View* child : container->children()) {
+    auto* section = views::AsViewClass<ZephyrusSetSection>(child);
+    if (section && section->set_id() == id) {
+      return section;
+    }
+  }
+  return nullptr;
+}
+
 // The tab's close button.
 //
 // Fills a red circle on hover, matching the window's own close control -- the
@@ -881,6 +2093,57 @@ class ZephyrusTabCloseButton : public views::ImageButton {
 
 BEGIN_METADATA(ZephyrusTabCloseButton)
 END_METADATA
+
+// A new tab's row arrives rather than appearing: it fades in while sliding in
+// from the leading edge, ~220ms. Compositor-driven (opacity and transform).
+// Skipped for reduced motion.
+void AnimateRowIn(views::View* row) {
+  if (!gfx::Animation::ShouldRenderRichAnimation()) {
+    return;
+  }
+  row->SetPaintToLayer();
+  ui::Layer* layer = row->layer();
+  layer->SetFillsBoundsOpaquely(false);
+  gfx::Transform from;
+  from.Translate(-16.f, 0.f);
+  layer->SetOpacity(0.f);
+  layer->SetTransform(from);
+  ui::ScopedLayerAnimationSettings settings(layer->GetAnimator());
+  settings.SetTransitionDuration(base::Milliseconds(220));
+  settings.SetTweenType(gfx::Tween::EASE_OUT);
+  layer->SetOpacity(1.f);
+  layer->SetTransform(gfx::Transform());
+}
+
+// The rows after a newly added one (and the New tab button) were laid out
+// `shift` lower than before; start each that much higher and let it settle, so
+// the list opens a gap rather than jumping. Same duration and curve as
+// AnimateRowIn.
+void SlideRowsBelow(views::View* container, views::View* added, int shift) {
+  if (!gfx::Animation::ShouldRenderRichAnimation()) {
+    return;
+  }
+  bool after = false;
+  for (views::View* child : container->children()) {
+    if (child == added) {
+      after = true;
+      continue;
+    }
+    if (!after || !child->GetVisible()) {
+      continue;
+    }
+    child->SetPaintToLayer();
+    ui::Layer* layer = child->layer();
+    layer->SetFillsBoundsOpaquely(false);
+    gfx::Transform from;
+    from.Translate(0.f, -static_cast<float>(shift));
+    layer->SetTransform(from);
+    ui::ScopedLayerAnimationSettings settings(layer->GetAnimator());
+    settings.SetTransitionDuration(base::Milliseconds(220));
+    settings.SetTweenType(gfx::Tween::EASE_OUT);
+    layer->SetTransform(gfx::Transform());
+  }
+}
 
 // A single tab row: favicon + title, with a close button revealed on hover.
 // Clicking the row (outside the close button) activates the tab.
@@ -935,10 +2198,10 @@ class ZephyrusTabRow : public views::Button {
     // body-small, not body-medium. At 14px the titles filled the row edge to
     // edge and the list read as a wall of text; the segments need air inside
     // them more than the titles need size.
+    // As the settings rail's rows: the title in the label weight, the site
+    // under it in the regular weight.
     title_label_->SetFontList(zephyrus::m3::Font(
-        is_active_ ? zephyrus::m3::Type::kLabelMedium
-                   : zephyrus::m3::Type::kBodySmall,
-        /*emphasized=*/is_active_));
+        zephyrus::m3::Type::kLabelMedium, /*emphasized=*/true));
     title_label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     title_label_->SetElideBehavior(gfx::ELIDE_TAIL);
     title_label_->SetEnabledColor(colors_.foreground);
@@ -1448,6 +2711,18 @@ class ZephyrusTabRow : public views::Button {
 BEGIN_METADATA(ZephyrusTabRow)
 END_METADATA
 
+// Every tab row under `root`, however deep: rows live in the list itself, in a
+// split card, or in a set's body.
+void CollectTabRows(views::View* root, std::vector<ZephyrusTabRow*>* out) {
+  for (views::View* child : root->children()) {
+    if (auto* row = views::AsViewClass<ZephyrusTabRow>(child)) {
+      out->push_back(row);
+    } else {
+      CollectTabRows(child, out);
+    }
+  }
+}
+
 // Two tabs in a split, drawn as one object.
 //
 // The point of the card is that a split is ONE thing the user arranged, not
@@ -1564,6 +2839,11 @@ class ZephyrusOmniboxOverlay : public views::View,
   // Room around the capsule for its shadow. Painted, never hit: see
   // GetHitTestMask.
   static constexpr int kShadowMargin = 12;
+  // The address bar's own corner radius (LocationBarView's
+  // kZephyrusOmniboxRadius), not half its height. The open overlay was a full
+  // capsule around a bar that is a rounded rectangle, so focusing it changed
+  // its shape; now it only grows. 8 is whole device pixels at 1.5x and 2x.
+  static constexpr int kCornerRadius = zephyrus::kRadiusSmall;
 
   ZephyrusOmniboxOverlay(base::RepeatingClosure on_escape,
                          base::RepeatingClosure on_collapsed)
@@ -1608,10 +2888,7 @@ class ZephyrusOmniboxOverlay : public views::View,
   // `pill` is where the address bar sits in the panel, in the parent's
   // coordinates; `editing_width` is how wide it grows.
   void SetGeometry(const gfx::Rect& pill, int editing_width) {
-    if (pill.height() != pill_.height()) {
-      clip_->layer()->SetRoundedCornerRadius(
-          gfx::RoundedCornersF(pill.height() / 2.f));
-    }
+    clip_->layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kCornerRadius));
     pill_ = pill;
     editing_width_ = std::max(editing_width, pill.width());
     LayoutContent();
@@ -1658,16 +2935,15 @@ class ZephyrusOmniboxOverlay : public views::View,
         zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh));
     flags.setLooper(gfx::CreateShadowDrawLooper(
         gfx::ShadowValue::MakeMdShadowValues(kElevation)));
-    canvas->DrawRoundRect(capsule, capsule.height() / 2.f, flags);
+    canvas->DrawRoundRect(capsule, kCornerRadius, flags);
   }
 
   // views::MaskedTargeterDelegate: the capsule only. The shadow margin around
   // it is the page's, and must not swallow a click meant for it.
   bool GetHitTestMask(SkPath* mask) const override {
     const gfx::Rect capsule = GetCapsule();
-    const SkScalar radius = capsule.height() / 2.f;
     *mask = SkPath::RRect(SkRRect::MakeRectXY(gfx::RectToSkRect(capsule),
-                                              radius, radius));
+                                              kCornerRadius, kCornerRadius));
     return true;
   }
 
@@ -1772,11 +3048,12 @@ class ZephyrusDragProxy : public views::View {
     layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
 
-    auto* icon = AddChildView(std::make_unique<views::ImageView>());
+    panel_ = panel;
+    icon_ = AddChildView(std::make_unique<views::ImageView>());
     if (!favicon.isNull()) {
-      icon->SetImage(ui::ImageModel::FromImageSkia(favicon));
+      icon_->SetImage(ui::ImageModel::FromImageSkia(favicon));
     }
-    icon->SetImageSize(gfx::Size(16, 16));
+    icon_->SetImageSize(gfx::Size(16, 16));
 
     auto* label = AddChildView(std::make_unique<views::Label>(title));
     label->SetEnabledColor(foreground);
@@ -1786,6 +3063,22 @@ class ZephyrusDragProxy : public views::View {
     label->SetElideBehavior(gfx::ELIDE_TAIL);
     layout->SetFlexForView(label, 1);
   }
+
+  // Dressed as a set's header: the set's own icon, and the capsule's shape.
+  void UseSetLook(std::unique_ptr<views::View> glyph, int height) {
+    RemoveChildViewT(icon_.get());
+    icon_ = nullptr;
+    AddChildViewAt(std::move(glyph), 0);
+    SetBackground(views::CreateRoundedRectBackground(SkColorSetA(panel_, 0xF2),
+                                                     height / 2.0f));
+    if (auto* box = static_cast<views::BoxLayout*>(GetLayoutManager())) {
+      box->set_inside_border_insets(gfx::Insets::TLBR(0, 12, 0, 14));
+    }
+  }
+
+ private:
+  raw_ptr<views::ImageView> icon_ = nullptr;
+  SkColor panel_ = SK_ColorBLACK;
 };
 
 BEGIN_METADATA(ZephyrusDragProxy)
@@ -2332,6 +3625,8 @@ void ZephyrusSidebarView::TuckAway() {
     return;
   }
   revealed_ = false;
+  known_tabs_.clear();
+  known_sets_.clear();
   SetCanProcessEventsWithinSubtree(false);
   float_shadow_.reset();
 
@@ -2427,10 +3722,65 @@ void ZephyrusSidebarView::OnTabStripModelChanged(
     }
   }
 
+  // Sets. A tab opened FROM a tab that is in a set (a link) joins that set: tabs
+  // do not leave their set until the user takes them out. A tab opened any other
+  // way -- the sidebar's New tab button, Ctrl+T -- does not; only a set's own
+  // plus opens a tab in it (NewTabInSet). And the set holding a newly active tab
+  // opens, so the tab can be seen. Before the tucked-away return below: hidden
+  // or not, the state has to stay right.
+  std::optional<tab_groups::TabGroupId> joining;
+  if (change.type() == TabStripModelChange::kInserted &&
+      selection.active_tab_changed() && selection.old_contents &&
+      selection.new_contents) {
+    const int old_index =
+        tab_strip_model_->GetIndexOfWebContents(selection.old_contents);
+    const int new_index =
+        tab_strip_model_->GetIndexOfWebContents(selection.new_contents);
+    if (old_index != TabStripModel::kNoTab &&
+        new_index != TabStripModel::kNoTab &&
+        !tab_strip_model_->IsTabPinned(old_index) &&
+        // The New tab button and Ctrl+T also open the tab from the active one
+        // (it is its opener); what tells them from a link is the page.
+        !IsNewTabPage(selection.new_contents) &&
+        tab_strip_model_->GetOpenerOfTabAt(new_index) ==
+            tab_strip_model_->GetTabAtIndex(old_index)) {
+      joining = tab_strip_model_->GetTabGroupForTab(old_index);
+    }
+  }
+  bool opened_a_set = false;
+  if (selection.active_tab_changed()) {
+    const int active = tab_strip_model_->active_index();
+    if (active != TabStripModel::kNoTab) {
+      if (const std::optional<tab_groups::TabGroupId> group =
+              tab_strip_model_->GetTabGroupForTab(active)) {
+        PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+        SetMeta meta = ReadSetMeta(prefs, *group);
+        if (meta.collapsed) {
+          meta.collapsed = false;
+          WriteSetMeta(prefs, *group, meta);
+          opened_a_set = true;
+        }
+      }
+    }
+  }
+  if (joining && change.type() == TabStripModelChange::kInserted &&
+      selection.new_contents) {
+    // Posted: the model must not be changed from inside its own notification.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(&ZephyrusSidebarView::JoinSet,
+                       weak_factory_.GetWeakPtr(),
+                       selection.new_contents->GetWeakPtr(), *joining));
+  }
+
   // While tucked away the list isn't visible and Reveal() rebuilds it anyway,
   // so skip the (comparatively expensive) row churn during background tab
   // activity — this keeps the hidden sidebar at zero cost.
   if (!revealed_) {
+    return;
+  }
+  if (opened_a_set) {
+    ScheduleRebuildTabList();
     return;
   }
   // A plain tab switch changes two rows' highlight, not the list. It used to
@@ -2456,11 +3806,9 @@ bool ZephyrusSidebarView::UpdateActiveRowsInPlace(
                    : TabStripModel::kNoTab;
   ZephyrusTabRow* new_row = nullptr;
   ZephyrusTabRow* old_row = nullptr;
-  for (views::View* child : tab_list_container_->children()) {
-    auto* row = views::AsViewClass<ZephyrusTabRow>(child);
-    if (!row) {
-      continue;
-    }
+  std::vector<ZephyrusTabRow*> all_rows;
+  CollectTabRows(tab_list_container_, &all_rows);
+  for (ZephyrusTabRow* row : all_rows) {
     if (row->model_index() == new_index) {
       new_row = row;
     } else if (old_index != TabStripModel::kNoTab &&
@@ -2476,7 +3824,8 @@ bool ZephyrusSidebarView::UpdateActiveRowsInPlace(
   if (old_row) {
     old_row->SetFallbackIcon(GetTabFallbackIcon(old_contents));
     old_row->UpdateContent(GetTabFavicon(old_contents),
-                           GetTabTitle(old_contents), /*is_active=*/false);
+                           GetTabTitle(old_contents),
+                           /*is_active=*/false);
   }
   new_row->SetFallbackIcon(GetTabFallbackIcon(new_contents));
   new_row->UpdateContent(GetTabFavicon(new_contents), GetTabTitle(new_contents),
@@ -2508,9 +3857,10 @@ void ZephyrusSidebarView::OnTabChangedAt(tabs::TabInterface* tab,
     return;
   }
   // Rows are a filtered subset of the model, so find the row by model index.
-  for (views::View* child : tab_list_container_->children()) {
-    auto* row = views::AsViewClass<ZephyrusTabRow>(child);
-    if (row && row->model_index() == index) {
+  std::vector<ZephyrusTabRow*> all_rows;
+  CollectTabRows(tab_list_container_, &all_rows);
+  for (ZephyrusTabRow* row : all_rows) {
+    if (row->model_index() == index) {
       row->SetFallbackIcon(GetTabFallbackIcon(contents));
       row->UpdateContent(GetTabFavicon(contents), GetTabTitle(contents),
                          index == tab_strip_model_->active_index());
@@ -2695,6 +4045,8 @@ void ZephyrusSidebarView::OnUiLayoutChanged(zephyrus::UiLayout layout) {
     reveal_holds_ = 0;
     pinned_ = false;
     revealed_ = false;
+  known_tabs_.clear();
+  known_sets_.clear();
     reveal_poll_timer_.Stop();
     mouse_watcher_->Stop();
     reveal_animation_.Reset(0.0);
@@ -2777,6 +4129,14 @@ void ZephyrusSidebarView::RebuildCompactChrome() {
   ToolbarView* toolbar = browser_view_->toolbar();
   const bool compact = IsCompactMode();
   compact_chrome_->SetVisible(compact);
+  // Room between the address bar and the first tab. Focused, the bar grows into
+  // a taller pill (the omnibox overlay) that reaches past its row; with no
+  // heading above the cards any more, nothing was there to keep it off the first
+  // tab. Only in compact mode, where the bar is in this panel at all.
+  if (auto* list = views::AsViewClass<views::BoxLayoutView>(tab_list_container_)) {
+    list->SetInsideBorderInsets(compact ? gfx::Insets::TLBR(kCompactListGap, 0, 0, 0)
+                                        : gfx::Insets());
+  }
   if (!toolbar) {
     return;
   }
@@ -2867,7 +4227,7 @@ void ZephyrusSidebarView::ScheduleRebuildTabList() {
   // it would delete the row still under the user's finger. Hold it until the
   // gesture finishes. Tab titles change constantly while pages load, so
   // cancelling the drag instead would make dragging fail at random.
-  if (dragging_row_) {
+  if (dragging_row_ || rename_active_) {
     rebuild_deferred_ = true;
     return;
   }
@@ -3024,6 +4384,210 @@ void ZephyrusSidebarView::BreakSplit(split_tabs::SplitTabId split_id) {
   }
 }
 
+void ZephyrusSidebarView::UpdateSetDropTarget(const gfx::Point& cursor_screen,
+                                              int dragged_model_index) {
+  std::optional<tab_groups::TabGroupId> target;
+  bool loose = false;
+  // A pinned tab is in no set and cannot be put in one; nor is anything
+  // dropped while the cursor is over the page (that is a split).
+  const bool pinned = dragged_model_index >= 0 &&
+                      tab_strip_model_->IsTabPinned(dragged_model_index);
+  if (!pinned && !drag_over_content_ &&
+      GetBoundsInScreen().Contains(cursor_screen)) {
+    loose = true;
+    for (views::View* child : tab_list_container_->children()) {
+      auto* section = views::AsViewClass<ZephyrusSetSection>(child);
+      if (section && section->GetBoundsInScreen().Contains(cursor_screen)) {
+        target = section->set_id();
+        loose = false;
+        break;
+      }
+    }
+  }
+  if (target == drag_target_set_ && loose == drag_target_loose_) {
+    return;
+  }
+  if (drag_target_set_) {
+    if (auto* old = FindSetSection(tab_list_container_, *drag_target_set_)) {
+      old->SetDropHighlight(false);
+    }
+  }
+  drag_target_set_ = target;
+  drag_target_loose_ = loose;
+  if (target) {
+    if (auto* now = FindSetSection(tab_list_container_, *target)) {
+      now->SetDropHighlight(true);
+    }
+  }
+}
+
+void ZephyrusSidebarView::ClearSetDropTarget() {
+  if (drag_target_set_ && tab_list_container_) {
+    if (auto* section = FindSetSection(tab_list_container_, *drag_target_set_)) {
+      section->SetDropHighlight(false);
+    }
+  }
+  drag_target_set_.reset();
+  drag_target_loose_ = false;
+}
+
+void ZephyrusSidebarView::CreateSetDragProxy(const std::u16string& title,
+                                             const std::string& icon_key,
+                                             const gfx::Size& size,
+                                             const gfx::Point& grab) {
+  if (!browser_view_ || drag_proxy_) {
+    return;
+  }
+  drag_grab_offset_ = grab;
+  auto proxy = std::make_unique<ZephyrusDragProxy>(
+      gfx::ImageSkia(), title, GetForegroundColor(), GetPanelColor());
+  auto glyph = std::make_unique<ZephyrusSetGlyph>(icon_key);
+  glyph->SetColor(GetForegroundColor());
+  proxy->UseSetLook(std::move(glyph), size.height());
+  drag_proxy_ = browser_view_->AddChildView(std::move(proxy));
+  drag_proxy_->SetSize(size);
+}
+
+void ZephyrusSidebarView::ReorderChildWithFlip(views::View* moved,
+                                               size_t target) {
+  const auto& children = tab_list_container_->children();
+  // FLIP, as OnRowDragged does it: note where everything is, move the view,
+  // then play every other child from its old place to its new one.
+  std::vector<std::pair<views::View*, float>> before;
+  before.reserve(children.size());
+  for (views::View* child : children) {
+    float visual_y = static_cast<float>(child->bounds().y());
+    if (child->layer()) {
+      visual_y += child->layer()->transform().To2dTranslation().y();
+    }
+    before.emplace_back(child, visual_y);
+  }
+  tab_list_container_->ReorderChildView(moved, target);
+  tab_list_container_->DeprecatedLayoutImmediately();
+  for (const auto& [child, old_y] : before) {
+    if (child == moved) {
+      continue;
+    }
+    const float delta = old_y - static_cast<float>(child->bounds().y());
+    if (std::abs(delta) < 0.5f) {
+      continue;
+    }
+    if (!child->layer()) {
+      child->SetPaintToLayer();
+      child->layer()->SetFillsBoundsOpaquely(false);
+    }
+    gfx::Transform offset;
+    offset.Translate(0, delta);
+    child->layer()->SetTransform(offset);
+    ui::ScopedLayerAnimationSettings settings(child->layer()->GetAnimator());
+    settings.SetPreemptionStrategy(
+        ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
+    settings.SetTransitionDuration(base::Milliseconds(180));
+    settings.SetTweenType(
+        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
+    child->layer()->SetTransform(gfx::Transform());
+  }
+}
+
+void ZephyrusSidebarView::OnSetDragged(const tab_groups::TabGroupId& id,
+                                       const gfx::Point& grab,
+                                       const gfx::Point& cursor_screen) {
+  ZephyrusSetSection* section = FindSetSection(tab_list_container_, id);
+  if (!section) {
+    return;
+  }
+  if (!dragging_row_) {
+    dragging_row_ = true;
+    CreateSetDragProxy(
+        section->header()->GetTitle(),
+        ReadSetMeta(browser_view_->browser()->GetProfile()->GetPrefs(), id).icon,
+        section->header()->size(), grab);
+    // The set itself stays in the list, dimmed, as the slot it will land in.
+    section->SetPaintToLayer();
+    section->layer()->SetFillsBoundsOpaquely(false);
+    section->layer()->SetOpacity(0.35f);
+  }
+  MoveDragProxyTo(cursor_screen);
+
+  // Reorder among the sets next to this one (a run of sets is bounded by
+  // anything else in the list, so the pinned sets and the others stay apart).
+  const auto& children = tab_list_container_->children();
+  const auto it = std::find(children.begin(), children.end(), section);
+  if (it == children.end()) {
+    return;
+  }
+  const size_t self = static_cast<size_t>(it - children.begin());
+  auto is_set = [&](size_t i) {
+    return views::AsViewClass<ZephyrusSetSection>(children[i]) != nullptr;
+  };
+  size_t first = self;
+  while (first > 0 && is_set(first - 1)) {
+    --first;
+  }
+  size_t last = self;
+  while (last + 1 < children.size() && is_set(last + 1)) {
+    ++last;
+  }
+  gfx::Point point = cursor_screen;
+  views::View::ConvertPointFromScreen(tab_list_container_, &point);
+  size_t target = self;
+  for (size_t i = first; i <= last; ++i) {
+    if (i == self) {
+      continue;
+    }
+    const int mid = children[i]->bounds().CenterPoint().y();
+    if (i < self && point.y() < mid) {
+      target = i;
+      break;
+    }
+    if (i > self && point.y() > mid) {
+      target = i;
+    }
+  }
+  if (target != self) {
+    ReorderChildWithFlip(section, target);
+  }
+}
+
+void ZephyrusSidebarView::OnSetDragFinished(const tab_groups::TabGroupId& id,
+                                            bool cancelled) {
+  if (!dragging_row_) {
+    return;
+  }
+  dragging_row_ = false;
+  DestroyDragProxy();
+  if (!cancelled && tab_list_container_) {
+    // Keep the order the list now shows: the sets on screen first, in that
+    // order, then any not on screen (another workspace's) as they were.
+    std::vector<std::string> shown;
+    for (views::View* child : tab_list_container_->children()) {
+      if (auto* section = views::AsViewClass<ZephyrusSetSection>(child)) {
+        shown.push_back(section->set_id().ToString());
+      }
+    }
+    PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+    std::vector<std::string> rest;
+    for (const base::Value& value : prefs->GetList(kSetsOrderPref)) {
+      if (value.is_string() &&
+          std::find(shown.begin(), shown.end(), value.GetString()) ==
+              shown.end()) {
+        rest.push_back(value.GetString());
+      }
+    }
+    ScopedListPrefUpdate update(prefs, kSetsOrderPref);
+    update->clear();
+    for (const std::string& token : shown) {
+      update->Append(token);
+    }
+    for (const std::string& token : rest) {
+      update->Append(token);
+    }
+  }
+  rebuild_deferred_ = false;
+  ScheduleRebuildTabList();
+  TuckAwayIfCursorLeft();
+}
+
 void ZephyrusSidebarView::OnRowDragged(views::View* row, int y_in_container) {
   if (!tab_list_container_ || !row) {
     return;
@@ -3060,10 +4624,13 @@ void ZephyrusSidebarView::OnRowDragged(views::View* row, int y_in_container) {
     dragged->SetSplitAffordance(over_content);
     UpdateSplitDropIndicator(over_content);
   }
+  // Sets: over a set, a drop adds the tab to it; over the loose tabs, a drop
+  // takes it out of its set.
+  UpdateSetDropTarget(cursor, dragged->model_index());
   // Over the page there is no slot to open a gap for, so the list is left
   // alone -- reordering underneath a gesture that is no longer about order
   // would rearrange tabs the user never meant to touch.
-  if (over_content) {
+  if (over_content || drag_target_set_) {
     return;
   }
 
@@ -3192,6 +4759,30 @@ void ZephyrusSidebarView::OnRowDragFinished() {
   UpdateSplitDropIndicator(false);
   DestroyDragProxy();
 
+  // Sets: dropped onto a set, or out of one onto the loose tabs.
+  const std::optional<tab_groups::TabGroupId> set_target = drag_target_set_;
+  const bool to_loose = drag_target_loose_;
+  ClearSetDropTarget();
+  if (!split_drop && from >= 0 && !tab_strip_model_->IsTabPinned(from) &&
+      (set_target || to_loose)) {
+    const std::optional<tab_groups::TabGroupId> current =
+        tab_strip_model_->GetTabGroupForTab(from);
+    bool changed = false;
+    if (set_target && current != set_target) {
+      tab_strip_model_->AddToExistingGroup({from}, *set_target);
+      changed = true;
+    } else if (!set_target && to_loose && current) {
+      tab_strip_model_->RemoveFromGroup({from});
+      changed = true;
+    }
+    if (changed) {
+      rebuild_deferred_ = false;
+      ScheduleRebuildTabList();
+      TuckAwayIfCursorLeft();
+      return;
+    }
+  }
+
   if (split_drop) {
     // AddToNewSplit pairs the given tabs with the ACTIVE one, which is exactly
     // the tab the user dropped onto -- the page under the cursor is the active
@@ -3290,6 +4881,7 @@ void ZephyrusSidebarView::CancelRowDrag() {
   dragging_row_ = false;
   drag_over_content_ = false;
   UpdateSplitDropIndicator(false);
+  ClearSetDropTarget();
   DestroyDragProxy();
   drag_contents_ = nullptr;
   rebuild_deferred_ = false;
@@ -3339,6 +4931,11 @@ void ZephyrusSidebarView::RebuildTabList() {
   // accent bar that briefly stood in for it -- a filled pill and a separate
   // marker were the same statement made twice.
   const bool contained = ContainersOn();
+  // The TAB rows are always the settings rail's segmented tonal cards, whatever
+  // the containers setting says: that setting is for the chrome around them
+  // (favourites, the new-tab button), and a list of tabs without its cards read
+  // as bare text.
+  const bool rows_contained = true;
   const SkColor on_surface = zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
   const SkColor row_container =
       zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
@@ -3347,14 +4944,14 @@ void ZephyrusSidebarView::RebuildTabList() {
       // One step ABOVE the panel, which already paints surface-container:
       // a segment filled with its own background is an invisible segment
       // (measured -- rows and panel came out at exactly 31,32,32).
-      .idle_bg = contained ? row_container : SK_ColorTRANSPARENT,
+      .idle_bg = rows_contained ? row_container : SK_ColorTRANSPARENT,
       .active_bg = zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
-      .hover_bg = contained
+      .hover_bg = rows_contained
                       ? zephyrus::m3::WithStateLayer(row_container, on_surface,
                                                      zephyrus::m3::kHover)
                       : zephyrus::m3::StateLayer(on_surface,
                                                  zephyrus::m3::kHover),
-      .pressed_bg = contained
+      .pressed_bg = rows_contained
                         ? zephyrus::m3::WithStateLayer(
                               row_container, on_surface, zephyrus::m3::kPressed)
                         : zephyrus::m3::StateLayer(on_surface,
@@ -3365,12 +4962,16 @@ void ZephyrusSidebarView::RebuildTabList() {
           zephyrus::m3::kPressed),
       .active_fg =
           zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer),
-      .contained = contained,
+      .contained = rows_contained,
   };
 
   ZephyrusWorkspaceManager* workspace_manager =
       browser_view_->zephyrus_workspace_manager();
   const int active_index = tab_strip_model_->active_index();
+
+  // Every row drawn, with its tab, so the new one can be found afterwards.
+  std::vector<std::pair<ZephyrusTabRow*, const content::WebContents*>>
+      rendered_rows;
 
   // Adds one row for the tab at `index`. Shared by both sections below.
   auto add_row_into = [&](views::View* parent, int index) {
@@ -3395,6 +4996,7 @@ void ZephyrusSidebarView::RebuildTabList() {
                                 base::Unretained(this),
                                 contents->GetWeakPtr())));
     row->SetFallbackIcon(GetTabFallbackIcon(contents));
+    rendered_rows.emplace_back(row, contents);
     // Right-click a row -> "Pin tab" / "Move to workspace" / "Close tab".
     row->set_context_menu_controller(this);
     row->SetDragCallbacks(
@@ -3477,9 +5079,90 @@ void ZephyrusSidebarView::RebuildTabList() {
     }
   }
 
+  // Sets: the unpinned tabs in a set go under that set's header, the rest are
+  // loose. Pinned sets come first of all, the others after the pinned tabs.
+  PrefService* const prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+  const bool sets_baseline = !known_tabs_.empty();
+  std::vector<std::pair<tab_groups::TabGroupId, std::vector<int>>> grouped;
+  std::vector<int> loose;
+  for (int index : unpinned) {
+    const std::optional<tab_groups::TabGroupId> group =
+        tab_strip_model_->GetTabGroupForTab(index);
+    if (!group) {
+      loose.push_back(index);
+      continue;
+    }
+    auto it = std::find_if(grouped.begin(), grouped.end(),
+                           [&](const auto& entry) {
+                             return entry.first == *group;
+                           });
+    if (it == grouped.end()) {
+      grouped.emplace_back(*group, std::vector<int>());
+      it = grouped.end() - 1;
+    }
+    it->second.push_back(index);
+  }
+  std::vector<tab_groups::TabGroupId> ordered_sets;
+  for (const auto& entry : grouped) {
+    ordered_sets.push_back(entry.first);
+  }
+  ordered_sets = OrderedSets(prefs, std::move(ordered_sets));
+  std::set<std::string> current_set_tokens;
+  std::vector<ZephyrusSetSection*> new_sections;
+  const int active_index_for_sets = tab_strip_model_->active_index();
+  auto emit_sets = [&](bool pinned_sets) {
+    for (const tab_groups::TabGroupId& id : ordered_sets) {
+      const SetMeta meta = ReadSetMeta(prefs, id);
+      if (meta.pinned != pinned_sets) {
+        continue;
+      }
+      const auto it = std::find_if(grouped.begin(), grouped.end(),
+                                   [&](const auto& entry) {
+                                     return entry.first == id;
+                                   });
+      const std::vector<int>& indices = it->second;
+      const bool has_active =
+          std::find(indices.begin(), indices.end(), active_index_for_sets) !=
+          indices.end();
+      current_set_tokens.insert(id.ToString());
+      auto* section = tab_list_container_->AddChildView(
+          std::make_unique<ZephyrusSetSection>(
+              id, GetSetTitle(tab_strip_model_, id), meta.icon, meta.pinned,
+              meta.collapsed, has_active, static_cast<int>(indices.size()),
+              ZephyrusSetSection::Callbacks{
+                  base::BindRepeating(&ZephyrusSidebarView::SetSetCollapsed,
+                                      base::Unretained(this), id),
+                  base::BindRepeating(&ZephyrusSidebarView::ToggleSetPinned,
+                                      base::Unretained(this), id),
+                  base::BindRepeating(&ZephyrusSidebarView::RenameSet,
+                                      base::Unretained(this), id),
+                  base::BindRepeating(&ZephyrusSidebarView::SetRenameActive,
+                                      base::Unretained(this)),
+                  base::BindRepeating(&ZephyrusSidebarView::NewTabInSet,
+                                      base::Unretained(this), id),
+                  base::BindRepeating(&ZephyrusSidebarView::OnSetDragged,
+                                      base::Unretained(this), id),
+                  base::BindRepeating(&ZephyrusSidebarView::OnSetDragFinished,
+                                      base::Unretained(this), id),
+                  base::BindRepeating(&ZephyrusSidebarView::ShowSetIconPicker,
+                                      base::Unretained(this), id)}));
+      section->header()->set_context_menu_controller(this);
+      // Air between one set and whatever is next: the loose tabs read as part of
+      // the set without it.
+      section->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(0, 0, 8, 0));
+      for (int index : indices) {
+        add_row_into(section->body(), index);
+      }
+      if (sets_baseline && !known_sets_.count(id.ToString())) {
+        new_sections.push_back(section);
+      }
+    }
+  };
+
   // In compact mode the pinned tabs are the essentials grid at the top of the
   // panel (RebuildCompactChrome), so listing them here as well would show
   // every pinned tab twice.
+  emit_sets(/*pinned_sets=*/true);
   if (!pinned.empty() && !IsCompactMode()) {
     tab_list_container_
         ->AddChildView(std::make_unique<ZephyrusSectionHeader>(u"Pinned tabs"))
@@ -3493,20 +5176,18 @@ void ZephyrusSidebarView::RebuildTabList() {
       }
     }
   }
-  if (!unpinned.empty()) {
-    // In compact mode the heading names the WORKSPACE whose tabs these are --
-    // the title bar's workspace chip is at the foot now, and a list headed
-    // "Tabs" above a switcher reads as though the two are unrelated.
-    std::u16string heading = u"Tabs";
-    if (IsCompactMode() && workspace_manager &&
-        !workspace_manager->current_workspace_name().empty()) {
-      heading = workspace_manager->current_workspace_name();
-    }
-    auto* tabs_header = tab_list_container_->AddChildView(
-        std::make_unique<ZephyrusSectionHeader>(heading));
-    tabs_header->SetCount(unpinned.size());
-    tabs_header_ = tabs_header;
-    for (int index : unpinned) {
+  emit_sets(/*pinned_sets=*/false);
+  // A rounded rule between the sets and the loose tabs under them.
+  if (!ordered_sets.empty() && !loose.empty()) {
+    tab_list_container_->AddChildView(
+        std::make_unique<ZephyrusRoundedDivider>());
+  }
+  if (!loose.empty()) {
+    // No heading above the cards in any layout. In compact mode it used to name
+    // the workspace and carry a count and a + new-tab button; the cards are the
+    // list, the New tab button under them does that job, and tabs_header_ stays
+    // null so RebuildCompactChrome parks its + out of sight.
+    for (int index : loose) {
       if (consumed.count(index)) {
         continue;
       }
@@ -3517,13 +5198,50 @@ void ZephyrusSidebarView::RebuildTabList() {
   }
 
   AssignSegmentPositions(tab_list_container_);
+  for (views::View* child : tab_list_container_->children()) {
+    if (auto* section = views::AsViewClass<ZephyrusSetSection>(child)) {
+      AssignSegmentPositions(section->body());
+    }
+  }
+  // A set made just now arrives: its header slides and fades in while its body
+  // opens from nothing.
+  for (ZephyrusSetSection* section : new_sections) {
+    AnimateRowIn(section->header());
+    section->PlayCreation();
+  }
+  known_sets_ = std::move(current_set_tokens);
+
+  // Slide in the row of a tab that was just opened: exactly one tab more than
+  // the last rebuild drew, and exactly one of them unknown. A workspace switch
+  // changes many at once and a swapped-out page keeps the count, so neither
+  // animates.
+  ZephyrusTabRow* slide_after = nullptr;
+  {
+    std::set<const void*> now;
+    for (const auto& entry : rendered_rows) {
+      now.insert(entry.second);
+    }
+    std::vector<ZephyrusTabRow*> added;
+    if (!known_tabs_.empty() && now.size() == known_tabs_.size() + 1) {
+      for (const auto& entry : rendered_rows) {
+        if (!known_tabs_.count(entry.second)) {
+          added.push_back(entry.first);
+        }
+      }
+    }
+    known_tabs_ = std::move(now);
+    if (added.size() == 1) {
+      AnimateRowIn(added[0]);
+      slide_after = added[0];
+    }
+  }
 
   // The New tab button is part of the LIST, not the panel: it sits directly
   // under the last tab and scrolls with it, rather than anchoring the bottom
   // edge of the sidebar where the workspace bar now lives.
   tab_list_container_
       ->AddChildView(std::make_unique<ZephyrusNewTabButton>(base::BindRepeating(
-          [](ZephyrusSidebarView* self, const ui::Event&) {
+          [](ZephyrusSidebarView* self) {
             // kNewTabButton: this IS the new-tab button in Zephyrus -- the
             // horizontal strip that would otherwise carry one is hidden.
             chrome::NewTab(self->browser_view_->browser(),
@@ -3531,6 +5249,12 @@ void ZephyrusSidebarView::RebuildTabList() {
           },
           base::Unretained(this))))
       ->SetContained(contained);
+
+  // After the New tab button exists, so it slides down with the rows.
+  if (slide_after) {
+    SlideRowsBelow(tab_list_container_, slide_after,
+                   slide_after->GetPreferredSize().height() + kRowSpacing);
+  }
 
   // Same beats, same data: whatever moved the tab list (a switch, a
   // navigation, a workspace change) also moved the address, the back/forward
@@ -3563,12 +5287,385 @@ void ZephyrusSidebarView::AssignSegmentPositions(views::View* container) {
   }
 }
 
+void ZephyrusSidebarView::TabGroupedStateChanged(
+    TabStripModel* tab_strip_model,
+    std::optional<tab_groups::TabGroupId> old_group,
+    std::optional<tab_groups::TabGroupId> new_group,
+    tabs::TabInterface* tab,
+    int index) {
+  if (revealed_) {
+    ScheduleRebuildTabList();
+  }
+}
+
+void ZephyrusSidebarView::OnTabGroupChanged(const TabGroupChange& change) {
+  if (revealed_) {
+    ScheduleRebuildTabList();
+  }
+}
+
+std::vector<tab_groups::TabGroupId> ZephyrusSidebarView::SetsInCurrentWorkspace()
+    const {
+  std::vector<tab_groups::TabGroupId> sets;
+  ZephyrusWorkspaceManager* manager =
+      browser_view_->zephyrus_workspace_manager();
+  TabGroupModel* model = tab_strip_model_->group_model();
+  for (const tab_groups::TabGroupId& id : model->ListTabGroups()) {
+    const gfx::Range tabs = model->GetTabGroup(id)->ListTabs();
+    bool here = !manager;
+    for (size_t i = tabs.start(); i < tabs.end() && !here; ++i) {
+      content::WebContents* contents =
+          tab_strip_model_->GetWebContentsAt(static_cast<int>(i));
+      here = contents && manager->IsContentsInCurrentWorkspace(contents);
+    }
+    if (here) {
+      sets.push_back(id);
+    }
+  }
+  return sets;
+}
+
+ZephyrusSidebarView* FindZephyrusSidebar(BrowserView* browser_view) {
+  if (!browser_view) {
+    return nullptr;
+  }
+  for (views::View* child : browser_view->children()) {
+    if (auto* sidebar = views::AsViewClass<ZephyrusSidebarView>(child)) {
+      return sidebar;
+    }
+  }
+  return nullptr;
+}
+
+ZephyrusSetInfo GetZephyrusSetInfo(PrefService* prefs,
+                                   const tab_groups::TabGroupId& id) {
+  const SetMeta meta = ReadSetMeta(prefs, id);
+  ZephyrusSetInfo info;
+  info.icon = meta.icon;
+  info.pinned = meta.pinned;
+  info.collapsed = meta.collapsed;
+  return info;
+}
+
+void SetZephyrusSetOrder(PrefService* prefs,
+                         const std::vector<tab_groups::TabGroupId>& shown) {
+  std::vector<std::string> tokens;
+  for (const tab_groups::TabGroupId& id : shown) {
+    tokens.push_back(id.ToString());
+  }
+  std::vector<std::string> rest;
+  for (const base::Value& value : prefs->GetList(kSetsOrderPref)) {
+    if (value.is_string() &&
+        std::find(tokens.begin(), tokens.end(), value.GetString()) ==
+            tokens.end()) {
+      rest.push_back(value.GetString());
+    }
+  }
+  ScopedListPrefUpdate update(prefs, kSetsOrderPref);
+  update->clear();
+  for (const std::string& token : tokens) {
+    update->Append(token);
+  }
+  for (const std::string& token : rest) {
+    update->Append(token);
+  }
+}
+
+std::vector<tab_groups::TabGroupId> OrderZephyrusSets(
+    PrefService* prefs,
+    std::vector<tab_groups::TabGroupId> sets) {
+  sets = OrderedSets(prefs, std::move(sets));
+  std::stable_partition(sets.begin(), sets.end(),
+                        [&](const tab_groups::TabGroupId& id) {
+                          return ReadSetMeta(prefs, id).pinned;
+                        });
+  return sets;
+}
+
+std::vector<ZephyrusSidebarView::SetSummary> ZephyrusSidebarView::SummariseSets()
+    const {
+  std::vector<SetSummary> summaries;
+  ZephyrusWorkspaceManager* manager =
+      browser_view_->zephyrus_workspace_manager();
+  PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+  TabGroupModel* model = tab_strip_model_->group_model();
+  for (const tab_groups::TabGroupId& id : SetsInCurrentWorkspace()) {
+    SetSummary summary;
+    summary.name = GetSetTitle(tab_strip_model_, id);
+    summary.icon = ReadSetMeta(prefs, id).icon;
+    const gfx::Range tabs = model->GetTabGroup(id)->ListTabs();
+    for (size_t i = tabs.start(); i < tabs.end(); ++i) {
+      content::WebContents* contents =
+          tab_strip_model_->GetWebContentsAt(static_cast<int>(i));
+      if (contents && (!manager || manager->IsContentsInCurrentWorkspace(contents))) {
+        summary.tabs.push_back(contents);
+      }
+    }
+    summaries.push_back(std::move(summary));
+  }
+  return summaries;
+}
+
+std::string ZephyrusSidebarView::GroupTabsIntoSet(
+    const std::vector<content::WebContents*>& tabs,
+    const std::u16string& name,
+    const std::string& icon) {
+  std::u16string title;
+  base::TrimWhitespace(name, base::TRIM_ALL, &title);
+  if (title.size() > kMaxSetNameLength) {
+    title.resize(kMaxSetNameLength);
+  }
+  if (title.empty()) {
+    return "the set needs a name";
+  }
+  // Every tab is resolved by identity now, not trusted from earlier: a tab may
+  // have closed, moved or been pinned since the agent listed them.
+  std::vector<int> indices;
+  for (content::WebContents* contents : tabs) {
+    const int index =
+        contents ? tab_strip_model_->GetIndexOfWebContents(contents)
+                 : TabStripModel::kNoTab;
+    if (index == TabStripModel::kNoTab) {
+      return "a tab is no longer open; call tabs.list again";
+    }
+    if (tab_strip_model_->IsTabPinned(index)) {
+      return "a pinned tab cannot join a set; leave it out";
+    }
+    indices.push_back(index);
+  }
+  std::sort(indices.begin(), indices.end());
+  indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+  if (indices.empty()) {
+    return "no tabs were given";
+  }
+
+  PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+  std::optional<tab_groups::TabGroupId> target;
+  for (const tab_groups::TabGroupId& id : SetsInCurrentWorkspace()) {
+    if (base::EqualsCaseInsensitiveASCII(GetSetTitle(tab_strip_model_, id),
+                                         title)) {
+      target = id;
+      break;
+    }
+  }
+  if (target) {
+    tab_strip_model_->AddToExistingGroup(indices, *target);
+  } else {
+    const size_t number =
+        tab_strip_model_->group_model()->ListTabGroups().size();
+    const tab_groups::TabGroupId id = tab_strip_model_->AddToNewGroup(indices);
+    const auto color =
+        static_cast<tab_groups::TabGroupColorId>(1 + (number % 8));
+    tab_strip_model_->group_model()->GetTabGroup(id)->SetVisualData(
+        tab_groups::TabGroupVisualData(title, color), /*is_customized=*/true);
+    AppendToSetOrder(prefs, id);
+    target = id;
+  }
+  // An icon is a nicety: one that is not in the set is ignored, not an error.
+  if (!icon.empty() &&
+      zephyrus::FindWorkspaceIcon(std::string_view(icon)) != nullptr) {
+    SetMeta meta = ReadSetMeta(prefs, *target);
+    meta.icon = icon;
+    WriteSetMeta(prefs, *target, meta);
+  }
+  ScheduleRebuildTabList();
+  return std::string();
+}
+
+void ZephyrusSidebarView::CreateSetWithTab(int index) {
+  if (index == TabStripModel::kNoTab || index >= tab_strip_model_->count() ||
+      tab_strip_model_->IsTabPinned(index)) {
+    return;
+  }
+  content::WebContents* contents = tab_strip_model_->GetWebContentsAt(index);
+  const size_t number = tab_strip_model_->group_model()->ListTabGroups().size();
+  const tab_groups::TabGroupId id = tab_strip_model_->AddToNewGroup({index});
+  // Cycled through the colours after grey, so two sets are not alike.
+  const auto color =
+      static_cast<tab_groups::TabGroupColorId>(1 + (number % 8));
+  tab_strip_model_->group_model()->GetTabGroup(id)->SetVisualData(
+      tab_groups::TabGroupVisualData(
+          u"Set " + base::NumberToString16(number + 1), color));
+  AppendToSetOrder(browser_view_->browser()->GetProfile()->GetPrefs(), id);
+  // Grouping moved the tab; find it again by identity.
+  const int now = tab_strip_model_->GetIndexOfWebContents(contents);
+  if (now != TabStripModel::kNoTab) {
+    tab_strip_model_->ActivateTabAt(now);
+  }
+  ScheduleRebuildTabList();
+}
+
+void ZephyrusSidebarView::UngroupSet(const tab_groups::TabGroupId& set) {
+  TabGroupModel* model = tab_strip_model_->group_model();
+  const std::vector<tab_groups::TabGroupId> all = model->ListTabGroups();
+  if (std::find(all.begin(), all.end(), set) == all.end()) {
+    return;
+  }
+  const gfx::Range tabs = model->GetTabGroup(set)->ListTabs();
+  std::vector<int> indices;
+  for (size_t i = tabs.start(); i < tabs.end(); ++i) {
+    indices.push_back(static_cast<int>(i));
+  }
+  tab_strip_model_->RemoveFromGroup(indices);
+  ForgetSet(browser_view_->browser()->GetProfile()->GetPrefs(), set);
+  ScheduleRebuildTabList();
+}
+
+void ZephyrusSidebarView::CloseSet(const tab_groups::TabGroupId& set) {
+  TabGroupModel* model = tab_strip_model_->group_model();
+  const std::vector<tab_groups::TabGroupId> all = model->ListTabGroups();
+  if (std::find(all.begin(), all.end(), set) == all.end()) {
+    return;
+  }
+  const gfx::Range tabs = model->GetTabGroup(set)->ListTabs();
+  for (size_t i = tabs.end(); i > tabs.start(); --i) {
+    tab_strip_model_->CloseWebContentsAt(static_cast<int>(i - 1),
+                                         CLOSE_USER_GESTURE);
+  }
+  ForgetSet(browser_view_->browser()->GetProfile()->GetPrefs(), set);
+  ScheduleRebuildTabList();
+}
+
+void ZephyrusSidebarView::JoinSet(base::WeakPtr<content::WebContents> contents,
+                                  tab_groups::TabGroupId set) {
+  if (!contents) {
+    return;
+  }
+  const int index = tab_strip_model_->GetIndexOfWebContents(contents.get());
+  if (index == TabStripModel::kNoTab || tab_strip_model_->IsTabPinned(index) ||
+      tab_strip_model_->GetTabGroupForTab(index)) {
+    return;
+  }
+  const std::vector<tab_groups::TabGroupId> all =
+      tab_strip_model_->group_model()->ListTabGroups();
+  if (std::find(all.begin(), all.end(), set) == all.end()) {
+    return;
+  }
+  tab_strip_model_->AddToExistingGroup({index}, set);
+  ScheduleRebuildTabList();
+}
+
+void ZephyrusSidebarView::SetSetCollapsed(const tab_groups::TabGroupId& set,
+                                          bool collapsed) {
+  PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+  SetMeta meta = ReadSetMeta(prefs, set);
+  meta.collapsed = collapsed;
+  WriteSetMeta(prefs, set, meta);
+}
+
+void ZephyrusSidebarView::ToggleSetPinned(const tab_groups::TabGroupId& set) {
+  PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+  SetMeta meta = ReadSetMeta(prefs, set);
+  meta.pinned = !meta.pinned;
+  WriteSetMeta(prefs, set, meta);
+  ScheduleRebuildTabList();
+}
+
+void ZephyrusSidebarView::RenameSet(const tab_groups::TabGroupId& set,
+                                    const std::u16string& name) {
+  TabGroupModel* model = tab_strip_model_->group_model();
+  const std::vector<tab_groups::TabGroupId> all = model->ListTabGroups();
+  if (name.empty() || std::find(all.begin(), all.end(), set) == all.end()) {
+    return;
+  }
+  TabGroup* group = model->GetTabGroup(set);
+  const tab_groups::TabGroupVisualData* data = group->visual_data();
+  group->SetVisualData(
+      tab_groups::TabGroupVisualData(
+          name, data ? data->color() : tab_groups::TabGroupColorId::kBlue),
+      /*is_customized=*/true);
+}
+
+void ZephyrusSidebarView::ChangeSetIcon(const tab_groups::TabGroupId& set,
+                                        const std::u16string& key) {
+  PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+  SetMeta meta = ReadSetMeta(prefs, set);
+  meta.icon = base::UTF16ToASCII(key);
+  WriteSetMeta(prefs, set, meta);
+  ScheduleRebuildTabList();
+}
+
+void ZephyrusSidebarView::NewTabInSet(const tab_groups::TabGroupId& set) {
+  TabGroupModel* model = tab_strip_model_->group_model();
+  const std::vector<tab_groups::TabGroupId> all = model->ListTabGroups();
+  if (std::find(all.begin(), all.end(), set) == all.end()) {
+    return;
+  }
+  // Straight into the set, after its last tab: not through the New tab button's
+  // path, which opens a loose tab.
+  const gfx::Range tabs = model->GetTabGroup(set)->ListTabs();
+  if (tabs.is_empty()) {
+    return;
+  }
+  chrome::AddTabAt(browser_view_->browser(), GURL(chrome::kChromeUINewTabURL),
+                   static_cast<int>(tabs.end()), /*foreground=*/true, set);
+}
+
+void ZephyrusSidebarView::ShowSetIconPicker(const tab_groups::TabGroupId& set) {
+  ZephyrusSetSection* section = FindSetSection(tab_list_container_, set);
+  if (!section) {
+    return;
+  }
+  if (views::Widget* picker = zephyrus::ShowIconPicker(
+          section->header(),
+          base::BindRepeating(&ZephyrusSidebarView::ChangeSetIcon,
+                              weak_factory_.GetWeakPtr(), set))) {
+    // Held until the picker closes. Taken before a menu that chose it releases
+    // its own, so the count never reaches zero between.
+    ++reveal_holds_;
+    picker->widget_delegate()->RegisterWindowClosingCallback(
+        base::BindOnce(&ZephyrusSidebarView::ReleaseRevealHold,
+                       weak_factory_.GetWeakPtr()));
+  }
+}
+
+void ZephyrusSidebarView::SetRenameActive(bool active) {
+  rename_active_ = active;
+  // The panel stays out while a name is being typed.
+  if (active) {
+    ++reveal_holds_;
+    return;
+  }
+  ReleaseRevealHold();
+  if (rebuild_deferred_) {
+    rebuild_deferred_ = false;
+    ScheduleRebuildTabList();
+  }
+}
+
 void ZephyrusSidebarView::ShowContextMenuForViewImpl(
     views::View* source,
     const gfx::Point& point,
     ui::mojom::MenuSourceType source_type) {
   // A row was right-clicked, or the panel's empty space was. The tab-specific
   // items only apply in the first case; the sidebar-level ones always apply.
+  // A set's header.
+  if (auto* header = views::AsViewClass<ZephyrusSetHeader>(source)) {
+    context_menu_set_ = header->set_id();
+    context_menu_contents_ = nullptr;
+    PrefService* prefs = browser_view_->browser()->GetProfile()->GetPrefs();
+    const SetMeta meta = ReadSetMeta(prefs, *context_menu_set_);
+    context_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+    context_menu_model_->AddItem(kRenameSetCommand, u"Rename");
+    context_menu_model_->AddItem(kChangeSetIconCommand, u"Change icon\u2026");
+    context_menu_model_->AddItem(kPinSetCommand,
+                                 meta.pinned ? u"Unpin from top" : u"Pin to top");
+    context_menu_model_->AddItem(kNewTabInSetCommand, u"New tab in set");
+    context_menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+    context_menu_model_->AddItem(kCloseSetCommand, u"Close set");
+    context_menu_model_->AddItem(kUngroupSetCommand, u"Ungroup set");
+    // The panel stays out for as long as the menu is up: the cursor is off it
+    // (in the menu) and it would otherwise tuck away under the menu.
+    ++reveal_holds_;
+    context_menu_runner_ = std::make_unique<views::MenuRunner>(
+        context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU,
+        base::BindRepeating(&ZephyrusSidebarView::ReleaseRevealHold,
+                            weak_factory_.GetWeakPtr()));
+    context_menu_runner_->RunMenuAt(
+        GetWidget(), nullptr, gfx::Rect(point, gfx::Size()),
+        views::MenuAnchorPosition::kTopLeft, source_type);
+    return;
+  }
   auto* row = views::AsViewClass<ZephyrusTabRow>(source);
   int row_index = -1;
   if (row) {
@@ -3590,6 +5687,8 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
       browser_view_->zephyrus_workspace_manager();
   context_menu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
   context_menu_workspace_ids_.clear();
+  context_menu_set_ids_.clear();
+  context_menu_set_.reset();
 
   if (row && manager && manager->workspaces().size() > 1) {
     const int current_ws =
@@ -3627,6 +5726,30 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
     // promising a pinned tab would follow the user -- signed in -- into every
     // other workspace. It never did, and should not.
     const bool tab_pinned = tab_strip_model_->IsTabPinned(row_index);
+    // Sets. A pinned tab is in none, and cannot be added to one.
+    if (!tab_pinned) {
+      const std::optional<tab_groups::TabGroupId> current_set =
+          tab_strip_model_->GetTabGroupForTab(row_index);
+      set_submenu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
+      for (const tab_groups::TabGroupId& id : SetsInCurrentWorkspace()) {
+        if (id == current_set) {
+          continue;
+        }
+        set_submenu_model_->AddItem(
+            kAddToSetBase + static_cast<int>(context_menu_set_ids_.size()),
+            GetSetTitle(tab_strip_model_, id));
+        context_menu_set_ids_.push_back(id);
+      }
+      if (!context_menu_set_ids_.empty()) {
+        set_submenu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+      }
+      set_submenu_model_->AddItem(kNewSetCommand, u"New set");
+      context_menu_model_->AddSubMenu(kAddToSetSubmenu, u"Add to set",
+                                      set_submenu_model_.get());
+      if (current_set) {
+        context_menu_model_->AddItem(kRemoveFromSetCommand, u"Remove from set");
+      }
+    }
     context_menu_model_->AddItem(kPinTabCommand,
                                  tab_pinned ? u"Unpin tab" : u"Pin tab");
     context_menu_model_->AddItem(kCloseTabCommand, u"Close tab");
@@ -3640,8 +5763,11 @@ void ZephyrusSidebarView::ShowContextMenuForViewImpl(
   context_menu_model_->AddItem(kResetSidebarWidthCommand,
                                u"Reset sidebar width");
 
+  ++reveal_holds_;
   context_menu_runner_ = std::make_unique<views::MenuRunner>(
-      context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU);
+      context_menu_model_.get(), views::MenuRunner::CONTEXT_MENU,
+      base::BindRepeating(&ZephyrusSidebarView::ReleaseRevealHold,
+                          weak_factory_.GetWeakPtr()));
   context_menu_runner_->RunMenuAt(
       GetWidget(), nullptr, gfx::Rect(point, gfx::Size()),
       views::MenuAnchorPosition::kTopLeft, source_type);
@@ -3667,6 +5793,36 @@ void ZephyrusSidebarView::ExecuteCommand(int command_id, int event_flags) {
     TogglePinned();
     return;
   }
+  if (command_id >= kUngroupSetCommand && command_id <= kCloseSetCommand) {
+    if (!context_menu_set_) {
+      return;
+    }
+    const tab_groups::TabGroupId set = *context_menu_set_;
+    switch (command_id) {
+      case kUngroupSetCommand:
+        UngroupSet(set);
+        break;
+      case kCloseSetCommand:
+        CloseSet(set);
+        break;
+      case kPinSetCommand:
+        ToggleSetPinned(set);
+        break;
+      case kNewTabInSetCommand:
+        NewTabInSet(set);
+        break;
+      case kRenameSetCommand:
+        if (ZephyrusSetSection* section =
+                FindSetSection(tab_list_container_, set)) {
+          section->header()->BeginRename();
+        }
+        break;
+      case kChangeSetIconCommand:
+        ShowSetIconPicker(set);
+        break;
+    }
+    return;
+  }
   // Re-resolve the tab by identity. If it went away while the menu was open,
   // do nothing rather than acting on whatever now sits at the old index.
   if (!context_menu_contents_) {
@@ -3687,7 +5843,31 @@ void ZephyrusSidebarView::ExecuteCommand(int command_id, int event_flags) {
     tab_strip_model_->SetTabPinned(index, !tab_strip_model_->IsTabPinned(index));
     return;
   }
+  if (command_id == kNewSetCommand) {
+    CreateSetWithTab(index);
+    return;
+  }
+  if (command_id == kRemoveFromSetCommand) {
+    tab_strip_model_->RemoveFromGroup({index});
+    return;
+  }
+  if (command_id >= kAddToSetBase) {
+    const size_t pos = static_cast<size_t>(command_id - kAddToSetBase);
+    if (pos < context_menu_set_ids_.size()) {
+      content::WebContents* contents = context_menu_contents_;
+      tab_strip_model_->AddToExistingGroup({index}, context_menu_set_ids_[pos]);
+      const int now = tab_strip_model_->GetIndexOfWebContents(contents);
+      if (now != TabStripModel::kNoTab) {
+        tab_strip_model_->ActivateTabAt(now);
+      }
+    }
+    return;
+  }
   if (command_id >= kMoveToWorkspaceBase) {
+    // A set lives in one workspace: a tab moving out leaves its set.
+    if (tab_strip_model_->GetTabGroupForTab(index)) {
+      tab_strip_model_->RemoveFromGroup({index});
+    }
     const size_t idx = static_cast<size_t>(command_id - kMoveToWorkspaceBase);
     if (idx >= context_menu_workspace_ids_.size()) {
       return;

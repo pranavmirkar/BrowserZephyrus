@@ -868,6 +868,14 @@ void BrowserCommandController::HandleCommandWithDisposition(
       break;
     }
     case IDC_CYCLE_TO_NEXT_TAB:
+      // Zephyrus: Ctrl+Tab. Upstream moved this key from IDC_SELECT_NEXT_TAB to
+      // this command, so the switcher has to be offered here too -- the case
+      // above no longer sees the key. False when there is nothing to switch
+      // between, and the plain behaviour below runs.
+      if (ZephyrusTabSwitcher::CycleOrShow(zephyrus::AsBrowser(browser_.get()),
+                                           /*forward=*/true)) {
+        break;
+      }
       if (IsCtrlTabMruEnabled(browser_)) {
         base::RecordAction(base::UserMetricsAction("Accel_CycleToNextTab"));
         CycleToMruTab(browser_,
@@ -883,6 +891,11 @@ void BrowserCommandController::HandleCommandWithDisposition(
       }
       break;
     case IDC_CYCLE_TO_PREV_TAB:
+      // Zephyrus: Ctrl+Shift+Tab; see IDC_CYCLE_TO_NEXT_TAB.
+      if (ZephyrusTabSwitcher::CycleOrShow(zephyrus::AsBrowser(browser_.get()),
+                                           /*forward=*/false)) {
+        break;
+      }
       if (IsCtrlTabMruEnabled(browser_)) {
         base::RecordAction(base::UserMetricsAction("Accel_CycleToPrevTab"));
         CycleToMruTab(browser_,

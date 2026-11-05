@@ -20,6 +20,7 @@
 #include "base/json/json_writer.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "chrome/browser/zephyrus/agent/sanitizer.h"
@@ -60,6 +61,11 @@ bool SameDestination(const GURL& wanted, const GURL& actual) {
   }
   return same_host && want_path == got_path;
 }
+
+// The limits sets.group enforces. The contract states the same numbers; the
+// kernel does not check them, so this is where they hold.
+constexpr size_t kMaxSetNameLength = 32;
+constexpr size_t kMaxTabsPerGroupCall = 40;
 
 ToolExecutor::Result Failed(std::string message) {
   ToolExecutor::Result result;
@@ -535,6 +541,81 @@ void ToolExecutor::Perform(const std::string& tool,
     const bool ok = tool == "tabs.switch" ? surface_->SwitchToTab(*tab_id)
                                           : surface_->CloseTab(*tab_id);
     std::move(callback).Run(ok ? Ok() : Failed("that tab is no longer open"));
+    return;
+  }
+
+  if (tool == "sets.list") {
+    base::ListValue sets;
+    for (const ToolSurface::SetInfo& set : surface_->ListSets()) {
+      base::DictValue entry;
+      entry.Set("name", set.name);
+      entry.Set("icon", set.icon);
+      base::ListValue ids;
+      for (int id : set.tab_ids) {
+        ids.Append(id);
+      }
+      entry.Set("tab_ids", std::move(ids));
+      sets.Append(std::move(entry));
+    }
+    std::string json;
+    if (!base::JSONWriter::Write(sets, &json)) {
+      std::move(callback).Run(Failed("the sets could not be read"));
+      return;
+    }
+    std::move(callback).Run(Ok(std::move(json)));
+    return;
+  }
+
+  if (tool == "sets.group") {
+    // The kernel checks that the arguments are present and spelled right; what
+    // they hold is checked here, because the kernel deliberately does not look
+    // at types.
+    const std::string* asked_name = arguments.FindString("name");
+    const base::ListValue* ids = arguments.FindList("tab_ids");
+    if (!asked_name || !ids || ids->empty()) {
+      std::move(callback).Run(Failed(
+          "sets.group needs a name and at least one tab id from tabs.list"));
+      return;
+    }
+    std::string name;
+    base::TrimWhitespaceASCII(*asked_name, base::TRIM_ALL, &name);
+    if (name.empty()) {
+      std::move(callback).Run(Failed("the set needs a name"));
+      return;
+    }
+    if (base::UTF8ToUTF16(name).size() > kMaxSetNameLength) {
+      std::move(callback).Run(Failed("a set's name is at most 32 characters"));
+      return;
+    }
+    if (ids->size() > kMaxTabsPerGroupCall) {
+      std::move(callback).Run(
+          Failed("put at most 40 tabs in a set in one call"));
+      return;
+    }
+    std::vector<int> tab_ids;
+    for (const base::Value& id : *ids) {
+      if (!id.is_int() || id.GetInt() < 0) {
+        std::move(callback).Run(Failed(
+            "tab_ids must be whole numbers taken from tabs.list"));
+        return;
+      }
+      tab_ids.push_back(id.GetInt());
+    }
+    const std::string* icon = arguments.FindString("icon");
+    // The tabs may have changed since tabs.list; the surface re-checks each one
+    // and says which stopped it.
+    const std::string error =
+        surface_->GroupTabs(tab_ids, name, icon ? *icon : std::string());
+    if (!error.empty()) {
+      std::move(callback).Run(Failed(error));
+      return;
+    }
+    base::DictValue done;
+    done.Set("set", name);
+    done.Set("tabs", static_cast<int>(tab_ids.size()));
+    std::string json;
+    base::JSONWriter::Write(done, &json);
+    std::move(callback).Run(Ok(std::move(json)));
     return;
   }
 

@@ -120,6 +120,28 @@ fn assert_denied(request: &ffi::PolicyRequest) -> ffi::PolicyDecision {
 // --- the contract itself ------------------------------------------------
 
 #[test]
+fn sorting_tabs_into_sets_is_allowed_without_asking() {
+    // Reversible, local, and the user can drag a tab back out: R1, like closing
+    // a tab is not (that one loses a page) and switching one is.
+    assert_allowed(&request("sets.list", "{}"));
+    assert_allowed(&request(
+        "sets.group",
+        r#"{"name":"Shopping","tab_ids":[3,4],"icon":"shopping"}"#,
+    ));
+}
+
+#[test]
+fn a_set_needs_a_name_and_tabs() {
+    for arguments in [r#"{"tab_ids":[1]}"#, r#"{"name":"Work"}"#] {
+        let decision = decide(&request("sets.group", arguments));
+        assert!(
+            decision.disposition != ffi::Disposition::Allow,
+            "{arguments} was allowed"
+        );
+    }
+}
+
+#[test]
 fn opening_a_blank_tab_needs_no_ceremony() {
     // "can you open a new tab" is about as harmless as a request gets, and it
     // was reaching the user as an approval prompt: `about:blank` has no origin,
@@ -155,8 +177,8 @@ fn the_blank_page_is_not_a_licence_for_the_about_scheme() {
 fn embedded_contract_loads() {
     let kernel = crate::load_kernel();
     assert!(kernel.is_valid(), "{}", kernel.last_error());
-    assert_eq!(kernel.contract_version(), "1.4.0");
-    assert_eq!(kernel.tool_count(), 26);
+    assert_eq!(kernel.contract_version(), "1.5.0");
+    assert_eq!(kernel.tool_count(), 28);
 }
 
 #[test]
@@ -594,8 +616,9 @@ fn the_prompt_listing_comes_from_the_contract() {
     // seventeen steps doing exactly that. See the_prompt_does_not_offer_a_tool
     // _for_looking. Any OTHER tool going missing is a bug, which is what this
     // count still catches.
-    // Twenty-five since contract 1.4.0 added memory.remember and memory.forget.
-    assert_eq!(listing.lines().filter(|l| l.starts_with("- ")).count(), 25);
+    // Twenty-five since contract 1.4.0 added memory.remember and memory.forget;
+    // twenty-seven since 1.5.0 added sets.list and sets.group.
+    assert_eq!(listing.lines().filter(|l| l.starts_with("- ")).count(), 27);
     assert!(listing.contains("- page.click:"));
     assert!(listing.contains("- tabs.list:"));
 

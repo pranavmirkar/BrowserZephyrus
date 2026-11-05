@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "base/containers/span.h"
+#include "base/functional/callback.h"
 #include "base/time/time.h"
 #include "third_party/skia/include/core/SkPath.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -16,6 +17,11 @@
 
 namespace gfx {
 class Canvas;
+}
+
+namespace views {
+class View;
+class Widget;
 }
 
 namespace zephyrus {
@@ -91,6 +97,13 @@ base::span<const WorkspaceIcon> AllWorkspaceIcons();
 // the stored string is an emoji rather than an icon key.
 const WorkspaceIcon* FindWorkspaceIcon(std::string_view key);
 const WorkspaceIcon* FindWorkspaceIcon(const std::u16string& key);
+
+// Opens the icon picker over `anchor`; `on_pick` gets the chosen icon's key (the
+// empty string for "use the default"). Defined in toolbar_view.cc, which owns
+// the picker.
+views::Widget* ShowIconPicker(
+    views::View* anchor,
+    base::RepeatingCallback<void(const std::u16string&)> on_pick);
 
 // A spring, as Material 3 Expressive specifies motion.
 //

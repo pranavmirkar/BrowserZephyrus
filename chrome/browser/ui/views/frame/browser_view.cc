@@ -197,6 +197,7 @@
 #include "chrome/browser/ui/views/frame/zephyrus_search_overlay.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_mascot_overlay.h"
 #include "chrome/browser/ui/views/frame/zephyrus_onboarding.h"
+#include "chrome/browser/ui/views/frame/zephyrus_settings_popup.h"
 #include "chrome/browser/ui/views/frame/zephyrus_hands_free.h"
 #include "chrome/browser/ui/views/frame/zephyrus_mascot_bubble.h"
 #include "chrome/browser/ui/views/frame/zephyrus_voice_setup.h"
@@ -3612,9 +3613,15 @@ void BrowserView::UpdateZephyrusCustomizePanelBounds() {
       content_bounds.right() +
       zephyrus::ZephyrusCustomizePanel::kDefaultWidth - kMargin;
 
+  // One dp further left than the card's edge, which the panel paints back in as
+  // its own inset: maximized, the page's 1px edge showed through the hairline
+  // between the container's ground and the panel (a 1px column of the page, 5px
+  // from the card). The panel's ground layer now overlaps that column.
+  constexpr int kEdgeOverlap = 1;
   zephyrus_customize_panel_->SetBounds(
-      panel_x + zephyrus_customize_panel_->SlideOffset(), card.y(),
-      std::max(0, panel_right - panel_x), card.height());
+      panel_x - kEdgeOverlap + zephyrus_customize_panel_->SlideOffset(),
+      card.y(), std::max(0, panel_right - panel_x) + kEdgeOverlap,
+      card.height());
 }
 
 void BrowserView::UpdateZephyrusAgentPanelBounds() {
@@ -3629,11 +3636,17 @@ void BrowserView::UpdateZephyrusAgentPanelBounds() {
   // container rather than from the client area keeps the two in step at every
   // scale factor, which is what the sidebar had to be corrected to do.
   const gfx::Rect content_bounds = contents_container()->bounds();
+  // One dp further left, painted back in as the panel's own inset (see
+  // UpdateZephyrusCustomizePanelBounds): covers the hairline between the
+  // container's ground and the panel that a maximized window showed the page
+  // through.
+  constexpr int kEdgeOverlap = 1;
   zephyrus_agent_panel_->SetBounds(
-      content_bounds.right() + kZephyrusSidebarGap,
+      content_bounds.right() + kZephyrusSidebarGap - kEdgeOverlap,
       content_bounds.y() + kZephyrusSidebarGap,
       std::max(0, zephyrus_agent_panel_->GetReservedWidth() -
-                      2 * kZephyrusSidebarGap),
+                      2 * kZephyrusSidebarGap) +
+          kEdgeOverlap,
       std::max(0, content_bounds.height() - 2 * kZephyrusSidebarGap));
 }
 
@@ -5154,6 +5167,12 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
     zephyrus_onboarding_checked_ = true;
     zephyrus_onboarding_->ShowIfDue();
     InvalidateLayout();
+  }
+  // Warm the settings popup's GPU pipelines a few seconds in, so its first open
+  // is not the one that pays for compiling them. Once per process, and only for
+  // normal windows (zephyrus_onboarding_ exists only for those).
+  if (active && zephyrus_onboarding_) {
+    ZephyrusSettingsPopup::SchedulePrewarm(weak_ptr_factory_.GetWeakPtr());
   }
   // Dev only: --zephyrus-test-compact starts the window in compact mode with
   // the sidebar pinned out, so the panel's chrome can be inspected without

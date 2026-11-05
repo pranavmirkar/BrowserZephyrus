@@ -12,11 +12,13 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/views/window/dialog_delegate.h"
 
 class Browser;
+class BrowserView;
 class GURL;
 
 namespace gfx {
@@ -60,6 +62,16 @@ class ZephyrusSettingsPopup : public views::DialogDelegate,
   // regular full-tab pages.
   static bool MaybeShow(Browser* browser, Section section);
 
+  // Once per process, a few seconds after a normal window first becomes active,
+  // draws an inert, effectively invisible stand-in for the popup (a translucent
+  // rounded window with a shadow and the entrance animation, at ~0.4% opacity,
+  // never activated, ignoring input) for under a second, so the GPU compiles
+  // the popup's pipelines before the user's first click rather than during it.
+  // On a cold shader cache the first open was ~150ms slower than every later
+  // one. A no-op if the window is not the foreground one by then, or the
+  // ZephyrusSettingsPopupPrewarm feature is off.
+  static void SchedulePrewarm(base::WeakPtr<BrowserView> view);
+
   // views::DialogDelegate:
   void WindowClosing() override;
 
@@ -71,7 +83,7 @@ class ZephyrusSettingsPopup : public views::DialogDelegate,
   std::unique_ptr<views::View> BuildContentsView(const gfx::Size& size,
                                                  Section initial_section);
   void SwitchTo(Section section);
-  void UpdatePillStates();
+  void SwitchToURL(const GURL& url);
   void ClosePopup();
 
   // content::WebContentsDelegate:
@@ -103,9 +115,9 @@ class ZephyrusSettingsPopup : public views::DialogDelegate,
   raw_ptr<Browser> browser_;
   raw_ptr<views::WebView> web_view_ = nullptr;
   raw_ptr<views::Widget> widget_ = nullptr;
-  // (section, pill button) per nav entry. std::pair keeps the chromium-rawptr
-  // plugin happy for the non-owning pointer.
-  std::vector<std::pair<Section, views::LabelButton*>> pills_;
+  // The rail: a SettingsRail (zephyrus_settings_popup.cc) owned by the rail's
+  // scroll view.
+  raw_ptr<views::View> rail_list_ = nullptr;
   Section current_;
   bool delete_scheduled_ = false;
 };

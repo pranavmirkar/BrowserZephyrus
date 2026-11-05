@@ -74,6 +74,12 @@ std::string PlainName(const std::string& tool) {
   if (tool == "tabs.close") {
     return "Closing a tab";
   }
+  if (tool == "sets.list") {
+    return "Checking the sets";
+  }
+  if (tool == "sets.group") {
+    return "Sorting tabs into a set";
+  }
   if (tool == "page.click") {
     return "Clicking something";
   }

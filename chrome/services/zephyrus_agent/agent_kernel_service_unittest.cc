@@ -133,8 +133,8 @@ TEST_F(AgentKernelServiceTest, ReportsTheContractItEnforces) {
       }));
   run_loop.Run();
 
-  EXPECT_EQ(version, "1.4.0");
-  EXPECT_EQ(tool_count, 26u);
+  EXPECT_EQ(version, "1.5.0");
+  EXPECT_EQ(tool_count, 28u);
 }
 
 TEST_F(AgentKernelServiceTest, AllowsAnOrdinaryRead) {

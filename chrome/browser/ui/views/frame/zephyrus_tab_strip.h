@@ -5,7 +5,11 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_TAB_STRIP_H_
 #define CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_TAB_STRIP_H_
 
+#include <map>
 #include <memory>
+#include <optional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "base/callback_list.h"
@@ -13,7 +17,12 @@
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "components/split_tabs/split_tab_id.h"
+#include "components/tab_groups/tab_group_id.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/gfx/animation/animation_delegate.h"
+#include "ui/gfx/animation/slide_animation.h"
+#include "ui/gfx/geometry/rect.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/context_menu_controller.h"
 #include "ui/views/view.h"
@@ -42,6 +51,7 @@ class MenuRunner;
 // callback: a synchronous rebuild deletes the very close button whose click is
 // still on the stack.
 class ZephyrusTabStrip : public views::View,
+                         public gfx::AnimationDelegate,
                          public TabStripModelObserver,
                          public views::ContextMenuController,
                          public ui::SimpleMenuModel::Delegate {
@@ -56,6 +66,8 @@ class ZephyrusTabStrip : public views::View,
   static constexpr int kTopInsetAlone = 4;
 
   void SetTopInset(int inset);
+  // The bar's own colour, for tabs that lighten it to raise the active one.
+  SkColor GroundColor() const;
 
   explicit ZephyrusTabStrip(BrowserView* browser_view);
   ZephyrusTabStrip(const ZephyrusTabStrip&) = delete;
@@ -74,6 +86,10 @@ class ZephyrusTabStrip : public views::View,
   void OnTabDragged(views::View* tab, int x_in_strip);
   void OnTabDragEnded(views::View* tab,
                       base::WeakPtr<content::WebContents> contents);
+  // The same for a set's pill: the set (its tabs with it) follows the pointer,
+  // and where it is dropped decides the sets' order.
+  void OnPillDragged(views::View* pill, int x_in_strip);
+  void OnPillDragEnded(views::View* pill, bool cancelled);
 
   // views::View:
   void Layout(PassKey key) override;
@@ -81,6 +97,10 @@ class ZephyrusTabStrip : public views::View,
   void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
   void VisibilityChanged(views::View* starting_from, bool is_visible) override;
+
+  // gfx::AnimationDelegate: the tabs slide to their new places.
+  void AnimationProgressed(const gfx::Animation* animation) override;
+  void AnimationEnded(const gfx::Animation* animation) override;
 
   // TabStripModelObserver:
   void OnTabStripModelChanged(
@@ -91,6 +111,22 @@ class ZephyrusTabStrip : public views::View,
                       TabChangeType change_type) override;
   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
   void OnSplitTabChanged(const SplitTabChange& change) override;
+  void TabGroupedStateChanged(TabStripModel* tab_strip_model,
+                              std::optional<tab_groups::TabGroupId> old_group,
+                              std::optional<tab_groups::TabGroupId> new_group,
+                              tabs::TabInterface* tab,
+                              int index) override;
+  void OnTabGroupChanged(const TabGroupChange& change) override;
+
+  // Sets, for the pills that head them. Each edits through the sidebar, which
+  // owns the rules, and then rebuilds this strip.
+  void ToggleSetCollapsed(const tab_groups::TabGroupId& id);
+  void RenameSet(const tab_groups::TabGroupId& id, const std::u16string& name);
+  void ChangeSetIcon(const tab_groups::TabGroupId& id,
+                     const std::u16string& key);
+  // A name is being typed: no rebuild until it is done, or it would delete the
+  // field.
+  void SetRenameActive(bool active);
 
   // views::ContextMenuController:
   void ShowContextMenuForViewImpl(
@@ -104,6 +140,29 @@ class ZephyrusTabStrip : public views::View,
   void ExecuteCommand(int command_id, int event_flags) override;
 
  private:
+  // Where an item was before the last rebuild, so it can slide from there; and
+  // whether it is new (it grows in instead).
+  struct AnimInfo {
+    gfx::Rect from;
+    bool has_from = false;
+    bool entering = false;
+    // Among the items that entered together; a set opening staggers them.
+    int rank = 0;
+  };
+  // A closed tab (or set) kept on screen while it shrinks away.
+  struct Ghost {
+    raw_ptr<views::View> view;
+    gfx::Rect from;
+    // The surviving item it followed, so the slide keeps it in its place while
+    // it shrinks.
+    std::string after_key;
+  };
+
+  void ClearGhosts();
+  // Rings the set a dragged tab would join (or none).
+  void SetDropHighlight(const std::optional<tab_groups::TabGroupId>& set);
+  void ClearLayoutAnimation();
+
   void ScheduleRebuild();
   void Rebuild();
   // Keeps the active tab inside the visible span after a rebuild or resize.
@@ -115,17 +174,40 @@ class ZephyrusTabStrip : public views::View,
 
   // Children in visual order; the new-tab button is last.
   std::vector<raw_ptr<views::View>> items_;
+  // Parallel to items_: true where a wider gap precedes the item (before the
+  // first set, between sets, before the loose tabs).
+  std::vector<bool> gap_before_;
+  // [begin, end) item ranges of each set: its pill and its tabs.
+  std::vector<std::pair<size_t, size_t>> set_spans_;
   raw_ptr<views::View> new_tab_button_ = nullptr;
   // The first unpinned item, so layout knows where the flexible run starts.
   size_t first_flexible_ = 0;
+
+  // The slide between two layouts (a tab opened or closed, a set made, opened
+  // or closed), ~220ms.
+  gfx::SlideAnimation layout_anim_{this};
+  std::vector<AnimInfo> anim_info_;
+  AnimInfo chip_info_;
+  int entering_count_ = 0;
+  std::vector<Ghost> ghosts_;
+  // Where each item belongs when the animation is over (the end of the slide).
+  std::vector<gfx::Rect> targets_;
+  // Set by a drag that ended, so the settle is animated too.
+  bool force_animation_ = false;
+  // Set while a rebuild restarts the slide, so stopping the old one does not
+  // tidy away what the rebuild is setting up.
+  bool ignore_anim_end_ = false;
 
   int scroll_offset_ = 0;
   int top_inset_ = kTopInsetAlone;
   bool rebuild_pending_ = false;
   bool dragging_ = false;
   bool rebuild_deferred_ = false;
+  bool rename_active_ = false;
   raw_ptr<views::View> drag_view_ = nullptr;
   int drag_x_ = 0;
+  // While a pill is dragged: its set's items, which move with it.
+  std::pair<size_t, size_t> drag_span_ = {0, 0};
 
   // The tab active at the last rebuild, to spot a CHANGE of active tab.
   base::WeakPtr<content::WebContents> last_active_;
@@ -133,6 +215,10 @@ class ZephyrusTabStrip : public views::View,
   // Context menu state. The tab is held by identity for the same reason the
   // actions are.
   base::WeakPtr<content::WebContents> menu_contents_;
+  // The set a pill's menu is for, and the sets the "Add to set" submenu lists.
+  std::optional<tab_groups::TabGroupId> menu_set_;
+  std::vector<tab_groups::TabGroupId> menu_set_ids_;
+  std::unique_ptr<ui::SimpleMenuModel> set_submenu_model_;
   std::vector<int> menu_workspace_ids_;
   std::unique_ptr<ui::SimpleMenuModel> menu_model_;
   std::unique_ptr<ui::SimpleMenuModel> move_menu_model_;

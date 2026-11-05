@@ -6,9 +6,13 @@
 #define CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_SIDEBAR_VIEW_H_
 
 #include <memory>
+#include <set>
+#include <string>
 #include <optional>
 #include <utility>
 #include <vector>
+
+#include "components/tab_groups/tab_group_id.h"
 
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
@@ -31,6 +35,8 @@
 class BrowserView;
 class TabStripModel;
 class ZephyrusOmniboxOverlay;
+class ZephyrusTabStrip;
+class PrefService;
 
 namespace content {
 class WebContents;
@@ -114,6 +120,10 @@ class ZephyrusSidebarView : public views::View,
                             public views::ContextMenuController,
                             public ui::SimpleMenuModel::Delegate {
   METADATA_HEADER(ZephyrusSidebarView, views::View)
+
+  // The horizontal strip shows the same sets and edits them through the same
+  // methods, rather than keeping a second copy of the rules.
+  friend class ::ZephyrusTabStrip;
 
  public:
   // 240 per the Zephyrus Browser Design Figma (sidebar "Example" component).
@@ -226,6 +236,14 @@ class ZephyrusSidebarView : public views::View,
   // Pinning usually reorders the strip (which rebuilds the list), but not when
   // the tab is already in place — so rebuild explicitly.
   void OnTabPinnedStateChanged(tabs::TabInterface* tab, int index) override;
+  // Sets (tab groups): the list shows one set at a time, so any change to
+  // which tab is in which group redraws it.
+  void TabGroupedStateChanged(TabStripModel* tab_strip_model,
+                              std::optional<tab_groups::TabGroupId> old_group,
+                              std::optional<tab_groups::TabGroupId> new_group,
+                              tabs::TabInterface* tab,
+                              int index) override;
+  void OnTabGroupChanged(const TabGroupChange& change) override;
 
   // views::ContextMenuController:
   void ShowContextMenuForViewImpl(
@@ -407,6 +425,84 @@ class ZephyrusSidebarView : public views::View,
   // in compact mode. A plain View because the heading class lives in the .cc's
   // anonymous namespace; null between rebuilds.
   raw_ptr<views::View> tabs_header_ = nullptr;
+  // The tabs the last rebuild drew, by identity only (never dereferenced), so
+  // the next one can tell which row is NEW and slide it in. Emptied while the
+  // panel is hidden, so the first rebuild after it opens animates nothing.
+  std::set<const void*> known_tabs_;
+
+  // --- Sets -------------------------------------------------------------
+  // A SET is a Chromium tab group used the way Safari uses Tab Groups: the list
+  // shows the tabs of ONE set at a time (nullopt = the tabs that are in none),
+  // and a bar of chips above it switches between them. Pinned tabs are never in
+  // a set and are always listed. The viewed set follows the active tab, so a
+  // link or Ctrl+Tab into another set switches the list with it.
+  // Sets the last rebuild drew, by token, so a NEW one can play its creation
+  // animation. Emptied with known_tabs_ while the panel is hidden.
+  std::set<std::string> known_sets_;
+  // A set's name is being edited: the list must not be rebuilt under it.
+  bool rename_active_ = false;
+  // The set the open context menu acts on (a chip's menu), and the sets the
+  // "Add to set" submenu offers, by menu position.
+  std::optional<tab_groups::TabGroupId> context_menu_set_;
+  std::vector<tab_groups::TabGroupId> context_menu_set_ids_;
+  std::unique_ptr<ui::SimpleMenuModel> set_submenu_model_;
+  // Sets with a tab in the current workspace, in creation order.
+  std::vector<tab_groups::TabGroupId> SetsInCurrentWorkspace() const;
+  void CloseSet(const tab_groups::TabGroupId& set);
+  void SetSetCollapsed(const tab_groups::TabGroupId& set, bool collapsed);
+  void ToggleSetPinned(const tab_groups::TabGroupId& set);
+  void RenameSet(const tab_groups::TabGroupId& set, const std::u16string& name);
+  void ChangeSetIcon(const tab_groups::TabGroupId& set,
+                     const std::u16string& key);
+  // A new tab in `set`: the tab after its last one, so it joins the set.
+  void NewTabInSet(const tab_groups::TabGroupId& set);
+  void SetRenameActive(bool active);
+ public:
+  // --- For the agent (BrowserToolSurface) -----------------------------------
+  struct SetSummary {
+    std::u16string name;
+    std::string icon;
+    std::vector<content::WebContents*> tabs;
+  };
+  // The sets in the current workspace, with their tabs.
+  std::vector<SetSummary> SummariseSets() const;
+  // Puts `tabs` into the set called `name` (made if there is none) and gives it
+  // `icon` when that is a known one. Returns "" on success, else why not.
+  std::string GroupTabsIntoSet(const std::vector<content::WebContents*>& tabs,
+                               const std::u16string& name,
+                               const std::string& icon);
+
+ private:
+  // Opens the icon picker on a set's header.
+  void ShowSetIconPicker(const tab_groups::TabGroupId& set);
+
+  // --- Dragging sets, and tabs into and out of them -------------------------
+  // The set a tab being dragged would be dropped INTO, if the cursor is over
+  // one; and whether it would be dropped OUT of its set onto the loose tabs.
+  std::optional<tab_groups::TabGroupId> drag_target_set_;
+  bool drag_target_loose_ = false;
+  void UpdateSetDropTarget(const gfx::Point& cursor_screen,
+                           int dragged_model_index);
+  void ClearSetDropTarget();
+  // A set's header is being dragged: `grab` is where in it it was taken.
+  void OnSetDragged(const tab_groups::TabGroupId& id,
+                    const gfx::Point& grab,
+                    const gfx::Point& cursor_screen);
+  void OnSetDragFinished(const tab_groups::TabGroupId& id, bool cancelled);
+  // Moves `moved` to child index `target` of the tab list, the others sliding
+  // to their new places (see OnRowDragged).
+  void ReorderChildWithFlip(views::View* moved, size_t target);
+  void CreateSetDragProxy(const std::u16string& title,
+                          const std::string& icon_key,
+                          const gfx::Size& size,
+                          const gfx::Point& grab);
+  // Puts the tab at `index` in a new set, named for its number, and shows it.
+  void CreateSetWithTab(int index);
+  // Dissolves `set`: its tabs stay open, in no set.
+  void UngroupSet(const tab_groups::TabGroupId& set);
+  // A foreground tab opened while a set is shown joins it.
+  void JoinSet(base::WeakPtr<content::WebContents> contents,
+               tab_groups::TabGroupId set);
 
   // Hidden when there are no bookmarks, so the heading never labels nothing.
   raw_ptr<views::View> favorites_header_ = nullptr;
@@ -454,5 +550,27 @@ class ZephyrusSidebarView : public views::View,
   // Guards the posted rebuild against the sidebar being torn down first.
   base::WeakPtrFactory<ZephyrusSidebarView> weak_factory_{this};
 };
+
+// A set's own settings, kept in the profile prefs (a tab group has nowhere to
+// keep them). For the horizontal strip, which shows sets too.
+struct ZephyrusSetInfo {
+  std::string icon;
+  bool pinned = false;
+  bool collapsed = false;
+};
+ZephyrusSetInfo GetZephyrusSetInfo(PrefService* prefs,
+                                   const tab_groups::TabGroupId& id);
+// Saves the order the sets are shown in (a drag moved one): `shown` first, then
+// any not on screen (another workspace's) as they were.
+void SetZephyrusSetOrder(PrefService* prefs,
+                         const std::vector<tab_groups::TabGroupId>& shown);
+// `sets` in the user's order, pinned sets first.
+std::vector<tab_groups::TabGroupId> OrderZephyrusSets(
+    PrefService* prefs,
+    std::vector<tab_groups::TabGroupId> sets);
+
+// The tab sidebar of a window, or null: it is a direct child of the BrowserView,
+// which keeps it private. For the agent's tools that organise tabs into sets.
+ZephyrusSidebarView* FindZephyrusSidebar(BrowserView* browser_view);
 
 #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_ZEPHYRUS_SIDEBAR_VIEW_H_

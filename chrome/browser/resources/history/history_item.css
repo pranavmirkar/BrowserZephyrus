@@ -378,6 +378,27 @@ cr-checkbox::part(label-container) {
    here: 24 + 20 + 12). Rows are the 56dp one-line list item, the favicon sits
    in a 40dp tonal circle, and the time moves to the trailing edge. */
 :host-context([webui-refresh-2026]) {
+  /* The row is 56dp here, and so is the unit every inner wrapper (the
+     checkbox, the favicon and title line, the time, the menu) sizes itself
+     with and centres its content in. Left at the stock 36px, each wrapper
+     centred its content in the TOP 36px of a 56px row, so everything sat 10px
+     above the row's centre. */
+  &:host {
+    --item-height: 56px;
+  }
+
+  /* The time-gap marker (two visits far apart in time) was a 1px rule 77px in
+     and 15px tall, placed for the old layout's favicon column. Here it floated
+     in the page colour between two segments, nowhere near the favicon circle,
+     and read as a stray line with a hole around it. It is dropped, not
+     shrunk: it lives INSIDE the row it follows, so any height it keeps makes
+     that row's segment taller than the other rows and leaves its content off
+     the segment's centre (measured with an 8dp gap: the card grew to 64dp
+     around content centred in 56). */
+  & #time-gap-separator {
+    display: none;
+  }
+
   & #date-accessed {
     border-bottom: none;
     box-sizing: border-box;
@@ -430,10 +451,10 @@ cr-checkbox::part(label-container) {
 
   & #icon {
     background-color: var(--color-zephyrus-surface-container-highest);
-    background-size: 20px;
+    background-size: 16px;
     border-radius: 50%;
-    height: 40px;
-    width: 40px;
+    height: 32px;
+    width: 32px;
   }
 
   & .website-title {

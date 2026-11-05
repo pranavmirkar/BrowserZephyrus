@@ -164,6 +164,7 @@ class ZephyrusAgentPanel : public views::View,
 
   // views::View:
   void OnThemeChanged() override;
+  void OnPaintBackground(gfx::Canvas* canvas) override;
   void Layout(PassKey) override;
   void AddedToWidget() override;
   void RemovedFromWidget() override;
@@ -273,6 +274,8 @@ class ZephyrusAgentPanel : public views::View,
   void UpdateJumpButton();
 
   const raw_ptr<BrowserView> browser_view_;
+  // The sheet's fill, a role: set in ApplyRoles, painted in OnPaintBackground.
+  SkColor sheet_color_ = SK_ColorTRANSPARENT;
 
   bool is_open_ = false;
   bool task_running_ = false;
