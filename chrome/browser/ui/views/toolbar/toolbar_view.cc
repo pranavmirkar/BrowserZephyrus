@@ -103,6 +103,7 @@
 #include "chrome/browser/ui/views/frame/zephyrus_privacy_popup.h"
 #include "chrome/browser/zephyrus/privacy/privacy_features.h"
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
+#include "chrome/browser/ui/views/frame/zephyrus_site_info.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_service_factory.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_tab_helper.h"
@@ -4462,6 +4463,14 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
              }));
   }
 
+  // The page's site info -- connection, cookies and site data, permissions, site
+  // settings -- where Chromium's page-info bubble keeps it, here in the Shield's
+  // own language. Rows in this column; its sub-pages replace the column.
+  zephyrus_site::AttachSiteInfo(
+      content.get(),
+      browser_ ? browser_->tab_strip_model()->GetActiveWebContents() : nullptr,
+      kWidth);
+
   // Privacy Intelligence (§6.1). Entry point rather than inline content: the
   // Shield panel answers "what is the blocker doing", and the privacy report
   // answers "what happened on this page" -- related, but two different
@@ -4486,6 +4495,9 @@ void ToolbarView::ShowZephyrusAdblockBubble() {
         vector_icons::kArrowForwardIcon, kSecondaryContainer, kOnSecondaryContainer));
   }
 
+  // Measured afresh: the site info section sets an explicit size of its own
+  // when its rows change, and that would answer for the height here.
+  content->SetPreferredSize(std::nullopt);
   content->SetPreferredSize(
       gfx::Size(kWidth, content->GetHeightForWidth(kWidth)));
 

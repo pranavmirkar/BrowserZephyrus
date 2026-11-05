@@ -3574,6 +3574,8 @@ static_library("ui") {
       "views/frame/zephyrus_agent_tool_surface.cc",
       "views/frame/zephyrus_agent_tool_surface.h",
       "views/frame/zephyrus_privacy_popup.cc",
+      "views/frame/zephyrus_site_info.cc",
+      "views/frame/zephyrus_site_info.h",
       "views/frame/zephyrus_privacy_popup.h",
       "views/frame/zephyrus_window_backdrop.cc",
       "views/frame/zephyrus_window_backdrop.h",
