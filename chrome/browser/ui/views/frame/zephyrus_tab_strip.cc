@@ -817,12 +817,13 @@ class SetPill : public views::Button, public views::TextfieldController {
       const views::SizeBounds& available_size) const override {
     const int text = renaming_ ? editor_->GetPreferredSize().width()
                                : std::min(label_->GetPreferredSize().width(), 120);
-    return gfx::Size(kLead + kGlyph + 6 + text + 6 + kChevron + kTrail, kHeight);
+    return gfx::Size(kLead + kGlyph + 6 + text + 6 + kChevronBox + kTrail,
+                     kHeight);
   }
 
   void Layout(PassKey) override {
     const int x = kLead + kGlyph + 6;
-    const int w = std::max(0, width() - x - 6 - kChevron - kTrail);
+    const int w = std::max(0, width() - x - 6 - kChevronBox - kTrail);
     label_->SetBounds(x, 0, w, height());
     editor_->SetBounds(x - 4, 1, w + 8, height() - 2);
   }
@@ -844,9 +845,8 @@ class SetPill : public views::Button, public views::TextfieldController {
     SkColor fill = zephyrus::m3::Role(
         *this, Lit() ? kColorZephyrusSecondaryContainer
                      : kColorZephyrusSurfaceContainerHighest);
-    if (IsMouseHovered()) {
-      fill = zephyrus::m3::WithStateLayer(fill, Ink(), zephyrus::m3::kHover);
-    }
+    // No hover layer on the pill itself: the control is the round container at
+    // its end, as in the sidebar's header.
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
     flags.setColor(fill);
@@ -871,14 +871,38 @@ class SetPill : public views::Button, public views::TextfieldController {
           gfx::RectF(kLead, (height() - kGlyph) / 2.f, kGlyph, kGlyph), Ink(),
           1.6f);
     }
+    // The dropdown control: the chevron in a round container of its own at the
+    // pill's end, concentric with it (the pill's end has radius 12, the
+    // container sits 3dp inside it: radius 9). The ink as a wash, so it reads on
+    // the pill whatever its tone.
+    const gfx::Rect box = ChevronRect();
+    uint8_t alpha = 0x1F;
+    if (chevron_pressed_) {
+      alpha = 0x3D;
+    } else if (chevron_hovered_) {
+      alpha = 0x33;
+    }
+    cc::PaintFlags wash;
+    wash.setAntiAlias(true);
+    wash.setColor(SkColorSetA(Ink(), alpha));
+    canvas->DrawCircle(gfx::PointF(box.CenterPoint()), kChevronBox / 2.f, wash);
     // The chevron points down when the set is open, right when it is closed.
     canvas->Save();
     cc::PaintCanvas* const paint = canvas->sk_canvas();
-    paint->translate(width() - kTrail - kChevron / 2.f, height() / 2.f);
+    paint->translate(box.CenterPoint().x(), box.CenterPoint().y());
     paint->rotate(collapsed_ ? -90.f : 0.f);
     paint->translate(-kChevron / 2.f, -kChevron / 2.f);
     gfx::PaintVectorIcon(canvas, kZephyrusExpandMoreIcon, kChevron, Ink());
     canvas->Restore();
+  }
+
+  void OnMouseMoved(const ui::MouseEvent& event) override {
+    views::Button::OnMouseMoved(event);
+    SetChevronHovered(ChevronRect().Contains(event.location()));
+  }
+  void OnMouseExited(const ui::MouseEvent& event) override {
+    views::Button::OnMouseExited(event);
+    SetChevronHovered(false);
   }
 
   void BeginRename() {
@@ -898,9 +922,11 @@ class SetPill : public views::Button, public views::TextfieldController {
   bool OnMousePressed(const ui::MouseEvent& event) override {
     press_x_ = event.x();
     if (!renaming_ && event.IsOnlyLeftMouseButton()) {
-      const gfx::Rect chevron(width() - kTrail - kChevron - 4, 0, kChevron + 8,
-                              height());
+      gfx::Rect chevron = ChevronRect();
+      chevron.Inset(-2);
       if (chevron.Contains(event.location())) {
+        chevron_pressed_ = true;
+        SchedulePaint();
         strip_->ToggleSetCollapsed(id_);
         return true;
       }
@@ -937,6 +963,10 @@ class SetPill : public views::Button, public views::TextfieldController {
     return true;
   }
   void OnMouseReleased(const ui::MouseEvent& event) override {
+    if (chevron_pressed_) {
+      chevron_pressed_ = false;
+      SchedulePaint();
+    }
     if (!dragging_) {
       views::Button::OnMouseReleased(event);
       return;
@@ -975,9 +1005,22 @@ class SetPill : public views::Button, public views::TextfieldController {
 
  private:
   static constexpr int kLead = 8;
-  static constexpr int kTrail = 6;
+  // The container sits 3dp in from the pill's end.
+  static constexpr int kTrail = 3;
   static constexpr int kGlyph = 14;
-  static constexpr int kChevron = 14;
+  static constexpr int kChevron = 12;
+  static constexpr int kChevronBox = 18;
+
+  gfx::Rect ChevronRect() const {
+    return gfx::Rect(width() - kTrail - kChevronBox,
+                     (height() - kChevronBox) / 2, kChevronBox, kChevronBox);
+  }
+  void SetChevronHovered(bool hovered) {
+    if (chevron_hovered_ != hovered) {
+      chevron_hovered_ = hovered;
+      SchedulePaint();
+    }
+  }
 
   bool Lit() const { return has_active_ && collapsed_; }
 
@@ -1019,6 +1062,8 @@ class SetPill : public views::Button, public views::TextfieldController {
   bool renaming_ = false;
   bool dragging_ = false;
   bool drop_highlight_ = false;
+  bool chevron_hovered_ = false;
+  bool chevron_pressed_ = false;
   int press_x_ = 0;
 };
 
