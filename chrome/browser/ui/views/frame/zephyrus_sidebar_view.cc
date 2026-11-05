@@ -8,6 +8,7 @@
 
 
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_icon_motion.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_private_workspace.h"
 
@@ -1100,73 +1101,8 @@ std::vector<tab_groups::TabGroupId> OrderedSets(
   return sets;
 }
 
-// Motion shared by the small icons of a set, in the way of the M3 Expressive
-// set: a spring on hover, a dip while pressed, and a pop on click. Owned by the
-// view that paints the icon, which reads Hover()/Press()/ClickProgress() when
-// it paints and is told to repaint when any of them moves.
-class SetIconMotion : public gfx::AnimationDelegate {
- public:
-  explicit SetIconMotion(base::RepeatingClosure on_change)
-      : on_change_(std::move(on_change)),
-        hover_(this),
-        press_(this),
-        click_(this) {
-    hover_.SetTweenType(gfx::Tween::LINEAR);
-    hover_.SetSlideDuration(base::Milliseconds(260));
-    press_.SetTweenType(gfx::Tween::LINEAR);
-    press_.SetSlideDuration(base::Milliseconds(100));
-    click_.SetTweenType(gfx::Tween::LINEAR);
-    click_.SetSlideDuration(base::Milliseconds(260));
-  }
-  SetIconMotion(const SetIconMotion&) = delete;
-  SetIconMotion& operator=(const SetIconMotion&) = delete;
-  ~SetIconMotion() override = default;
-
-  void SetHovered(bool hovered) { Retarget(hover_, hovered); }
-  void SetPressed(bool pressed) { Retarget(press_, pressed); }
-  void Click() {
-    if (gfx::Animation::ShouldRenderRichAnimation()) {
-      click_.Reset(0.0);
-      click_.Show();
-    }
-  }
-  // 0..1, springing (it overshoots a little).
-  float Hover() const {
-    return zephyrus::m3::Curve(zephyrus::m3::Spring::kFastSpatial)
-        .Solve(hover_.GetCurrentValue());
-  }
-  float Press() const {
-    return zephyrus::m3::Curve(zephyrus::m3::Spring::kFastEffects)
-        .Solve(press_.GetCurrentValue());
-  }
-  // 0 -> 1 over a click; sin(pi * this) is the pop.
-  float Pop() const {
-    return std::sin(static_cast<float>(M_PI) *
-                    static_cast<float>(click_.GetCurrentValue()));
-  }
-
-  // gfx::AnimationDelegate:
-  void AnimationProgressed(const gfx::Animation* animation) override {
-    on_change_.Run();
-  }
-
- private:
-  void Retarget(gfx::SlideAnimation& animation, bool show) {
-    if (!gfx::Animation::ShouldRenderRichAnimation()) {
-      animation.Reset(show ? 1.0 : 0.0);
-      on_change_.Run();
-    } else if (show) {
-      animation.Show();
-    } else {
-      animation.Hide();
-    }
-  }
-
-  base::RepeatingClosure on_change_;
-  gfx::SlideAnimation hover_;
-  gfx::SlideAnimation press_;
-  gfx::SlideAnimation click_;
-};
+// Motion shared by the small icons of a set: see zephyrus::IconMotion.
+using SetIconMotion = zephyrus::IconMotion;
 
 // A set's icon, drawn from the workspace icon set (stroked, so it takes any
 // ink). Still: it does not animate on hover, press or click.

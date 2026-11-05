@@ -98,26 +98,25 @@ IN_PROC_BROWSER_TEST_F(ZephyrusTitlebarGroupsBrowserTest, GroupMembershipAndStat
   EXPECT_NE(toolbar()->reload_button(),
             GroupContaining(groups, toolbar()->home_button())[0].view);
 
-  // A run's inner corners stay well under its half-height, or the segments
-  // stop reading as one connected bar. See ZephyrusSegmentShape.
+  // Every control is its own circle: no joined runs, no resting container.
   const auto normal = Shape(toolbar()->reload_button());
-  EXPECT_FLOAT_EQ(4.f, normal.radii(SkRRect::kUpperLeft_Corner).x());
-  EXPECT_LT(normal.radii(SkRRect::kUpperLeft_Corner).x(), normal.height() / 4);
+  EXPECT_FLOAT_EQ(normal.height() / 2,
+                  normal.radii(SkRRect::kUpperLeft_Corner).x());
   toolbar()->reload_button()->SetState(views::Button::STATE_PRESSED);
   const auto pressed = Shape(toolbar()->reload_button());
   EXPECT_EQ(normal.rect(), pressed.rect());
-  EXPECT_FLOAT_EQ(2.f, pressed.radii(SkRRect::kUpperLeft_Corner).x());
+  // Pressed squares the corners up (M3's small-button pressed shape).
+  EXPECT_FLOAT_EQ(8.f, pressed.radii(SkRRect::kUpperLeft_Corner).x());
   Paint("titlebar-pressed.png");
   toolbar()->reload_button()->SetState(views::Button::STATE_NORMAL);
   Paint("titlebar-normal.png");
 
-  // Removing an optional first action rounds the next visible action's end.
+  // Removing an optional action leaves the rest as they were: still circles.
   toolbar()->home_button()->SetVisible(false);
   Layout();
   groups = Groups();
   for (const auto& group : groups) {
     EXPECT_NE(toolbar()->home_button(), group[0].view);
-    // Whichever control now leads a run wears the run's rounded cap.
     const auto lead = Shape(const_cast<views::View*>(group[0].view.get()));
     EXPECT_FLOAT_EQ(lead.height() / 2,
                     lead.radii(SkRRect::kUpperLeft_Corner).x());
@@ -137,7 +136,6 @@ IN_PROC_BROWSER_TEST_F(ZephyrusTitlebarGroupsBrowserTest, CustomizedActionsAndRe
     Layout();
     const auto groups = Groups();
     ASSERT_GE(groups.size(), 3u);
-    float tightest = 1e9f;
     for (const auto& group : groups) {
       for (size_t i = 0; i < group.size(); ++i) {
         // A container centred on its control is what keeps the glyph centred.
@@ -145,23 +143,9 @@ IN_PROC_BROWSER_TEST_F(ZephyrusTitlebarGroupsBrowserTest, CustomizedActionsAndRe
         const gfx::Rect cell = group[i].view->GetLocalBounds();
         EXPECT_NEAR(cell.CenterPoint().x(), shape.rect().centerX(), 0.5f)
             << "segment " << i << " is off centre on its control";
-        if (i == 0) {
-          continue;
-        }
-        const auto prev = Shape(const_cast<views::View*>(group[i - 1].view.get()));
-        const int prev_x = views::View::ConvertRectToTarget(
-            group[i - 1].view, toolbar(), group[i - 1].view->GetLocalBounds()).x();
-        const int x = views::View::ConvertRectToTarget(
-            group[i].view, toolbar(), group[i].view->GetLocalBounds()).x();
-        const float seam =
-            shape.rect().left() + x - prev.rect().right() - prev_x;
-        EXPECT_GE(seam, 2.f) << "segments overlap or touch";
-        tightest = std::min(tightest, seam);
       }
     }
-    // The closest pair in the bar lands exactly on the 2dp connected seam.
-    EXPECT_FLOAT_EQ(2.f, tightest);
-    // Containers are square: a cell narrower than it is tall was what made
+    // State layers are square: a cell narrower than it is tall was what made
     // lone controls read as vertical ovals.
     for (const auto& group : groups) {
       for (const auto& segment : group) {

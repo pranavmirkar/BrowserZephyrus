@@ -97,6 +97,7 @@
 #include "chrome/browser/net/secure_dns_config.h"
 #include "chrome/browser/ui/views/frame/zephyrus_agent_panel.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_icon_motion.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3_switch.h"
 #include "chrome/browser/zephyrus/agent/dev_model_client.h"
@@ -117,6 +118,7 @@
 #include "ui/views/window/dialog_delegate.h"
 #include "ui/base/models/image_model.h"
 #include "ui/views/controls/image_view.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/controls/label.h"
 #include "ui/base/hit_test.h"
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
@@ -371,77 +373,149 @@ DEFINE_UI_CLASS_PROPERTY_KEY(bool, kActionItemUnderlineIndicatorKey, false)
 // the cast hands back a bogus pointer and writing through it takes the browser
 // down with an access violation (0xC0000005) before the first paint.
 
-// One geometry source for the container and the native ink-drop mask.
+// One geometry source for the native ink-drop mask and the caption buttons'
+// own hover.
 //
-// Every segment is SYMMETRIC about its own control. That is the whole point:
-// the glyph is centred in the control's cell, so a container that reaches
-// further to one side than the other puts the glyph visibly off centre.
+// Every control is its own shape, SYMMETRIC about itself: the glyph is centred
+// in the control's cell, so a state layer that reached further to one side
+// than the other would put the glyph visibly off centre. A toolbar cell is 24
+// wide inside a 28 tall bar, and a layer drawn at the cell's width is a
+// VERTICAL oval, so a narrow control is widened until it is at least square and
+// the fully rounded ends read as a circle.
 //
-// Splitting at the midpoint between neighbours did exactly that. A run's first
-// control grew only rightwards and its last only leftwards, so the glyph drifted
-// toward the group's outer cap -- and the old per-run inset, applied to one side
-// of those same two controls, pulled it the same way again.
-//
-// So the run grows by ONE amount on both sides of every control, taken from its
-// tightest gap: the closest pair lands exactly kSeam apart, wider-spaced pairs
-// keep a little more air, and no glyph moves. A control standing alone in its
-// group grows not at all -- there is nothing to connect to.
+// There used to be resting containers here, joined into runs with a seam
+// between neighbours. They are gone for good: the controls sit bare on the
+// title bar, and what answers the pointer is the state layer and the glyph's
+// own motion (ZephyrusGlyphMotion).
 SkRRect ZephyrusSegmentShape(const std::vector<ZephyrusGroupSegment>& group,
                             size_t index) {
-  constexpr int kSeam = 2;
-  // A run only closes up to kSeam if it is allowed to grow half its gap. The
-  // toolbar sets its buttons about 13dp apart, so a cap of 6 left roughly a
-  // 3dp trough -- visible, and the group read as separate chips. The cap is
-  // only here to stop a loosely spaced run reaching into the group beside it.
-  constexpr int kMaxGrow = 10;
   const auto& item = group[index];
-  int grow;
-  if (group.size() > 1) {
-    grow = kMaxGrow;
-    for (size_t i = 1; i < group.size(); ++i) {
-      const int gap =
-          std::max(0, group[i].bounds.x() - group[i - 1].bounds.right());
-      grow = std::min(grow, (gap - kSeam) / 2);
-    }
-    // NEGATIVE is allowed, and it has to be: cells that already touch (gap 0)
-    // need the containers pulled IN to open the seam, not left flush. Flooring
-    // this at zero is what painted the window controls as one unbroken slab.
-    grow = std::max(grow, -kSeam);
-  } else {
-    // Nothing to connect to, so nothing constrains the width -- and a toolbar
-    // cell is 24 wide inside a 28 tall bar, so a container drawn at the cell's
-    // width is a VERTICAL oval. Widen a lone control until its container is at
-    // least square and the fully rounded ends read as a circle.
-    grow = std::max(0, (item.bounds.height() - item.bounds.width() + 1) / 2);
-  }
-  const bool first = index == 0;
-  const bool last = index + 1 == group.size();
+  const int grow = std::max(0, (item.bounds.height() - item.bounds.width() + 1) / 2);
   const float left = item.bounds.x() - grow;
   const float right = item.bounds.right() + grow;
-  const float outer = item.bounds.height() / 2.f;
-  // Keep the group's outside silhouette while its inner corners respond.
-  //
-  // The inner radius has to stay SMALL relative to the container's half-height,
-  // or a run stops reading as one bar. These containers are kPillHeight tall,
-  // so the half-height is 14: at the old inner radius of 8, two corners facing
-  // each other across the 2dp seam opened the background to 2 + 8 + 8 = 18dp at
-  // the top and bottom edges while the middle stayed 2dp, and every segment
-  // read as its own rounded chip. At 4 that opening is 10dp, and the run reads
-  // as a divided bar with fully round ends -- which is the connected button
-  // group. Scale this with kPillHeight, never independently of it.
-  const float inner = item.pressed ? 2.f : 4.f;
-  const float end = first && last && item.pressed ? 4.f : outer;
-  const float l = first ? end : inner;
-  const float r = last ? end : inner;
-  const SkVector radii[4] = {{l, l}, {r, r}, {r, r}, {l, l}};
-  return SkRRect::MakeRectRadii(
-      SkRect::MakeLTRB(left, item.bounds.y(), right, item.bounds.bottom()), radii);
+  // M3 squares a pressed control's corners (a "small" button's pressed shape
+  // is 8dp); at rest it is fully round.
+  const float half = item.bounds.height() / 2.f;
+  const float radius = item.pressed ? std::min(8.f, half) : half;
+  return SkRRect::MakeRectXY(
+      SkRect::MakeLTRB(left, item.bounds.y(), right, item.bounds.bottom()),
+      radius, radius);
 }
 
-namespace {
+// The motion of one title-bar glyph. The glyph is the toolbar button's own
+// ImageView, lifted onto a layer so it can be moved, turned and scaled without
+// a repaint: the spring is a compositor transform, not a redraw.
+//
+// Which motion a glyph gets follows what it does. The arrows lean the way they
+// point, reload turns once when it is pressed, the plus turns a quarter, and
+// everything else lifts and pops. All of it reads the same way: a spring on
+// hover, a dip while pressed, a pop on click -- M3 Expressive's icon button
+// without the container.
+enum class ZephyrusGlyph { kNudgeBack, kNudgeForward, kSpin, kTurnPlus, kPop };
 
-// Appearance setting; registered as a literal in browser_prefs.cc.
-constexpr char kZephyrusContainersPref[] = "zephyrus.appearance.m3_containers";
+class ZephyrusGlyphMotion {
+ public:
+  ZephyrusGlyphMotion(views::Button* button, ZephyrusGlyph kind)
+      : button_(button),
+        kind_(kind),
+        motion_(base::BindRepeating(&ZephyrusGlyphMotion::Apply,
+                                    base::Unretained(this)),
+                kind == ZephyrusGlyph::kSpin ? base::Milliseconds(520)
+                                             : base::Milliseconds(300)) {
+    for (views::View* child : button->children()) {
+      if (auto* image = views::AsViewClass<views::ImageView>(child)) {
+        image->SetPaintToLayer();
+        image->layer()->SetFillsBoundsOpaquely(false);
+        icon_.SetView(image);
+        break;
+      }
+    }
+    subscription_ = button->AddStateChangedCallback(base::BindRepeating(
+        &ZephyrusGlyphMotion::OnState, base::Unretained(this)));
+    OnState();
+  }
+  ZephyrusGlyphMotion(const ZephyrusGlyphMotion&) = delete;
+  ZephyrusGlyphMotion& operator=(const ZephyrusGlyphMotion&) = delete;
+  ~ZephyrusGlyphMotion() = default;
+
+  // False once the button is gone: the owner drops the entry.
+  bool Alive() const { return button_.view() != nullptr; }
+  bool IsFor(const views::View* view) const { return button_.view() == view; }
+
+ private:
+  void OnState() {
+    auto* button = views::AsViewClass<views::Button>(button_.view());
+    if (!button) {
+      return;
+    }
+    const views::Button::ButtonState state = button->GetState();
+    const bool pressed = state == views::Button::STATE_PRESSED;
+    motion_.SetHovered(pressed || state == views::Button::STATE_HOVERED);
+    motion_.SetPressed(pressed);
+    // Released over the button: that was a click.
+    if (was_pressed_ && state == views::Button::STATE_HOVERED) {
+      motion_.Click();
+    }
+    was_pressed_ = pressed;
+  }
+
+  void Apply() {
+    views::View* icon = icon_.view();
+    if (!icon || !icon->layer()) {
+      return;
+    }
+    const float hover = motion_.Hover();
+    const float press = motion_.Press();
+    const float pop = motion_.Pop();
+    const float turn = motion_.Turn();
+    float dx = 0.f;
+    float dy = 0.f;
+    float degrees = 0.f;
+    float scale = 1.f - 0.14f * press;
+    // The arrows follow the UI direction, as their icons do.
+    const float dir = base::i18n::IsRTL() ? -1.f : 1.f;
+    switch (kind_) {
+      case ZephyrusGlyph::kNudgeBack:
+        dx = -dir * 2.5f * hover;
+        scale += 0.05f * hover;
+        break;
+      case ZephyrusGlyph::kNudgeForward:
+        dx = dir * 2.5f * hover;
+        scale += 0.05f * hover;
+        break;
+      case ZephyrusGlyph::kSpin:
+        // A lean on hover; one full turn, springing past and settling, on click.
+        degrees = 40.f * hover + 360.f * turn;
+        scale += 0.04f * hover;
+        break;
+      case ZephyrusGlyph::kTurnPlus:
+        degrees = 90.f * hover + 90.f * turn;
+        scale += 0.08f * hover;
+        break;
+      case ZephyrusGlyph::kPop:
+        dy = -1.f * hover;
+        scale += 0.12f * hover + 0.12f * pop;
+        break;
+    }
+    const float cx = icon->width() / 2.f;
+    const float cy = icon->height() / 2.f;
+    gfx::Transform transform;
+    transform.Translate(cx + dx, cy + dy);
+    transform.RotateAboutZAxis(degrees);
+    transform.Scale(scale, scale);
+    transform.Translate(-cx, -cy);
+    icon->layer()->SetTransform(transform);
+  }
+
+  views::ViewTracker button_;
+  views::ViewTracker icon_;
+  const ZephyrusGlyph kind_;
+  bool was_pressed_ = false;
+  zephyrus::IconMotion motion_;
+  base::CallbackListSubscription subscription_;
+};
+
+namespace {
 
 // Gets the display mode for a given browser.
 ToolbarView::DisplayMode GetDisplayMode(BrowserWindowInterface* browser) {
@@ -1178,12 +1252,6 @@ void ToolbarView::Init() {
   if (home_) {
     home_->SetVisible(show_home_button_.GetValue());
   }
-
-  zephyrus_m3_containers_.Init(
-      kZephyrusContainersPref, prefs,
-      base::BindRepeating(&ToolbarView::OnZephyrusContainersChanged,
-                          base::Unretained(this)));
-  OnZephyrusContainersChanged();
 
   auto* vertical_tab_strip_state_controller =
       tabs::VerticalTabStripStateController::From(browser_view_->browser());
@@ -2049,10 +2117,13 @@ void ToolbarView::Layout(PassKey) {
         if (!views::AsViewClass<ToolbarIconContainerView>(button->parent())) {
           SetZephyrusPitchMargin(button);
         }
-        // The shared container paints the state layer once. Keep the native
-        // mask/focus geometry but avoid a second wash over the same segment.
-        views::InkDrop::Get(button)->SetHighlightOpacity(0.f);
-        views::InkDrop::Get(button)->SetVisibleOpacity(0.f);
+        // The ink drop IS the state layer now that nothing is painted behind
+        // the controls: M3's hover and pressed alphas, in the control's own
+        // shape (ZephyrusSegmentShape).
+        views::InkDrop::Get(button)->SetHighlightOpacity(
+            zephyrus::m3::kHover / 255.0f);
+        views::InkDrop::Get(button)->SetVisibleOpacity(
+            zephyrus::m3::kPressed / 255.0f);
         return;
       }
       if (views::AsViewClass<ToolbarIconContainerView>(view)) {
@@ -2062,7 +2133,7 @@ void ToolbarView::Layout(PassKey) {
         self(self, child);
       }
     };
-    if (zephyrus_nav_pill_backdrop_) {
+    if (zephyrus_close_button_) {
       for (views::View* child : children()) {
         if (views::AsViewClass<views::Button>(child) ||
             views::AsViewClass<ToolbarIconContainerView>(child)) {
@@ -2162,12 +2233,8 @@ void ToolbarView::Layout(PassKey) {
     // What splits them is the control KIND, not a view sitting between them --
     // see ZephyrusTitlebarGroups.
   }
-  // The group painter covers the whole bar; it positions nothing itself, it
-  // just draws every group's containers behind the controls.
-  if (zephyrus_nav_pill_backdrop_) {
-    zephyrus_nav_pill_backdrop_->SetVisible(true);
-    zephyrus_nav_pill_backdrop_->SetBoundsRect(GetLocalBounds());
-  }
+  // Controls come and go (a download, an extension): give each the motion.
+  AttachZephyrusMotions();
 
   // Zephyrus: Safari-style compact address pill. Stock Chromium stretches the
   // location bar across every free pixel — the single strongest "this is
@@ -2486,24 +2553,40 @@ class ZephyrusWin11CaptionButton : public views::Button {
   ZephyrusWin11CaptionButton(PressedCallback callback,
                              Kind kind,
                              const std::u16string& name)
-      : views::Button(std::move(callback)), kind_(kind) {
+      : views::Button(std::move(callback)),
+        kind_(kind),
+        motion_(base::BindRepeating(&views::View::SchedulePaint,
+                                    base::Unretained(this))),
+        morph_(base::BindRepeating(&views::View::SchedulePaint,
+                                   base::Unretained(this)),
+               base::Milliseconds(420)) {
     GetViewAccessibility().SetName(name);
     SetTooltipText(name);
     SetAnimateOnStateChange(false);
     // Reserve the same width that Layout() assigns. The full-height hit
-    // target is independent of the compact painted container.
+    // target is independent of the compact painted state layer.
     SetPreferredSize(gfx::Size(kZephyrusCaptionCell, 36));
   }
 
   // The 18-unit Breeze grid is drawn into a box this many DIPs across; the
-  // drawn glyph occupies roughly the middle 10 units.
+  // drawn glyph occupies roughly the middle 10 units. The motion below moves
+  // the glyph inside that box and never changes it.
   static constexpr float kGlyphBox = 16.f;
 
   void SetMaximized(bool maximized) {
-    if (maximized_ != maximized) {
-      maximized_ = maximized;
-      SchedulePaint();
+    if (maximized_ == maximized) {
+      return;
     }
+    // Maximise and restore are one glyph turning into the other: the two
+    // triangles collapse toward each other and open out the other way. With
+    // reduced motion it just changes.
+    morph_from_maximized_ = maximized_;
+    maximized_ = maximized;
+    morphing_ = gfx::Animation::ShouldRenderRichAnimation();
+    if (morphing_) {
+      morph_.Click();
+    }
+    SchedulePaint();
   }
 
   void SetForeground(SkColor color) {
@@ -2513,44 +2596,72 @@ class ZephyrusWin11CaptionButton : public views::Button {
     }
   }
 
-  // Whether a tonal container sits behind this glyph. Without one the glyph
-  // reads against the title bar, so it uses onSurface, not the container ink.
-  void SetContained(bool contained) {
-    if (contained_ != contained) {
-      contained_ = contained;
-      SchedulePaint();
-    }
-  }
-
-  // The group owns the complete container and state layer. A second circular
-  // hover fill here would cover the connected corners with a different shape.
+  // There is no container behind a caption glyph, resting or otherwise. The
+  // hover is painted in PaintButtonContents, under the glyph, so it can fade
+  // and square up with the same springs the glyph moves on.
   void OnPaintBackground(gfx::Canvas* canvas) override {}
 
   void StateChanged(ButtonState old_state) override {
     views::Button::StateChanged(old_state);
-    if (parent()) {
-      parent()->SchedulePaint();
-    }
+    const bool pressed = GetState() == STATE_PRESSED;
+    motion_.SetHovered(pressed || GetState() == STATE_HOVERED);
+    motion_.SetPressed(pressed);
   }
 
   // Breeze geometry, from breezebutton.cpp, on its own 18x18 grid:
   //   close     X       (5,5)-(13,13) and (13,5)-(5,13)
-  //   maximize  chevron UP    (4,11)-(9,6)-(14,11)
-  //   minimize  chevron DOWN  (4,7)-(9,12)-(14,7)
-  //   restore   filled diamond (4,9)-(9,4)-(14,9)-(9,14)
+  //   minimize  a bar   (5,9)-(13,9)
+  //   maximize  two filled triangles reaching for opposite corners
+  //   restore   the same two, apexes turned in toward the centre
   //
-  // Antialiased on a float grid deliberately: diagonals and chevrons cannot be
-  // snapped to whole pixels without distorting their angles, which is what made
-  // the old pixel-blocked X ragged at fractional scaling.
+  // Antialiased on a float grid deliberately: diagonals cannot be snapped to
+  // whole pixels without distorting their angles, which is what made the old
+  // pixel-blocked X ragged at fractional scaling.
   void PaintButtonContents(gfx::Canvas* canvas) override {
-    const bool hot =
-        GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
-    // Pair the glyph with the container, including Close's error state.
-    const SkColor symbol_color = zephyrus::m3::Role(
-        *this, hot && kind_ == Kind::kClose
-                   ? kColorZephyrusOnErrorContainer
-                   : contained_ ? kColorZephyrusOnSecondaryContainer
-                                : kColorZephyrusOnSurface);
+    const float hover = std::clamp(motion_.Hover(), 0.f, 1.2f);
+    const float press = std::clamp(motion_.Press(), 0.f, 1.f);
+    const bool close = kind_ == Kind::kClose;
+
+    // The state layer: a circle that squares up while it is held. Close keeps
+    // its error container, because closing is the one destructive thing here.
+    {
+      gfx::Rect cell = GetLocalBounds();
+      if (const gfx::Insets* pad = GetProperty(views::kInternalPaddingKey)) {
+        cell.Inset(*pad);
+      }
+      const int diameter = std::min(kZephyrusContainer, cell.width());
+      gfx::Rect disc(diameter, diameter);
+      disc.set_origin(gfx::Point(cell.CenterPoint().x() - diameter / 2,
+                                 cell.CenterPoint().y() - diameter / 2));
+      const float radius =
+          gfx::Tween::FloatValueBetween(press, diameter / 2.f, 8.f);
+      const float on = std::min(1.f, hover);
+      SkColor fill;
+      if (close) {
+        fill = zephyrus::m3::WithStateLayer(
+            zephyrus::m3::Role(*this, kColorZephyrusErrorContainer),
+            zephyrus::m3::Role(*this, kColorZephyrusOnErrorContainer),
+            static_cast<SkAlpha>(zephyrus::m3::kPressed * press));
+        fill = SkColorSetA(fill, static_cast<SkAlpha>(255 * on));
+      } else {
+        // Pressed replaces the hover layer, it does not stack on it.
+        const float alpha = gfx::Tween::FloatValueBetween(
+            press, zephyrus::m3::kHover * on, zephyrus::m3::kPressed);
+        fill = SkColorSetA(zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+                           static_cast<SkAlpha>(std::min(255.f, alpha)));
+      }
+      cc::PaintFlags flags;
+      flags.setAntiAlias(true);
+      flags.setColor(fill);
+      canvas->sk_canvas()->drawRRect(
+          SkRRect::MakeRectXY(gfx::RectToSkRect(disc), radius, radius), flags);
+    }
+
+    const SkColor symbol_color = gfx::Tween::ColorValueBetween(
+        std::min(1.f, hover),
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+        zephyrus::m3::Role(*this, close ? kColorZephyrusOnErrorContainer
+                                        : kColorZephyrusOnSurface));
 
     gfx::ScopedCanvas scoped(canvas);
     const gfx::Rect contents = GetContentsBounds();
@@ -2559,6 +2670,17 @@ class ZephyrusWin11CaptionButton : public views::Button {
     canvas->sk_canvas()->scale(unit, unit);
     canvas->sk_canvas()->translate((contents.width() / unit) / 2.f - 9.f,
                                    (contents.height() / unit) / 2.f - 9.f);
+
+    // The glyph's own motion, about the centre of its grid: it swells a little
+    // on hover and dips while held.
+    const float scale = 1.f + 0.10f * hover - 0.14f * press;
+    canvas->sk_canvas()->translate(9.f, 9.f);
+    if (close) {
+      // A quarter turn: the X lands on itself, so it reads as a spin.
+      canvas->sk_canvas()->rotate(90.f * hover);
+    }
+    canvas->sk_canvas()->scale(scale, scale);
+    canvas->sk_canvas()->translate(-9.f, -9.f);
 
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
@@ -2573,42 +2695,50 @@ class ZephyrusWin11CaptionButton : public views::Button {
         canvas->sk_canvas()->drawLine(5, 5, 13, 13, flags);
         canvas->sk_canvas()->drawLine(13, 5, 5, 13, flags);
         break;
-      // macOS glyphs for these two. Close keeps its X, which both platforms
-      // draw the same way.
-      case Kind::kMinimize:
-        // A plain bar. macOS's minimise is the one glyph in the set with no
-        // direction to it -- the window is not going anywhere you can point at.
-        canvas->sk_canvas()->drawLine(5, 9, 13, 9, flags);
+      case Kind::kMinimize: {
+        // A plain bar, which dips toward the taskbar on hover: the window is
+        // about to go down there.
+        const float dip = 1.5f * hover;
+        canvas->sk_canvas()->drawLine(5, 9 + dip, 13, 9 + dip, flags);
         break;
+      }
       case Kind::kMaximizeRestore: {
-        // Two triangles in opposite corners: pointing OUT to expand, and in
-        // toward each other to restore. Filled, unlike the chevrons this
-        // replaces -- a stroked triangle this small closes up into a smudge,
-        // and macOS fills them for the same reason.
+        // Two filled triangles, as macOS draws them: a stroked triangle this
+        // small closes up into a smudge. Expand has the apexes reaching for the
+        // corners; restore turns them in toward each other. `restored` runs
+        // 0 (expand) .. 1 (restore) and is what the click animates.
+        const float to = maximized_ ? 1.f : 0.f;
+        const float from = morph_from_maximized_ ? 1.f : 0.f;
+        const float restored =
+            morphing_ ? gfx::Tween::FloatValueBetween(morph_.Turn(), from, to)
+                      : to;
+        // Hover leans the pair: outward to expand, inward to restore.
+        const float lean =
+            hover * gfx::Tween::FloatValueBetween(restored, -1.2f, 0.6f);
+        // Vertex pairing keeps the winding the same, so the triangles shrink
+        // through the middle of the change instead of folding flat.
+        const std::array<SkPoint, 3> expand_a = {{{4, 4}, {10, 4}, {4, 10}}};
+        const std::array<SkPoint, 3> restore_a = {{{8, 8}, {4, 8}, {8, 4}}};
+        const std::array<SkPoint, 3> expand_b = {{{14, 14}, {8, 14}, {14, 8}}};
+        const std::array<SkPoint, 3> restore_b = {{{10, 10}, {14, 10}, {10, 14}}};
+        auto lerp = [&](const SkPoint& a, const SkPoint& b, float sign) {
+          return SkPoint::Make(
+              gfx::Tween::FloatValueBetween(restored, a.x(), b.x()) + sign * lean,
+              gfx::Tween::FloatValueBetween(restored, a.y(), b.y()) + sign * lean);
+        };
         cc::PaintFlags solid = flags;
         solid.setStyle(cc::PaintFlags::kFill_Style);
         SkPathBuilder path;
-        if (maximized_) {
-          // Restore: apexes meet near the centre.
-          path.moveTo(4, 8);
-          path.lineTo(8, 8);
-          path.lineTo(8, 4);
-          path.close();
-          path.moveTo(14, 10);
-          path.lineTo(10, 10);
-          path.lineTo(10, 14);
-          path.close();
-        } else {
-          // Expand: apexes reach for the corners.
-          path.moveTo(4, 4);
-          path.lineTo(10, 4);
-          path.lineTo(4, 10);
-          path.close();
-          path.moveTo(14, 14);
-          path.lineTo(8, 14);
-          path.lineTo(14, 8);
-          path.close();
+        for (int i = 0; i < 3; ++i) {
+          const SkPoint p = lerp(expand_a[i], restore_a[i], 1.f);
+          i == 0 ? path.moveTo(p) : path.lineTo(p);
         }
+        path.close();
+        for (int i = 0; i < 3; ++i) {
+          const SkPoint p = lerp(expand_b[i], restore_b[i], -1.f);
+          i == 0 ? path.moveTo(p) : path.lineTo(p);
+        }
+        path.close();
         canvas->sk_canvas()->drawPath(path.detach(), solid);
         break;
       }
@@ -2618,8 +2748,12 @@ class ZephyrusWin11CaptionButton : public views::Button {
  private:
   Kind kind_;
   bool maximized_ = false;
-  bool contained_ = true;
+  bool morph_from_maximized_ = false;
+  bool morphing_ = false;
   SkColor foreground_ = SK_ColorWHITE;
+  zephyrus::IconMotion motion_;
+  // Plays once per maximise / restore; Turn() is the change itself.
+  zephyrus::IconMotion morph_;
 };
 
 BEGIN_METADATA(ZephyrusWin11CaptionButton)
@@ -3560,96 +3694,6 @@ void ShowZephyrusDeleteWorkspaceDialog(BrowserWindowInterface* browser,
 }
 
 
-// Paints tonal M3 connected controls below their native glyphs.
-class ZephyrusGlassPill : public views::View {
-  METADATA_HEADER(ZephyrusGlassPill, views::View)
-
- public:
-  ZephyrusGlassPill() {
-    SetCanProcessEventsWithinSubtree(false);
-    SetProperty(views::kViewIgnoredByLayoutKey, true);
-  }
-
-  // Where the groups come from, asked for at PAINT time.
-  //
-  // Pulling rather than being told means the containers can never lag the
-  // controls after a relayout, and this class is defined below
-  // ToolbarView::Layout() so it could not be handed them anyway.
-  using GroupSource = base::RepeatingCallback<
-      std::vector<std::vector<ZephyrusGroupSegment>>()>;
-  void SetGroupSource(GroupSource source) { source_ = std::move(source); }
-
-  // Appearance setting. Off: no container at rest, only the hover and pressed
-  // state layer, so the controls still answer the pointer.
-  void SetContained(bool contained) {
-    if (contained_ != contained) {
-      contained_ = contained;
-      SchedulePaint();
-    }
-  }
-
-  // views::View:
-  void OnPaint(gfx::Canvas* canvas) override {
-    if (!source_) {
-      return;
-    }
-    // Connected XS tokens: kZephyrusGap spacing, small inner corners at rest
-    // and smaller when pressed, at kZephyrusContainer height. The numbers live
-    // in ZephyrusSegmentShape; do not restate them here, they drift.
-    cc::PaintFlags fill;
-    fill.setAntiAlias(true);
-    fill.setColor(zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer));
-
-    for (const auto& group : source_.Run()) {
-      for (size_t i = 0; i < group.size(); ++i) {
-        SkRRect rrect = ZephyrusSegmentShape(group, i);
-        rrect.offset(-x(), -y());
-        SkColor color = zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer);
-        SkColor ink = zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer);
-        // A disabled control keeps the container. M3 swaps it for onSurface at
-        // 12%, but that assumes a far weaker container tone than our seeded
-        // one: against kColorZephyrusSecondaryContainer the swap punched a
-        // visible hole in the run -- back and forward are disabled on a new
-        // tab, so the navigation group split into a grey half and a coloured
-        // half. The run's silhouette is the point of a connected group, so the
-        // container holds and only the GLYPH drops to 38%, which is where M3
-        // puts disabled content anyway.
-        if (group[i].hovered || group[i].pressed) {
-          if (group[i].close) {
-            color = zephyrus::m3::Role(*this, kColorZephyrusErrorContainer);
-            ink = zephyrus::m3::Role(*this, kColorZephyrusOnErrorContainer);
-          }
-          color = zephyrus::m3::WithStateLayer(
-              color, ink, group[i].pressed ? zephyrus::m3::kPressed
-                                          : zephyrus::m3::kHover);
-        }
-        if (!contained_) {
-          if (!(group[i].hovered || group[i].pressed)) {
-            continue;
-          }
-          // No container to tint: Close keeps its error container (a warning
-          // affordance), everything else is a bare onSurface state layer.
-          color = group[i].close
-                      ? color
-                      : SkColorSetA(
-                            zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
-                            group[i].pressed ? zephyrus::m3::kPressed
-                                             : zephyrus::m3::kHover);
-        }
-        fill.setColor(color);
-        canvas->sk_canvas()->drawRRect(rrect, fill);
-      }
-    }
-  }
-
- private:
-  GroupSource source_;
-  bool contained_ = true;
-};
-
-BEGIN_METADATA(ZephyrusGlassPill)
-END_METADATA
-
 }  // namespace
 
 views::View* ToolbarView::zephyrus_new_tab_button() {
@@ -3774,7 +3818,8 @@ ToolbarView::ZephyrusTitlebarGroups() const {
 
 bool ToolbarView::GetZephyrusButtonShape(const views::View* button,
                                          SkRRect* shape) const {
-  if (!zephyrus_nav_pill_backdrop_) {
+  // Only the Zephyrus title bar, which is the one that has window controls.
+  if (!zephyrus_close_button_) {
     return false;
   }
   for (const auto& group : ZephyrusTitlebarGroups()) {
@@ -3792,12 +3837,6 @@ bool ToolbarView::GetZephyrusButtonShape(const views::View* button,
 }
 
 void ToolbarView::AddZephyrusWindowControls() {
-  // One painter tracks all visible groups, including customized actions.
-  auto groups = std::make_unique<ZephyrusGlassPill>();
-  groups->SetGroupSource(base::BindRepeating(
-      [](ToolbarView* toolbar) { return toolbar->ZephyrusTitlebarGroups(); },
-      base::Unretained(this)));
-  zephyrus_nav_pill_backdrop_ = AddChildViewAt(std::move(groups), 0);
   using Kind = ZephyrusWin11CaptionButton::Kind;
   auto add_button = [&](Kind kind, int accessible_name_id,
                         views::Button::PressedCallback callback) {
@@ -3865,23 +3904,36 @@ void ToolbarView::AddZephyrusWindowControls() {
                                          gfx::Insets::TLBR(-3, 0, -3, 0));
   zephyrus_close_button_->SetProperty(views::kMarginsKey,
                                       gfx::Insets::TLBR(-3, 0, -3, -6));
-  OnZephyrusContainersChanged();
 }
 
-void ToolbarView::OnZephyrusContainersChanged() {
-  // Read the pref itself, not the member: this also runs from
-  // AddZephyrusWindowControls(), which can precede Init() binding the member.
-  const bool contained =
-      browser_->GetProfile()->GetPrefs()->GetBoolean(kZephyrusContainersPref);
-  if (zephyrus_nav_pill_backdrop_) {
-    static_cast<ZephyrusGlassPill*>(zephyrus_nav_pill_backdrop_.get())
-        ->SetContained(contained);
-  }
-  for (views::Button* button :
-       {zephyrus_minimize_button_.get(), zephyrus_maximize_button_.get(),
-        zephyrus_close_button_.get()}) {
-    if (button) {
-      static_cast<ZephyrusWin11CaptionButton*>(button)->SetContained(contained);
+void ToolbarView::AttachZephyrusMotions() {
+  std::erase_if(zephyrus_glyph_motions_,
+                [](const auto& motion) { return !motion->Alive(); });
+  for (const auto& group : ZephyrusTitlebarGroups()) {
+    for (const auto& segment : group) {
+      auto* button = views::AsViewClass<views::Button>(
+          const_cast<views::View*>(segment.view.get()));
+      // The caption buttons draw their own motion.
+      if (!button || views::AsViewClass<ZephyrusWin11CaptionButton>(button)) {
+        continue;
+      }
+      if (std::any_of(zephyrus_glyph_motions_.begin(),
+                      zephyrus_glyph_motions_.end(),
+                      [button](const auto& m) { return m->IsFor(button); })) {
+        continue;
+      }
+      ZephyrusGlyph kind = ZephyrusGlyph::kPop;
+      if (button == back_) {
+        kind = ZephyrusGlyph::kNudgeBack;
+      } else if (button == forward_) {
+        kind = ZephyrusGlyph::kNudgeForward;
+      } else if (button == reload_) {
+        kind = ZephyrusGlyph::kSpin;
+      } else if (button == zephyrus_new_tab_button_) {
+        kind = ZephyrusGlyph::kTurnPlus;
+      }
+      zephyrus_glyph_motions_.push_back(
+          std::make_unique<ZephyrusGlyphMotion>(button, kind));
     }
   }
 }
@@ -4078,7 +4130,6 @@ void ToolbarView::LendZephyrusChromeTo(views::View* host) {
                        child == zephyrus_maximize_button_ ||
                        child == zephyrus_close_button_ ||
                        child == zephyrus_pin_button_ ||
-                       child == zephyrus_nav_pill_backdrop_ ||
                        views::AsViewClass<ToolbarIconContainerView>(child);
     if (!stays) {
       movable.push_back(child);

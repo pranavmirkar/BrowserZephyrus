@@ -99,7 +99,9 @@ enum class ExpansionMode {
 };
 
 // The Browser Window's toolbar.
-// One control's slot in a title-bar connected button group.
+class ZephyrusGlyphMotion;
+
+// One control's slot in the title bar: where it sits and what state it is in.
 struct ZephyrusGroupSegment {
   gfx::Rect bounds;
   // Drives the press shape-morph: M3 squares a control's corner while it is
@@ -111,14 +113,13 @@ struct ZephyrusGroupSegment {
   raw_ptr<const views::View> view = nullptr;
 };
 
-// The container shape for one control in a connected run: fully rounded on the
-// group's outside, small corners on the inside, and grown to close the seam
-// between neighbours. `group[index].bounds` are in whatever coordinate space
-// the caller paints in.
+// The state-layer shape for one title-bar control: a circle at rest, a rounded
+// square while it is pressed. There is no container at rest, and no joining of
+// neighbours: each control answers the pointer by itself. `group[index].bounds`
+// are in whatever coordinate space the caller paints in.
 //
 // Declared here rather than kept file-local so the geometry has one owner:
-// the container shape, the ink-drop mask and anything that re-lays these
-// controls out all read it from the same place.
+// the ink-drop mask and the caption buttons' own hover both read it.
 SkRRect ZephyrusSegmentShape(const std::vector<ZephyrusGroupSegment>& group,
                              size_t index);
 
@@ -594,11 +595,13 @@ class ToolbarView : public views::AccessiblePaneView,
   // added action into one long run, which is not what a button group means.
   std::vector<std::vector<ZephyrusGroupSegment>> ZephyrusTitlebarGroups() const;
 
-  // Applies zephyrus_m3_containers_ to the painter and the caption buttons.
-  void OnZephyrusContainersChanged();
+  // Gives every title-bar glyph its spring motion (see ZephyrusGlyphMotion),
+  // including the buttons that arrive later: a download, an installed
+  // extension, a pinned action. Cheap enough to run on every layout.
+  void AttachZephyrusMotions();
 
-  // Paints every title-bar button group's containers, behind the controls.
-  raw_ptr<views::View> zephyrus_nav_pill_backdrop_ = nullptr;
+  // One per title-bar button; each owns that glyph's hover/press/click motion.
+  std::vector<std::unique_ptr<ZephyrusGlyphMotion>> zephyrus_glyph_motions_;
   // See LendZephyrusChromeTo().
   bool zephyrus_compact_ = false;
   // Controls currently lent to the sidebar, with the index each one occupied
@@ -693,9 +696,6 @@ class ToolbarView : public views::AccessiblePaneView,
   BooleanPrefMember show_home_button_;
 
   BooleanPrefMember show_chrome_labs_button_;
-
-  // Appearance: tonal M3 containers behind the title-bar controls.
-  BooleanPrefMember zephyrus_m3_containers_;
 
   // The display mode used when laying out the toolbar.
   const DisplayMode display_mode_;

@@ -900,11 +900,11 @@ void AddZephyrusAdblockStrings(content::WebUIDataSource* html_source) {
       u"skips Incognito and recognized local names. The built-in threat list "
       u"checks sites on this device.");
   html_source->AddString("zephyrusM3ContainersLabel",
-                         u"Tonal containers behind toolbar buttons");
+                         u"Tonal containers in the sidebar");
   html_source->AddString(
       "zephyrusM3ContainersSubLabel",
-      u"Draws the rounded Material 3 shapes behind the navigation and window "
-      u"buttons. Turn off for plain, borderless buttons.");
+      u"Draws the rounded Material 3 shapes behind the sidebar's controls. "
+      u"The title bar's buttons are always plain.");
   html_source->AddString("zephyrusAdblockEnabledLabel",
                          u"Block ads and trackers");
   html_source->AddString(

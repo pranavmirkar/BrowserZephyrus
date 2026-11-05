@@ -1611,6 +1611,11 @@ gfx::Rect LocationBarView::GetLocalBoundsWithoutEndcaps() const {
   return bounds_without_endcaps;
 }
 
+namespace {
+// Defined below, with the other Zephyrus colour helpers.
+SkColor ZephyrusFieldFill(SkColor base, bool hovered);
+}  // namespace
+
 void LocationBarView::RefreshBackground() {
   const double opacity = hover_animation_.GetCurrentValue();
   const bool is_caret_visible =
@@ -1640,39 +1645,23 @@ void LocationBarView::RefreshBackground() {
     background_color_ = gfx::Tween::ColorValueBetween(opacity, normal, hovered);
   }
 
-  // Zephyrus: an M3 OUTLINED text field.
+  // Zephyrus: an M3 FILLED text field.
   //
-  // It was a filled pill -- an elevated card on the title bar. Two surfaces
-  // stacked in the same band is the one place this UI could least afford it:
-  // the field is the widest thing in the chrome, so its fill was also the
-  // largest block of colour competing with the page below. Outlined, the band
-  // reads as one surface and the field is drawn on it by a line.
+  // The fill is a tone of the title bar behind it (see ZephyrusFieldFill), so the
+  // field is a surface of its own on the bar. Hover lifts it one step, which is
+  // the whole hover affordance. It has to be opaque (the textfield needs an
+  // opaque background for subpixel AA), and it is.
   //
-  // The fill is the BACKDROP, not a surface of its own. It has to be opaque
-  // (the textfield needs an opaque background for subpixel AA), so "unfilled"
-  // means painting exactly what is behind: the page-adapted title bar colour.
-  // Hover lifts it by one state layer, which is the whole hover affordance.
+  // No outline: a filled field is told from its bar by its fill. The 2dp primary
+  // ring that says "typing here" is painted in OnPaintBorder, and it is the only
+  // line the field ever has.
   const SkColor zephyrus_backdrop =
       zephyrus_titlebar_color_.value_or(zephyrus::Ground());
   background_color_ = gfx::Tween::ColorValueBetween(
-      opacity, zephyrus_backdrop,
-      zephyrus::m3::WithStateLayer(
-          zephyrus_backdrop,
-          zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
-          zephyrus::m3::kHover));
+      opacity, ZephyrusFieldFill(zephyrus_backdrop, /*hovered=*/false),
+      ZephyrusFieldFill(zephyrus_backdrop, /*hovered=*/true));
 
-  // The outline carries the state, per M3: outline-variant at rest, and the
-  // full primary at 2dp once the caret is in.
-  //
-  // The focused outline is painted in OnPaintBorder, not here -- this painter
-  // only draws a 1px stroke, and a focus indicator that differs from rest by
-  // colour alone is a weak signal on a dark backdrop, where primary is a pale
-  // tone. So the background stroke is dropped while focused and the 2dp ring
-  // replaces it: one outline in either state, never two.
-  SkColor border_color =
-      is_caret_visible
-          ? SK_ColorTRANSPARENT
-          : zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant);
+  SkColor border_color = SK_ColorTRANSPARENT;
   if (high_contrast) {
     border_color =
         is_caret_visible
@@ -1719,28 +1708,25 @@ void LocationBarView::SetZephyrusTitlebarColor(std::optional<SkColor> color) {
 // theme base (zephyrus::Ground()) using the same overlay model as
 // the nav buttons (ToolbarView), so the whole search UI sits on one fixed theme.
 namespace {
-// Elevates a base color into a card surface.
+// The field's own fill: a tone of the bar it sits on, not the bar's colour.
 //
-// On DARK bases a translucent white overlay lifts the surface, which is what
-// this always did. On LIGHT bases it used to overlay BLACK -- and that is
-// wrong here in a way that is easy to miss, because it still "works": it
-// darkens the search bar into a grey-brown smudge sitting on warm cream, which
-// looks like a rendering fault rather than a raised control.
+// It was the bar itself, outlined -- one surface with the field drawn on it by a
+// line. The field now reads as a FILLED text field, as M3's: a container a step
+// off the title bar, so it is a thing of its own and reads at a glance. The
+// step is taken from the title bar's own colour (which follows the page and the
+// theme), so the fill is always a tone of the theme the user chose, never a
+// colour from somewhere else.
 //
-// The warm theme cannot elevate by getting lighter either -- the ground is
-// already near-white. So on light bases this returns the ground essentially
-// unchanged and the OUTLINE does the elevating instead, which is exactly how
-// the reference raises its own controls: a near-white fill with a wine rule
-// around it, never a darker fill.
-SkColor ZephyrusElevate(SkColor base, bool hovered) {
+// On a dark bar it lifts toward white; on a light one it settles a little
+// darker, the way a filled field sits on a light surface. The step is small: it
+// has to separate the field from the bar and no more.
+SkColor ZephyrusFieldFill(SkColor base, bool hovered) {
   if (!color_utils::IsDark(base)) {
-    return hovered ? color_utils::GetResultingPaintColor(
-                         SkColorSetA(zephyrus::Ink(), 0x0A), base)
-                   : base;
+    return color_utils::GetResultingPaintColor(
+        SkColorSetA(zephyrus::Ink(), hovered ? 0x1A : 0x12), base);
   }
-  const SkAlpha a = hovered ? 0x33 : 0x26;
-  return color_utils::GetResultingPaintColor(SkColorSetA(SK_ColorWHITE, a),
-                                             base);
+  return color_utils::GetResultingPaintColor(
+      SkColorSetA(SK_ColorWHITE, hovered ? 0x2B : 0x1F), base);
 }
 }  // namespace
 
@@ -1748,9 +1734,8 @@ SkColor LocationBarView::ZephyrusSurfaceColor(bool hovered) const {
   // Zephyrus: elevate off the permanent theme base. The title bar pushes that
   // same value down via SetZephyrusTitlebarColor; the fallback keeps the bar on
   // the identical theme during early init, so it never flashes another color.
-  return ZephyrusElevate(
-      zephyrus_titlebar_color_.value_or(zephyrus::Ground()),
-      hovered);
+  return ZephyrusFieldFill(
+      zephyrus_titlebar_color_.value_or(zephyrus::Ground()), hovered);
 }
 
 std::optional<SkColor> LocationBarView::GetZephyrusOmniboxTextColor() const {
