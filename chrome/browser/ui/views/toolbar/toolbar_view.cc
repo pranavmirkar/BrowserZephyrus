@@ -747,7 +747,7 @@ void SetZephyrusContainerPitch(views::View* container) {
 inline constexpr int kZephyrusCaptionCell = kZephyrusCell;
 // How big every glyph on the title bar's far side is, ink to ink: the icons
 // (see ToolbarButton::SetZephyrusArtDip) and the window controls alike.
-inline constexpr int kZephyrusGlyphArt = 11;
+inline constexpr int kZephyrusGlyphArt = 13;
 
 // Air between the close button and the window's right edge. The strip used to
 // run flush into the corner; a few pixels of inset lets the cluster read as a
@@ -1172,7 +1172,8 @@ void ToolbarView::Init() {
     overflow_button_->SetVisible(false);
   }
 
-  // Zephyrus: the agent button, immediately left of the app menu.
+  // Zephyrus: the agent button, immediately RIGHT of the app menu (the menu is
+  // moved to its left once both exist, below).
   //
   // On this side of the caption separator on purpose. The rule divides browser
   // controls from window controls, and an agent is a browser control -- putting
@@ -1211,6 +1212,12 @@ void ToolbarView::Init() {
         l10n_util::GetStringUTF16(IDS_APPMENU_TOOLTIP));
     app_menu_button->SetID(VIEW_ID_APP_MENU);
     app_menu_button_ = AddChildView(std::move(app_menu_button));
+    // The three dots go LEFT of the agent button, so the agent is the last
+    // browser control before the window controls.
+    if (zephyrus_agent_button_) {
+      ReorderChildView(app_menu_button_,
+                       GetIndexOf(zephyrus_agent_button_).value());
+    }
   }
 
   if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&

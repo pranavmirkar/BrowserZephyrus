@@ -51,6 +51,9 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_rep.h"
+#include "ui/gfx/canvas.h"
+#include "ui/gfx/image/canvas_image_source.h"
+#include "base/memory/raw_ref.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/text_utils.h"
 #include "ui/views/animation/ink_drop.h"
@@ -280,41 +283,101 @@ SkColor ToolbarButton::GetForegroundColor(ButtonState state) const {
 
 namespace {
 
-// The canvas size at which `icon`'s inked art is `art_dip` across its longer
-// side, found by drawing it once large and measuring what was inked. Cached per
-// icon: it never changes.
-int ZephyrusCanvasForArt(const gfx::VectorIcon& icon, int art_dip) {
+// What an icon's ink does on its canvas: how much of it the ink spans along its
+// longer side, and where the ink's centre lies (0..1 of the canvas). Found by
+// drawing the icon once, large, and measuring what was inked. Cached per icon:
+// it never changes.
+struct ZephyrusArtInfo {
+  double fraction = 0.75;
+  double centre_x = 0.5;
+  double centre_y = 0.5;
+};
+
+const ZephyrusArtInfo& GetZephyrusArtInfo(const gfx::VectorIcon& icon) {
   constexpr int kProbe = 128;
-  static base::NoDestructor<std::map<const gfx::VectorIcon*, double>> fraction;
-  auto it = fraction->find(&icon);
-  if (it == fraction->end()) {
-    double frac = 0.75;  // What a typical icon fills, if the probe fails.
-    const gfx::ImageSkia probe =
-        gfx::CreateVectorIcon(icon, kProbe, SK_ColorBLACK);
-    const SkBitmap bitmap = probe.GetRepresentation(1.0f).GetBitmap();
-    if (!bitmap.isNull() && bitmap.width() > 0 && bitmap.height() > 0) {
-      int left = bitmap.width();
-      int right = -1;
-      int top = bitmap.height();
-      int bottom = -1;
-      for (int y = 0; y < bitmap.height(); ++y) {
-        for (int x = 0; x < bitmap.width(); ++x) {
-          if (SkColorGetA(bitmap.getColor(x, y)) > 48) {
-            left = std::min(left, x);
-            right = std::max(right, x);
-            top = std::min(top, y);
-            bottom = std::max(bottom, y);
-          }
+  static base::NoDestructor<std::map<const gfx::VectorIcon*, ZephyrusArtInfo>>
+      cache;
+  auto it = cache->find(&icon);
+  if (it != cache->end()) {
+    return it->second;
+  }
+  ZephyrusArtInfo info;
+  const gfx::ImageSkia probe = gfx::CreateVectorIcon(icon, kProbe, SK_ColorBLACK);
+  const SkBitmap bitmap = probe.GetRepresentation(1.0f).GetBitmap();
+  if (!bitmap.isNull() && bitmap.width() > 0 && bitmap.height() > 0) {
+    int left = bitmap.width();
+    int right = -1;
+    int top = bitmap.height();
+    int bottom = -1;
+    for (int y = 0; y < bitmap.height(); ++y) {
+      for (int x = 0; x < bitmap.width(); ++x) {
+        if (SkColorGetA(bitmap.getColor(x, y)) > 48) {
+          left = std::min(left, x);
+          right = std::max(right, x);
+          top = std::min(top, y);
+          bottom = std::max(bottom, y);
         }
       }
-      if (right >= left && bottom >= top) {
-        frac = std::max(right - left + 1, bottom - top + 1) /
-               static_cast<double>(bitmap.width());
-      }
     }
-    it = fraction->emplace(&icon, std::clamp(frac, 0.2, 1.0)).first;
+    if (right >= left && bottom >= top) {
+      const double w = bitmap.width();
+      const double h = bitmap.height();
+      info.fraction = std::clamp(
+          std::max(right - left + 1, bottom - top + 1) / w, 0.2, 1.0);
+      info.centre_x = (left + right + 1) / 2.0 / w;
+      info.centre_y = (top + bottom + 1) / 2.0 / h;
+    }
   }
-  return std::clamp(static_cast<int>(std::lround(art_dip / it->second)), 8, 32);
+  return cache->emplace(&icon, info).first->second;
+}
+
+// An icon drawn shifted so that its INK is centred on its canvas. Many icons
+// are not symmetric (a speech bubble's tail hangs off one corner), and centring
+// the canvas then leaves the mark itself riding high or low beside its
+// neighbours.
+class ZephyrusCentredIcon : public gfx::CanvasImageSource {
+ public:
+  ZephyrusCentredIcon(const gfx::VectorIcon& icon,
+                      SkColor color,
+                      int size,
+                      gfx::Vector2dF offset)
+      : gfx::CanvasImageSource(gfx::Size(size, size)),
+        icon_(icon),
+        color_(color),
+        size_(size),
+        offset_(offset) {}
+
+  void Draw(gfx::Canvas* canvas) override {
+    // Whole device pixels, so the mark stays as crisp as an unshifted one.
+    const float scale = canvas->image_scale();
+    canvas->sk_canvas()->translate(std::round(offset_.x() * scale) / scale,
+                                   std::round(offset_.y() * scale) / scale);
+    gfx::PaintVectorIcon(canvas, *icon_, size_, color_);
+  }
+
+ private:
+  raw_ref<const gfx::VectorIcon> icon_;
+  const SkColor color_;
+  const int size_;
+  const gfx::Vector2dF offset_;
+};
+
+int ZephyrusCanvasForArt(const gfx::VectorIcon& icon, int art_dip) {
+  return std::clamp(
+      static_cast<int>(std::lround(art_dip / GetZephyrusArtInfo(icon).fraction)),
+      8, 32);
+}
+
+ui::ImageModel ZephyrusCentredIconModel(const gfx::VectorIcon& icon,
+                                        SkColor color,
+                                        int canvas) {
+  const ZephyrusArtInfo& info = GetZephyrusArtInfo(icon);
+  const gfx::Vector2dF offset(
+      static_cast<float>((0.5 - info.centre_x) * canvas),
+      static_cast<float>((0.5 - info.centre_y) * canvas));
+  return ui::ImageModel::FromImageSkia(gfx::ImageSkia(
+      std::make_unique<ZephyrusCentredIcon>(icon, color, canvas, offset),
+      gfx::Size(canvas, canvas)));
 }
 
 }  // namespace
@@ -340,6 +403,18 @@ void ToolbarButton::UpdateIconsWithColors(const gfx::VectorIcon& icon,
                                           SkColor pressed_color,
                                           SkColor disabled_color) {
   const int icon_size = ZephyrusIconCanvas(icon);
+  if (zephyrus_art_dip_ > 0) {
+    // Sized by its ink and centred by its ink (see ZephyrusCentredIcon).
+    SetImageModel(ButtonState::STATE_NORMAL,
+                  ZephyrusCentredIconModel(icon, normal_color, icon_size));
+    SetImageModel(ButtonState::STATE_HOVERED,
+                  ZephyrusCentredIconModel(icon, hovered_color, icon_size));
+    SetImageModel(ButtonState::STATE_PRESSED,
+                  ZephyrusCentredIconModel(icon, pressed_color, icon_size));
+    SetImageModel(Button::STATE_DISABLED,
+                  ZephyrusCentredIconModel(icon, disabled_color, icon_size));
+    return;
+  }
   SetImageModel(ButtonState::STATE_NORMAL,
                 ui::ImageModel::FromVectorIcon(icon, normal_color, icon_size));
   SetImageModel(ButtonState::STATE_HOVERED,
