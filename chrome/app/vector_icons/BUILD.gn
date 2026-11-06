@@ -391,6 +391,7 @@ aggregate_vector_icons("chrome_vector_icons") {
     "webid/arrow_range.icon",
     "webid/webid_arrow_old.icon",
     "webid/webid_globe_old.icon",
+    "zephyrus_agent.icon",
     "zephyrus_back_arrow.icon",
     "zephyrus_close.icon",
     "zephyrus_download.icon",

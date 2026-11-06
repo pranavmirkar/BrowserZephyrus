@@ -747,7 +747,7 @@ void SetZephyrusContainerPitch(views::View* container) {
 inline constexpr int kZephyrusCaptionCell = kZephyrusCell;
 // How big every glyph on the title bar's far side is, ink to ink: the icons
 // (see ToolbarButton::SetZephyrusArtDip) and the window controls alike.
-inline constexpr int kZephyrusGlyphArt = 13;
+inline constexpr int kZephyrusGlyphArt = 11;
 
 // Air between the close button and the window's right edge. The strip used to
 // run flush into the corner; a few pixels of inset lets the cluster read as a
@@ -1193,7 +1193,7 @@ void ToolbarView::Init() {
           }
         },
         browser_));
-    agent_button->SetVectorIcon(vector_icons::kChatSparkIcon);
+    agent_button->SetVectorIcon(kZephyrusAgentIcon);
     const std::u16string agent_name = u"Agent";
     agent_button->SetTooltipText(agent_name);
     agent_button->GetViewAccessibility().SetName(agent_name);
@@ -2597,11 +2597,13 @@ class ZephyrusWin11CaptionButton : public views::Button {
     SetPreferredSize(gfx::Size(kZephyrusCaptionCell, 36));
   }
 
-  // The 18-unit Breeze grid is drawn into a box this many DIPs across; the
-  // drawn glyph occupies roughly the middle 10 units -- sized so that is
+  // The 18-unit Breeze grid is drawn into a box this many DIPs across; every
+  // glyph occupies the middle 8 units (5..13) -- sized so that is
   // kZephyrusGlyphArt, the same ink as every icon beside the window controls. The motion below moves
   // the glyph inside that box and never changes it.
-  static constexpr float kGlyphBox = kZephyrusGlyphArt * 18.f / 10.f;
+  // One dp under the icons' ink: a stroked mark reads larger than a filled one
+  // of the same extent.
+  static constexpr float kGlyphBox = (kZephyrusGlyphArt - 1) * 18.f / 8.f;
 
   void SetMaximized(bool maximized) {
     if (maximized_ == maximized) {
@@ -2733,43 +2735,42 @@ class ZephyrusWin11CaptionButton : public views::Button {
         break;
       }
       case Kind::kMaximizeRestore: {
-        // Two filled triangles, as macOS draws them: a stroked triangle this
-        // small closes up into a smudge. Expand has the apexes reaching for the
-        // corners; restore turns them in toward each other. `restored` runs
-        // 0 (expand) .. 1 (restore) and is what the click animates.
+        // Outlines, like the close X and the minimise bar: one square to expand,
+        // two overlapping to restore, and the click cross-fades between them.
+        // (The pair of filled triangles this replaces were macOS's glyph, and a
+        // different KIND of mark from the strokes beside them.) `restored` runs
+        // 0 (expand) .. 1 (restore).
         const float to = maximized_ ? 1.f : 0.f;
         const float from = morph_from_maximized_ ? 1.f : 0.f;
         const float restored =
             morphing_ ? gfx::Tween::FloatValueBetween(morph_.Turn(), from, to)
                       : to;
-        // Hover leans the pair: outward to expand, inward to restore.
-        const float lean =
-            hover * gfx::Tween::FloatValueBetween(restored, -1.2f, 0.6f);
-        // Vertex pairing keeps the winding the same, so the triangles shrink
-        // through the middle of the change instead of folding flat.
-        const std::array<SkPoint, 3> expand_a = {{{4, 4}, {10, 4}, {4, 10}}};
-        const std::array<SkPoint, 3> restore_a = {{{8, 8}, {4, 8}, {8, 4}}};
-        const std::array<SkPoint, 3> expand_b = {{{14, 14}, {8, 14}, {14, 8}}};
-        const std::array<SkPoint, 3> restore_b = {{{10, 10}, {14, 10}, {10, 14}}};
-        auto lerp = [&](const SkPoint& a, const SkPoint& b, float sign) {
-          return SkPoint::Make(
-              gfx::Tween::FloatValueBetween(restored, a.x(), b.x()) + sign * lean,
-              gfx::Tween::FloatValueBetween(restored, a.y(), b.y()) + sign * lean);
+        auto faded = [&](float alpha) {
+          cc::PaintFlags f = flags;
+          f.setColor(SkColorSetA(
+              symbol_color, static_cast<uint8_t>(SkColorGetA(symbol_color) *
+                                                 std::clamp(alpha, 0.f, 1.f))));
+          return f;
         };
-        cc::PaintFlags solid = flags;
-        solid.setStyle(cc::PaintFlags::kFill_Style);
-        SkPathBuilder path;
-        for (int i = 0; i < 3; ++i) {
-          const SkPoint p = lerp(expand_a[i], restore_a[i], 1.f);
-          i == 0 ? path.moveTo(p) : path.lineTo(p);
+        if (restored < 1.f) {
+          canvas->sk_canvas()->drawRRect(
+              SkRRect::MakeRectXY(SkRect::MakeLTRB(5, 5, 13, 13), 1.5f, 1.5f),
+              faded(1.f - restored));
         }
-        path.close();
-        for (int i = 0; i < 3; ++i) {
-          const SkPoint p = lerp(expand_b[i], restore_b[i], -1.f);
-          i == 0 ? path.moveTo(p) : path.lineTo(p);
+        if (restored > 0.f) {
+          const cc::PaintFlags f = faded(restored);
+          // The back square shows only where the front one does not cover it.
+          SkPathBuilder back;
+          back.moveTo(7, 7);
+          back.lineTo(7, 5);
+          back.lineTo(13, 5);
+          back.lineTo(13, 11);
+          back.lineTo(11, 11);
+          canvas->sk_canvas()->drawPath(back.detach(), f);
+          canvas->sk_canvas()->drawRRect(
+              SkRRect::MakeRectXY(SkRect::MakeLTRB(5, 7, 11, 13), 1.5f, 1.5f),
+              f);
         }
-        path.close();
-        canvas->sk_canvas()->drawPath(path.detach(), solid);
         break;
       }
     }

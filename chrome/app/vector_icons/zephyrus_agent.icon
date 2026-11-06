@@ -1,0 +1,26 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// The agent: a large four-point sparkle with a small one beside it (the shape
+// every assistant uses, and one that stays clear at 16dp, which the chat bubble
+// with a spark in it it replaces did not -- its tail and its text lines turned to
+// mush and it filled its canvas, so it read bigger than every icon around it).
+//
+// Whole and half units, centred on the canvas: the ink spans x 2.5..22 and
+// y 3..21.5, about (12.25, 12.25) against a canvas centre of 12.
+
+CANVAS_DIMENSIONS, 24,
+MOVE_TO, 10.5, 5.5,
+QUADRATIC_TO, 12.5, 11.5, 18.5, 13.5,
+QUADRATIC_TO, 12.5, 15.5, 10.5, 21.5,
+QUADRATIC_TO, 8.5, 15.5, 2.5, 13.5,
+QUADRATIC_TO, 8.5, 11.5, 10.5, 5.5,
+CLOSE,
+NEW_PATH,
+MOVE_TO, 19, 3,
+QUADRATIC_TO, 20, 5, 22, 6,
+QUADRATIC_TO, 20, 7, 19, 9,
+QUADRATIC_TO, 18, 7, 16, 6,
+QUADRATIC_TO, 18, 5, 19, 3,
+CLOSE
