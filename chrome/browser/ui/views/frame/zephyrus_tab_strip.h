@@ -62,7 +62,12 @@ class ZephyrusTabStrip : public views::View,
   // height up on every window. Above them, SetTopInset() decides: nothing
   // under the title bar (the bar's own padding is the gap), 4dp when the bar
   // is hidden and the tabs would otherwise touch the window edge.
-  static constexpr int kBandHeight = 32;
+  // 33dp under the title bar: the 26dp tab sits 1dp down it, which leaves 6dp
+  // above it (the bar's own 5dp of bottom padding, plus that 1dp) and 6dp below
+  // -- the same gap on both sides.
+  static constexpr int kBandHeight = 33;
+  // In the title bar's row (one strip) the band is centred on the row.
+  static constexpr int kOneStripHeight = 32;
   static constexpr int kTopInsetAlone = 4;
   // ONE-STRIP layout: this same strip (same tabs, same design) lives in the
   // title bar's row, after the omnibox; the last 24dp of the row stays title bar.

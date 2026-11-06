@@ -80,13 +80,16 @@ namespace {
 // The same height as the omnibox (toolbar_view.cc's kZephyrusContainer): the
 // tabs and the field read as one family of controls.
 constexpr int kTabHeight = 26;
-constexpr int kOneStripPlateY = (ZephyrusTabStrip::kBandHeight - kTabHeight) / 2;
+constexpr int kOneStripPlateY =
+    (ZephyrusTabStrip::kOneStripHeight - kTabHeight) / 2;
+// Under the title bar: 1dp, which evens the gaps above and below the tab.
+constexpr int kHorizontalPlateY = 1;
 // One strip: the plate sits this far down its 32dp band so that it is CENTRED
 // in it, the band itself centred in the title bar's row. Under the title bar
-// (the horizontal layout) it is NOT: there the bar's own bottom padding is the
-// gap above the tabs, and the 6dp the band has left below them matches it.
-// The tab VIEW is the whole band (ZephyrusTabStrip::kBandHeight), so the raised
-// tab's shadow has room below the 28dp plate.
+// (the horizontal layout) the band is 33dp and the plate 1dp down it (see
+// kHorizontalPlateY), so the gap above the tab, which includes the bar's own
+// bottom padding, equals the one below. The tab VIEW is what is left of the
+// band below the plate, so the raised tab's shadow has room.
 constexpr int kEdge = 4;
 // Tabs adjoin: the dividers, not gaps, mark where one ends.
 constexpr int kSegmentGap = 0;
@@ -1523,7 +1526,7 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
   // one and the one being dragged, where a plate takes their place.
   const SkColor divider =
       SkColorSetA(zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant), 0xB0);
-  const int plate_y = one_strip_ ? kOneStripPlateY : 0;
+  const int plate_y = one_strip_ ? kOneStripPlateY : kHorizontalPlateY;
   const int y = top_inset_ + plate_y + (kTabHeight - kDividerHeight) / 2;
   const bool ordered = order_.size() == items_.size();
   for (size_t i = 0; i + 1 < items_.size(); ++i) {
@@ -1576,7 +1579,8 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
 }
 
 void ZephyrusTabStrip::Layout(PassKey key) {
-  const int plate_y = one_strip_ ? kOneStripPlateY : 0;
+  const int plate_y = one_strip_ ? kOneStripPlateY : kHorizontalPlateY;
+  const int band = one_strip_ ? kOneStripHeight : kBandHeight;
   const int y = top_inset_ + plate_y;
   const int avail = ContentWidth();
   const bool animating = layout_anim_.is_animating();
@@ -1708,7 +1712,7 @@ void ZephyrusTabStrip::Layout(PassKey key) {
       const double w = (e.fixed >= 0 ? e.fixed : unit) * e.share;
       // A pill is a small capsule, centred on the tab's plate; a tab is the
       // whole band, so its shadow has room.
-      const int h = e.is_pill ? SetPill::kHeight : kBandHeight - plate_y;
+      const int h = e.is_pill ? SetPill::kHeight : band - plate_y;
       const int top = y + (e.is_pill ? (kTabHeight - SetPill::kHeight) / 2 : 0);
       const gfx::Rect rect(static_cast<int>(std::lround(x)), top,
                            static_cast<int>(std::lround(w)), h);
@@ -1828,7 +1832,7 @@ gfx::Size ZephyrusTabStrip::CalculatePreferredSize(
   // controls beside it get theirs, and a strip that asked for every tab would
   // push them into the overflow menu. What is left over is offered afterwards.
   return gfx::Size(2 * kEdge + 2 * kMinTabWidth + kTabHeight + kGroupGap,
-                   kBandHeight);
+                   kOneStripHeight);
 }
 
 gfx::Size ZephyrusTabStrip::GetMinimumSize() const {
@@ -1837,7 +1841,7 @@ gfx::Size ZephyrusTabStrip::GetMinimumSize() const {
   }
   return gfx::Size(
       2 * kEdge + kMinTabWidth + kTabHeight + kGroupGap + kDragZone,
-      kBandHeight);
+      kOneStripHeight);
 }
 
 void ZephyrusTabStrip::SetOneStrip(bool on) {
