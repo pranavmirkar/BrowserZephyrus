@@ -235,6 +235,9 @@
 #include "ui/views/controls/textfield/textfield_controller.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/views/layout/fill_layout.h"
+#include "chrome/browser/ui/views/frame/zephyrus_tab_strip.h"
+#include "chrome/browser/ui/views/frame/zephyrus_ui_layout.h"
+#include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/proposed_layout.h"
@@ -2260,14 +2263,21 @@ void ToolbarView::Layout(PassKey) {
     const int steady_width = std::min(552, width() * 29 / 100);
     const int editing_width = std::min(680, width() * 46 / 100);
     const int max_width =
-        gfx::Tween::IntValueBetween(focus, steady_width, editing_width);
+        zephyrus_one_strip_
+            ? ZephyrusOneStripOmniboxWidth()
+            : gfx::Tween::IntValueBetween(focus, steady_width, editing_width);
     // The same height as every other control in the bar, centred on the same
     // line. It took the location bar's own 30dp while the containers beside
     // it draw at kZephyrusContainer (26), so the pill stood 2dp proud of the
     // row at top and bottom -- measured 45px against 40px at 150%.
     const int pill_height = std::min(slot.height(), kZephyrusContainer);
     const int pill_y = (height() - pill_height) / 2;
-    if (slot.width() > max_width && max_width > 0) {
+    if (zephyrus_one_strip_) {
+      // On the left, where the layout put it; never wider than its width.
+      location_bar_view_->SetBounds(slot.x(), pill_y,
+                                    std::min(slot.width(), max_width),
+                                    pill_height);
+    } else if (slot.width() > max_width && max_width > 0) {
       // Prefer true window-centering (like Safari); fall back to centering
       // inside the slot when neighbors crowd the middle.
       int x = (width() - max_width) / 2;
@@ -2422,11 +2432,13 @@ void ToolbarView::InitLayout() {
     // Let events fall through to the toolbar so these areas are draggable
     // caption (handled in BrowserView::NonClientHitTest).
     leading_spacer->SetCanProcessEventsWithinSubtree(false);
+    zephyrus_leading_spacer_ = leading_spacer;
     const size_t trailing_index = GetIndexOf(location_bar_view_).value() + 1;
     views::View* trailing_spacer =
         AddChildViewAt(std::make_unique<views::View>(), trailing_index);
     trailing_spacer->SetProperty(views::kFlexBehaviorKey, zephyrus_spacer_flex);
     trailing_spacer->SetCanProcessEventsWithinSubtree(false);
+    zephyrus_trailing_spacer_ = trailing_spacer;
   }
 
   if (extensions_container_) {
@@ -4147,6 +4159,114 @@ void ToolbarView::LendZephyrusChromeTo(views::View* host) {
   InvalidateLayout();
 }
 
+int ToolbarView::ZephyrusOneStripOmniboxWidth() const {
+  // Shorter than the centred omnibox of the other layouts, since the tabs share
+  // the row; it grows while it is being edited (the same focus animation that
+  // grows the centred one), and the tabs give that room up as it goes.
+  const double focus = zephyrus_omnibox_focus_animation_
+                           ? zephyrus_omnibox_focus_animation_->value()
+                           : 0.0;
+  const int steady = std::clamp(width() * 22 / 100, 240, 340);
+  const int editing = std::clamp(width() * 40 / 100, 340, 560);
+  return gfx::Tween::IntValueBetween(focus, steady, editing);
+}
+
+bool ToolbarView::EnterZephyrusOneStrip(ZephyrusTabStrip* strip) {
+  if (zephyrus_one_strip_) {
+    return true;
+  }
+  if (!strip || !strip->parent() || !initialized_ || !location_bar_view_ ||
+      display_mode_ != DisplayMode::kNormal || zephyrus_compact_ ||
+      location_bar_view_->parent() != this) {
+    return false;
+  }
+  const size_t index = GetIndexOf(location_bar_view_).value();
+  const views::FlexSpecification* const omnibox_flex =
+      location_bar_view_->GetProperty(views::kFlexBehaviorKey);
+  int order = 1;
+  if (omnibox_flex) {
+    order = omnibox_flex->order();
+    zephyrus_saved_omnibox_flex_ = *omnibox_flex;
+  }
+
+  // The strip goes right after the omnibox.
+  std::unique_ptr<ZephyrusTabStrip> owned =
+      strip->parent()->RemoveChildViewT(strip);
+  zephyrus_one_strip_ = AddChildViewAt(std::move(owned), index + 1);
+
+  // The omnibox keeps its place (after the workspaces) and its height, and
+  // becomes a fixed-width field on the left: no centring, so no spacers.
+  location_bar_view_->SetProperty(
+      views::kFlexBehaviorKey,
+      views::FlexSpecification(
+          base::BindRepeating(
+              [](const ToolbarView* toolbar, const views::View* view,
+                 const views::SizeBounds& bounds) {
+                const gfx::Size natural = view->GetPreferredSize(bounds);
+                int width = toolbar->ZephyrusOneStripOmniboxWidth();
+                if (bounds.width().is_bounded()) {
+                  width = std::min(width, bounds.width().value());
+                }
+                return gfx::Size(std::max(width, 0), natural.height());
+              },
+              base::Unretained(this)))
+          .WithOrder(order));
+  // The strip takes whatever the omnibox, and the controls after it, leave.
+  zephyrus_one_strip_->SetProperty(
+      views::kFlexBehaviorKey,
+      views::FlexSpecification(
+          base::BindRepeating([](const views::View* view,
+                                 const views::SizeBounds& bounds) {
+            const gfx::Size natural = view->GetPreferredSize(bounds);
+            // PREFERRED when nothing is offered, whatever is offered beyond
+            // that when it is: the same shape as the omnibox's own rule (see
+            // InitLayout), for the same reason -- a child that answers "all of
+            // it" as its preferred size starves the actions beside it.
+            const int width = bounds.width().is_bounded()
+                                  ? std::max(bounds.width().value(), 0)
+                                  : natural.width();
+            return gfx::Size(width, natural.height());
+          }))
+          .WithOrder(order + 1));
+  zephyrus_one_strip_->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 6));
+  if (zephyrus_leading_spacer_) {
+    zephyrus_leading_spacer_->SetVisible(false);
+  }
+  if (zephyrus_trailing_spacer_) {
+    zephyrus_trailing_spacer_->SetVisible(false);
+  }
+  PreferredSizeChanged();
+  InvalidateLayout();
+  return true;
+}
+
+void ToolbarView::ExitZephyrusOneStrip(views::View* new_parent) {
+  if (!zephyrus_one_strip_ || !new_parent) {
+    return;
+  }
+  ZephyrusTabStrip* const strip = zephyrus_one_strip_;
+  zephyrus_one_strip_ = nullptr;
+  std::unique_ptr<ZephyrusTabStrip> owned = RemoveChildViewT(strip);
+  // Neither of the strip's layout properties follows it out.
+  owned->ClearProperty(views::kFlexBehaviorKey);
+  owned->ClearProperty(views::kMarginsKey);
+  new_parent->AddChildView(std::move(owned));
+  // The omnibox goes back to being the centred one.
+  if (location_bar_view_ && zephyrus_saved_omnibox_flex_) {
+    location_bar_view_->SetProperty(views::kFlexBehaviorKey,
+                                    *zephyrus_saved_omnibox_flex_);
+  }
+  zephyrus_saved_omnibox_flex_.reset();
+  if (zephyrus_leading_spacer_) {
+    zephyrus_leading_spacer_->SetVisible(true);
+  }
+  if (zephyrus_trailing_spacer_) {
+    zephyrus_trailing_spacer_->SetVisible(true);
+  }
+  PreferredSizeChanged();
+  InvalidateLayout();
+}
+
 std::vector<views::View*> ToolbarView::ZephyrusLentViews() const {
   std::vector<views::View*> views;
   views.reserve(zephyrus_lent_children_.size());
@@ -4257,6 +4377,12 @@ void ToolbarView::UpdateZephyrusPinButton() {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser_);
   const bool pinned =
       !browser_view || browser_view->IsZephyrusTitlebarPinned();
+  // The one-strip title bar holds the tabs, so there is no hiding it.
+  // Read from the pref, not through the BrowserView: this also runs while the
+  // toolbar is being built, before the BrowserView can be found.
+  zephyrus_pin_button_->SetVisible(
+      zephyrus::GetUiLayout(browser_->GetProfile()->GetPrefs()) !=
+      zephyrus::UiLayout::kOneStrip);
   // Zephyrus: the glyph now REPORTS the state instead of just offering the
   // action. One icon for both states meant the button could only be understood
   // by hovering it for the tooltip -- you could not tell from the title bar

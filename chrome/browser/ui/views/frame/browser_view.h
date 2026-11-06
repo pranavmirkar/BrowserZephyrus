@@ -897,6 +897,8 @@ class BrowserView : public BrowserWindow,
 
   // Zephyrus UI layouts (zephyrus::UiLayout), picked in the three-dots menu.
   bool IsZephyrusHorizontalLayout() const;
+  // The ALL-IN-ONE-STRIP layout: the tab strip lives in the title bar.
+  bool IsZephyrusOneStripLayout() const;
   // The sidebar as a floating card, rather than the classic flush column.
   bool IsZephyrusFloatingSidebar() const;
   // The sidebar's margin off the window: the card's in the floating layout,

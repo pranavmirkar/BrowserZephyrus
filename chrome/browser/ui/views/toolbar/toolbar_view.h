@@ -24,6 +24,7 @@
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/custom_tab_bar_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "ui/views/layout/flex_layout_types.h"
 #include "chrome/browser/ui/views/toolbar/avatar_toolbar_button_interface.h"
 #include "chrome/browser/ui/views/toolbar/overflow_button.h"
 #include "chrome/browser/ui/views/toolbar/pinned_action_toolbar_button.h"
@@ -65,6 +66,7 @@ class PinnedToolbarActionsContainer;
 class ToolbarButton;
 class AvatarToolbarButtonBrowserTest;
 class ToolbarController;
+class ZephyrusTabStrip;
 class ToolbarDivider;
 class OverflowButton;
 class PerformanceInterventionButton;
@@ -281,6 +283,18 @@ class ToolbarView : public views::AccessiblePaneView,
   // they are currently lent.
   std::vector<views::View*> ZephyrusLentViews() const;
   bool IsZephyrusCompact() const { return zephyrus_compact_; }
+
+  // ALL-IN-ONE-STRIP layout: the tab strip takes the omnibox's place in this
+  // row, and hosts the omnibox itself, so the active tab IS the address field.
+  // Enter returns false (and does nothing) until the toolbar is initialised;
+  // the layout is applied again once it is.
+  bool EnterZephyrusOneStrip(ZephyrusTabStrip* strip);
+  // Gives the strip back to `new_parent` and the omnibox its centred place.
+  void ExitZephyrusOneStrip(views::View* new_parent);
+  // The omnibox's width in that layout: fixed on the left, growing while it is
+  // edited.
+  int ZephyrusOneStripOmniboxWidth() const;
+  bool IsZephyrusOneStrip() const { return zephyrus_one_strip_ != nullptr; }
   // The workspace switcher, so a host can place it apart from the rest.
   views::View* zephyrus_workspace_strip() {
     return zephyrus_workspace_strip_;
@@ -604,6 +618,13 @@ class ToolbarView : public views::AccessiblePaneView,
   std::vector<std::unique_ptr<ZephyrusGlyphMotion>> zephyrus_glyph_motions_;
   // See LendZephyrusChromeTo().
   bool zephyrus_compact_ = false;
+  // The strip while it lives in this row (one-strip layout), and the two
+  // spacers that centre the omnibox, which it replaces.
+  raw_ptr<ZephyrusTabStrip> zephyrus_one_strip_ = nullptr;
+  // The omnibox's own flex rule (the centred one), put back on leaving.
+  std::optional<views::FlexSpecification> zephyrus_saved_omnibox_flex_;
+  raw_ptr<views::View> zephyrus_leading_spacer_ = nullptr;
+  raw_ptr<views::View> zephyrus_trailing_spacer_ = nullptr;
   // Controls currently lent to the sidebar, with the index each one occupied
   // here. Restored in reverse so earlier indices stay valid.
   std::vector<std::pair<views::View*, size_t>> zephyrus_lent_children_;

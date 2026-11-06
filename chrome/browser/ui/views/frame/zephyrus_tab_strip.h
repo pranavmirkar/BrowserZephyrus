@@ -64,8 +64,21 @@ class ZephyrusTabStrip : public views::View,
   // is hidden and the tabs would otherwise touch the window edge.
   static constexpr int kBandHeight = 32;
   static constexpr int kTopInsetAlone = 4;
+  // ONE-STRIP layout: this same strip (same tabs, same design) lives in the
+  // title bar's row, after the omnibox. The plate sits 2dp down so the 28dp tabs
+  // are centred in the 32dp band, and the last 24dp of the row stays title bar.
+  static constexpr int kOneStripInset = 2;
+  static constexpr int kDragZone = 24;
 
   void SetTopInset(int inset);
+
+  // ONE-STRIP layout. On, the strip is a child of the toolbar's row: it takes the
+  // room the omnibox leaves (so it re-lays out, smoothly, as the omnibox grows
+  // and shrinks), paints no background of its own, clips to its bounds, and does
+  // not show sets -- they stay in the model and come back with the other
+  // layouts.
+  void SetOneStrip(bool on);
+  bool one_strip() const { return one_strip_; }
   // The bar's own colour, for tabs that lighten it to raise the active one.
   SkColor GroundColor() const;
 
@@ -95,6 +108,9 @@ class ZephyrusTabStrip : public views::View,
 
   // views::View:
   void Layout(PassKey key) override;
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override;
+  gfx::Size GetMinimumSize() const override;
   bool OnMouseWheel(const ui::MouseWheelEvent& event) override;
   void OnThemeChanged() override;
   void OnPaintBackground(gfx::Canvas* canvas) override;
@@ -221,6 +237,7 @@ class ZephyrusTabStrip : public views::View,
   bool ignore_anim_end_ = false;
 
   int scroll_offset_ = 0;
+  bool one_strip_ = false;
   int top_inset_ = kTopInsetAlone;
   bool rebuild_pending_ = false;
   bool dragging_ = false;

@@ -3561,15 +3561,9 @@ void ZephyrusSidebarView::OnPaintBackground(gfx::Canvas* canvas) {
       !browser_view_->IsZephyrusSidebarAttached()) {
     views::View::OnPaintBackground(canvas);
   }
-  // Docked, the column is window chrome beside the page and needs no edge: the
-  // page's own margin is the seam. Revealed by hover it COVERS the page, and a
-  // hairline down its trailing edge is what says where the column stops and the
-  // page goes on. It is painted in the view, so it travels with the slide.
-  if (browser_view_->IsZephyrusSidebarAttached()) {
-    return;
-  }
-  canvas->FillRect(gfx::Rect(width() - 1, 0, 1, height()),
-                   zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant));
+  // No edge line: docked the page's own margin is the seam, and covering the
+  // page the column's low shadow and the card's curved corners say where it
+  // stops.
 }
 
 void ZephyrusSidebarView::OnThemeChanged() {
@@ -4180,7 +4174,9 @@ void ZephyrusSidebarView::OnUiLayoutChanged(zephyrus::UiLayout layout) {
       UpdateFloatShadow();
     }
   }
-  const bool horizontal = layout == zephyrus::UiLayout::kHorizontalTabs;
+  // Both strip layouts hold the tabs themselves; the sidebar has no work.
+  const bool horizontal = layout == zephyrus::UiLayout::kHorizontalTabs ||
+                          layout == zephyrus::UiLayout::kOneStrip;
   if (horizontal == hidden_by_layout_) {
     return;
   }

@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/frame/zephyrus_tab_strip.h"
 
 #include <algorithm>
@@ -681,7 +682,19 @@ class NewTabChip : public views::Button {
     SchedulePaint();
   }
 
+  // One strip, scrolled: the chip stays at the strip's end with tabs passing
+  // beneath it, so it needs something opaque to stand on.
+  void SetBackdrop(std::optional<SkColor> backdrop) {
+    if (backdrop_ != backdrop) {
+      backdrop_ = backdrop;
+      SchedulePaint();
+    }
+  }
+
   void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (backdrop_) {
+      canvas->DrawColor(*backdrop_);
+    }
     const bool hovered = GetState() == STATE_HOVERED;
     const bool pressed = GetState() == STATE_PRESSED;
     if (!hovered && !pressed) {
@@ -719,6 +732,7 @@ class NewTabChip : public views::Button {
   }
 
  private:
+  std::optional<SkColor> backdrop_;
   static constexpr int kIconSize = 16;
 
   // views::Button is itself a gfx::AnimationDelegate, so ours cannot be the
@@ -1285,7 +1299,10 @@ void ZephyrusTabStrip::Rebuild() {
   for (int index : unpinned) {
     const std::optional<tab_groups::TabGroupId> group =
         tab_strip_model_->GetTabGroupForTab(index);
-    if (!group) {
+    // One strip: sets are off. The tabs stay in them in the model; they are
+    // simply shown loose, collapsed or not, until another layout brings the
+    // sets back.
+    if (!group || one_strip_) {
       loose.push_back(index);
       continue;
     }
@@ -1470,7 +1487,7 @@ void ZephyrusTabStrip::AnimationEnded(const gfx::Animation* animation) {
 }
 
 int ZephyrusTabStrip::ContentWidth() const {
-  return std::max(0, width() - 2 * kEdge);
+  return std::max(0, width() - 2 * kEdge - (one_strip_ ? kDragZone : 0));
 }
 
 SkColor ZephyrusTabStrip::GroundColor() const {
@@ -1489,7 +1506,11 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
   // frame paints only its own top area, and the page starts below this strip.
   // Left unpainted it shows whatever the compositor started with (black, or a
   // debug blue), most visibly in the gaps between tabs and right of "+".
-  canvas->DrawColor(browser_view_->GetZephyrusThemeColor());
+  //
+  // In the title bar (one strip) the bar paints its own background.
+  if (!one_strip_) {
+    canvas->DrawColor(browser_view_->GetZephyrusThemeColor());
+  }
 
   // The hairlines between idle tabs. Hidden beside the active tab, the hovered
   // one and the one being dragged, where a plate takes their place.
@@ -1740,7 +1761,38 @@ void ZephyrusTabStrip::Layout(PassKey key) {
     }
   }
   if (new_tab_button_) {
-    new_tab_button_->SetBoundsRect(now.chip);
+    gfx::Rect chip_rect = now.chip;
+    std::optional<SkColor> backdrop;
+    if (one_strip_) {
+      // Past the end of the room, the "+" stays at the strip's edge (still
+      // reachable) and the tabs scroll beneath it.
+      const int limit = width() - kEdge - kDragZone - kTabHeight;
+      if (chip_rect.x() > limit) {
+        chip_rect.set_x(limit);
+        if (GetColorProvider()) {
+          backdrop = GetColorProvider()->GetColor(kColorToolbar);
+        }
+      }
+      // The strip clips to its own bounds, less the title-bar room at its end --
+      // and, with the "+" held at the end, to the "+" itself, so no tab shows
+      // (or can be clicked) beyond it.
+      const int visible_right = std::max(
+          0, backdrop ? chip_rect.right() : width() - kDragZone);
+      if (layer()) {
+        layer()->SetClipRect(gfx::Rect(0, 0, visible_right, height()));
+      }
+      for (views::View* item : items_) {
+        if (item == drag_view_) {
+          continue;
+        }
+        const gfx::Rect& r = item->bounds();
+        item->SetVisible(r.right() > 0 && r.x() < visible_right);
+      }
+    }
+    if (auto* chip = views::AsViewClass<NewTabChip>(new_tab_button_.get())) {
+      chip->SetBackdrop(backdrop);
+    }
+    new_tab_button_->SetBoundsRect(chip_rect);
     if (new_tab_button_->layer()) {
       new_tab_button_->layer()->SetOpacity(1.f);
     }
@@ -1754,6 +1806,50 @@ void ZephyrusTabStrip::Layout(PassKey key) {
       ghosts_[g].view->layer()->SetOpacity(static_cast<float>(1.0 - t));
     }
   }
+}
+
+gfx::Size ZephyrusTabStrip::CalculatePreferredSize(
+    const views::SizeBounds& available_size) const {
+  if (!one_strip_) {
+    return views::View::CalculatePreferredSize(available_size);
+  }
+  // Modest, on purpose: the toolbar gives a child its preferred width before the
+  // controls beside it get theirs, and a strip that asked for every tab would
+  // push them into the overflow menu. What is left over is offered afterwards.
+  return gfx::Size(2 * kEdge + 2 * kMinTabWidth + kTabHeight + kGroupGap,
+                   kBandHeight);
+}
+
+gfx::Size ZephyrusTabStrip::GetMinimumSize() const {
+  if (!one_strip_) {
+    return views::View::GetMinimumSize();
+  }
+  return gfx::Size(
+      2 * kEdge + kMinTabWidth + kTabHeight + kGroupGap + kDragZone,
+      kBandHeight);
+}
+
+void ZephyrusTabStrip::SetOneStrip(bool on) {
+  if (one_strip_ == on) {
+    return;
+  }
+  one_strip_ = on;
+  top_inset_ = on ? kOneStripInset : kTopInsetAlone;
+  scroll_offset_ = 0;
+  // In the title bar the strip has neighbours it must not paint over when its
+  // tabs scroll: clip to its own bounds.
+  if (on) {
+    SetPaintToLayer();
+    layer()->SetFillsBoundsOpaquely(false);
+    layer()->SetMasksToBounds(true);
+  } else if (layer()) {
+    DestroyLayer();
+  }
+  // The tabs are shown with or without their sets, so they are made again. A
+  // strip that is not showing rebuilds when it next shows.
+  ScheduleRebuild();
+  InvalidateLayout();
+  PreferredSizeChanged();
 }
 
 void ZephyrusTabStrip::ScrollActiveIntoView() {
@@ -1772,7 +1868,8 @@ void ZephyrusTabStrip::ScrollActiveIntoView() {
         i < targets_.size() ? targets_[i] : items_[i]->bounds();
     const int left = place.x();
     const int right = place.right();
-    const int limit = width() - kEdge - kTabHeight - kGroupGap;
+    const int limit = width() - kEdge - kTabHeight - kGroupGap -
+                      (one_strip_ ? kDragZone : 0);
     if (left < kEdge) {
       scroll_offset_ = std::max(0, scroll_offset_ - (kEdge - left));
     } else if (right > limit) {
@@ -2381,8 +2478,9 @@ void ZephyrusTabStrip::ShowContextMenuForViewImpl(
       menu_model_->AddSubMenu(0, u"Move to workspace", move_menu_model_.get());
     }
   }
-  // Sets: a pinned tab is in none and cannot be put in one.
-  if (!tab_strip_model_->IsTabPinned(index)) {
+  // Sets: a pinned tab is in none and cannot be put in one; and there are none
+  // in the one-strip layout.
+  if (!tab_strip_model_->IsTabPinned(index) && !one_strip_) {
     menu_set_ids_.clear();
     set_submenu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
     const std::optional<tab_groups::TabGroupId> current =

@@ -701,7 +701,6 @@ bool ConvertedHitTest(views::View* src, views::View* dst, gfx::Point* point) {
 constexpr int kZephyrusClipCornersViewId = 0x5a430001;
 
 class ZephyrusClipCornersView : public views::View {
- public:
   METADATA_HEADER(ZephyrusClipCornersView, views::View)
 
  public:
@@ -709,7 +708,13 @@ class ZephyrusClipCornersView : public views::View {
     gfx::Point corner;  // In this view's coordinates.
     int dx;             // +1 when the patch extends to the right of the corner.
     int dy;             // +1 when it extends downward.
+    SkColor color;
     bool operator==(const Patch&) const = default;
+  };
+  struct Fill {
+    gfx::Rect rect;  // In this view's coordinates.
+    SkColor color;
+    bool operator==(const Fill&) const = default;
   };
 
   ZephyrusClipCornersView() {
@@ -722,29 +727,32 @@ class ZephyrusClipCornersView : public views::View {
   }
 
   void Update(const gfx::Rect& bounds_in_parent,
+              std::vector<Fill> fills,
               std::vector<Patch> patches,
-              SkColor color,
               int radius) {
-    SetVisible(!patches.empty());
+    SetVisible(!patches.empty() || !fills.empty());
     if (bounds() != bounds_in_parent) {
       SetBoundsRect(bounds_in_parent);
     }
-    if (patches_ == patches && color_ == color && radius_ == radius) {
+    if (fills_ == fills && patches_ == patches && radius_ == radius) {
       return;
     }
+    fills_ = std::move(fills);
     patches_ = std::move(patches);
-    color_ = color;
     radius_ = radius;
     SchedulePaint();
   }
 
   // views::View:
   void OnPaint(gfx::Canvas* canvas) override {
-    cc::PaintFlags flags;
-    flags.setAntiAlias(true);
-    flags.setColor(color_);
+    for (const Fill& fill : fills_) {
+      canvas->FillRect(fill.rect, fill.color);
+    }
     const float r = static_cast<float>(radius_);
     for (const Patch& patch : patches_) {
+      cc::PaintFlags flags;
+      flags.setAntiAlias(true);
+      flags.setColor(patch.color);
       const float cx = static_cast<float>(patch.corner.x());
       const float cy = static_cast<float>(patch.corner.y());
       const float dx = static_cast<float>(patch.dx);
@@ -762,8 +770,8 @@ class ZephyrusClipCornersView : public views::View {
   }
 
  private:
+  std::vector<Fill> fills_;
   std::vector<Patch> patches_;
-  SkColor color_ = SK_ColorTRANSPARENT;
   int radius_ = 0;
 };
 
@@ -773,7 +781,19 @@ END_METADATA
 // Works out which corners of the page card the covers cut, and hands them to
 // the overlay. Called from every layout pass, after the title bar and the
 // sidebar have been placed for the frame.
-void UpdateZephyrusClipCorners(BrowserView* view, ZephyrusSidebarView* sidebar) {
+//
+// `ground` is the plane the card floats in (the margin around it); `bar` is the
+// title bar's colour.
+//
+// The sidebar covers like classic's does when it is docked: not touching the
+// card, with the same margin of ground between them, so the card is surrounded
+// by one ring of ground and its curves have ground behind them. The title bar
+// DOES touch the card (the card is married to it when docked), so its curves
+// show the bar's colour.
+void UpdateZephyrusClipCorners(BrowserView* view,
+                               ZephyrusSidebarView* sidebar,
+                               SkColor ground,
+                               SkColor bar_color) {
   ZephyrusClipCornersView* overlay = nullptr;
   for (views::View* child : view->children()) {
     if (child->GetID() == kZephyrusClipCornersViewId) {
@@ -784,9 +804,9 @@ void UpdateZephyrusClipCorners(BrowserView* view, ZephyrusSidebarView* sidebar) 
   if (!overlay) {
     return;
   }
+  std::vector<ZephyrusClipCornersView::Fill> fills;
   std::vector<ZephyrusClipCornersView::Patch> patches;
   gfx::Rect overlay_bounds;
-  SkColor color = SK_ColorTRANSPARENT;
   ContentsContainerView* const contents = view->GetActiveContentsContainerView();
   const bool clipping =
       zephyrus::GetUiLayout(view->browser()->GetProfile()->GetPrefs()) ==
@@ -802,11 +822,13 @@ void UpdateZephyrusClipCorners(BrowserView* view, ZephyrusSidebarView* sidebar) 
       // Where the visible part of the card starts: past whatever covers it.
       int left = card.x();
       int top = card.y();
+      int sidebar_right = card.x();
       if (!view->IsZephyrusSidebarAttached() && sidebar->GetVisible()) {
-        left = std::max(
-            left, sidebar->bounds().x() +
-                      base::ClampFloor(sidebar->GetSidebarWidth() *
-                                       view->ZephyrusSidebarRevealAmount()));
+        sidebar_right =
+            sidebar->bounds().x() +
+            base::ClampFloor(sidebar->GetSidebarWidth() *
+                             view->ZephyrusSidebarRevealAmount());
+        left = std::max(left, sidebar_right + margin.left());
       }
       views::View* const bar = view->top_container();
       if (!view->IsZephyrusTitlebarPinned() && bar && bar->GetVisible() &&
@@ -817,22 +839,29 @@ void UpdateZephyrusClipCorners(BrowserView* view, ZephyrusSidebarView* sidebar) 
       const bool cut_top = top > card.y();
       // The card's own rounding covers the corners nothing has cut.
       const gfx::Vector2d origin = overlay_bounds.OffsetFromOrigin();
+      if (cut_left) {
+        // The margin between the covering sidebar and the card.
+        fills.push_back(
+            {gfx::Rect(sidebar_right, top, left - sidebar_right,
+                       std::max(0, card.bottom() - top)) -
+                 origin,
+             ground});
+      }
       if (cut_left || cut_top) {
-        patches.push_back({gfx::Point(left, top) - origin, 1, 1});
+        patches.push_back({gfx::Point(left, top) - origin, 1, 1,
+                           cut_top ? bar_color : ground});
       }
       if (cut_left) {
-        patches.push_back({gfx::Point(left, card.bottom()) - origin, 1, -1});
+        patches.push_back(
+            {gfx::Point(left, card.bottom()) - origin, 1, -1, ground});
       }
       if (cut_top) {
-        patches.push_back({gfx::Point(card.right(), top) - origin, -1, 1});
-      }
-      if (sidebar->background() && sidebar->GetColorProvider()) {
-        color = sidebar->background()->color().ResolveToSkColor(
-            sidebar->GetColorProvider());
+        patches.push_back(
+            {gfx::Point(card.right(), top) - origin, -1, 1, bar_color});
       }
     }
   }
-  overlay->Update(overlay_bounds, std::move(patches), color,
+  overlay->Update(overlay_bounds, std::move(fills), std::move(patches),
                   ContentsContainerOutline::kCornerRadius);
 }
 
@@ -3827,7 +3856,12 @@ void BrowserView::UpdateZephyrusSidebarBounds() {
       client_left + margin, content_bounds.y() + margin,
       zephyrus_sidebar_->GetSidebarWidth(),
       std::max(0, content_bounds.height() - 2 * margin));
-  UpdateZephyrusClipCorners(this, zephyrus_sidebar_);
+  UpdateZephyrusClipCorners(
+      this, zephyrus_sidebar_, GetZephyrusThemeColor(),
+      zephyrus_sidebar_->background() && GetColorProvider()
+          ? zephyrus_sidebar_->background()->color().ResolveToSkColor(
+                GetColorProvider())
+          : GetZephyrusThemeColor());
   if (zephyrus_sidebar_hotzone_) {
     zephyrus_sidebar_hotzone_->SetBounds(client_left, content_bounds.y(),
                                          kHotZoneWidth, content_bounds.height());
@@ -3878,6 +3912,12 @@ bool BrowserView::IsZephyrusHorizontalLayout() const {
              zephyrus::UiLayout::kHorizontalTabs;
 }
 
+bool BrowserView::IsZephyrusOneStripLayout() const {
+  return zephyrus_tab_strip_ &&
+         zephyrus::GetUiLayout(browser_->GetProfile()->GetPrefs()) ==
+             zephyrus::UiLayout::kOneStrip;
+}
+
 namespace {
 
 // Whether the window is in the CLIPPING layout, where a hover reveal (of the
@@ -3924,6 +3964,10 @@ int BrowserView::ZephyrusTabStripHeight() const {
   if (!zephyrus_tab_strip_ || !zephyrus_tab_strip_->GetVisible()) {
     return 0;
   }
+  // In the title bar itself: no band of its own above the page.
+  if (IsZephyrusOneStripLayout()) {
+    return 0;
+  }
   // Under the title bar the bar's own bottom padding is the gap above the
   // tabs; adding the strip's as well made it twice the gap below them.
   //
@@ -3940,11 +3984,19 @@ int BrowserView::ZephyrusTabStripHeight() const {
 
 void BrowserView::OnZephyrusUiLayoutChanged() {
   const bool horizontal = IsZephyrusHorizontalLayout();
+  const bool one_strip = IsZephyrusOneStripLayout();
+  // Either way the tabs are in a strip, not in the sidebar.
+  const bool strip_layout = horizontal || one_strip;
+  // The one-strip title bar HOLDS the tabs, so it cannot be hidden: dock it
+  // first (this hands any lent controls back to the bar).
+  if (one_strip && !zephyrus_titlebar_pinned_) {
+    ToggleZephyrusTitlebarPinned();
+  }
   // The strip ends in its own "+", right where new tabs appear; a second one
   // in the title bar would be the same control twice. Set before the sidebar
   // runs below, since its compact chrome only adopts a VISIBLE button.
   if (toolbar_ && toolbar_->zephyrus_new_tab_button()) {
-    toolbar_->zephyrus_new_tab_button()->SetVisible(!horizontal);
+    toolbar_->zephyrus_new_tab_button()->SetVisible(!strip_layout);
   }
   // The sidebar first: it hands the title bar's lent controls back, and they
   // must be home before the strip's layout pass runs.
@@ -3953,21 +4005,37 @@ void BrowserView::OnZephyrusUiLayoutChanged() {
         zephyrus::GetUiLayout(browser_->GetProfile()->GetPrefs()));
   }
   if (zephyrus_sidebar_hotzone_) {
-    zephyrus_sidebar_hotzone_->SetVisible(!horizontal);
+    zephyrus_sidebar_hotzone_->SetVisible(!strip_layout);
   }
-  if (zephyrus_sidebar_resize_handle_ && horizontal) {
+  if (zephyrus_sidebar_resize_handle_ && strip_layout) {
     zephyrus_sidebar_resize_handle_->SetVisible(false);
   }
   if (zephyrus_tab_strip_) {
-    zephyrus_tab_strip_->SetVisible(horizontal);
+    // Where the strip lives: in the title bar's row (taking the omnibox's place
+    // and hosting it) for one strip, under the title bar otherwise. Before the
+    // toolbar has been initialised the move is refused and happens on the
+    // second application of the layout, once it has (see Init).
+    zephyrus_tab_strip_->SetOneStrip(one_strip);
+    if (one_strip) {
+      if (toolbar_) {
+        toolbar_->EnterZephyrusOneStrip(zephyrus_tab_strip_);
+      }
+    } else if (toolbar_ && toolbar_->IsZephyrusOneStrip()) {
+      toolbar_->ExitZephyrusOneStrip(this);
+    }
+    zephyrus_tab_strip_->SetVisible(strip_layout);
+  }
+  if (toolbar_) {
+    toolbar_->UpdateZephyrusPinButton();
   }
   SyncZephyrusTitlebarOverlay(this);
   InvalidateLayout();
 }
 
 void BrowserView::UpdateZephyrusTabStripBounds() {
+  // One strip: the toolbar lays the strip out, in its own row.
   if (!zephyrus_tab_strip_ || !zephyrus_tab_strip_->GetVisible() ||
-      !contents_container()) {
+      !contents_container() || zephyrus_tab_strip_->parent() != this) {
     return;
   }
   // The band the layout left above the page (GetZephyrusTabStripHeight), at
@@ -6221,7 +6289,12 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
     views::View::ConvertPointToTarget(parent(), toolbar_, &toolbar_point);
     if (toolbar_->HitTestPoint(toolbar_point)) {
       views::View* handler = toolbar_->GetEventHandlerForPoint(toolbar_point);
-      return (handler == toolbar_) ? HTCAPTION : HTCLIENT;
+      // The one-strip tab strip lives in this row; what is left of it between
+      // its chips is title bar too.
+      const bool empty_strip =
+          zephyrus_tab_strip_ && handler == zephyrus_tab_strip_ &&
+          zephyrus_tab_strip_->parent() == toolbar_;
+      return (handler == toolbar_ || empty_strip) ? HTCAPTION : HTCLIENT;
     }
   }
 

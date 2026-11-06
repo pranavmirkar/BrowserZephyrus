@@ -682,6 +682,17 @@ class ZephyrusLayoutThumb : public views::Button {
       draw(gfx::Rect(inner.x(), inner.y() + 16, inner.width(),
                      inner.height() - 16),
            4.f, page);
+    } else if (layout_ == zephyrus::UiLayout::kOneStrip) {
+      // One row: a short address field on the left, the tabs after it (the
+      // first active), then the page.
+      draw(gfx::Rect(inner.x(), inner.y(), inner.width(), 9), 4.5f, chrome);
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 1, 20, 7), 3.5f, page);
+      draw(gfx::Rect(inner.x() + 26, inner.y() + 1, 14, 7), 3.5f, accent);
+      draw(gfx::Rect(inner.x() + 42, inner.y() + 1, 14, 7), 3.5f, page);
+      draw(gfx::Rect(inner.x() + 58, inner.y() + 1, 14, 7), 3.5f, page);
+      draw(gfx::Rect(inner.x(), inner.y() + 12, inner.width(),
+                     inner.height() - 12),
+           4.f, page);
     } else if (layout_ == zephyrus::UiLayout::kClassicSidebar) {
       // A flush column down the leading edge, square, running into the page.
       const int column = 22;
@@ -778,6 +789,7 @@ class ZephyrusLayoutPicker : public views::View {
          u"Clipping sidebar"},
         {zephyrus::UiLayout::kHorizontalTabs, u"Horizontal",
          u"Horizontal tabs"},
+        {zephyrus::UiLayout::kOneStrip, u"One strip", u"All in one strip"},
     };
     for (const Choice& choice : choices) {
       thumbs_.push_back(AddChildView(std::make_unique<ZephyrusLayoutThumb>(

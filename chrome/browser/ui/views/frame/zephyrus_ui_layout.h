@@ -30,7 +30,13 @@ enum class UiLayout : int {
   // Kept so the newer layouts are a choice rather than a replacement -- nobody
   // loses the UI they had.
   kClassicSidebar = 2,
-  kMaxValue = kClassicSidebar,
+  // ALL IN ONE STRIP (Safari's Compact). The title bar IS the tab strip: back
+  // and forward, then the tabs as favicon chips, with the ACTIVE tab expanded
+  // into the address field, then the actions and the window controls, all in
+  // one row. There is no sidebar and no second row, and because the row holds
+  // the tabs the title bar cannot be hidden.
+  kOneStrip = 3,
+  kMaxValue = kOneStrip,
 };
 
 inline constexpr UiLayout kDefaultUiLayout = UiLayout::kClassicSidebar;
