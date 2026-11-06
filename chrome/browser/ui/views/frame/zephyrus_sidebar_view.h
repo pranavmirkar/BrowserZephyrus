@@ -492,6 +492,27 @@ class ZephyrusSidebarView : public views::View,
   // Moves `moved` to child index `target` of the tab list, the others sliding
   // to their new places (see OnRowDragged).
   void ReorderChildWithFlip(views::View* moved, size_t target);
+
+  // LIVE PREVIEW of a tab dragged between lists (into a set, or out of one):
+  // a gap opens where it would land, so the result is on screen before the
+  // pointer lets go.
+  using FlipPositions = std::vector<std::pair<views::View*, float>>;
+  // Where every list child (and every set body's child) is, as drawn now.
+  FlipPositions CaptureFlip() const;
+  // Plays everything that has moved since `before` from there to where it is.
+  void PlayFlip(const FlipPositions& before, const views::View* skip);
+  void PlaceDropSlot(views::View* container, size_t index);
+  void RemoveDropSlot();
+  // The slot for the tab being dragged, given the lists it may land in.
+  void UpdateDropSlot(const gfx::Point& cursor_screen,
+                      const std::optional<tab_groups::TabGroupId>& own_set);
+  // The tabs either side of the slot, and the slot is taken down.
+  struct DropSlotNeighbours {
+    raw_ptr<content::WebContents> before = nullptr;
+    raw_ptr<content::WebContents> after = nullptr;
+  };
+  DropSlotNeighbours TakeDropSlot();
+  raw_ptr<views::View> drop_slot_ = nullptr;
   void CreateSetDragProxy(const std::u16string& title,
                           const std::string& icon_key,
                           const gfx::Size& size,

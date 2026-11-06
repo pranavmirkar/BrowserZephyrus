@@ -3544,6 +3544,8 @@ static_library("ui") {
       "views/frame/zephyrus_glance_controller.h",
       "views/frame/zephyrus_glance_view.cc",
       "views/frame/zephyrus_glance_view.h",
+      "views/frame/zephyrus_audio_button.cc",
+      "views/frame/zephyrus_audio_button.h",
       "views/frame/zephyrus_bubble_style.h",
       "views/frame/zephyrus_m3.cc",
       "views/frame/zephyrus_icon_motion.cc",

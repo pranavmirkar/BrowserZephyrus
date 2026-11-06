@@ -78,6 +78,8 @@ class ZephyrusTabStrip : public views::View,
   // moment the strip reorders before the next rebuild).
   void ActivateTab(base::WeakPtr<content::WebContents> contents);
   void CloseTab(base::WeakPtr<content::WebContents> contents);
+  // Mutes a playing tab, or unmutes a muted one. The strip rebuilds after.
+  void ToggleTabMuted(base::WeakPtr<content::WebContents> contents);
   void BreakSplit(split_tabs::SplitTabId split_id);
   void NewTab();
 
@@ -159,6 +161,26 @@ class ZephyrusTabStrip : public views::View,
   };
 
   void ClearGhosts();
+
+  // LIVE REORDER while a tab or a set is held. The strip shows its items in
+  // `order_` (a permutation of their indices; empty means as built): the held
+  // one follows the pointer, the others slide into the places the drop would
+  // leave them, so the result is on screen before the pointer lets go.
+  using Unit = std::pair<size_t, size_t>;  // [begin, end) item range
+  size_t ItemIndex(const views::View* view) const;
+  // The items a held tab may be reordered among: its set's tabs, or the loose
+  // ones. [begin, end) in item indices.
+  std::pair<size_t, size_t> TabGroupRange(size_t item) const;
+  // That range as things that move whole: a tab, or a split pair with its seam.
+  std::vector<Unit> UnitsIn(size_t begin, size_t end) const;
+  // Whether the wider group gap sits between two neighbours on screen.
+  bool GapBetween(size_t before, size_t after) const;
+  void BeginDragPreview();
+  void SetPreviewOrder(std::vector<size_t> order);
+  // Records where every item is now and restarts the slide, so whatever the
+  // next layout changes is eased rather than jumped to.
+  void SlideFromCurrent(bool include_held);
+  std::vector<size_t> order_;
   // Rings the set a dragged tab would join (or none).
   void SetDropHighlight(const std::optional<tab_groups::TabGroupId>& set);
   void ClearLayoutAnimation();

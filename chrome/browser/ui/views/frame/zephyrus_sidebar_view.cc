@@ -27,6 +27,7 @@
 #include "base/time/time.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/views/frame/zephyrus_audio_button.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -131,6 +132,7 @@
 #include "ui/views/layout/table_layout.h"
 #include "ui/views/mouse_watcher_view_host.h"
 #include "ui/views/vector_icons.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 
@@ -1768,6 +1770,87 @@ END_METADATA
 
 // The tab cards under a header. Its height follows how far the set is open, and
 // it clips what is not showing yet.
+// The gap that opens where a dragged tab would land: a tonal outline of a row
+// that grows in, and closes again when the tab moves on.
+class ZephyrusDropSlot : public views::View, public gfx::AnimationDelegate {
+  METADATA_HEADER(ZephyrusDropSlot, views::View)
+
+ public:
+  ZephyrusDropSlot() : anim_(this) {
+    SetCanProcessEventsWithinSubtree(false);
+    anim_.SetTweenType(gfx::Tween::EASE_OUT);
+    anim_.SetSlideDuration(base::Milliseconds(160));
+    if (gfx::Animation::ShouldRenderRichAnimation()) {
+      anim_.Reset(0.0);
+      anim_.Show();
+    } else {
+      anim_.Reset(1.0);
+    }
+  }
+  ZephyrusDropSlot(const ZephyrusDropSlot&) = delete;
+  ZephyrusDropSlot& operator=(const ZephyrusDropSlot&) = delete;
+  ~ZephyrusDropSlot() override = default;
+
+  // Closes, then takes itself out of the list.
+  void Dismiss() {
+    dismissed_ = true;
+    if (gfx::Animation::ShouldRenderRichAnimation()) {
+      anim_.Hide();
+    } else {
+      anim_.Reset(0.0);
+      RemoveSoon();
+    }
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(
+        0, base::ClampRound(kRowHeight * anim_.GetCurrentValue()));
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    if (height() < 4) {
+      return;
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(SkColorSetA(
+        zephyrus::m3::Role(*this, kColorZephyrusPrimary), 0x38));
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 12.f, flags);
+  }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    PreferredSizeChanged();
+  }
+  void AnimationEnded(const gfx::Animation* animation) override {
+    if (dismissed_) {
+      RemoveSoon();
+    }
+  }
+
+ private:
+  // Not from inside the animation callback: removing deletes this.
+  void RemoveSoon() {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](std::unique_ptr<views::ViewTracker> tracker) {
+              views::View* view = tracker->view();
+              if (view && view->parent()) {
+                view->parent()->RemoveChildViewT(view);
+              }
+            },
+            std::make_unique<views::ViewTracker>(this)));
+  }
+
+  gfx::SlideAnimation anim_;
+  bool dismissed_ = false;
+};
+
+BEGIN_METADATA(ZephyrusDropSlot)
+END_METADATA
+
 class ZephyrusSetBody : public views::BoxLayoutView {
   METADATA_HEADER(ZephyrusSetBody, views::BoxLayoutView)
 
@@ -2150,24 +2233,17 @@ class ZephyrusTabRow : public views::Button {
     // Audio indicator. Unlike the close button this is NOT hover-gated: the
     // whole point is seeing at a glance which tab is making noise, and being
     // able to silence it without hunting for the tab first.
-    audio_button_ = AddChildView(std::make_unique<views::ImageButton>(
+    // The same control as the horizontal strip's: bars that move while it
+    // plays, the struck speaker when muted.
+    audio_button_ = AddChildView(std::make_unique<ZephyrusAudioButton>(
         base::BindRepeating(
             [](base::RepeatingClosure cb, const ui::Event&) { cb.Run(); },
-            std::move(mute_callback))));
-    audio_button_->SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(
-            muted ? vector_icons::kVolumeOffIcon : vector_icons::kVolumeUpIcon,
-            colors_.foreground, 16));
-    audio_button_->SetImageHorizontalAlignment(
-        views::ImageButton::ALIGN_CENTER);
-    audio_button_->SetImageVerticalAlignment(views::ImageButton::ALIGN_MIDDLE);
+            std::move(mute_callback)),
+        /*diameter=*/18));
+    audio_button_->SetInk(is_active_ ? colors_.active_fg : colors_.foreground);
+    audio_button_->SetAudio(audible, muted);
     // Shown while playing, and while muted so the user can undo it.
-    audio_button_->SetVisible(audible || muted);
-    const std::u16string audio_name = muted ? u"Unmute tab" : u"Mute tab";
-    audio_button_->GetViewAccessibility().SetName(audio_name);
-    audio_button_->SetTooltipText(audio_name);
-    views::InstallCircleHighlightPathGenerator(audio_button_);
+    audio_button_->SetVisible(audio_button_->wanted());
 
     close_callback_ = close_callback;
     close_button_ = AddChildView(std::make_unique<ZephyrusTabCloseButton>(
@@ -2481,15 +2557,8 @@ class ZephyrusTabRow : public views::Button {
     if (!audio_button_) {
       return;
     }
-    audio_button_->SetImageModel(
-        views::Button::STATE_NORMAL,
-        ui::ImageModel::FromVectorIcon(
-            muted ? vector_icons::kVolumeOffIcon : vector_icons::kVolumeUpIcon,
-            colors_.foreground, 16));
-    audio_button_->SetVisible(audible || muted);
-    const std::u16string audio_name = muted ? u"Unmute tab" : u"Mute tab";
-    audio_button_->GetViewAccessibility().SetName(audio_name);
-    audio_button_->SetTooltipText(audio_name);
+    audio_button_->SetAudio(audible, muted);
+    audio_button_->SetVisible(audio_button_->wanted());
   }
 
  private:
@@ -2589,6 +2658,9 @@ class ZephyrusTabRow : public views::Button {
     if (close_button_) {
       close_button_->SetRowInk(on_row);
     }
+    if (audio_button_) {
+      audio_button_->SetInk(on_row);
+    }
     ApplyFallbackIconTint();
     SchedulePaint();
   }
@@ -2639,7 +2711,7 @@ class ZephyrusTabRow : public views::Button {
   ZephyrusRowColors colors_;
   raw_ptr<views::ImageView> favicon_view_ = nullptr;
   raw_ptr<views::Label> title_label_ = nullptr;
-  raw_ptr<views::ImageButton> audio_button_ = nullptr;
+  raw_ptr<ZephyrusAudioButton> audio_button_ = nullptr;
   raw_ptr<ZephyrusTabCloseButton> close_button_ = nullptr;
   base::RepeatingClosure close_callback_;
 };
@@ -4328,13 +4400,21 @@ void ZephyrusSidebarView::UpdateSetDropTarget(const gfx::Point& cursor_screen,
   // dropped while the cursor is over the page (that is a split).
   const bool pinned = dragged_model_index >= 0 &&
                       tab_strip_model_->IsTabPinned(dragged_model_index);
+  const std::optional<tab_groups::TabGroupId> own =
+      dragged_model_index >= 0
+          ? tab_strip_model_->GetTabGroupForTab(dragged_model_index)
+          : std::nullopt;
   if (!pinned && !drag_over_content_ &&
       GetBoundsInScreen().Contains(cursor_screen)) {
     loose = true;
     for (views::View* child : tab_list_container_->children()) {
       auto* section = views::AsViewClass<ZephyrusSetSection>(child);
       if (section && section->GetBoundsInScreen().Contains(cursor_screen)) {
-        target = section->set_id();
+        // Over its own set the tab is only being put in order: no ring, no
+        // join, and the rows reorder live (OnRowDragged).
+        if (!(own && section->set_id() == *own)) {
+          target = section->set_id();
+        }
         loose = false;
         break;
       }
@@ -4382,6 +4462,194 @@ void ZephyrusSidebarView::CreateSetDragProxy(const std::u16string& title,
   proxy->UseSetLook(std::move(glyph), size.height());
   drag_proxy_ = browser_view_->AddChildView(std::move(proxy));
   drag_proxy_->SetSize(size);
+}
+
+ZephyrusSidebarView::FlipPositions ZephyrusSidebarView::CaptureFlip() const {
+  FlipPositions positions;
+  if (!tab_list_container_) {
+    return positions;
+  }
+  auto add = [&](views::View* parent) {
+    for (views::View* child : parent->children()) {
+      float visual_y = static_cast<float>(child->bounds().y());
+      if (child->layer()) {
+        visual_y += child->layer()->transform().To2dTranslation().y();
+      }
+      positions.emplace_back(child, visual_y);
+    }
+  };
+  add(tab_list_container_);
+  for (views::View* child : tab_list_container_->children()) {
+    if (auto* section = views::AsViewClass<ZephyrusSetSection>(child)) {
+      add(section->body());
+    }
+  }
+  return positions;
+}
+
+void ZephyrusSidebarView::PlayFlip(const FlipPositions& before,
+                                   const views::View* skip) {
+  for (const auto& [child, old_y] : before) {
+    if (child == skip || !child->parent()) {
+      continue;
+    }
+    const float delta = old_y - static_cast<float>(child->bounds().y());
+    if (std::abs(delta) < 0.5f) {
+      continue;
+    }
+    if (!child->layer()) {
+      child->SetPaintToLayer();
+      child->layer()->SetFillsBoundsOpaquely(false);
+    }
+    gfx::Transform offset;
+    offset.Translate(0, delta);
+    child->layer()->SetTransform(offset);
+    ui::ScopedLayerAnimationSettings settings(child->layer()->GetAnimator());
+    settings.SetPreemptionStrategy(
+        ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
+    settings.SetTransitionDuration(base::Milliseconds(180));
+    settings.SetTweenType(
+        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
+    child->layer()->SetTransform(gfx::Transform());
+  }
+}
+
+void ZephyrusSidebarView::PlaceDropSlot(views::View* container, size_t index) {
+  index = std::min(index, container->children().size());
+  if (drop_slot_ && drop_slot_->parent() == container) {
+    const auto& siblings = container->children();
+    size_t at = 0;
+    for (views::View* child : siblings) {
+      if (child == drop_slot_) {
+        break;
+      }
+      ++at;
+    }
+    // Just before or just after itself is where it already is.
+    if (at == index || at + 1 == index) {
+      return;
+    }
+  }
+  // The old gap closes where it was (it takes itself out when it is shut); the
+  // new one opens where the tab would land, and everything else glides.
+  const FlipPositions before = CaptureFlip();
+  if (drop_slot_) {
+    if (auto* old = views::AsViewClass<ZephyrusDropSlot>(drop_slot_.get())) {
+      old->Dismiss();
+    }
+    drop_slot_ = nullptr;
+  }
+  drop_slot_ = container->AddChildViewAt(std::make_unique<ZephyrusDropSlot>(),
+                                         index);
+  tab_list_container_->DeprecatedLayoutImmediately();
+  PlayFlip(before, nullptr);
+}
+
+void ZephyrusSidebarView::RemoveDropSlot() {
+  if (!drop_slot_) {
+    return;
+  }
+  if (auto* slot = views::AsViewClass<ZephyrusDropSlot>(drop_slot_.get())) {
+    slot->Dismiss();
+  }
+  drop_slot_ = nullptr;
+}
+
+void ZephyrusSidebarView::UpdateDropSlot(
+    const gfx::Point& cursor_screen,
+    const std::optional<tab_groups::TabGroupId>& own_set) {
+  views::View* container = nullptr;
+  if (drag_target_set_) {
+    if (auto* section = FindSetSection(tab_list_container_, *drag_target_set_)) {
+      container = section->body();
+    }
+  } else if (drag_target_loose_ && own_set) {
+    container = tab_list_container_;
+  }
+  if (!container) {
+    RemoveDropSlot();
+    return;
+  }
+  gfx::Point point = cursor_screen;
+  views::View::ConvertPointFromScreen(container, &point);
+  // The index among the container's children, where the gap would be put. In
+  // the top-level list only the loose tabs are candidates.
+  size_t index = 0;
+  size_t seen = 0;
+  bool any = false;
+  size_t first_candidate = 0;
+  for (views::View* child : container->children()) {
+    if (child == drop_slot_) {
+      // The open gap is a child like any other: it stays in the list (closing)
+      // when it moves, so the index it is replaced at counts it.
+      ++seen;
+      continue;
+    }
+    auto* row = views::AsViewClass<ZephyrusTabRow>(child);
+    const bool candidate =
+        container == tab_list_container_
+            ? row && row->model_index() >= 0 &&
+                  !tab_strip_model_->IsTabPinned(row->model_index())
+            : true;
+    if (!candidate) {
+      ++seen;
+      continue;
+    }
+    if (!any) {
+      first_candidate = seen;
+    }
+    any = true;
+    ++seen;
+    if (child->bounds().CenterPoint().y() < point.y()) {
+      index = seen;
+    }
+  }
+  if (container == tab_list_container_) {
+    if (!any) {
+      RemoveDropSlot();
+      return;
+    }
+    // Above the first loose tab it goes BEFORE that tab, not at the top of the
+    // whole list (where the sets are).
+    index = std::max(index, first_candidate);
+  }
+  PlaceDropSlot(container, index);
+}
+
+ZephyrusSidebarView::DropSlotNeighbours ZephyrusSidebarView::TakeDropSlot() {
+  DropSlotNeighbours neighbours;
+  if (!drop_slot_ || !drop_slot_->parent()) {
+    return neighbours;
+  }
+  const auto& siblings = drop_slot_->parent()->children();
+  size_t at = 0;
+  for (views::View* child : siblings) {
+    if (child == drop_slot_) {
+      break;
+    }
+    ++at;
+  }
+  auto contents_of = [&](views::View* view) -> content::WebContents* {
+    std::vector<ZephyrusTabRow*> rows;
+    if (auto* row = views::AsViewClass<ZephyrusTabRow>(view)) {
+      rows.push_back(row);
+    } else {
+      CollectTabRows(view, &rows);
+    }
+    if (rows.empty() || rows.front()->model_index() < 0 ||
+        rows.front()->model_index() >= tab_strip_model_->count()) {
+      return nullptr;
+    }
+    return tab_strip_model_->GetWebContentsAt(rows.front()->model_index());
+  };
+  for (size_t i = at + 1; i < siblings.size() && !neighbours.after; ++i) {
+    neighbours.after = contents_of(siblings[i]);
+  }
+  for (size_t i = at; i-- > 0 && !neighbours.before;) {
+    neighbours.before = contents_of(siblings[i]);
+  }
+  RemoveDropSlot();
+  return neighbours;
 }
 
 void ZephyrusSidebarView::ReorderChildWithFlip(views::View* moved,
@@ -4566,18 +4834,36 @@ void ZephyrusSidebarView::OnRowDragged(views::View* row, int y_in_container) {
   // Over the page there is no slot to open a gap for, so the list is left
   // alone -- reordering underneath a gesture that is no longer about order
   // would rearrange tabs the user never meant to touch.
-  if (over_content || drag_target_set_) {
+  if (over_content) {
+    RemoveDropSlot();
     return;
   }
+  // Moving between lists (into another set, or out of its own): a gap opens
+  // where the tab would land, and the drop puts it there.
+  const std::optional<tab_groups::TabGroupId> own_set =
+      dragged->model_index() >= 0
+          ? tab_strip_model_->GetTabGroupForTab(dragged->model_index())
+          : std::nullopt;
+  if (drag_target_set_ || (drag_target_loose_ && own_set)) {
+    UpdateDropSlot(cursor, own_set);
+    return;
+  }
+  RemoveDropSlot();
 
-  const auto& children = tab_list_container_->children();
+  // Reordering inside its own list: the loose tabs, the pinned ones, or the
+  // tabs of its set. The row's parent is that list.
+  views::View* const container = row->parent();
+  if (!container) {
+    return;
+  }
+  const auto& children = container->children();
   const auto it = std::find(children.begin(), children.end(), row);
   if (it == children.end()) {
     return;
   }
   const size_t self = static_cast<size_t>(it - children.begin());
 
-  // The container interleaves section headers ("Pinned tabs", "Tabs") with
+  // The top-level list interleaves section headers ("Pinned tabs", "Tabs") with
   // rows. A drag may only move a row WITHIN its own run of rows: crossing a
   // header would mean pinning or unpinning, which is a different operation
   // with different consequences and belongs to the context menu, not to a
@@ -4625,54 +4911,11 @@ void ZephyrusSidebarView::OnRowDragged(views::View* row, int y_in_container) {
   // still-running animation is applying), not layout positions. Reading layout
   // alone would snap any row that is still in flight back to its slot before
   // re-animating it, and during a drag rows are in flight most of the time.
-  std::vector<std::pair<views::View*, float>> before;
-  before.reserve(children.size());
-  for (views::View* child : children) {
-    float visual_y = static_cast<float>(child->bounds().y());
-    if (child->layer()) {
-      visual_y += child->layer()->transform().To2dTranslation().y();
-    }
-    before.emplace_back(child, visual_y);
-  }
-
-  tab_list_container_->ReorderChildView(row, target);
-  tab_list_container_->DeprecatedLayoutImmediately();
-
-  for (const auto& [child, old_y] : before) {
-    // The dragged row is driven by the cursor, not by this.
-    if (child == row) {
-      continue;
-    }
-    const float delta = old_y - static_cast<float>(child->bounds().y());
-    if (std::abs(delta) < 0.5f) {
-      continue;
-    }
-    if (!child->layer()) {
-      child->SetPaintToLayer();
-      child->layer()->SetFillsBoundsOpaquely(false);
-    }
-
-    // INVERT -- instantly, outside any animation scope.
-    gfx::Transform offset;
-    offset.Translate(0, delta);
-    child->layer()->SetTransform(offset);
-
-    // PLAY. IMMEDIATELY_ANIMATE_TO_NEW_TARGET is the load-bearing setting: a
-    // drag crosses boundaries repeatedly, and the default strategy would queue
-    // each reorder behind the last. Rows have to RETARGET from wherever they
-    // currently are, the same reason CSS transitions beat keyframes for
-    // anything the user can trigger rapidly.
-    ui::ScopedLayerAnimationSettings settings(child->layer()->GetAnimator());
-    settings.SetPreemptionStrategy(
-        ui::LayerAnimator::IMMEDIATELY_ANIMATE_TO_NEW_TARGET);
-    // 180ms: inside the 150-250ms band for this size of movement. Slower and
-    // the list feels like it is wading; faster and the reorder is invisible,
-    // which defeats the point of animating it at all.
-    settings.SetTransitionDuration(base::Milliseconds(180));
-    settings.SetTweenType(
-        zephyrus::m3::TweenFor(zephyrus::m3::Spring::kFastSpatial));
-    child->layer()->SetTransform(gfx::Transform());
-  }
+  const FlipPositions before = CaptureFlip();
+  container->ReorderChildView(row, target);
+  container->DeprecatedLayoutImmediately();
+  // The dragged row is driven by the cursor, not by this.
+  PlayFlip(before, row);
 }
 
 void ZephyrusSidebarView::OnRowDragFinished() {
@@ -4695,9 +4938,11 @@ void ZephyrusSidebarView::OnRowDragFinished() {
   UpdateSplitDropIndicator(false);
   DestroyDragProxy();
 
-  // Sets: dropped onto a set, or out of one onto the loose tabs.
+  // Sets: dropped onto a set, or out of one onto the loose tabs. The gap that
+  // was open says where in that list.
   const std::optional<tab_groups::TabGroupId> set_target = drag_target_set_;
   const bool to_loose = drag_target_loose_;
+  const DropSlotNeighbours slot = TakeDropSlot();
   ClearSetDropTarget();
   if (!split_drop && from >= 0 && !tab_strip_model_->IsTabPinned(from) &&
       (set_target || to_loose)) {
@@ -4712,6 +4957,29 @@ void ZephyrusSidebarView::OnRowDragFinished() {
       changed = true;
     }
     if (changed) {
+      // Then to the place the gap was: just before the tab that followed it, or
+      // just after the one that preceded it.
+      const int moved = contents ? tab_strip_model_->GetIndexOfWebContents(contents)
+                                 : -1;
+      if (moved >= 0) {
+        int destination = -1;
+        if (slot.after) {
+          const int next = tab_strip_model_->GetIndexOfWebContents(slot.after);
+          if (next >= 0) {
+            destination = moved < next ? next - 1 : next;
+          }
+        } else if (slot.before) {
+          const int prev = tab_strip_model_->GetIndexOfWebContents(slot.before);
+          if (prev >= 0) {
+            destination = moved < prev ? prev : prev + 1;
+          }
+        }
+        if (destination >= 0 && destination != moved &&
+            destination < tab_strip_model_->count()) {
+          tab_strip_model_->MoveWebContentsAt(moved, destination,
+                                              /*select_after_move=*/false);
+        }
+      }
       rebuild_deferred_ = false;
       ScheduleRebuildTabList();
       TuckAwayIfCursorLeft();
@@ -4743,13 +5011,25 @@ void ZephyrusSidebarView::OnRowDragFinished() {
 
   if (from >= 0 && tab_list_container_) {
     // Where the row ended up visually, versus the order the model still holds.
+    // Its siblings: the rows in the same list, which is the loose tabs, the
+    // pinned ones, or the tabs of its set.
+    std::vector<ZephyrusTabRow*> all;
+    CollectTabRows(tab_list_container_, &all);
+    views::View* list = nullptr;
+    for (ZephyrusTabRow* r : all) {
+      if (r->model_index() == from) {
+        list = r->parent();
+      }
+    }
     std::vector<ZephyrusTabRow*> visual;
-    for (views::View* child : tab_list_container_->children()) {
-      if (auto* r = views::AsViewClass<ZephyrusTabRow>(child)) {
-        if (r->model_index() >= 0 &&
-            tab_strip_model_->IsTabPinned(r->model_index()) ==
-                tab_strip_model_->IsTabPinned(from)) {
-          visual.push_back(r);
+    if (list) {
+      for (views::View* child : list->children()) {
+        if (auto* r = views::AsViewClass<ZephyrusTabRow>(child)) {
+          if (r->model_index() >= 0 &&
+              tab_strip_model_->IsTabPinned(r->model_index()) ==
+                  tab_strip_model_->IsTabPinned(from)) {
+            visual.push_back(r);
+          }
         }
       }
     }
@@ -4818,6 +5098,7 @@ void ZephyrusSidebarView::CancelRowDrag() {
   drag_over_content_ = false;
   UpdateSplitDropIndicator(false);
   ClearSetDropTarget();
+  RemoveDropSlot();
   DestroyDragProxy();
   drag_contents_ = nullptr;
   rebuild_deferred_ = false;
@@ -4832,6 +5113,7 @@ void ZephyrusSidebarView::RebuildTabList() {
   // this function.
   ParkBorrowedNewTabButton();
   tabs_header_ = nullptr;
+  drop_slot_ = nullptr;
 
   if (!tab_list_container_) {
     return;

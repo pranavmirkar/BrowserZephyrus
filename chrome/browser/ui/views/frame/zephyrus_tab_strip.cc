@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <map>
 #include <set>
 #include <string>
@@ -17,7 +18,9 @@
 #include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "cc/paint/paint_flags.h"
+#include "base/timer/timer.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/views/frame/zephyrus_audio_button.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/color/zephyrus_color_mixer.h"
@@ -113,6 +116,7 @@ enum Command {
   kCommandCloseOthers,
   kCommandNewSet,
   kCommandRemoveFromSet,
+  kCommandMute,
   // A set's own menu (on its pill).
   kCommandSetRename = 30,
   kCommandSetIcon,
@@ -309,6 +313,14 @@ class StripTab : public Segment {
 
       close_ = AddChildView(std::make_unique<StripCloseButton>(
           base::BindRepeating(&StripTab::Close, base::Unretained(this))));
+
+      // The audio control sits at the right end, where the close zone's mirror
+      // image is already kept clear.
+      audio_ = AddChildView(std::make_unique<ZephyrusAudioButton>(
+          base::BindRepeating(&StripTab::ToggleMute, base::Unretained(this)),
+          kCloseSize));
+      audio_->SetAudio(contents->IsCurrentlyAudible(),
+                       contents->IsAudioMuted());
     }
 
     morph_.SetSlideDuration(gfx::Animation::ShouldRenderRichAnimation()
@@ -331,6 +343,13 @@ class StripTab : public Segment {
   bool is_pinned() const { return pinned_; }
   bool in_split() const { return tone_ == Tone::kSplit; }
   bool is_active() const { return active_; }
+  // Held by a drag: painted raised, as the active tab is.
+  void SetDragged(bool dragged) {
+    if (dragged_ != dragged) {
+      dragged_ = dragged;
+      SchedulePaint();
+    }
+  }
 
   // views::Button:
   void OnThemeChanged() override {
@@ -341,6 +360,9 @@ class StripTab : public Segment {
     }
     if (close_) {
       close_->SetInk(ink);
+    }
+    if (audio_) {
+      audio_->SetInk(ink);
     }
   }
 
@@ -358,10 +380,22 @@ class StripTab : public Segment {
       close_->SetBounds(kPlateInset + 4, (kTabHeight - kCloseSize) / 2,
                         kCloseSize, kCloseSize);
     }
+    // And the audio control at the RIGHT edge, whenever the tab is playing or
+    // muted (it is not hover-gated: it is also the "this tab is making noise"
+    // sign).
+    const bool show_audio =
+        audio_ && audio_->wanted() && width() >= kMinTabWidth;
+    audio_->SetVisible(show_audio);
+    const int audio_zone = kPlateInset + 4 + kCloseSize + 4;
+    if (show_audio) {
+      audio_->SetBounds(width() - kPlateInset - 4 - kCloseSize,
+                        (kTabHeight - kCloseSize) / 2, kCloseSize, kCloseSize);
+    }
     // Favicon and title are centred as one unit, in the room the two close
     // zones leave. A narrow tab left-aligns them instead.
     const int zone = narrow ? 8 : kCloseZone;
-    const int room = std::max(0, width() - 2 * zone);
+    const int right_zone = show_audio ? std::max(zone, audio_zone) : zone;
+    const int room = std::max(0, width() - zone - right_zone);
     const int wanted =
         kFaviconSize + 6 + label_->GetPreferredSize().width();
     const int unit = std::min(wanted, room);
@@ -377,7 +411,7 @@ class StripTab : public Segment {
   }
 
   void OnPaintBackground(gfx::Canvas* canvas) override {
-    const double t = morph_.GetCurrentValue();
+    const double t = std::max(morph_.GetCurrentValue(), dragged_ ? 1.0 : 0.0);
     const SkRRect plate = SegmentShape(PlateBounds(), LeadRadius(), TrailRadius());
     const bool hovered = GetState() == STATE_HOVERED;
     const bool pressed = GetState() == STATE_PRESSED;
@@ -533,6 +567,7 @@ class StripTab : public Segment {
   }
 
   void Close(const ui::Event& event) { strip_->CloseTab(contents_); }
+  void ToggleMute(const ui::Event& event) { strip_->ToggleTabMuted(contents_); }
 
   raw_ptr<ZephyrusTabStrip> strip_;
   base::WeakPtr<content::WebContents> contents_;
@@ -546,9 +581,11 @@ class StripTab : public Segment {
   gfx::ImageSkia favicon_;
   raw_ptr<views::Label> label_ = nullptr;
   raw_ptr<StripCloseButton> close_ = nullptr;
+  raw_ptr<ZephyrusAudioButton> audio_ = nullptr;
   gfx::SlideAnimation morph_;
   int press_x_ = 0;
   bool dragging_ = false;
+  bool dragged_ = false;
   // Where the favicon sits, set by Layout.
   int content_x_ = 10;
 };
@@ -1156,6 +1193,7 @@ void ZephyrusTabStrip::Rebuild() {
     old.push_back(std::move(entry));
   }
   items_.clear();
+  order_.clear();
   gap_before_.clear();
   set_spans_.clear();
   new_tab_button_ = nullptr;
@@ -1458,12 +1496,14 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
   const SkColor divider =
       SkColorSetA(zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant), 0xB0);
   const int y = top_inset_ + (kTabHeight - kDividerHeight) / 2;
+  const bool ordered = order_.size() == items_.size();
   for (size_t i = 0; i + 1 < items_.size(); ++i) {
-    auto* left = views::AsViewClass<StripTab>(items_[i].get());
-    auto* right = views::AsViewClass<StripTab>(items_[i + 1].get());
+    const size_t a = ordered ? order_[i] : i;
+    const size_t b = ordered ? order_[i + 1] : i + 1;
+    auto* left = views::AsViewClass<StripTab>(items_[a].get());
+    auto* right = views::AsViewClass<StripTab>(items_[b].get());
     if (!left || !right || left->is_pinned() != right->is_pinned() ||
-        left->in_split() || right->in_split() ||
-        (i + 1 < gap_before_.size() && gap_before_[i + 1])) {
+        left->in_split() || right->in_split() || GapBetween(a, b)) {
       continue;
     }
     auto quiet = [&](StripTab* tab) {
@@ -1486,8 +1526,15 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
     if (begin >= end || end > items_.size()) {
       continue;
     }
-    const int left = items_[begin]->x() + 2;
-    const int right = items_[end - 1]->bounds().right() - 2;
+    // The span's extent, whatever order its tabs are in at the moment.
+    int left = INT_MAX;
+    int right = INT_MIN;
+    for (size_t k = begin; k < end; ++k) {
+      left = std::min(left, items_[k]->x());
+      right = std::max(right, items_[k]->bounds().right());
+    }
+    left += 2;
+    right -= 2;
     if (right <= left) {
       continue;
     }
@@ -1584,15 +1631,18 @@ void ZephyrusTabStrip::Layout(PassKey key) {
         entries.push_back(e);
       }
     };
-    for (size_t i = 0; i < items_.size(); ++i) {
-      add_ghosts(i);
+    const bool ordered = order_.size() == items_.size();
+    for (size_t k = 0; k < items_.size(); ++k) {
+      add_ghosts(k);
+      const size_t i = ordered ? order_[k] : k;
       Entry e;
       e.item = static_cast<int>(i);
       e.view = items_[i];
       e.share = with_motion ? entering_share(i) : 1.0;
-      e.gap = i == 0 ? 0
-                     : (i < gap_before_.size() && gap_before_[i] ? kGroupGap
-                                                                 : kSegmentGap);
+      e.gap = k == 0 ? 0
+                     : (GapBetween(ordered ? order_[k - 1] : k - 1, i)
+                            ? kGroupGap
+                            : kSegmentGap);
       e.fixed = fixed_width(e.view, i < first_flexible_);
       e.is_pill = views::IsViewClass<SetPill>(e.view);
       entries.push_back(e);
@@ -1782,6 +1832,18 @@ void ZephyrusTabStrip::CloseTab(base::WeakPtr<content::WebContents> contents) {
   }
 }
 
+void ZephyrusTabStrip::ToggleTabMuted(
+    base::WeakPtr<content::WebContents> contents) {
+  content::WebContents* target = contents.get();
+  if (!target) {
+    return;
+  }
+  target->SetAudioMuted(!target->IsAudioMuted());
+  // Posted: this is called from inside the audio button's own click, and the
+  // rebuild replaces that button.
+  ScheduleRebuild();
+}
+
 void ZephyrusTabStrip::BreakSplit(split_tabs::SplitTabId split_id) {
   if (tab_strip_model_->GetSplitData(split_id)) {
     tab_strip_model_->RemoveSplit(split_id);
@@ -1790,6 +1852,98 @@ void ZephyrusTabStrip::BreakSplit(split_tabs::SplitTabId split_id) {
 
 void ZephyrusTabStrip::NewTab() {
   chrome::NewTab(browser_view_->browser(), NewTabTypes::kNewTabButton);
+}
+
+size_t ZephyrusTabStrip::ItemIndex(const views::View* view) const {
+  for (size_t i = 0; i < items_.size(); ++i) {
+    if (items_[i] == view) {
+      return i;
+    }
+  }
+  return items_.size();
+}
+
+std::pair<size_t, size_t> ZephyrusTabStrip::TabGroupRange(size_t item) const {
+  for (const auto& [begin, end] : set_spans_) {
+    if (item > begin && item < end) {
+      return {begin + 1, end};
+    }
+  }
+  // Loose tabs come after every set.
+  size_t lo = first_flexible_;
+  if (!set_spans_.empty()) {
+    lo = set_spans_.back().second;
+  }
+  return {lo, items_.size()};
+}
+
+std::vector<ZephyrusTabStrip::Unit> ZephyrusTabStrip::UnitsIn(
+    size_t begin,
+    size_t end) const {
+  std::vector<Unit> units;
+  for (size_t i = begin; i < end;) {
+    auto* tab = views::AsViewClass<StripTab>(items_[i].get());
+    if (tab && tab->in_split() && i + 2 < end &&
+        views::IsViewClass<SplitSeam>(items_[i + 1].get())) {
+      units.emplace_back(i, i + 3);
+      i += 3;
+    } else {
+      units.emplace_back(i, i + 1);
+      ++i;
+    }
+  }
+  return units;
+}
+
+bool ZephyrusTabStrip::GapBetween(size_t before, size_t after) const {
+  auto category = [&](size_t i) {
+    if (i < first_flexible_) {
+      return 0;  // Pinned.
+    }
+    for (const auto& [begin, end] : set_spans_) {
+      if (i >= begin && i < end) {
+        return 1;  // In a set.
+      }
+    }
+    return 2;  // Loose.
+  };
+  return category(before) != category(after) ||
+         views::IsViewClass<SetPill>(items_[after].get());
+}
+
+void ZephyrusTabStrip::BeginDragPreview() {
+  // Whatever slide is still running is settled first.
+  ClearLayoutAnimation();
+  ignore_anim_end_ = true;
+  layout_anim_.Reset(1.0);
+  ignore_anim_end_ = false;
+  order_.assign(items_.size(), 0);
+  std::iota(order_.begin(), order_.end(), size_t{0});
+}
+
+void ZephyrusTabStrip::SlideFromCurrent(bool include_held) {
+  anim_info_.assign(items_.size(), AnimInfo());
+  for (size_t i = 0; i < items_.size(); ++i) {
+    if (!include_held && items_[i] == drag_view_) {
+      continue;  // It follows the pointer, not the slide.
+    }
+    anim_info_[i].from = items_[i]->bounds();
+    anim_info_[i].has_from = true;
+  }
+  entering_count_ = 0;
+  ignore_anim_end_ = true;
+  layout_anim_.Reset(0.0);
+  ignore_anim_end_ = false;
+  layout_anim_.Show();
+}
+
+void ZephyrusTabStrip::SetPreviewOrder(std::vector<size_t> order) {
+  if (order == order_) {
+    return;
+  }
+  SlideFromCurrent(/*include_held=*/false);
+  order_ = std::move(order);
+  InvalidateLayout();
 }
 
 void ZephyrusTabStrip::SetDropHighlight(
@@ -1814,7 +1968,13 @@ std::optional<tab_groups::TabGroupId> SetAt(
     if (begin >= end || end > targets.size()) {
       continue;
     }
-    if (x >= targets[begin].x() - kAir && x <= targets[end - 1].right() + kAir) {
+    int left = INT_MAX;
+    int right = INT_MIN;
+    for (size_t k = begin; k < end; ++k) {
+      left = std::min(left, targets[k].x());
+      right = std::max(right, targets[k].right());
+    }
+    if (x >= left - kAir && x <= right + kAir) {
       if (auto* pill = views::AsViewClass<SetPill>(items[begin].get())) {
         return pill->set_id();
       }
@@ -1826,9 +1986,54 @@ std::optional<tab_groups::TabGroupId> SetAt(
 }  // namespace
 
 void ZephyrusTabStrip::OnTabDragged(views::View* tab, int x_in_strip) {
+  if (!dragging_) {
+    BeginDragPreview();
+    if (auto* held = views::AsViewClass<StripTab>(tab)) {
+      held->SetDragged(true);
+    }
+    // The held tab paints over its neighbours.
+    ReorderChildView(tab, children().size() - 1);
+  }
   dragging_ = true;
   drag_view_ = tab;
   drag_x_ = x_in_strip;
+
+  // Live reorder among the tabs it may move between: it takes the slot whose
+  // neighbours' middles it has passed, and they slide to make room.
+  const size_t held = ItemIndex(tab);
+  if (held < items_.size()) {
+    const auto [lo, hi] = TabGroupRange(held);
+    const int center = x_in_strip + tab->width() / 2;
+    std::vector<Unit> others;
+    std::optional<Unit> mine;
+    for (const Unit& unit : UnitsIn(lo, hi)) {
+      if (unit.first == held) {
+        mine = unit;
+      } else {
+        others.push_back(unit);
+      }
+    }
+    if (mine) {
+      size_t slot = 0;
+      for (const Unit& unit : others) {
+        if (unit.second - 1 < targets_.size() &&
+            (targets_[unit.first].x() + targets_[unit.second - 1].right()) / 2 <
+                center) {
+          ++slot;
+        }
+      }
+      others.insert(others.begin() + slot, *mine);
+      std::vector<size_t> order(items_.size());
+      std::iota(order.begin(), order.end(), size_t{0});
+      size_t pos = lo;
+      for (const Unit& unit : others) {
+        for (size_t j = unit.first; j < unit.second; ++j) {
+          order[pos++] = j;
+        }
+      }
+      SetPreviewOrder(std::move(order));
+    }
+  }
   // Over another set: it lights, and letting go adds the tab to it.
   std::optional<tab_groups::TabGroupId> over =
       SetAt(x_in_strip + tab->width() / 2, items_, set_spans_, targets_);
@@ -1861,39 +2066,72 @@ void ZephyrusTabStrip::OnPillDragged(views::View* pill, int x_in_strip) {
       }
     }
   }
+  if (!dragging_) {
+    BeginDragPreview();
+    // The set (its pill and tabs) paints over the others as it moves.
+    for (size_t i = drag_span_.first; i < drag_span_.second; ++i) {
+      ReorderChildView(items_[i], children().size() - 1);
+    }
+  }
   dragging_ = true;
   drag_view_ = pill;
   drag_x_ = x_in_strip;
+
+  // Live reorder of the sets: the held one takes the place whose neighbours'
+  // middles its pill has passed.
+  if (!set_spans_.empty() && drag_span_.first < drag_span_.second &&
+      drag_span_.second <= targets_.size()) {
+    const int center = x_in_strip + targets_[drag_span_.first].width() / 2;
+    std::vector<Unit> others;
+    for (const auto& span : set_spans_) {
+      if (span != drag_span_ && span.second <= targets_.size()) {
+        others.push_back(span);
+      }
+    }
+    size_t slot = 0;
+    for (const Unit& unit : others) {
+      if ((targets_[unit.first].x() + targets_[unit.second - 1].right()) / 2 <
+          center) {
+        ++slot;
+      }
+    }
+    others.insert(others.begin() + slot, drag_span_);
+    std::vector<size_t> order(items_.size());
+    std::iota(order.begin(), order.end(), size_t{0});
+    size_t pos = set_spans_.front().first;
+    for (const Unit& unit : others) {
+      for (size_t j = unit.first; j < unit.second; ++j) {
+        order[pos++] = j;
+      }
+    }
+    SetPreviewOrder(std::move(order));
+  }
   InvalidateLayout();
 }
 
 void ZephyrusTabStrip::OnPillDragEnded(views::View* pill_view, bool cancelled) {
   auto* pill = views::AsViewClass<SetPill>(pill_view);
   const std::pair<size_t, size_t> span = drag_span_;
+  // The set eases into its place from where it was let go.
+  SlideFromCurrent(/*include_held=*/true);
   dragging_ = false;
   drag_view_ = nullptr;
   drag_span_ = {0, 0};
   if (pill && !cancelled && span.first < span.second &&
       span.second <= targets_.size()) {
-    // Where it was dropped, among the sets: by the pill (what is held) against
-    // the middle of each other set. Not the dragged set's own middle, which the
-    // strip's ends keep from ever getting past a set of the same size.
-    const int dragged_center = drag_x_ + targets_[span.first].width() / 2;
+    // The order the strip was showing when it was let go: the sets as they
+    // stand on screen, which is what the preview has been promising.
     std::vector<tab_groups::TabGroupId> order;
-    size_t slot = 0;
-    for (const auto& other : set_spans_) {
-      auto* other_pill = views::AsViewClass<SetPill>(items_[other.first].get());
-      if (!other_pill || other_pill == pill || other.second > targets_.size()) {
-        continue;
-      }
-      const int center =
-          (targets_[other.first].x() + targets_[other.second - 1].right()) / 2;
-      order.push_back(other_pill->set_id());
-      if (center < dragged_center) {
-        slot = order.size();
+    if (order_.size() == items_.size()) {
+      for (size_t item : order_) {
+        if (auto* other = views::AsViewClass<SetPill>(items_[item].get())) {
+          order.push_back(other->set_id());
+        }
       }
     }
-    order.insert(order.begin() + slot, pill->set_id());
+    if (order.empty()) {
+      order.push_back(pill->set_id());
+    }
     SetZephyrusSetOrder(browser_view_->browser()->GetProfile()->GetPrefs(),
                         order);
   }
@@ -1911,6 +2149,8 @@ void ZephyrusTabStrip::OnTabDragEnded(
   // the strip shows only this workspace's slice of the model.
   const int drop_center = drag_x_ + tab->width() / 2;
   SetDropHighlight(std::nullopt);
+  // The tab eases into its place from where it was let go.
+  SlideFromCurrent(/*include_held=*/true);
   // Dropped on another set, the tab joins it; dropped clear of its own set, it
   // leaves it; otherwise it only reorders (below).
   {
@@ -1942,30 +2182,40 @@ void ZephyrusTabStrip::OnTabDragEnded(
       }
     }
   }
+  // The slot the preview left the tab in, among the tabs it moves between: read
+  // from the order the strip was showing, not guessed again from the pointer.
   int target_index = TabStripModel::kNoTab;
-  int best = INT_MAX;
-  for (size_t i = first_flexible_; i < items_.size(); ++i) {
-    auto* other = views::AsViewClass<StripTab>(items_[i].get());
-    if (!other || !other->contents() || other->in_split()) {
-      continue;  // Split pairs are not drop targets; they move as a unit.
+  const size_t held = ItemIndex(tab);
+  if (held < items_.size() && order_.size() == items_.size()) {
+    const auto [lo, hi] = TabGroupRange(held);
+    const std::vector<Unit> units = UnitsIn(lo, hi);
+    size_t from_pos = units.size();
+    for (size_t u = 0; u < units.size(); ++u) {
+      if (units[u].first == held) {
+        from_pos = u;
+      }
     }
-    // A tab reorders within its own set, or among the loose tabs: moving it
-    // across would change its set, which is the menu's job, not a drag's.
-    const int other_index =
-        tab_strip_model_->GetIndexOfWebContents(other->contents());
-    const int dragged_index =
-        contents ? tab_strip_model_->GetIndexOfWebContents(contents.get())
-                 : TabStripModel::kNoTab;
-    if (other_index == TabStripModel::kNoTab ||
-        dragged_index == TabStripModel::kNoTab ||
-        tab_strip_model_->GetTabGroupForTab(other_index) !=
-            tab_strip_model_->GetTabGroupForTab(dragged_index)) {
-      continue;
+    // Where the held unit stands in the on-screen sequence.
+    size_t to_pos = from_pos;
+    size_t seen = 0;
+    for (size_t k = lo; k < hi; ++k) {
+      for (size_t u = 0; u < units.size(); ++u) {
+        if (units[u].first == order_[k]) {
+          if (order_[k] == held) {
+            to_pos = seen;
+          }
+          ++seen;
+        }
+      }
     }
-    const int distance = std::abs(other->bounds().CenterPoint().x() - drop_center);
-    if (distance < best) {
-      best = distance;
-      target_index = tab_strip_model_->GetIndexOfWebContents(other->contents());
+    if (from_pos < units.size() && to_pos != from_pos && to_pos < units.size()) {
+      // Moving right lands after the tab that held the slot; moving left, before.
+      const Unit& slot = units[to_pos];
+      const size_t pick = to_pos > from_pos ? slot.second - 1 : slot.first;
+      if (auto* other = views::AsViewClass<StripTab>(items_[pick].get());
+          other && other->contents()) {
+        target_index = tab_strip_model_->GetIndexOfWebContents(other->contents());
+      }
     }
   }
 
@@ -2097,6 +2347,13 @@ void ZephyrusTabStrip::ShowContextMenuForViewImpl(
   menu_model_->AddItem(kCommandPin, tab_strip_model_->IsTabPinned(index)
                                         ? u"Unpin tab"
                                         : u"Pin tab");
+  // Pinned tabs have no room for the audio control, so this is how they mute.
+  if (tab->contents()->IsCurrentlyAudible() ||
+      tab->contents()->IsAudioMuted()) {
+    menu_model_->AddItem(kCommandMute, tab->contents()->IsAudioMuted()
+                                           ? u"Unmute tab"
+                                           : u"Mute tab");
+  }
 
   menu_workspace_ids_.clear();
   ZephyrusWorkspaceManager* manager =
@@ -2233,6 +2490,10 @@ void ZephyrusTabStrip::ExecuteCommand(int command_id, int event_flags) {
     case kCommandPin:
       tab_strip_model_->SetTabPinned(index,
                                      !tab_strip_model_->IsTabPinned(index));
+      return;
+    case kCommandMute:
+      contents->SetAudioMuted(!contents->IsAudioMuted());
+      ScheduleRebuild();
       return;
     case kCommandClose:
       tab_strip_model_->CloseWebContentsAt(index, CLOSE_USER_GESTURE);
