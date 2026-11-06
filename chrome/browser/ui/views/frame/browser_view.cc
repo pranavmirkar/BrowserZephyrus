@@ -166,6 +166,8 @@
 #include "chrome/browser/ui/views/frame/browser_frame_view.h"
 #include "chrome/browser/ui/views/frame/browser_native_widget.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "cc/paint/paint_flags.h"
+#include "chrome/browser/ui/views/frame/contents_container_outline.h"
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
 #include "ui/views/background.h"
 #include "chrome/browser/ui/views/frame/contents_separator.h"
@@ -372,6 +374,7 @@
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/animation/tween.h"
+#include "third_party/skia/include/core/SkPathBuilder.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/outsets.h"
@@ -687,6 +690,150 @@ bool ConvertedHitTest(views::View* src, views::View* dst, gfx::Point* point) {
   DCHECK(point);
   views::View::ConvertPointToTarget(src, dst, point);
   return dst->HitTestPoint(*point);
+}
+
+// Clipping layout: what a cover (the sidebar over the page's leading edge, the
+// title bar over its top edge) cuts off the page card leaves a STRAIGHT edge
+// with square corners, where the card itself is rounded. This draws the
+// missing curves: a small concave patch, in the colour of the chrome that is
+// covering, at each corner of the visible part of the card. It sits above the
+// page and below the sidebar and the title bar, and takes no input.
+constexpr int kZephyrusClipCornersViewId = 0x5a430001;
+
+class ZephyrusClipCornersView : public views::View {
+ public:
+  METADATA_HEADER(ZephyrusClipCornersView, views::View)
+
+ public:
+  struct Patch {
+    gfx::Point corner;  // In this view's coordinates.
+    int dx;             // +1 when the patch extends to the right of the corner.
+    int dy;             // +1 when it extends downward.
+    bool operator==(const Patch&) const = default;
+  };
+
+  ZephyrusClipCornersView() {
+    SetID(kZephyrusClipCornersViewId);
+    SetCanProcessEventsWithinSubtree(false);
+    GetViewAccessibility().SetIsIgnored(true);
+    SetPaintToLayer();
+    layer()->SetFillsBoundsOpaquely(false);
+    SetVisible(false);
+  }
+
+  void Update(const gfx::Rect& bounds_in_parent,
+              std::vector<Patch> patches,
+              SkColor color,
+              int radius) {
+    SetVisible(!patches.empty());
+    if (bounds() != bounds_in_parent) {
+      SetBoundsRect(bounds_in_parent);
+    }
+    if (patches_ == patches && color_ == color && radius_ == radius) {
+      return;
+    }
+    patches_ = std::move(patches);
+    color_ = color;
+    radius_ = radius;
+    SchedulePaint();
+  }
+
+  // views::View:
+  void OnPaint(gfx::Canvas* canvas) override {
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(color_);
+    const float r = static_cast<float>(radius_);
+    for (const Patch& patch : patches_) {
+      const float cx = static_cast<float>(patch.corner.x());
+      const float cy = static_cast<float>(patch.corner.y());
+      const float dx = static_cast<float>(patch.dx);
+      const float dy = static_cast<float>(patch.dy);
+      // The corner, along one edge to where the curve starts, round the curve
+      // (a quarter circle, as a conic with the corner as its control point),
+      // and back along the other edge.
+      SkPathBuilder path;
+      path.moveTo(cx, cy);
+      path.lineTo(cx + dx * r, cy);
+      path.conicTo(cx, cy, cx, cy + dy * r, 0.70710678f);
+      path.close();
+      canvas->DrawPath(path.detach(), flags);
+    }
+  }
+
+ private:
+  std::vector<Patch> patches_;
+  SkColor color_ = SK_ColorTRANSPARENT;
+  int radius_ = 0;
+};
+
+BEGIN_METADATA(ZephyrusClipCornersView)
+END_METADATA
+
+// Works out which corners of the page card the covers cut, and hands them to
+// the overlay. Called from every layout pass, after the title bar and the
+// sidebar have been placed for the frame.
+void UpdateZephyrusClipCorners(BrowserView* view, ZephyrusSidebarView* sidebar) {
+  ZephyrusClipCornersView* overlay = nullptr;
+  for (views::View* child : view->children()) {
+    if (child->GetID() == kZephyrusClipCornersViewId) {
+      overlay = static_cast<ZephyrusClipCornersView*>(child);
+      break;
+    }
+  }
+  if (!overlay) {
+    return;
+  }
+  std::vector<ZephyrusClipCornersView::Patch> patches;
+  gfx::Rect overlay_bounds;
+  SkColor color = SK_ColorTRANSPARENT;
+  ContentsContainerView* const contents = view->GetActiveContentsContainerView();
+  const bool clipping =
+      zephyrus::GetUiLayout(view->browser()->GetProfile()->GetPrefs()) ==
+      zephyrus::UiLayout::kClippingSidebar;
+  if (clipping && contents && sidebar && !view->IsFullscreen()) {
+    const gfx::Insets margin = contents->GetZephyrusContentMargin();
+    if (!margin.IsEmpty()) {
+      overlay_bounds = views::View::ConvertRectToTarget(
+          contents, view, contents->GetLocalBounds());
+      gfx::Rect card = overlay_bounds;
+      card.Inset(margin);
+
+      // Where the visible part of the card starts: past whatever covers it.
+      int left = card.x();
+      int top = card.y();
+      if (!view->IsZephyrusSidebarAttached() && sidebar->GetVisible()) {
+        left = std::max(
+            left, sidebar->bounds().x() +
+                      base::ClampFloor(sidebar->GetSidebarWidth() *
+                                       view->ZephyrusSidebarRevealAmount()));
+      }
+      views::View* const bar = view->top_container();
+      if (!view->IsZephyrusTitlebarPinned() && bar && bar->GetVisible() &&
+          bar->height() > 0) {
+        top = std::max(top, bar->bounds().bottom());
+      }
+      const bool cut_left = left > card.x();
+      const bool cut_top = top > card.y();
+      // The card's own rounding covers the corners nothing has cut.
+      const gfx::Vector2d origin = overlay_bounds.OffsetFromOrigin();
+      if (cut_left || cut_top) {
+        patches.push_back({gfx::Point(left, top) - origin, 1, 1});
+      }
+      if (cut_left) {
+        patches.push_back({gfx::Point(left, card.bottom()) - origin, 1, -1});
+      }
+      if (cut_top) {
+        patches.push_back({gfx::Point(card.right(), top) - origin, -1, 1});
+      }
+      if (sidebar->background() && sidebar->GetColorProvider()) {
+        color = sidebar->background()->color().ResolveToSkColor(
+            sidebar->GetColorProvider());
+      }
+    }
+  }
+  overlay->Update(overlay_bounds, std::move(patches), color,
+                  ContentsContainerOutline::kCornerRadius);
 }
 
 }  // namespace
@@ -1008,6 +1155,9 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
                   }
                 },
                 base::Unretained(this))));
+    // The curves a cover leaves off the page card (clipping layout); above the
+    // page, below the sidebar.
+    AddChildView(std::make_unique<ZephyrusClipCornersView>());
     zephyrus_sidebar_ =
         AddChildView(std::make_unique<ZephyrusSidebarView>(this));
     // The horizontal-tabs layout's strip. Made for every normal window and
@@ -3677,6 +3827,7 @@ void BrowserView::UpdateZephyrusSidebarBounds() {
       client_left + margin, content_bounds.y() + margin,
       zephyrus_sidebar_->GetSidebarWidth(),
       std::max(0, content_bounds.height() - 2 * margin));
+  UpdateZephyrusClipCorners(this, zephyrus_sidebar_);
   if (zephyrus_sidebar_hotzone_) {
     zephyrus_sidebar_hotzone_->SetBounds(client_left, content_bounds.y(),
                                          kHotZoneWidth, content_bounds.height());
@@ -3727,14 +3878,46 @@ bool BrowserView::IsZephyrusHorizontalLayout() const {
              zephyrus::UiLayout::kHorizontalTabs;
 }
 
+namespace {
+
+// Whether the window is in the CLIPPING layout, where a hover reveal (of the
+// sidebar, or of a hidden title bar) covers the page instead of resizing it.
+bool IsClippingLayout(const PrefService* prefs) {
+  return zephyrus::GetUiLayout(prefs) == zephyrus::UiLayout::kClippingSidebar;
+}
+
+// Gives the title bar what it needs to slide OVER the page while it is hidden
+// in the clipping layout (a layer to be drawn above the page, and a place above
+// it in the stack), and takes it back otherwise. Safe to call whenever the layout
+// or the pin changes.
+void SyncZephyrusTitlebarOverlay(BrowserView* view) {
+  views::View* const top = view->top_container();
+  if (!top) {
+    return;
+  }
+  const bool overlay = !view->IsZephyrusTitlebarPinned() &&
+                       IsClippingLayout(view->browser()->GetProfile()->GetPrefs());
+  if (overlay) {
+    if (!top->layer()) {
+      top->SetPaintToLayer();
+      top->layer()->SetFillsBoundsOpaquely(false);
+    }
+    view->ReorderChildView(top, view->children().size() - 1);
+  } else if (top->layer()) {
+    top->DestroyLayer();
+  }
+}
+
+}  // namespace
+
 bool BrowserView::IsZephyrusFloatingSidebar() const {
-  return zephyrus_tab_strip_ &&
-         zephyrus::GetUiLayout(browser_->GetProfile()->GetPrefs()) ==
-             zephyrus::UiLayout::kFloatingSidebar;
+  // The floating card is gone (the clipping layout replaced it). Kept, false,
+  // until the header can be cleaned up without rebuilding everything.
+  return false;
 }
 
 int BrowserView::ZephyrusSidebarMargin() const {
-  return IsZephyrusFloatingSidebar() ? kZephyrusSidebarFloatMargin : 0;
+  return 0;
 }
 
 int BrowserView::ZephyrusTabStripHeight() const {
@@ -3743,8 +3926,16 @@ int BrowserView::ZephyrusTabStripHeight() const {
   }
   // Under the title bar the bar's own bottom padding is the gap above the
   // tabs; adding the strip's as well made it twice the gap below them.
+  //
+  // In the clipping layout this is decided by whether the title bar is DOCKED,
+  // not by whether it is on screen at the moment: a hover reveal overlays the
+  // page and must not change the strip's height, or the page would move with it.
+  const bool title_bar_above =
+      IsClippingLayout(browser_->GetProfile()->GetPrefs())
+          ? zephyrus_titlebar_pinned_
+          : IsZephyrusTitlebarShowing();
   return ZephyrusTabStrip::kBandHeight +
-         (IsZephyrusTitlebarShowing() ? 0 : ZephyrusTabStrip::kTopInsetAlone);
+         (title_bar_above ? 0 : ZephyrusTabStrip::kTopInsetAlone);
 }
 
 void BrowserView::OnZephyrusUiLayoutChanged() {
@@ -3770,6 +3961,7 @@ void BrowserView::OnZephyrusUiLayoutChanged() {
   if (zephyrus_tab_strip_) {
     zephyrus_tab_strip_->SetVisible(horizontal);
   }
+  SyncZephyrusTitlebarOverlay(this);
   InvalidateLayout();
 }
 
@@ -3812,8 +4004,12 @@ void BrowserView::ToggleZephyrusTitlebarPinned() {
     zephyrus_titlebar_anim_timer_.Stop();
     zephyrus_titlebar_anim_t_ = 1.0;
     zephyrus_titlebar_anim_target_ = 1.0;
+    SyncZephyrusTitlebarOverlay(this);
     InvalidateLayout();
   } else {
+    // In the clipping layout it can now slide over the page, which needs a layer
+    // to be drawn above it and a place above it in the stack.
+    SyncZephyrusTitlebarOverlay(this);
     // Poll the cursor so the title bar can reveal on a top-edge hover (move
     // events don't reliably reach views sitting over web contents), and slide
     // the title bar out now.
@@ -3918,6 +4114,34 @@ void BrowserView::ApplyZephyrusTitlebarReveal() {
     return;
   }
   const double ratio = ZephyrusTitlebarRevealRatio();
+
+  if (IsClippingLayout(browser_->GetProfile()->GetPrefs())) {
+    // CLIPPING layout: HIDDEN means hidden, and revealing it is an OVERLAY. The
+    // page keeps the geometry it has with the title bar away -- full height, up
+    // to the top of the client area -- whatever the title bar is doing, and the
+    // title bar slides down over its top edge and back. The page is never
+    // resized or reflowed by a hover. (Pinning the title bar, which docks it
+    // above the page, is the one thing that changes the page's height, and it
+    // does it once.) The layout pass itself already leaves the page that
+    // geometry (ZephyrusTopContainerOverlaysContents); fixing it up here
+    // instead resized the page twice per pass -- to the docked height, then
+    // back -- and the page shook on every pass.
+    const int full = top_container_->height();
+    if (full <= 0) {
+      return;
+    }
+    // The title bar itself: off the top edge by what the reveal has not yet
+    // brought in. Fully revealed it sits in its docked place, over the page.
+    const int shift = base::ClampRound((1.0 - ratio) * full);
+    if (shift > 0) {
+      gfx::Rect top_bounds = top_container_->bounds();
+      top_bounds.set_y(top_bounds.y() - shift);
+      top_container_->SetBoundsRect(top_bounds);
+    }
+    return;
+  }
+
+  // Classic and horizontal: the page follows the title bar, as it always did.
   if (ratio >= 1.0) {
     return;  // Fully shown: laid out normally.
   }
@@ -5212,7 +5436,7 @@ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
                     zephyrus::SetUiLayout(
                         prefs, zephyrus::GetUiLayout(prefs) ==
                                        zephyrus::UiLayout::kHorizontalTabs
-                                   ? zephyrus::UiLayout::kFloatingSidebar
+                                   ? zephyrus::UiLayout::kClassicSidebar
                                    : zephyrus::UiLayout::kHorizontalTabs);
                     return;
                   }

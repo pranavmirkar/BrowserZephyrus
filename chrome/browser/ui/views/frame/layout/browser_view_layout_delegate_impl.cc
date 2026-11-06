@@ -21,6 +21,8 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/glass_frame_service.h"
+#include "chrome/browser/ui/views/frame/zephyrus_ui_layout.h"
+#include "components/prefs/pref_service.h"
 #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
 #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
@@ -67,6 +69,14 @@ int BrowserViewLayoutDelegateImpl::GetZephyrusCustomizePanelWidth() const {
 
 int BrowserViewLayoutDelegateImpl::GetZephyrusTabStripHeight() const {
   return browser_view().ZephyrusTabStripHeight();
+}
+
+bool BrowserViewLayoutDelegateImpl::ZephyrusTopContainerOverlaysContents()
+    const {
+  return !browser_view().IsZephyrusTitlebarPinned() &&
+         zephyrus::GetUiLayout(
+             browser_view().browser()->GetProfile()->GetPrefs()) ==
+             zephyrus::UiLayout::kClippingSidebar;
 }
 
 double BrowserViewLayoutDelegateImpl::GetZephyrusSidebarRevealAmount() const {

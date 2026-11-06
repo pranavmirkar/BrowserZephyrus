@@ -15,17 +15,20 @@ namespace zephyrus {
 // Stored as an int, so values are APPEND ONLY: a renumbering would silently
 // move every user onto the other layout.
 enum class UiLayout : int {
-  // Tabs in a panel on the leading edge. Hover reveals it over the page; the
-  // pin docks it beside the page. The title-bar pin lends the toolbar's
-  // controls to the panel (compact mode).
-  kFloatingSidebar = 0,
+  // The CLIPPING sidebar. It replaces the floating-card layout (the stored value
+  // is the same, so those users land here). The same flush column as classic,
+  // but the page is never resized or reflowed by it: revealed by hover it
+  // covers the page's leading edge, pinned it docks beside the page. Compact
+  // mode (the title-bar pin) works as in classic, and the hidden title bar
+  // clips the same way: a hover reveal slides it over the page's top edge.
+  kClippingSidebar = 0,
   // Tabs in a strip under the title bar. The title-bar pin only hides the
   // title bar; nothing is lent anywhere.
   kHorizontalTabs = 1,
   // The original Zephyrus sidebar, and the DEFAULT: a flush column of window
   // chrome on the leading edge that pushes the page aside whenever it is out.
-  // Kept so the two newer layouts are a choice rather than a replacement --
-  // nobody loses the UI they had.
+  // Kept so the newer layouts are a choice rather than a replacement -- nobody
+  // loses the UI they had.
   kClassicSidebar = 2,
   kMaxValue = kClassicSidebar,
 };

@@ -147,22 +147,13 @@ constexpr int kRowHeight = 36;
 // only have applied to one row in a column of rounded rectangles. What says
 // "this one" is still the container -- its colour, not its shape.
 
-// Two shapes, one per sidebar layout (zephyrus::UiLayout):
-//
-// FLOATING: a card in the page card's margin with a gap all round. Concentric
-// with what it holds (Rule 2): the rows' 16dp ends sit kFloatPadding in, so
-// the card is 16 + 8 = 24 -- the popup radius, and a whole number of device
-// pixels at 125% and 150%.
-//
-// CLASSIC (the default): square, 10dp padding. A flush column of window chrome
-// running from the toolbar to the bottom edge, with no free side for a corner
-// to round against.
-constexpr int kFloatPadding = 8;
-constexpr int kFloatCornerRadius = 24;
+// The panel is a flush column of window chrome in every layout: square, 10dp
+// padding, running from the toolbar to the bottom edge, with no free side for a
+// corner to round against.
 constexpr int kClassicPadding = 10;
-// Floating over the page (a hover reveal, not pinned), the card is raised:
-// M3 level 3.
-constexpr int kFloatElevation = 6;
+// The covering column's shadow (clipping layout, a hover reveal, not pinned):
+// low and square.
+constexpr int kCoverElevation = 3;
 constexpr int kFaviconSize = 16;
 // M3 Expressive SEGMENTED list. A row is a filled segment, not a label
 // floating on the panel: 2dp between segments, small inner corners, and the
@@ -3226,8 +3217,7 @@ ZephyrusSidebarView::ZephyrusSidebarView(BrowserView* browser_view)
   // themed fill below as a fallback when the native effect is unavailable.
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
-  // Classic shape to start with; ApplyPanelShape() switches it when the
-  // floating layout is chosen.
+  // A flush column, the same in every layout.
   SetBackground(views::CreateRoundedRectBackground(GetPanelColor(), 0));
 
   auto* box_layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -3571,23 +3561,15 @@ void ZephyrusSidebarView::OnPaintBackground(gfx::Canvas* canvas) {
       !browser_view_->IsZephyrusSidebarAttached()) {
     views::View::OnPaintBackground(canvas);
   }
-  if (!floating_) {
-    return;  // The classic column is window chrome, not a card.
+  // Docked, the column is window chrome beside the page and needs no edge: the
+  // page's own margin is the seam. Revealed by hover it COVERS the page, and a
+  // hairline down its trailing edge is what says where the column stops and the
+  // page goes on. It is painted in the view, so it travels with the slide.
+  if (browser_view_->IsZephyrusSidebarAttached()) {
+    return;
   }
-  // The card's edge: an M3 outlined card. Its fill is the window's own
-  // surface (measured: panel and ground both 31,32,32), so without an edge a
-  // pinned card was indistinguishable from the frame around it and the
-  // "floating" layout looked like no change at all. A hairline marks the card
-  // in every state without recolouring the rows it holds, which are toned
-  // against that fill.
-  cc::PaintFlags edge;
-  edge.setAntiAlias(true);
-  edge.setStyle(cc::PaintFlags::kStroke_Style);
-  edge.setStrokeWidth(1.f);
-  edge.setColor(zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant));
-  gfx::RectF rect(GetLocalBounds());
-  rect.Inset(0.5f);
-  canvas->DrawRoundRect(rect, PanelRadius() - 0.5f, edge);
+  canvas->FillRect(gfx::Rect(width() - 1, 0, 1, height()),
+                   zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant));
 }
 
 void ZephyrusSidebarView::OnThemeChanged() {
@@ -3613,11 +3595,11 @@ void ZephyrusSidebarView::Reveal() {
   }
   revealed_ = true;
   reveal_poll_timer_.Stop();
-  // FLOATING sidebar: a hover reveal slides the card OVER the page and the
-  // page keeps its width; only a pinned panel takes the column beside it.
-  // Resizing the page on every hover was also the most expensive thing a
-  // hover could do.
-  browser_view_->SetZephyrusSidebarAttached(pinned_ || !floating_);
+  // CLIPPING layout: a hover reveal slides the column OVER the page and the page
+  // keeps its size and its layout; only a pinned panel takes the column beside
+  // it. (Classic's column always takes the page's column.) Resizing the page on
+  // every hover was also the most expensive thing a hover could do.
+  browser_view_->SetZephyrusSidebarAttached(pinned_ || !clipping_);
   // Zero duration under reduced motion, matching the layer slide below, which
   // has always honoured it. Without this the panel would snap into place while
   // the page's edge kept easing open behind it — reduced motion half-applied
@@ -3646,9 +3628,10 @@ void ZephyrusSidebarView::TogglePinned() {
     return;
   }
   pinned_ = !pinned_;
-  // Pinned, the card docks beside the page; unpinned it floats over it.
+  // Pinned, the column docks beside the page; unpinned in the clipping layout
+  // it covers the page.
   if (revealed_) {
-    browser_view_->SetZephyrusSidebarAttached(pinned_ || !floating_);
+    browser_view_->SetZephyrusSidebarAttached(pinned_ || !clipping_);
     UpdateFloatShadow();
   }
   if (pinned_) {
@@ -4181,31 +4164,19 @@ bool ZephyrusSidebarView::IsCompactMode() const {
 }
 
 int ZephyrusSidebarView::PanelRadius() const {
-  return floating_ ? kFloatCornerRadius : 0;
-}
-
-void ZephyrusSidebarView::ApplyPanelShape() {
-  layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(PanelRadius()));
-  SetBackground(
-      views::CreateRoundedRectBackground(GetPanelColor(), PanelRadius()));
-  static_cast<views::BoxLayout*>(GetLayoutManager())
-      ->set_inside_border_insets(
-          gfx::Insets(floating_ ? kFloatPadding : kClassicPadding));
-  InvalidateLayout();
-  SchedulePaint();
+  return 0;
 }
 
 void ZephyrusSidebarView::OnUiLayoutChanged(zephyrus::UiLayout layout) {
-  const bool floating = layout == zephyrus::UiLayout::kFloatingSidebar;
-  if (floating != floating_) {
-    floating_ = floating;
-    ApplyPanelShape();
+  const bool clipping = layout == zephyrus::UiLayout::kClippingSidebar;
+  if (clipping != clipping_) {
+    clipping_ = clipping;
     float_shadow_.reset();
     // A revealed panel changes its relationship to the page on the spot:
-    // the classic column always takes the page's column, a floating card
-    // only when pinned.
+    // classic's column always takes the page's column, a clipping panel only
+    // when pinned.
     if (revealed_) {
-      browser_view_->SetZephyrusSidebarAttached(pinned_ || !floating_);
+      browser_view_->SetZephyrusSidebarAttached(pinned_ || !clipping_);
       UpdateFloatShadow();
     }
   }
@@ -4240,10 +4211,11 @@ void ZephyrusSidebarView::OnUiLayoutChanged(zephyrus::UiLayout layout) {
 }
 
 void ZephyrusSidebarView::UpdateFloatShadow() {
-  // Only while resting OUT and floating. During the slide the shadow would
-  // not move with the panel -- it follows the layer's bounds, and the slide
-  // is a transform -- so it would sit in place ahead of the card.
-  const bool want = revealed_ && floating_ && !hidden_by_layout_ &&
+  // Only while resting OUT and covering the page. During the slide the shadow
+  // would not move with the panel -- it follows the layer's bounds, and the
+  // slide is a transform -- so it would sit in place ahead of the column. (The
+  // hairline down its edge is painted in the view, and travels.)
+  const bool want = revealed_ && !hidden_by_layout_ &&
                     !browser_view_->IsZephyrusSidebarAttached() &&
                     !reveal_animation_.is_animating();
   if (!want) {
@@ -4251,8 +4223,9 @@ void ZephyrusSidebarView::UpdateFloatShadow() {
     return;
   }
   if (!float_shadow_) {
-    float_shadow_ = std::make_unique<views::ViewShadow>(this, kFloatElevation);
-    float_shadow_->SetRoundedCornerRadius(kFloatCornerRadius);
+    // Square, and low: the column is chrome, not a card.
+    float_shadow_ = std::make_unique<views::ViewShadow>(this, kCoverElevation);
+    float_shadow_->SetRoundedCornerRadius(0);
   }
 }
 

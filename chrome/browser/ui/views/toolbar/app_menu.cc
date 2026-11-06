@@ -698,20 +698,28 @@ class ZephyrusLayoutThumb : public views::Button {
                      inner.width() - column, inner.height()),
            4.f, page);
     } else {
-      // A card on the leading edge with tab rows (the first active), and the
-      // page beside it.
-      const int card_width = 22;
-      draw(gfx::Rect(inner.x(), inner.y(), card_width, inner.height()), 4.f,
+      // CLIPPING: the page runs the whole width and the flush column lies over
+      // its leading edge, with a line down its trailing side.
+      const int column = 22;
+      draw(gfx::Rect(inner.x(), inner.y(), inner.width(), inner.height()), 4.f,
+           page);
+      draw(gfx::Rect(inner.x() + column + 6, inner.y() + 8, 26, 3), 1.5f,
            chrome);
-      draw(gfx::Rect(inner.x() + 3, inner.y() + 4, card_width - 6, 4), 2.f,
+      draw(gfx::Rect(inner.x() + column + 6, inner.y() + 15, 18, 3), 1.5f,
+           chrome);
+      fill.setColor(chrome);
+      canvas->DrawRect(gfx::RectF(inner.x(), inner.y(), column, inner.height()),
+                       fill);
+      fill.setColor(accent);
+      canvas->DrawRect(
+          gfx::RectF(inner.x() + column - 1, inner.y(), 1, inner.height()),
+          fill);
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 4, column - 6, 4), 2.f,
            accent);
-      draw(gfx::Rect(inner.x() + 3, inner.y() + 11, card_width - 6, 4), 2.f,
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 11, column - 6, 4), 2.f,
            page);
-      draw(gfx::Rect(inner.x() + 3, inner.y() + 18, card_width - 6, 4), 2.f,
+      draw(gfx::Rect(inner.x() + 3, inner.y() + 18, column - 6, 4), 2.f,
            page);
-      draw(gfx::Rect(inner.x() + card_width + 3, inner.y(),
-                     inner.width() - card_width - 3, inner.height()),
-           4.f, page);
     }
 
     if (selected_) {
@@ -766,8 +774,8 @@ class ZephyrusLayoutPicker : public views::View {
     // The default first.
     const Choice choices[] = {
         {zephyrus::UiLayout::kClassicSidebar, u"Classic", u"Classic sidebar"},
-        {zephyrus::UiLayout::kFloatingSidebar, u"Floating",
-         u"Floating sidebar"},
+        {zephyrus::UiLayout::kClippingSidebar, u"Clipping",
+         u"Clipping sidebar"},
         {zephyrus::UiLayout::kHorizontalTabs, u"Horizontal",
          u"Horizontal tabs"},
     };

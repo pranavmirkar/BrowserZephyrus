@@ -58,6 +58,10 @@ class BrowserViewLayoutDelegate {
   // The horizontal-tabs layout's strip, taken off the TOP of the content area
   // (zephyrus::UiLayout::kHorizontalTabs); 0 in the sidebar layout.
   virtual int GetZephyrusTabStripHeight() const = 0;
+  // True while the title bar lies OVER the page instead of above it (clipping
+  // layout, compact mode): the page is then laid out as if the title bar were
+  // not there, whatever the title bar is doing, so a hover never resizes it.
+  virtual bool ZephyrusTopContainerOverlaysContents() const = 0;
 
   // The style of tab strip present, if any.
   enum class TabStripType { kNone, kVertical, kHorizontal };

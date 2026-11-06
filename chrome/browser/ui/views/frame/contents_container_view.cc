@@ -3,6 +3,10 @@
 // found in the LICENSE file.
 
 #include "chrome/browser/ui/views/frame/contents_container_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_ui_layout.h"
+#include "components/prefs/pref_service.h"
+#include "chrome/browser/ui/browser.h"
+#include "chrome/browser/profiles/profile.h"
 
 #include <memory>
 #include <optional>
@@ -492,8 +496,20 @@ bool ContentsContainerView::ZephyrusTopIsAttached() const {
   // directly above the page and already leaves 4dp under its tabs. Adding the
   // page's own margin on top of that doubled the gap below the tabs (8dp)
   // against the 4dp above them.
-  return browser_view_ && (browser_view_->IsZephyrusTitlebarShowing() ||
-                           browser_view_->ZephyrusTabStripHeight() > 0);
+  //
+  // In the clipping layout, DOCKED rather than merely on screen: a hover reveal
+  // overlays the page and must not move it, and this margin is part of where the
+  // page is.
+  if (!browser_view_) {
+    return false;
+  }
+  const bool clipping =
+      zephyrus::GetUiLayout(
+          browser_view_->browser()->GetProfile()->GetPrefs()) ==
+      zephyrus::UiLayout::kClippingSidebar;
+  return (clipping ? browser_view_->IsZephyrusTitlebarPinned()
+                   : browser_view_->IsZephyrusTitlebarShowing()) ||
+         browser_view_->ZephyrusTabStripHeight() > 0;
 }
 
 void ContentsContainerView::Layout(PassKey pass_key) {

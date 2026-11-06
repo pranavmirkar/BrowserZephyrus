@@ -971,7 +971,11 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
         top_container_layout, top_container_params, needs_exclusion);
     top_container_layout.bounds =
         GetTopContainerBoundsInParent(top_container_local_bounds, params);
-    params.SetTop(top_container_layout.bounds.bottom());
+    // Zephyrus: a title bar that overlays the page (clipping layout, compact
+    // mode) takes no room from it.
+    if (!delegate().ZephyrusTopContainerOverlaysContents()) {
+      params.SetTop(top_container_layout.bounds.bottom());
+    }
 
     // Possibly bump the leading margin of the top container out to cover the
     // caption buttons, leaving all of the child views in the same absolute
@@ -1103,7 +1107,10 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
         params.InLocalCoordinates(params.visual_client_area), needs_exclusion);
     top_container_layout.bounds =
         GetTopContainerBoundsInParent(top_container_local_bounds, params);
-    params.SetTop(top_container_layout.bounds.bottom());
+    // Zephyrus: see above; an overlaying title bar takes no room from the page.
+    if (!delegate().ZephyrusTopContainerOverlaysContents()) {
+      params.SetTop(top_container_layout.bounds.bottom());
+    }
   }
 
   // Lay out infobar container.

@@ -26,6 +26,7 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
   int GetZephyrusAgentPanelWidth() const override;
   int GetZephyrusCustomizePanelWidth() const override;
   int GetZephyrusTabStripHeight() const override;
+  bool ZephyrusTopContainerOverlaysContents() const override;
   double GetZephyrusSidebarRevealAmount() const override;
 
   TabStripType GetTabStripType() const override;

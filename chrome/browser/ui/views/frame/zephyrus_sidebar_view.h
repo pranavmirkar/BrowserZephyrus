@@ -397,14 +397,14 @@ class ZephyrusSidebarView : public views::View,
 
   // The horizontal-tabs layout is active: this panel is hidden and inert.
   bool hidden_by_layout_ = false;
-  // The floating-card layout, rather than the classic column. Starts false:
+  // The CLIPPING layout, rather than classic. The panel is the same flush
+  // column in both; in clipping a hover reveal covers the page (which does not
+  // move), and only a pinned panel takes its column beside it. Starts false:
   // classic is the default, and what the constructor builds.
-  bool floating_ = false;
-  // Radius and padding of the panel for the current sidebar layout, applied
-  // to the layer, the fill and the layout together.
+  bool clipping_ = false;
+  // Radius of the panel: square (it is window chrome, not a card).
   int PanelRadius() const;
-  void ApplyPanelShape();
-  // The raised shadow of a card floating over the page (hover reveal, not
+  // The low shadow of the column while it covers the page (hover reveal, not
   // pinned). See UpdateFloatShadow().
   void UpdateFloatShadow();
   std::unique_ptr<views::ViewShadow> float_shadow_;
