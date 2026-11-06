@@ -113,6 +113,8 @@ class ZephyrusSidebarResizeHandle : public views::View {
 // is the foundation for the workspace switcher (added later). Lives as an
 // overlay on the left edge of the browser's content area and slides in/out on
 // hover via a GPU layer transform.
+class ZephyrusRowCloser;
+
 class ZephyrusSidebarView : public views::View,
                             public gfx::AnimationDelegate,
                             public TabStripModelObserver,
@@ -567,6 +569,19 @@ class ZephyrusSidebarView : public views::View,
   // would delete the row being dragged -- the use-after-free described on
   // ScheduleRebuildTabList -- so it is held until the gesture ends.
   bool rebuild_deferred_ = false;
+
+  // CLOSING: a closed tab's row folds away (its height and opacity run to
+  // nothing, the rows under it glide up) instead of vanishing with the rebuild;
+  // the rebuild waits until the last one has finished. `removed_since_build_`
+  // keeps the build-time index of every tab removed since the rows were built,
+  // so a second close inside the animation still finds its row (the rows keep
+  // the indices of their build).
+  std::vector<std::unique_ptr<ZephyrusRowCloser>> closers_;
+  std::vector<int> removed_since_build_;
+  bool index_map_stale_ = false;
+  bool TryAnimateClose(const TabStripModelChange& change,
+                       const TabStripSelectionChange& selection);
+  void OnRowCloseFinished();
 
   // Guards the posted rebuild against the sidebar being torn down first.
   base::WeakPtrFactory<ZephyrusSidebarView> weak_factory_{this};

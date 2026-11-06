@@ -95,7 +95,9 @@ using zephyrus::ShapePath;
 using zephyrus::WorkspaceIcon;
 namespace m3 = zephyrus::m3;
 
-constexpr int kCardWidth = 404;
+// 280 + the body's 2 x 20 = 320: the narrowest width a dialog with buttons snaps
+// to. Any wider and the frame rounds it up to 448.
+constexpr int kCardWidth = 280;
 // Rule 2. The hero is the only element that reaches the dialog's corners, so
 // it is the one that must nest: it sits kHeroInset from the edge and takes the
 // dialog radius minus that. At the body's 20dp it would have had to be 8 to be
@@ -206,7 +208,7 @@ class HeroPreview : public views::View, public views::AnimationDelegateViews {
   explicit HeroPreview(std::u16string overline)
       : views::AnimationDelegateViews(this), overline_(std::move(overline)) {
     SetPreferredSize(
-        gfx::Size(kCardWidth + 2 * (kBodyInset - kHeroInset), 128));
+        gfx::Size(kCardWidth + 2 * (kBodyInset - kHeroInset), 96));
     GetViewAccessibility().SetRole(ax::mojom::Role::kImage);
   }
 
@@ -246,15 +248,15 @@ class HeroPreview : public views::View, public views::AnimationDelegateViews {
     canvas->DrawRoundRect(bounds, kHeroCorner, flags);
 
     // The mark: the icon's own expressive shape, sprung in from a circle.
-    constexpr float kMark = 72.f;
-    const gfx::RectF mark(20.f, (bounds.height() - kMark) / 2.f, kMark, kMark);
+    constexpr float kMark = 56.f;
+    const gfx::RectF mark(18.f, (bounds.height() - kMark) / 2.f, kMark, kMark);
     const Shape shape = icon_ ? icon_->shape : Shape::kCookie;
     flags.setColor(tones.accent);
     canvas->DrawPath(
         ShapePath(shape, mark, static_cast<float>(morph_.Get())), flags);
     if (icon_) {
       gfx::RectF glyph = mark;
-      glyph.Inset(20.f);
+      glyph.Inset(15.f);
       PaintWorkspaceGlyph(canvas, *icon_, glyph, tones.on_accent, 2.25f);
     } else {
       canvas->DrawStringRectWithFlags(
@@ -637,6 +639,10 @@ class ZephyrusWorkspaceEditor : public views::View,
       scroll->SetDrawOverflowIndicator(false);
       scroll->SetHorizontalScrollBarMode(
           views::ScrollView::ScrollBarMode::kDisabled);
+      // No bar to take room from a 320dp card: the wheel and touch still
+      // scroll, and the icons cut off at the foot say there is more.
+      scroll->SetVerticalScrollBarMode(
+          views::ScrollView::ScrollBarMode::kHiddenButEnabled);
       scroll->ClipHeightTo(0, max_body_height);
       body = scroll->SetContents(std::make_unique<views::View>());
     } else {
@@ -660,8 +666,8 @@ class ZephyrusWorkspaceEditor : public views::View,
     body->AddChildView(std::make_unique<SectionLabel>(u"Icon"));
     {
       auto* card = body->AddChildView(std::make_unique<Card>(gfx::Insets(8)));
-      constexpr int kCell = 42;
-      constexpr int kPerRow = 9;
+      constexpr int kCell = 30;
+      constexpr int kPerRow = 8;
       views::View* row = nullptr;
       int in_row = kPerRow;
       auto add = [&](std::unique_ptr<ShapeChoice> choice) -> ShapeChoice* {
@@ -698,7 +704,7 @@ class ZephyrusWorkspaceEditor : public views::View,
       auto* row = body->AddChildView(std::make_unique<views::View>());
       row->SetLayoutManager(std::make_unique<views::BoxLayout>(
           views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 0));
-      constexpr int kChip = 40;
+      constexpr int kChip = 28;
       auto add_seed = [&](std::optional<SkColor> seed,
                           const std::u16string& name) {
         auto* chip = row->AddChildView(std::make_unique<ShapeChoice>(
@@ -746,6 +752,8 @@ class ZephyrusWorkspaceEditor : public views::View,
       wallpaper_next_ = card->AddChildView(std::make_unique<SwitchRow>(
           u"Choose a wallpaper next", u"Opens Customize once it's created.",
           /*on=*/false));
+      separate_->SetCompact(true);
+      wallpaper_next_->SetCompact(true);
     } else {
       auto* photo = body->AddChildView(std::make_unique<views::MdTextButton>(
           base::BindRepeating(&ZephyrusWorkspaceEditor::ChoosePhoto,
@@ -970,7 +978,7 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView {
     // Header (the hero, about 150) and buttons and margins (about 110).
     editor_ = AddChildView(std::make_unique<ZephyrusWorkspaceEditor>(
         browser_view, workspace_id,
-        zephyrus::BubbleBodyRoom(anchor, 260, 640)));
+        zephyrus::BubbleBodyRoom(anchor, 260, 380)));
     SetAcceptCallback(base::BindOnce(&ZephyrusWorkspaceEditor::Commit,
                                      base::Unretained(editor_.get())));
   }
@@ -978,6 +986,7 @@ class ZephyrusWorkspaceSetup : public views::BubbleDialogDelegateView {
   views::View* GetInitiallyFocusedView() override {
     return editor_->InitialFocus();
   }
+
 
   // Styles the dialog's own buttons once they exist. Theirs rather than
   // hand-built ones, because they bring Enter-to-create and Esc-to-cancel.

@@ -2919,13 +2919,15 @@ class ZephyrusShieldCookie : public views::View {
   METADATA_HEADER(ZephyrusShieldCookie, views::View)
 
  public:
-  static constexpr int kSize = 64;
+  static constexpr int kSize = 48;
 
   ZephyrusShieldCookie(const std::u16string& text, SkColor fill, SkColor ink)
       : fill_(fill) {
     SetLayoutManager(std::make_unique<views::FillLayout>());
     auto* label = AddChildView(std::make_unique<views::Label>(text));
-    label->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kHeadlineSmall));
+    label->SetFontList(zephyrus::m3::Font(text.size() > 3
+                                              ? zephyrus::m3::Type::kTitleSmall
+                                              : zephyrus::m3::Type::kTitleLarge));
     label->SetEnabledColor(ink);
     label->SetBackgroundColor(fill);
     label->SetAutoColorReadabilityEnabled(false);
@@ -3111,12 +3113,12 @@ class ZephyrusFilterChip : public views::Button {
   }
 
  private:
-  static constexpr int kHeight = 32;
+  static constexpr int kHeight = 28;
   static constexpr int kRadius = 8;
   static constexpr int kLeading = 8;
-  static constexpr int kIcon = 18;
-  static constexpr int kIconGap = 8;
-  static constexpr int kTrailing = 16;
+  static constexpr int kIcon = 16;
+  static constexpr int kIconGap = 6;
+  static constexpr int kTrailing = 12;
 
   std::u16string label_;
   raw_ref<const gfx::VectorIcon> icon_;
@@ -3210,9 +3212,9 @@ class ZephyrusTonalButton : public views::LabelButton {
     // ALIGN_RIGHT is what puts LabelButton's image AFTER its label.
     SetHorizontalAlignment(gfx::ALIGN_RIGHT);
     SetImageLabelSpacing(8);
-    SetMinSize(gfx::Size(0, 40));
-    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 16)));
-    SetBackground(views::CreateRoundedRectBackground(container, 20));
+    SetMinSize(gfx::Size(0, 32));
+    SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 14)));
+    SetBackground(views::CreateRoundedRectBackground(container, 16));
     SetFocusBehavior(views::View::FocusBehavior::ALWAYS);
     SetInstallFocusRingOnFocus(true);
     views::InstallPillHighlightPathGenerator(this);
@@ -4378,9 +4380,11 @@ void ToolbarView::ShowZephyrusAdblockBubble(views::View* anchor) {
   // rows, and hid a large part of the page under it. The master switch now
   // lives in the header, the three secondary settings are filter chips, and
   // the two lifetime stats are one line of supporting text.
-  constexpr int kWidth = 300;
-  constexpr int kInset = 16;
-  constexpr int kGap = 16;
+  // Smaller again: it still covered too much of the page. Narrower, tighter
+  // spacing, a smaller hero, shorter rows.
+  constexpr int kWidth = 264;
+  constexpr int kInset = 12;
+  constexpr int kGap = 10;
 
   auto content = std::make_unique<views::View>();
   content->SetBackground(
@@ -4407,16 +4411,16 @@ void ToolbarView::ShowZephyrusAdblockBubble(views::View* anchor) {
   hl->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kCenter);
   auto* badge = header->AddChildView(std::make_unique<views::ImageView>(
       ui::ImageModel::FromVectorIcon(kZephyrusShieldIcon, kOnPrimaryContainer,
-                                     20)));
-  badge->SetPreferredSize(gfx::Size(40, 40));
+                                     18)));
+  badge->SetPreferredSize(gfx::Size(32, 32));
   badge->SetBackground(
-      views::CreateRoundedRectBackground(kPrimaryContainer, 20));
+      views::CreateRoundedRectBackground(kPrimaryContainer, 16));
   auto* titles = header->AddChildView(std::make_unique<views::View>());
   titles->SetLayoutManager(std::make_unique<views::BoxLayout>(
                                views::BoxLayout::Orientation::kVertical))
       ->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kStretch);
   titles->AddChildView(
-      make_label(u"Shield", kOnSurface, zephyrus::m3::Type::kTitleMedium));
+      make_label(u"Shield", kOnSurface, zephyrus::m3::Type::kTitleSmall));
   if (!page_host.empty()) {
     auto* host = titles->AddChildView(
         make_label(page_host, kOnVariant, zephyrus::m3::Type::kBodySmall));
@@ -4426,6 +4430,7 @@ void ToolbarView::ShowZephyrusAdblockBubble(views::View* anchor) {
 
   const std::u16string kBlockingName = u"Block ads & trackers";
   auto* master = header->AddChildView(std::make_unique<zephyrus::m3::Switch>());
+  master->SetScale(0.75f);
   // Before the callback exists, so the initial value never reads as a change.
   master->SetIsOn(service->enabled());
   master->GetViewAccessibility().SetName(kBlockingName);
@@ -4440,7 +4445,7 @@ void ToolbarView::ShowZephyrusAdblockBubble(views::View* anchor) {
   // ---- Hero: the page's count on an expressive shape ----------------------
   auto* hero = content->AddChildView(std::make_unique<views::View>());
   auto* herol = hero->SetLayoutManager(std::make_unique<views::BoxLayout>(
-      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 16));
+      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 12));
   herol->set_cross_axis_alignment(
       views::BoxLayout::CrossAxisAlignment::kCenter);
   hero->AddChildView(std::make_unique<ZephyrusShieldCookie>(
@@ -4453,7 +4458,7 @@ void ToolbarView::ShowZephyrusAdblockBubble(views::View* anchor) {
       ->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kStretch);
   herol->SetFlexForView(hero_text, 1);
   hero_text->AddChildView(make_label(u"blocked on this page", kOnSurface,
-                                     zephyrus::m3::Type::kBodyLarge));
+                                     zephyrus::m3::Type::kBodyMedium));
   auto* lifetime = hero_text->AddChildView(make_label(
       base::FormatNumber(static_cast<int64_t>(service->total_blocked())) +
           u" blocked in total",

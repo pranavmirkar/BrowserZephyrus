@@ -42,6 +42,11 @@ class Switch : public views::Button {
   ~Switch() override;
 
   bool GetIsOn() const { return is_on_; }
+
+  // Draws the whole switch (track, thumb, state layer, and the view that holds
+  // them) at `scale` of M3's size. For the places a full-size switch is too much
+  // for the row it sits in; 1.0 is the spec.
+  void SetScale(float scale);
   void SetIsOn(bool is_on);
 
   // views::Button:
@@ -60,6 +65,7 @@ class Switch : public views::Button {
  private:
 
   bool is_on_ = false;
+  float scale_ = 1.0f;
   // 0 at off, 1 at on, and briefly past either end: the spatial curve
   // overshoots, which is the switch's small bounce.
   double position_ = 0.0;

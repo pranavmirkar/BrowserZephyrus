@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/extensions/extensions_menu_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_bubble_style.h"
+#include "chrome/browser/ui/views/frame/zephyrus_extension_toggle.h"
 
 #include <algorithm>
 
@@ -122,8 +123,11 @@ ExtensionsMenuView::ExtensionsMenuView(
     set_highlight_button_when_shown(false);
   }
 
+  // Zephyrus: a little wider than stock, so a name keeps its room beside the
+  // pin, the menu and the on/off switch.
   set_fixed_width(views::LayoutProvider::Get()->GetDistanceMetric(
-      views::DISTANCE_BUBBLE_PREFERRED_WIDTH));
+                      views::DISTANCE_BUBBLE_PREFERRED_WIDTH) +
+                  40);
   SetLayoutManager(std::make_unique<views::BoxLayout>(
       views::BoxLayout::Orientation::kVertical));
   Populate();
@@ -268,6 +272,10 @@ ExtensionsMenuView::CreateExtensionButtonsContainer() {
   create_section(&has_access_);
   create_section(&wants_access_);
   create_section(&cant_access_);
+  // Zephyrus: the extensions the user turned off, with a switch to turn them
+  // back on.
+  extension_buttons->AddChildView(
+      std::make_unique<ZephyrusTurnedOffSection>(browser_->GetProfile()));
 
   return extension_buttons;
 }
@@ -451,6 +459,8 @@ void ExtensionsMenuView::OnToolbarActionAdded(
   CreateAndInsertNewItem(item);
   SortMenuItemsByName();
   UpdateSectionVisibility();
+  // Zephyrus: an extension turned on or off from the menu changes its height.
+  SizeToContents();
 
   SanityCheck();
 }
@@ -468,6 +478,7 @@ void ExtensionsMenuView::OnToolbarActionRemoved(
   extensions_menu_items_.erase(iter);
 
   UpdateSectionVisibility();
+  SizeToContents();
 
   SanityCheck();
 }

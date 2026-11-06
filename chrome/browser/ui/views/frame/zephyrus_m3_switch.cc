@@ -61,6 +61,18 @@ Switch::Switch(PressedCallback callback)
   SetInstallFocusRingOnFocus(true);
 }
 
+void Switch::SetScale(float scale) {
+  if (scale_ == scale) {
+    return;
+  }
+  scale_ = scale;
+  views::InstallRoundRectHighlightPathGenerator(
+      this, gfx::Insets(static_cast<int>(kOverhang * scale_)),
+      static_cast<int>(kTrackHeight * scale_ / 2));
+  PreferredSizeChanged();
+  SchedulePaint();
+}
+
 Switch::~Switch() = default;
 
 void Switch::SetIsOn(bool is_on) {
@@ -84,8 +96,9 @@ void Switch::SetIsOn(bool is_on) {
 
 gfx::Size Switch::CalculatePreferredSize(
     const views::SizeBounds& available_size) const {
-  return gfx::Size(static_cast<int>(kTrackWidth) + 2 * kOverhang,
-                   static_cast<int>(kStateLayer));
+  return gfx::Size(static_cast<int>(kTrackWidth * scale_) +
+                       2 * static_cast<int>(kOverhang * scale_),
+                   static_cast<int>(kStateLayer * scale_));
 }
 
 void Switch::PaintButtonContents(gfx::Canvas* canvas) {
@@ -93,10 +106,19 @@ void Switch::PaintButtonContents(gfx::Canvas* canvas) {
   if (!GetWidget()) {
     return;
   }
+  // M3's dimensions at this switch's scale.
+  const float track_width = kTrackWidth * scale_;
+  const float track_height = kTrackHeight * scale_;
+  const float outline_width = std::max(1.5f, kTrackOutlineWidth * scale_);
+  const float handle_inset = kHandleInset * scale_;
+  const float handle_off = kHandleOff * scale_;
+  const float handle_on = kHandleOn * scale_;
+  const float handle_pressed = kHandlePressed * scale_;
+  const float state_layer = kStateLayer * scale_;
   const gfx::PointF centre = gfx::RectF(GetLocalBounds()).CenterPoint();
-  const gfx::RectF track(centre.x() - kTrackWidth / 2,
-                         centre.y() - kTrackHeight / 2, kTrackWidth,
-                         kTrackHeight);
+  const gfx::RectF track(centre.x() - track_width / 2,
+                         centre.y() - track_height / 2, track_width,
+                         track_height);
   const bool enabled = GetEnabled();
   const bool pressed = enabled && GetState() == STATE_PRESSED;
   const bool hovered = enabled && GetState() == STATE_HOVERED;
@@ -122,15 +144,15 @@ void Switch::PaintButtonContents(gfx::Canvas* canvas) {
     flags.setColor(Role(*this, on_look ? kColorZephyrusPrimary
                                        : kColorZephyrusSurfaceContainerHighest));
   }
-  canvas->DrawRoundRect(track, kTrackHeight / 2, flags);
+  canvas->DrawRoundRect(track, track_height / 2, flags);
 
   if (!on_look) {
     // Off carries an outline, drawn INSIDE the track so the switch does not
     // grow by the stroke when it turns off.
     gfx::RectF outline = track;
-    outline.Inset(kTrackOutlineWidth / 2);
+    outline.Inset(outline_width / 2);
     flags.setStyle(cc::PaintFlags::kStroke_Style);
-    flags.setStrokeWidth(kTrackOutlineWidth);
+    flags.setStrokeWidth(outline_width);
     flags.setColor(enabled ? Role(*this, kColorZephyrusOutline)
                            : SkColorSetA(on_surface, 0x1F));
     canvas->DrawRoundRect(outline, outline.height() / 2, flags);
@@ -138,14 +160,14 @@ void Switch::PaintButtonContents(gfx::Canvas* canvas) {
 
   // ---- Thumb geometry -----------------------------------------------------
   const gfx::PointF thumb(
-      static_cast<float>(Lerp(track.x() + kHandleInset,
-                              track.right() - kHandleInset, position_)),
+      static_cast<float>(Lerp(track.x() + handle_inset,
+                              track.right() - handle_inset, position_)),
       track.CenterPoint().y());
   // The overshoot moves the thumb, but must not shrink or swell it past the
   // two sizes, so size uses the clamped position.
   const float diameter =
-      pressed ? kHandlePressed
-              : static_cast<float>(Lerp(kHandleOff, kHandleOn,
+      pressed ? handle_pressed
+              : static_cast<float>(Lerp(handle_off, handle_on,
                                         std::clamp(position_, 0.0, 1.0)));
 
   // ---- State layer, under the thumb ---------------------------------------
@@ -156,7 +178,7 @@ void Switch::PaintButtonContents(gfx::Canvas* canvas) {
     flags.setStyle(cc::PaintFlags::kFill_Style);
     flags.setColor(StateLayer(
         on_look ? Role(*this, kColorZephyrusPrimary) : on_surface, opacity));
-    canvas->DrawCircle(thumb, kStateLayer / 2, flags);
+    canvas->DrawCircle(thumb, state_layer / 2, flags);
   }
 
   // ---- Thumb --------------------------------------------------------------

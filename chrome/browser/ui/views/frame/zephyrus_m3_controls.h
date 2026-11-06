@@ -90,6 +90,8 @@ class SwitchRow : public views::Button {
   ~SwitchRow() override;
 
   bool is_on() const;
+  // A narrower row: smaller switch, earlier wrap. See the definition.
+  void SetCompact(bool compact);
   // Sets the switch from code. The change callback is NOT run: whoever sets it
   // already knows.
   void SetOn(bool on);

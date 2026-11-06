@@ -65,15 +65,15 @@ namespace {
 
 // The rail's list shape: tonal rows 52dp tall, large corners on the outside of a
 // list, small where two rows meet, 2dp between them.
-constexpr int kRowHeight = 52;
+constexpr int kRowHeight = 44;
 constexpr float kOuterRadius = 16.f;
 constexpr float kInnerRadius = 4.f;
 constexpr int kRowGap = 2;
-constexpr int kIconSize = 22;
+constexpr int kIconSize = 20;
 constexpr int kTrailSize = 18;
-constexpr int kSectionGap = 12;
+constexpr int kSectionGap = 8;
 // The Shield popup's own inset on each side of its column.
-constexpr int kColumnInset = 16;
+constexpr int kColumnInset = 12;
 
 using ActionCallback = base::RepeatingCallback<void(const ui::Event&)>;
 
@@ -142,7 +142,7 @@ class SiteRow : public views::Button {
         action_(std::move(action)) {
     auto* box = SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kHorizontal,
-        gfx::Insets::TLBR(0, 16, 0, 12), 16));
+        gfx::Insets::TLBR(0, 14, 0, 10), 12));
     box->set_cross_axis_alignment(views::BoxLayout::CrossAxisAlignment::kCenter);
     box->set_minimum_cross_axis_size(kRowHeight);
 
@@ -158,7 +158,7 @@ class SiteRow : public views::Button {
         ->set_cross_axis_alignment(
             views::BoxLayout::CrossAxisAlignment::kStretch);
     auto* title_label = texts->AddChildView(std::make_unique<ThemedLabel>(
-        title, kColorZephyrusOnSurface, zephyrus::m3::Type::kBodyLarge));
+        title, kColorZephyrusOnSurface, zephyrus::m3::Type::kBodyMedium));
     // Wraps rather than cutting a long name short next to a switch.
     title_label->SetMultiLine(true);
     title_label->SetMaxLines(2);
@@ -172,6 +172,7 @@ class SiteRow : public views::Button {
     if (trailing_ == Trailing::kSwitch) {
       switch_ = AddChildView(std::make_unique<zephyrus::m3::Switch>(
           base::BindRepeating(&SiteRow::OnSwitched, base::Unretained(this))));
+      switch_->SetScale(0.75f);
     } else if (trailing_ != Trailing::kNone) {
       // Only reserves the room: the arrow is painted in PaintButtonContents,
       // turned as it needs to be.

@@ -142,6 +142,14 @@ SwitchRow::SwitchRow(std::u16string headline,
 
 SwitchRow::~SwitchRow() = default;
 
+void SwitchRow::SetCompact(bool compact) {
+  // For a narrow card: the supporting text wraps sooner and the switch is
+  // smaller, so a row is about 280dp across instead of about 380.
+  supporting_->SetMaximumWidth(compact ? 184 : 270);
+  switch_->SetScale(compact ? 0.8f : 1.0f);
+  InvalidateLayout();
+}
+
 bool SwitchRow::is_on() const {
   return switch_->GetIsOn();
 }

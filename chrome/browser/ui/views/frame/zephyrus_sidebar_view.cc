@@ -1770,6 +1770,67 @@ END_METADATA
 
 // The tab cards under a header. Its height follows how far the set is open, and
 // it clips what is not showing yet.
+}  // namespace
+
+// Folds a closed tab's row away: its height and its opacity run to nothing, and
+// the rows around it follow through layout. Owned by the sidebar until it ends.
+class ZephyrusRowCloser : public gfx::AnimationDelegate {
+ public:
+  ZephyrusRowCloser(views::View* row, base::OnceClosure done)
+      : tracker_(row),
+        height_(row->height()),
+        done_(std::move(done)),
+        anim_(this) {
+    // A layer that clips, so the title does not spill over the rows it passes
+    // while the row is shorter than its contents.
+    row->SetCanProcessEventsWithinSubtree(false);
+    row->SetPaintToLayer();
+    row->layer()->SetFillsBoundsOpaquely(false);
+    row->layer()->SetMasksToBounds(true);
+    anim_.SetTweenType(gfx::Tween::EASE_OUT);
+    anim_.SetSlideDuration(base::Milliseconds(200));
+    anim_.Show();
+  }
+  ZephyrusRowCloser(const ZephyrusRowCloser&) = delete;
+  ZephyrusRowCloser& operator=(const ZephyrusRowCloser&) = delete;
+  ~ZephyrusRowCloser() override = default;
+
+  bool finished() const { return finished_; }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    views::View* row = tracker_.view();
+    if (!row) {
+      return;
+    }
+    const double t = animation->GetCurrentValue();
+    row->SetPreferredSize(
+        gfx::Size(0, base::ClampRound(height_ * (1.0 - t))));
+    if (row->layer()) {
+      // Gone before the height is, so the text is not seen squashed.
+      row->layer()->SetOpacity(static_cast<float>(std::max(0.0, 1.0 - 1.6 * t)));
+    }
+  }
+  void AnimationEnded(const gfx::Animation* animation) override {
+    finished_ = true;
+    if (views::View* row = tracker_.view()) {
+      row->SetVisible(false);
+    }
+    if (done_) {
+      std::move(done_).Run();
+    }
+  }
+
+ private:
+  views::ViewTracker tracker_;
+  const int height_;
+  base::OnceClosure done_;
+  bool finished_ = false;
+  gfx::SlideAnimation anim_;
+};
+
+namespace {
+
 // The gap that opens where a dragged tab would land: a tonal outline of a row
 // that grows in, and closes again when the tab moves on.
 class ZephyrusDropSlot : public views::View, public gfx::AnimationDelegate {
@@ -3787,6 +3848,18 @@ void ZephyrusSidebarView::OnTabStripModelChanged(
   if (!revealed_) {
     return;
   }
+  // Anything but a removal or a plain switch changes the indices the rows were
+  // built with, and a closing animation finds its row by them.
+  if (change.type() != TabStripModelChange::kRemoved &&
+      change.type() != TabStripModelChange::kSelectionOnly) {
+    index_map_stale_ = true;
+  }
+  if (TryAnimateClose(change, selection)) {
+    // The rebuild (which the set opening, or a join, also needs) comes when the
+    // rows have finished closing.
+    rebuild_deferred_ = true;
+    return;
+  }
   if (opened_a_set) {
     ScheduleRebuildTabList();
     return;
@@ -3800,6 +3873,100 @@ void ZephyrusSidebarView::OnTabStripModelChanged(
     return;
   }
   ScheduleRebuildTabList();
+}
+
+bool ZephyrusSidebarView::TryAnimateClose(
+    const TabStripModelChange& change,
+    const TabStripSelectionChange& selection) {
+  if (change.type() != TabStripModelChange::kRemoved ||
+      !gfx::Animation::ShouldRenderRichAnimation() || dragging_row_ ||
+      rename_active_ || index_map_stale_ || !tab_list_container_) {
+    return false;
+  }
+  // The index a tab had when the rows were built: the model's own index counts
+  // only the tabs that are still there.
+  auto build_index = [&](int index) {
+    for (int removed : removed_since_build_) {
+      if (removed <= index) {
+        ++index;
+      }
+    }
+    return index;
+  };
+  std::vector<int> closing_indices;
+  for (const auto& removed : change.GetRemove()->contents) {
+    closing_indices.push_back(build_index(removed.index));
+  }
+  std::vector<ZephyrusTabRow*> rows;
+  CollectTabRows(tab_list_container_, &rows);
+  std::vector<ZephyrusTabRow*> closing;
+  for (ZephyrusTabRow* row : rows) {
+    if (std::find(closing_indices.begin(), closing_indices.end(),
+                  row->model_index()) != closing_indices.end()) {
+      closing.push_back(row);
+    }
+  }
+  if (closing.empty()) {
+    return false;
+  }
+  // A row in a list or a set folds away; one inside a split card is left to
+  // the plain rebuild.
+  for (ZephyrusTabRow* row : closing) {
+    views::View* parent = row->parent();
+    if (parent != tab_list_container_ &&
+        !views::IsViewClass<ZephyrusSetBody>(parent)) {
+      return false;
+    }
+  }
+
+  // A rebuild may already be waiting (a tab leaving its set schedules one just
+  // before the removal arrives). The one after the fold covers it.
+  rebuild_pending_ = false;
+  removed_since_build_.insert(removed_since_build_.end(),
+                              closing_indices.begin(), closing_indices.end());
+  std::sort(removed_since_build_.begin(), removed_since_build_.end());
+
+  for (ZephyrusTabRow* row : closing) {
+    closers_.push_back(std::make_unique<ZephyrusRowCloser>(
+        row, base::BindOnce(
+                 [](base::WeakPtr<ZephyrusSidebarView> sidebar) {
+                   // Posted: this is called from inside the animation, and the
+                   // closer is about to be destroyed.
+                   base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+                       FROM_HERE,
+                       base::BindOnce(
+                           &ZephyrusSidebarView::OnRowCloseFinished, sidebar));
+                 },
+                 weak_factory_.GetWeakPtr())));
+  }
+
+  // The tab that took over as the active one is lit now, not after the fold.
+  if (selection.active_tab_changed() && selection.new_contents) {
+    const int now = tab_strip_model_->GetIndexOfWebContents(selection.new_contents);
+    if (now != TabStripModel::kNoTab) {
+      const int at_build = build_index(now);
+      for (ZephyrusTabRow* row : rows) {
+        if (row->model_index() == at_build) {
+          row->SetFallbackIcon(GetTabFallbackIcon(selection.new_contents));
+          row->UpdateContent(GetTabFavicon(selection.new_contents),
+                             GetTabTitle(selection.new_contents),
+                             /*is_active=*/true);
+        }
+      }
+    }
+  }
+  return true;
+}
+
+void ZephyrusSidebarView::OnRowCloseFinished() {
+  std::erase_if(closers_, [](const std::unique_ptr<ZephyrusRowCloser>& closer) {
+    return closer->finished();
+  });
+  if (closers_.empty()) {
+    // The rows are gone from sight; now the list is rebuilt from the model.
+    rebuild_deferred_ = false;
+    ScheduleRebuildTabList();
+  }
 }
 
 bool ZephyrusSidebarView::UpdateActiveRowsInPlace(
@@ -3848,6 +4015,7 @@ void ZephyrusSidebarView::OnTabPinnedStateChanged(tabs::TabInterface* tab,
   }
   // A newly pinned tab becomes visible in every workspace, so the list has to
   // be rebuilt rather than just refreshed in place.
+  index_map_stale_ = true;
   ScheduleRebuildTabList();
 }
 
@@ -4235,7 +4403,7 @@ void ZephyrusSidebarView::ScheduleRebuildTabList() {
   // it would delete the row still under the user's finger. Hold it until the
   // gesture finishes. Tab titles change constantly while pages load, so
   // cancelling the drag instead would make dragging fail at random.
-  if (dragging_row_ || rename_active_) {
+  if (dragging_row_ || rename_active_ || !closers_.empty()) {
     rebuild_deferred_ = true;
     return;
   }
@@ -5114,6 +5282,9 @@ void ZephyrusSidebarView::RebuildTabList() {
   ParkBorrowedNewTabButton();
   tabs_header_ = nullptr;
   drop_slot_ = nullptr;
+  closers_.clear();
+  removed_since_build_.clear();
+  index_map_stale_ = false;
 
   if (!tab_list_container_) {
     return;
