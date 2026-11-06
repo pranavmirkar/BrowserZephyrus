@@ -80,9 +80,11 @@ namespace {
 // The same height as the omnibox (toolbar_view.cc's kZephyrusContainer): the
 // tabs and the field read as one family of controls.
 constexpr int kTabHeight = 26;
-// The plate sits this far down its 32dp band so that it is CENTRED in it; the
-// tab's own view is what is left, which still has room for the shadow.
-constexpr int kPlateY = (ZephyrusTabStrip::kBandHeight - kTabHeight) / 2;
+constexpr int kOneStripPlateY = (ZephyrusTabStrip::kBandHeight - kTabHeight) / 2;
+// One strip: the plate sits this far down its 32dp band so that it is CENTRED
+// in it, the band itself centred in the title bar's row. Under the title bar
+// (the horizontal layout) it is NOT: there the bar's own bottom padding is the
+// gap above the tabs, and the 6dp the band has left below them matches it.
 // The tab VIEW is the whole band (ZephyrusTabStrip::kBandHeight), so the raised
 // tab's shadow has room below the 28dp plate.
 constexpr int kEdge = 4;
@@ -1521,7 +1523,8 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
   // one and the one being dragged, where a plate takes their place.
   const SkColor divider =
       SkColorSetA(zephyrus::m3::Role(*this, kColorZephyrusOutlineVariant), 0xB0);
-  const int y = top_inset_ + kPlateY + (kTabHeight - kDividerHeight) / 2;
+  const int plate_y = one_strip_ ? kOneStripPlateY : 0;
+  const int y = top_inset_ + plate_y + (kTabHeight - kDividerHeight) / 2;
   const bool ordered = order_.size() == items_.size();
   for (size_t i = 0; i + 1 < items_.size(); ++i) {
     const size_t a = ordered ? order_[i] : i;
@@ -1565,7 +1568,7 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
       continue;
     }
     canvas->DrawRoundRect(
-        gfx::RectF(left, top_inset_ + kPlateY + kTabHeight + 1.f, right - left,
+        gfx::RectF(left, top_inset_ + plate_y + kTabHeight + 1.f, right - left,
                    2.f),
         1.f,
         line);
@@ -1573,7 +1576,8 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
 }
 
 void ZephyrusTabStrip::Layout(PassKey key) {
-  const int y = top_inset_ + kPlateY;
+  const int plate_y = one_strip_ ? kOneStripPlateY : 0;
+  const int y = top_inset_ + plate_y;
   const int avail = ContentWidth();
   const bool animating = layout_anim_.is_animating();
   const double t = animating ? layout_anim_.GetCurrentValue() : 1.0;
@@ -1704,7 +1708,7 @@ void ZephyrusTabStrip::Layout(PassKey key) {
       const double w = (e.fixed >= 0 ? e.fixed : unit) * e.share;
       // A pill is a small capsule, centred on the tab's plate; a tab is the
       // whole band, so its shadow has room.
-      const int h = e.is_pill ? SetPill::kHeight : kBandHeight - kPlateY;
+      const int h = e.is_pill ? SetPill::kHeight : kBandHeight - plate_y;
       const int top = y + (e.is_pill ? (kTabHeight - SetPill::kHeight) / 2 : 0);
       const gfx::Rect rect(static_cast<int>(std::lround(x)), top,
                            static_cast<int>(std::lround(w)), h);
