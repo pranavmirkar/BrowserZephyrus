@@ -162,7 +162,7 @@ void BrowserAppMenuButton::UpdateIcon() {
   // chevrons, the workspace dots, the tab counter) runs horizontally, and a
   // vertical stack of dots was the only element fighting that grain.
   const gfx::VectorIcon& icon = views::kMoreHorizIcon;
-  const int icon_size = GetIconSize();
+  const int icon_size = ZephyrusIconCanvas(icon);
 
   for (auto state : kButtonStates) {
     SkColor icon_color = GetForegroundColor(state);

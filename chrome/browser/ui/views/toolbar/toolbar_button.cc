@@ -5,10 +5,13 @@
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
 
 #include <algorithm>
+#include <cmath>
+#include <map>
 #include <memory>
 #include <optional>
 #include <utility>
 
+#include "base/no_destructor.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/location.h"
@@ -45,6 +48,9 @@
 #include "ui/display/screen.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/geometry/insets.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/image/image_skia_rep.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/text_utils.h"
 #include "ui/views/animation/ink_drop.h"
@@ -272,12 +278,68 @@ SkColor ToolbarButton::GetForegroundColor(ButtonState state) const {
   }
 }
 
+namespace {
+
+// The canvas size at which `icon`'s inked art is `art_dip` across its longer
+// side, found by drawing it once large and measuring what was inked. Cached per
+// icon: it never changes.
+int ZephyrusCanvasForArt(const gfx::VectorIcon& icon, int art_dip) {
+  constexpr int kProbe = 128;
+  static base::NoDestructor<std::map<const gfx::VectorIcon*, double>> fraction;
+  auto it = fraction->find(&icon);
+  if (it == fraction->end()) {
+    double frac = 0.75;  // What a typical icon fills, if the probe fails.
+    const gfx::ImageSkia probe =
+        gfx::CreateVectorIcon(icon, kProbe, SK_ColorBLACK);
+    const SkBitmap bitmap = probe.GetRepresentation(1.0f).GetBitmap();
+    if (!bitmap.isNull() && bitmap.width() > 0 && bitmap.height() > 0) {
+      int left = bitmap.width();
+      int right = -1;
+      int top = bitmap.height();
+      int bottom = -1;
+      for (int y = 0; y < bitmap.height(); ++y) {
+        for (int x = 0; x < bitmap.width(); ++x) {
+          if (SkColorGetA(bitmap.getColor(x, y)) > 48) {
+            left = std::min(left, x);
+            right = std::max(right, x);
+            top = std::min(top, y);
+            bottom = std::max(bottom, y);
+          }
+        }
+      }
+      if (right >= left && bottom >= top) {
+        frac = std::max(right - left + 1, bottom - top + 1) /
+               static_cast<double>(bitmap.width());
+      }
+    }
+    it = fraction->emplace(&icon, std::clamp(frac, 0.2, 1.0)).first;
+  }
+  return std::clamp(static_cast<int>(std::lround(art_dip / it->second)), 8, 32);
+}
+
+}  // namespace
+
+int ToolbarButton::ZephyrusIconCanvas(const gfx::VectorIcon& icon) const {
+  return zephyrus_art_dip_ > 0 ? ZephyrusCanvasForArt(icon, zephyrus_art_dip_)
+                               : GetIconSize();
+}
+
+void ToolbarButton::SetZephyrusArtDip(int dip) {
+  if (zephyrus_art_dip_ == dip) {
+    return;
+  }
+  zephyrus_art_dip_ = dip;
+  if (vector_icons_ && GetThemeProvider()) {
+    UpdateIcon();
+  }
+}
+
 void ToolbarButton::UpdateIconsWithColors(const gfx::VectorIcon& icon,
                                           SkColor normal_color,
                                           SkColor hovered_color,
                                           SkColor pressed_color,
                                           SkColor disabled_color) {
-  const int icon_size = GetIconSize();
+  const int icon_size = ZephyrusIconCanvas(icon);
   SetImageModel(ButtonState::STATE_NORMAL,
                 ui::ImageModel::FromVectorIcon(icon, normal_color, icon_size));
   SetImageModel(ButtonState::STATE_HOVERED,

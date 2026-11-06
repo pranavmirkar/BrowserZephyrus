@@ -65,9 +65,7 @@ class ZephyrusTabStrip : public views::View,
   static constexpr int kBandHeight = 32;
   static constexpr int kTopInsetAlone = 4;
   // ONE-STRIP layout: this same strip (same tabs, same design) lives in the
-  // title bar's row, after the omnibox. The plate sits 2dp down so the 28dp tabs
-  // are centred in the 32dp band, and the last 24dp of the row stays title bar.
-  static constexpr int kOneStripInset = 2;
+  // title bar's row, after the omnibox; the last 24dp of the row stays title bar.
   static constexpr int kDragZone = 24;
 
   void SetTopInset(int inset);

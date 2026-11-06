@@ -745,6 +745,9 @@ void SetZephyrusContainerPitch(views::View* container) {
                          kZephyrusCellGap - (container->width() - trail.right()));
 }
 inline constexpr int kZephyrusCaptionCell = kZephyrusCell;
+// How big every glyph on the title bar's far side is, ink to ink: the icons
+// (see ToolbarButton::SetZephyrusArtDip) and the window controls alike.
+inline constexpr int kZephyrusGlyphArt = 11;
 
 // Air between the close button and the window's right edge. The strip used to
 // run flush into the corner; a few pixels of inset lets the cluster read as a
@@ -2112,6 +2115,13 @@ void ToolbarView::Layout(PassKey) {
             button->GetHorizontalAlignment() != gfx::ALIGN_CENTER) {
           button->SetHorizontalAlignment(gfx::ALIGN_CENTER);
         }
+        // One OPTICAL size for every glyph on the bar's far side: each icon is
+        // drawn so its ink measures the same, whatever padding its canvas has.
+        // The navigation buttons keep the stock size.
+        if (button != back_ && button != forward_ && button != reload_ &&
+            button != zephyrus_new_tab_button_) {
+          button->SetZephyrusArtDip(kZephyrusGlyphArt);
+        }
         // One pitch for the whole bar. FlexLayout collapses margins, so the
         // gap between two controls is the LARGER of their two margins, not the
         // sum. A uniform margin makes every gap kZephyrusGap, and a run of
@@ -2581,9 +2591,10 @@ class ZephyrusWin11CaptionButton : public views::Button {
   }
 
   // The 18-unit Breeze grid is drawn into a box this many DIPs across; the
-  // drawn glyph occupies roughly the middle 10 units. The motion below moves
+  // drawn glyph occupies roughly the middle 10 units -- sized so that is
+  // kZephyrusGlyphArt, the same ink as every icon beside the window controls. The motion below moves
   // the glyph inside that box and never changes it.
-  static constexpr float kGlyphBox = 16.f;
+  static constexpr float kGlyphBox = kZephyrusGlyphArt * 18.f / 10.f;
 
   void SetMaximized(bool maximized) {
     if (maximized_ == maximized) {
