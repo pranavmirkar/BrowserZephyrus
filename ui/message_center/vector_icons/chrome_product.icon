@@ -1,0 +1,15 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+// The product mark: the Zephyrus ribbon, where Chromium's logo used to be
+// (see zephyrus_mark.icon for where it comes from).
+
+CANVAS_DIMENSIONS, 24,
+FILL_RULE_NONZERO,
+MOVE_TO, 3.5, 3.5,
+CUBIC_TO, 3.5, 32.962, 17.264, 13.507, 20.492, 3.5,
+CUBIC_TO, 20.492, -2.027, 20.492, 49.967, 20.492, 20.505,
+CUBIC_TO, 20.492, -8.957, 6.728, 10.498, 3.5, 20.505,
+CUBIC_TO, 3.5, 26.032, 3.5, -25.962, 3.5, 3.5,
+CLOSE

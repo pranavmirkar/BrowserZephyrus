@@ -21,6 +21,8 @@
 #include "cc/paint/paint_flags.h"
 #include "base/timer/timer.h"
 #include "chrome/app/vector_icons/vector_icons.h"
+#include "content/public/common/url_constants.h"
+#include "chrome/common/url_constants.h"
 #include "chrome/browser/ui/views/frame/zephyrus_audio_button.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -149,6 +151,15 @@ constexpr size_t kMaxSetNameLength = 32;
 // A split pair's segments take the tertiary tone, so the pair reads as one
 // thing inside the group without a container around it.
 enum class Tone { kNormal, kSplit };
+
+bool IsNewTabPage(content::WebContents* contents) {
+  const GURL& url = contents->GetVisibleURL();
+  return (url.SchemeIs(content::kChromeUIScheme) &&
+          (url.host() == chrome::kChromeUINewTabPageHost ||
+           url.host() == chrome::kChromeUINewTabHost ||
+           url.host() == chrome::kChromeUINewTabPageThirdPartyHost)) ||
+         url.SchemeIs(chrome::kChromeSearchScheme);
+}
 
 gfx::ImageSkia GetFavicon(content::WebContents* contents) {
   if (auto* driver =
@@ -317,6 +328,12 @@ class StripTab : public Segment {
                              ui::EF_MIDDLE_MOUSE_BUTTON);
 
     favicon_ = GetFavicon(contents);
+    // The new tab page's own favicon is Chromium's greyed logo (or nothing): a
+    // new tab shows the Zephyrus mark instead.
+    if (IsNewTabPage(contents)) {
+      favicon_ = gfx::ImageSkia();
+      ntp_ = true;
+    }
 
     if (!pinned_) {
       label_ = AddChildView(std::make_unique<views::Label>(title));
@@ -509,8 +526,9 @@ class StripTab : public Segment {
                            x, y, kFaviconSize, kFaviconSize, true);
     } else {
       const gfx::ImageSkia globe = ui::ImageModel::FromVectorIcon(
-                                       vector_icons::kGlobeIcon, Ink(),
-                                       kFaviconSize)
+                                       ntp_ ? kZephyrusMarkIcon
+                                            : vector_icons::kGlobeIcon,
+                                       Ink(), kFaviconSize)
                                        .Rasterize(GetColorProvider());
       canvas->DrawImageInt(globe, x, y);
     }
@@ -661,6 +679,8 @@ class StripTab : public Segment {
   // A row of the set dropdown: favicon, title, trailing controls, 40dp tall.
   const bool row_;
   gfx::ImageSkia favicon_;
+  // A new tab page: drawn with the Zephyrus mark, not a favicon.
+  bool ntp_ = false;
   raw_ptr<views::Label> label_ = nullptr;
   raw_ptr<StripCloseButton> close_ = nullptr;
   raw_ptr<ZephyrusAudioButton> audio_ = nullptr;
