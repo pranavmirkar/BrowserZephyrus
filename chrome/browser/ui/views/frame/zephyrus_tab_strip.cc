@@ -1092,9 +1092,8 @@ class SetPill : public views::Button, public views::TextfieldController {
         return true;
       }
       if (event.GetClickCount() == 1) {
-        // The whole pill is the control: it toggles on release, unless the
-        // press turns into a drag.
-        pending_toggle_ = true;
+        // Only the chevron opens the list; the body of the pill is for
+        // dragging, renaming (double-click) and the context menu.
         return views::Button::OnMousePressed(event);
       }
       if (event.GetClickCount() == 2) {
@@ -1136,7 +1135,10 @@ class SetPill : public views::Button, public views::TextfieldController {
     }
     if (!dragging_) {
       views::Button::OnMouseReleased(event);
-      if (pending_toggle_ && !renaming_) {
+      // A click that began and ended on the chevron.
+      gfx::Rect chevron = ChevronRect();
+      chevron.Inset(-2);
+      if (pending_toggle_ && !renaming_ && chevron.Contains(event.location())) {
         pending_toggle_ = false;
         strip_->ToggleSetDropdown(id_);
       }
