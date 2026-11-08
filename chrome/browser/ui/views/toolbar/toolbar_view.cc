@@ -469,7 +469,15 @@ class ZephyrusGlyphMotion {
   }
   ZephyrusGlyphMotion(const ZephyrusGlyphMotion&) = delete;
   ZephyrusGlyphMotion& operator=(const ZephyrusGlyphMotion&) = delete;
-  ~ZephyrusGlyphMotion() = default;
+  ~ZephyrusGlyphMotion() {
+    // Dropped while the glyph is mid-motion (the button is lent to the sidebar,
+    // which has none): leave the glyph where it belongs, not where the motion
+    // had carried it.
+    views::View* icon = icon_.view();
+    if (icon && icon->layer()) {
+      icon->layer()->SetTransform(gfx::Transform());
+    }
+  }
 
   // False once the button is gone: the owner drops the entry.
   bool Alive() const { return button_.view() != nullptr; }
@@ -4190,6 +4198,13 @@ void ToolbarView::LendZephyrusChromeTo(views::View* host) {
   }
   for (views::View* child : movable) {
     host->AddChildView(child);
+    // The sidebar draws one plain highlight and the glyph stays put under it:
+    // the arrows' lean, the reload's tilt and the menu's pop belong to the
+    // title bar's own highlight, and with a circle drawn about the cell they
+    // read as an off-centre glyph. They are attached again when the control
+    // returns (AttachZephyrusMotions, on the next layout).
+    std::erase_if(zephyrus_glyph_motions_,
+                  [child](const auto& m) { return m->IsFor(child); });
   }
   PreferredSizeChanged();
   InvalidateLayout();

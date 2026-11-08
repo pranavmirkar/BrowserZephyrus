@@ -275,11 +275,20 @@ class ZephyrusControlRow : public views::View {
   }
 
   // The row draws the one highlight, a plain circle. A control's own hover
-  // disc (an oval the size of its toolbar cell, clipped to it) would be a
-  // second one, so it is switched off while the control is in this row and
-  // given back when it leaves. And the row repaints on every state change of
-  // a control: a circle painted by the row is not cleared by the control
-  // repainting itself, which left the old one behind.
+  // highlight (an oval the shape of its toolbar cell) would be a second one,
+  // so its ink drop is switched off while the control is in this row and
+  // given back when it leaves. It has to be switched off AGAIN on every state
+  // change: ToolbarButton turns its ink drop back on when it goes from
+  // disabled to enabled (back and forward, once there is history), which
+  // brought the oval back as a ring around the circle.
+  //
+  // The icon is centred too. ToolbarButton right-aligns it, which is invisible
+  // in a toolbar cell but puts the glyph off the centre of a circle drawn
+  // about the cell.
+  //
+  // And the row repaints on every state change of a control: a circle painted
+  // by the row is not cleared by the control repainting itself, which left the
+  // old one behind.
   void ViewHierarchyChanged(
       const views::ViewHierarchyChangedDetails& details) override {
     views::View::ViewHierarchyChanged(details);
@@ -291,17 +300,29 @@ class ZephyrusControlRow : public views::View {
       return;
     }
     views::InkDropHost* ink_drop = views::InkDrop::Get(button);
+    auto* label_button = views::AsViewClass<views::LabelButton>(button);
     if (details.is_add) {
       saved_ink_modes_[button] = ink_drop->GetMode();
       ink_drop->SetMode(views::InkDropHost::InkDropMode::OFF);
+      if (label_button) {
+        saved_alignments_[button] = label_button->GetHorizontalAlignment();
+        label_button->SetHorizontalAlignment(gfx::ALIGN_CENTER);
+      }
       state_subscriptions_[button] = button->AddStateChangedCallback(
-          base::BindRepeating(&views::View::SchedulePaint,
-                              base::Unretained(this)));
+          base::BindRepeating(&ZephyrusControlRow::OnControlStateChanged,
+                              base::Unretained(this), base::Unretained(button)));
     } else {
       const auto saved = saved_ink_modes_.find(button);
       if (saved != saved_ink_modes_.end()) {
         ink_drop->SetMode(saved->second);
         saved_ink_modes_.erase(saved);
+      }
+      const auto alignment = saved_alignments_.find(button);
+      if (alignment != saved_alignments_.end()) {
+        if (label_button) {
+          label_button->SetHorizontalAlignment(alignment->second);
+        }
+        saved_alignments_.erase(alignment);
       }
       state_subscriptions_.erase(button);
     }
@@ -318,7 +339,16 @@ class ZephyrusControlRow : public views::View {
   void OnMouseExited(const ui::MouseEvent& event) override { SchedulePaint(); }
 
  private:
+  void OnControlStateChanged(views::Button* button) {
+    views::InkDropHost* ink_drop = views::InkDrop::Get(button);
+    if (ink_drop->GetMode() != views::InkDropHost::InkDropMode::OFF) {
+      ink_drop->SetMode(views::InkDropHost::InkDropMode::OFF);
+    }
+    SchedulePaint();
+  }
+
   std::map<views::View*, views::InkDropHost::InkDropMode> saved_ink_modes_;
+  std::map<views::View*, gfx::HorizontalAlignment> saved_alignments_;
   std::map<views::View*, base::CallbackListSubscription> state_subscriptions_;
 
   std::vector<views::View*> VisibleChildren() const {
