@@ -1712,10 +1712,7 @@ void ZephyrusTabStrip::Rebuild() {
   for (int index : unpinned) {
     const std::optional<tab_groups::TabGroupId> group =
         tab_strip_model_->GetTabGroupForTab(index);
-    // One strip: sets are off. The tabs stay in them in the model; they are
-    // simply shown loose, collapsed or not, until another layout brings the
-    // sets back.
-    if (!group || one_strip_) {
+    if (!group) {
       loose.push_back(index);
       continue;
     }
@@ -3072,9 +3069,8 @@ void ZephyrusTabStrip::ShowContextMenuForViewImpl(
       menu_model_->AddSubMenu(0, u"Move to workspace", move_menu_model_.get());
     }
   }
-  // Sets: a pinned tab is in none and cannot be put in one; and there are none
-  // in the one-strip layout.
-  if (!tab_strip_model_->IsTabPinned(index) && !one_strip_) {
+  // Sets: a pinned tab is in none and cannot be put in one.
+  if (!tab_strip_model_->IsTabPinned(index)) {
     menu_set_ids_.clear();
     set_submenu_model_ = std::make_unique<ui::SimpleMenuModel>(this);
     const std::optional<tab_groups::TabGroupId> current =

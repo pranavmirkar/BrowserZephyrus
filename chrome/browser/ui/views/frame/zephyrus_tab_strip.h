@@ -77,9 +77,8 @@ class ZephyrusTabStrip : public views::View,
 
   // ONE-STRIP layout. On, the strip is a child of the toolbar's row: it takes the
   // room the omnibox leaves (so it re-lays out, smoothly, as the omnibox grows
-  // and shrinks), paints no background of its own, clips to its bounds, and does
-  // not show sets -- they stay in the model and come back with the other
-  // layouts.
+  // and shrinks), paints no background of its own, and clips to its bounds.
+  // Sets are the same pill and dropdown as in the horizontal layout.
   void SetOneStrip(bool on);
   bool one_strip() const { return one_strip_; }
   // The bar's own colour, for tabs that lighten it to raise the active one.
