@@ -36,8 +36,11 @@ import {MostVisitedWindowProxy} from './window_proxy.js';
 
 // Zephyrus: dock positions, indexed by the browser's pref value.
 const DOCK_POSITIONS = ['middle', 'top', 'bottom', 'left', 'right'];
-// The dock's tile pitch: the 56px tile and the 4px gap.
-const DOCK_TILE_PITCH = 60;
+// Zephyrus: dock sizes, indexed by the browser's pref value, and each one's
+// tile pitch: the tile (44, 56 or 68px) and the 4px gap.
+const DOCK_SIZES = ['small', 'medium', 'large'];
+const DOCK_TILE_PITCH: {[size: string]: number} =
+    {small: 48, medium: 60, large: 72};
 // The dock's distance from the page's edge, and from the search pill.
 const DOCK_EDGE = 16;
 const DOCK_GAP = 12;
@@ -150,6 +153,9 @@ export class MostVisitedElement extends MostVisitedElementBase {
        */
       dock_: {type: String, reflect: true},
 
+      /** Zephyrus: how big the dock is: 'small', 'medium' or 'large'. */
+      dockSize_: {type: String, reflect: true},
+
       customLinksEnabled_: {
         type: Boolean,
         reflect: true,
@@ -233,6 +239,7 @@ export class MostVisitedElement extends MostVisitedElementBase {
   protected accessor columnCount_: number = 3;
   protected accessor rowCount_: number = 1;
   protected accessor dock_: string = 'middle';
+  protected accessor dockSize_: string = 'medium';
   protected accessor customLinksEnabled_: boolean = false;
   protected accessor enterpriseShortcutsEnabled_: boolean = false;
   protected accessor dialogTileTitle_: string = '';
@@ -362,6 +369,7 @@ export class MostVisitedElement extends MostVisitedElementBase {
         this.info_ !== null) {
       this.visible_ = this.info_.visible;
       this.dock_ = DOCK_POSITIONS[this.info_.dockPosition] || 'middle';
+      this.dockSize_ = DOCK_SIZES[this.info_.dockSize] || 'medium';
       this.customLinksEnabled_ = this.info_.customLinksEnabled;
       this.enterpriseShortcutsEnabled_ = this.info_.enterpriseShortcutsEnabled;
       const totalMax =
@@ -462,7 +470,8 @@ export class MostVisitedElement extends MostVisitedElementBase {
     const room = this.isVerticalDock_() ?
         window.innerHeight - 2 * DOCK_EDGE - 16 :
         (window.innerWidth - 420) / 2 - DOCK_GAP - DOCK_EDGE - 16;
-    return Math.max(3, Math.min(11, Math.floor(room / DOCK_TILE_PITCH)));
+    const pitch = DOCK_TILE_PITCH[this.dockSize_] || 60;
+    return Math.max(3, Math.min(11, Math.floor(room / pitch)));
   }
 
   private holdDockSize_() {

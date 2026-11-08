@@ -451,6 +451,8 @@ void MostVisitedHandler::OnURLsAvailable(
   result->dock_position = std::clamp(
       profile_->GetPrefs()->GetInteger(ntp_prefs::kNtpZephyrusDockPosition), 0,
       4);
+  result->dock_size = std::clamp(
+      profile_->GetPrefs()->GetInteger(ntp_prefs::kNtpZephyrusDockSize), 0, 2);
   page_->SetMostVisitedInfo(std::move(result));
 }
 

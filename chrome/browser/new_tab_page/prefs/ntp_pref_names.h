@@ -14,6 +14,10 @@ inline constexpr char kNtpShortcutsVisible[] = "ntp.shortcust_visible";
 // search box), 1 top, 2 bottom, 3 left, 4 right.
 inline constexpr char kNtpZephyrusDockPosition[] = "ntp.zephyrus_dock_position";
 
+// Zephyrus: how big the dock (and the search pill beside it) is. 0 small,
+// 1 medium, 2 large.
+inline constexpr char kNtpZephyrusDockSize[] = "ntp.zephyrus_dock_size";
+
 // Tracks whether the user has chosen to use custom links or most visited sites
 // for the shortcut tiles on the NTP. This pref is migrated to
 // `kNtpShortcutsType`.

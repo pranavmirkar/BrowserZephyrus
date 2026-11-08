@@ -147,6 +147,8 @@ class CustomizeChromePageHandler
   void UpdateMostVisitedSettings() override;
   void SetZephyrusDockPosition(int32_t position) override;
   void GetZephyrusDockPosition(GetZephyrusDockPositionCallback callback) override;
+  void SetZephyrusDockSize(int32_t size) override;
+  void GetZephyrusDockSize(GetZephyrusDockSizeCallback callback) override;
   void SetToolChipsVisible(bool visible) override;
   void UpdateToolChipsSettings() override;
   void SetFooterVisible(bool visible) override;

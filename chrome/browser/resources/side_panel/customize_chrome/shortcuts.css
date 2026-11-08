@@ -35,14 +35,15 @@ cr-radio-group {
   padding-inline-start: 32px;
 }
 
-#dockTitle {
+/* Zephyrus: the dock's position and size controls. */
+.dock-title {
   color: var(--cr-primary-text-color);
   font-weight: 500;
   padding: 4px var(--sp-card-padding) 0;
   padding-inline-start: 32px;
 }
 
-#dockRadio .option {
+.dock-radio .option {
   align-items: center;
   padding-block: 8px;
 }

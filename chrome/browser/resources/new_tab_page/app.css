@@ -579,7 +579,7 @@ ntp-lens-upload-dialog {
   --z-ease: 300ms cubic-bezier(0.2, 0, 0, 1);
   --z-edge: 16px;
   --z-gap: 12px;
-  --z-search-h: 72px;
+  --z-search-h: var(--z-thick, 72px);
   --z-search-open-w: clamp(
       320px,
       calc(100vw - 2 * (var(--zd-w, 0px) + var(--z-gap) + var(--z-edge))),
@@ -634,9 +634,9 @@ ntp-lens-upload-dialog {
   --color-searchbox-placeholder: var(--z-ink-dim);
   --color-searchbox-results-background: var(--z-field);
   --color-searchbox-results-background-hovered:
-      color-mix(in srgb, var(--z-ink) 8%, var(--z-field));
+      color-mix(in srgb, var(--z-ink) 8%, transparent);
   --color-searchbox-results-background-selected:
-      color-mix(in srgb, var(--z-ink) 12%, var(--z-field));
+      color-mix(in srgb, var(--z-ink) 14%, transparent);
   --color-searchbox-results-foreground: var(--z-ink);
   --color-searchbox-results-foreground-dimmed: var(--z-ink-dim);
   --color-searchbox-results-foreground-selected: var(--z-ink);
@@ -650,9 +650,9 @@ ntp-lens-upload-dialog {
   --color-searchbox-dropdown-divider:
       color-mix(in srgb, var(--z-ink) 12%, transparent);
   --cr-searchbox-border-radius: 24px;
-  --cr-searchbox-font-size: 16px;
+  --cr-searchbox-font-size: clamp(14px, calc(var(--z-search-h) * 0.2222), 18px);
   --cr-searchbox-height: var(--z-search-h);
-  --cr-searchbox-icon-left-position: 26px;
+  --cr-searchbox-icon-left-position: calc((var(--z-search-h) - 32px) / 2 - 1px);
   --cr-searchbox-match-end-radius: 18px;
   --cr-searchbox-match-margin-inline-end: 4px;
   --cr-searchbox-match-margin-inline-start: 4px;
@@ -692,6 +692,16 @@ ntp-lens-upload-dialog {
           [z-dock_=right])) ntp-searchbox:focus-within {
   outline: 2px solid var(--color-sys-primary, var(--color-new-tab-page-focus-ring));
   outline-offset: 0;
+}
+
+/* The search pill is as thick as the dock: a row's height, a column's width.
+ * So when the dock is resized the pill is too. */
+:host(:is([z-dock_=top], [z-dock_=middle], [z-dock_=bottom])) {
+  --z-thick: var(--zd-h, 72px);
+}
+
+:host(:is([z-dock_=left], [z-dock_=right])) {
+  --z-thick: var(--zd-w, 72px);
 }
 
 /* A row: top, middle, bottom. */

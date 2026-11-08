@@ -225,8 +225,8 @@
 }
 
 .tile-icon img {
-  height: 28px;
-  width: 28px;
+  height: var(--dock-img, 28px);
+  width: var(--dock-img, 28px);
 }
 
 .managed-tile-icon {
@@ -237,9 +237,9 @@
   flex-shrink: 0;
   height: 18px;
   justify-content: center;
-  left: 34px;
+  left: calc(var(--tile-size) - 22px);
   position: absolute;
-  top: 34px;
+  top: calc(var(--tile-size) - 22px);
   width: 18px;
 }
 
@@ -409,6 +409,21 @@ cr-toast-manager {
   pointer-events: none;
   position: absolute;
   z-index: -1;
+}
+
+/* The dock's sizes (the Customize panel picks). The search pill beside it
+ * takes its thickness from the dock, so it follows. Medium is the :host
+ * default above. */
+:host([dock-size_=small]) {
+  --dock-img: 22px;
+  --icon-size: 34px;
+  --tile-size: 44px;
+}
+
+:host([dock-size_=large]) {
+  --dock-img: 34px;
+  --icon-size: 54px;
+  --tile-size: 68px;
 }
 
 /* An empty dock is not drawn. */

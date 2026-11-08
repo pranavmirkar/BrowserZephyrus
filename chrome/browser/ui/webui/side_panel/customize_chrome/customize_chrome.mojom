@@ -152,6 +152,10 @@ interface CustomizeChromePageHandler {
   SetZephyrusDockPosition(int32 position);
   GetZephyrusDockPosition() => (int32 position);
 
+  // Zephyrus: how big the dock is (0 small, 1 medium, 2 large).
+  SetZephyrusDockSize(int32 size);
+  GetZephyrusDockSize() => (int32 size);
+
   // Returns the collections of background images.
   GetBackgroundCollections() => (array<BackgroundCollection> collections);
 

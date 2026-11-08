@@ -588,6 +588,17 @@ void CustomizeChromePageHandler::GetZephyrusDockPosition(
       4));
 }
 
+void CustomizeChromePageHandler::SetZephyrusDockSize(int32_t size) {
+  profile_->GetPrefs()->SetInteger(ntp_prefs::kNtpZephyrusDockSize,
+                                   std::clamp(size, 0, 2));
+}
+
+void CustomizeChromePageHandler::GetZephyrusDockSize(
+    GetZephyrusDockSizeCallback callback) {
+  std::move(callback).Run(std::clamp(
+      profile_->GetPrefs()->GetInteger(ntp_prefs::kNtpZephyrusDockSize), 0, 2));
+}
+
 void CustomizeChromePageHandler::SetFooterVisible(bool visible) {
   profile_->GetPrefs()->SetBoolean(prefs::kNtpFooterVisible, visible);
 }

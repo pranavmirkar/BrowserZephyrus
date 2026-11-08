@@ -40,6 +40,13 @@ const DOCK_OPTIONS = [
   {position: 4, label: 'Right'},
 ];
 
+// Zephyrus: how big the dock (and the search pill beside it) can be.
+const DOCK_SIZE_OPTIONS = [
+  {position: 0, label: 'Small'},
+  {position: 1, label: 'Medium'},
+  {position: 2, label: 'Large'},
+];
+
 interface ShortcutConfig {
   type: TileType;
   title: string;
@@ -73,6 +80,7 @@ export class ShortcutsElement extends CrLitElement {
       shortcutConfigs_: {type: Array},
       disabledShortcuts_: {type: Array},
       dockPosition_: {type: Number},
+      dockSize_: {type: Number},
     };
   }
 
@@ -88,6 +96,7 @@ export class ShortcutsElement extends CrLitElement {
   // -1 until the browser answers, so the radio group sees a change when it
   // does (a group only selects on change).
   protected accessor dockPosition_: number = -1;
+  protected accessor dockSize_: number = -1;
 
   private setMostVisitedSettingsListenerId_: number|null = null;
 
@@ -115,6 +124,31 @@ export class ShortcutsElement extends CrLitElement {
     this.apiProxy_.handler.getZephyrusDockPosition().then(({position}) => {
       this.dockPosition_ = position;
     });
+    this.apiProxy_.handler.getZephyrusDockSize().then(({size}) => {
+      this.dockSize_ = size;
+    });
+  }
+
+  protected getDockSizeOptions_(): Array<{position: number, label: string}> {
+    return DOCK_SIZE_OPTIONS;
+  }
+
+  protected onDockSizeOptionClick_(e: Event) {
+    const size = Number((e.currentTarget as HTMLElement).dataset['position']);
+    if (size === this.dockSize_) {
+      return;
+    }
+    this.dockSize_ = size;
+    this.apiProxy_.handler.setZephyrusDockSize(size);
+  }
+
+  protected onDockSizeSelectedChanged_(e: CustomEvent<{value: string}>) {
+    const size = Number(e.detail.value);
+    if (Number.isNaN(size) || size === this.dockSize_) {
+      return;
+    }
+    this.dockSize_ = size;
+    this.apiProxy_.handler.setZephyrusDockSize(size);
   }
 
   // Zephyrus: the dock's position options, in the browser's pref order.

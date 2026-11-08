@@ -72,12 +72,30 @@ export function getHtml(this: ShortcutsElement) {
       `)}
     </cr-radio-group>
     <hr class="sp-hr">
-    <div id="dockTitle">Dock position</div>
-    <cr-radio-group id="dockRadio" .selected="${String(this.dockPosition_)}"
+    <div id="dockTitle" class="dock-title">Dock position</div>
+    <cr-radio-group id="dockRadio" class="dock-radio"
+        .selected="${String(this.dockPosition_)}"
         @selected-changed="${this.onDockSelectedChanged_}" nested-selectable>
       ${this.getDockOptions_().map(item => html`
         <div class="option" data-position="${item.position}"
             @click="${this.onDockOptionClick_}">
+          <customize-chrome-button-label label="${item.label}">
+          </customize-chrome-button-label>
+          <cr-radio-button name="${item.position}" label="${item.label}"
+              hide-label-text>
+          </cr-radio-button>
+        </div>
+      `)}
+    </cr-radio-group>
+    <hr class="sp-hr">
+    <div id="dockSizeTitle" class="dock-title">Dock size</div>
+    <cr-radio-group id="dockSizeRadio" class="dock-radio"
+        .selected="${String(this.dockSize_)}"
+        @selected-changed="${this.onDockSizeSelectedChanged_}"
+        nested-selectable>
+      ${this.getDockSizeOptions_().map(item => html`
+        <div class="option" data-position="${item.position}"
+            @click="${this.onDockSizeOptionClick_}">
           <customize-chrome-button-label label="${item.label}">
           </customize-chrome-button-label>
           <cr-radio-button name="${item.position}" label="${item.label}"

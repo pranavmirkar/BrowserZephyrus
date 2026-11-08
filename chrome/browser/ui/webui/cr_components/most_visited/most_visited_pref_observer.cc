@@ -40,9 +40,14 @@ MostVisitedPrefObserver::MostVisitedPrefObserver(Profile* profile,
       base::BindRepeating(
           &MostVisitedPrefObserver::OnTilesVisibilityPrefChanged,
           base::Unretained(this)));
-  // Zephyrus: moving the dock re-sends the info so the page re-lays-out.
+  // Zephyrus: moving or resizing the dock re-sends the info so the page
+  // re-lays-out.
   pref_change_registrar_.Add(
       ntp_prefs::kNtpZephyrusDockPosition,
+      base::BindRepeating(&MostVisitedHandler::UpdateMostVisitedInfo,
+                          base::Unretained(handler_.get())));
+  pref_change_registrar_.Add(
+      ntp_prefs::kNtpZephyrusDockSize,
       base::BindRepeating(&MostVisitedHandler::UpdateMostVisitedInfo,
                           base::Unretained(handler_.get())));
 // TODO(b/502297163): Implement for Android.
@@ -69,6 +74,7 @@ void MostVisitedPrefObserver::RegisterProfilePrefs(
                                 false);
   registry->RegisterBooleanPref(ntp_prefs::kNtpShortcutsVisible, true);
   registry->RegisterIntegerPref(ntp_prefs::kNtpZephyrusDockPosition, 0);
+  registry->RegisterIntegerPref(ntp_prefs::kNtpZephyrusDockSize, 1);
   registry->RegisterIntegerPref(ntp_prefs::kNtpShortcutsStalenessCount, 0);
   registry->RegisterTimePref(ntp_prefs::kNtpLastShortcutsStalenessUpdate,
                              base::Time());
@@ -87,6 +93,7 @@ void MostVisitedPrefObserver::ResetProfilePrefs(PrefService* prefs) {
   prefs->SetBoolean(ntp_prefs::kNtpEnterpriseShortcutsVisible, false);
   prefs->SetBoolean(ntp_prefs::kNtpShortcutsVisible, true);
   prefs->SetInteger(ntp_prefs::kNtpZephyrusDockPosition, 0);
+  prefs->SetInteger(ntp_prefs::kNtpZephyrusDockSize, 1);
   prefs->SetInteger(ntp_prefs::kNtpShortcutsStalenessCount, 0);
   prefs->SetTime(ntp_prefs::kNtpLastShortcutsStalenessUpdate, base::Time());
   prefs->SetBoolean(ntp_prefs::kNtpShortcutsAutoRemovalDisabled, false);

@@ -39,6 +39,8 @@ struct MostVisitedInfo {
   // Zephyrus: where the shortcuts dock sits (0 middle, 1 top, 2 bottom,
   // 3 left, 4 right).
   int32 dock_position;
+  // Zephyrus: how big the dock is (0 small, 1 medium, 2 large).
+  int32 dock_size;
   array<MostVisitedTile> tiles;
 };
 
