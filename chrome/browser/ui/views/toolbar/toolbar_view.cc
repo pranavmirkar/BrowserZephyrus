@@ -322,38 +322,65 @@ class ZephyrusColorTransition : public gfx::AnimationDelegate {
 };
 
 // Zephyrus: drives the omnibox pill's focus expansion (compact domain pill →
-// comfortable editing width). A SlideAnimation so focus/blur mid-animation
-// reverses smoothly from the current width instead of jumping. Owned by
-// ToolbarView; forward-declared in toolbar_view.h.
-class ZephyrusOmniboxFocusAnimation : public gfx::AnimationDelegate {
+// comfortable editing width).
+//
+// Frame-aligned: it is an AnimationDelegateViews, so it ticks on the
+// compositor's frames (every vsync) rather than on a timer. The timer it used
+// before fired every 24ms on average (about 40fps) and as late as 41ms, so the
+// width moved in visible steps even though each layout took only ~1ms.
+//
+// The width follows a published M3 curve, applied to a linear animation's
+// value: growing uses the fast SPATIAL spring (it overshoots the editing width a
+// touch and settles, which is what makes the bar feel opened, not stretched);
+// shrinking uses the fast EFFECTS curve (a plain deceleration; nothing should
+// bounce on the way out). A focus or blur mid-motion retargets from where the
+// width is NOW, so reversing never jumps. Owned by ToolbarView; forward-declared
+// in toolbar_view.h.
+class ZephyrusOmniboxFocusAnimation : public views::AnimationDelegateViews {
  public:
-  explicit ZephyrusOmniboxFocusAnimation(base::RepeatingClosure on_frame)
-      : on_frame_(std::move(on_frame)) {
-    animation_.SetSlideDuration(base::Milliseconds(250));
-    animation_.SetTweenType(gfx::Tween::EASE_OUT_3);
-  }
+  ZephyrusOmniboxFocusAnimation(views::View* owner,
+                                base::RepeatingClosure on_frame)
+      : views::AnimationDelegateViews(owner), on_frame_(std::move(on_frame)) {}
   ZephyrusOmniboxFocusAnimation(const ZephyrusOmniboxFocusAnimation&) = delete;
   ZephyrusOmniboxFocusAnimation& operator=(
       const ZephyrusOmniboxFocusAnimation&) = delete;
   ~ZephyrusOmniboxFocusAnimation() override = default;
 
   void SetFocused(bool focused) {
+    const double target = focused ? 1.0 : 0.0;
+    if (target == to_) {
+      return;
+    }
     if (!gfx::Animation::ShouldRenderRichAnimation()) {
-      animation_.Reset(focused ? 1.0 : 0.0);
+      animation_.Stop();
+      from_ = to_ = target;
       on_frame_.Run();
       return;
     }
-    if (focused) {
-      animation_.Show();
-    } else {
-      animation_.Hide();
-    }
+    from_ = value();
+    to_ = target;
+    animation_.SetDuration(focused ? kGrow : kShrink);
+    animation_.Start();
   }
 
-  // 0 = compact steady pill, 1 = full editing width.
-  double value() const { return animation_.GetCurrentValue(); }
+  // 0 = compact steady pill, 1 = full editing width. May pass 1 briefly while
+  // growing (the spring), so callers interpolate, never clamp-assume.
+  double value() const {
+    if (!animation_.is_animating()) {
+      return to_;
+    }
+    const gfx::CubicBezier& curve = zephyrus::m3::Curve(
+        to_ > from_ ? zephyrus::m3::Spring::kFastSpatial
+                    : zephyrus::m3::Spring::kFastEffects);
+    return from_ + (to_ - from_) * curve.Solve(animation_.GetCurrentValue());
+  }
 
  private:
+  // Growing is the entrance, so it takes a little longer than shrinking back:
+  // nothing needs reading on the way out.
+  static constexpr base::TimeDelta kGrow = base::Milliseconds(260);
+  static constexpr base::TimeDelta kShrink = base::Milliseconds(180);
+
   // gfx::AnimationDelegate:
   void AnimationProgressed(const gfx::Animation* animation) override {
     on_frame_.Run();
@@ -363,7 +390,10 @@ class ZephyrusOmniboxFocusAnimation : public gfx::AnimationDelegate {
   }
 
   base::RepeatingClosure on_frame_;
-  gfx::SlideAnimation animation_{this};
+  double from_ = 0.0;
+  double to_ = 0.0;
+  gfx::LinearAnimation animation_{kGrow, gfx::LinearAnimation::kDefaultFrameRate,
+                                  this};
 };
 
 DEFINE_UI_CLASS_PROPERTY_KEY(bool, kActionItemUnderlineIndicatorKey, false)
@@ -3983,9 +4013,10 @@ void ToolbarView::SetZephyrusOmniboxFocused(bool focused) {
   }
   if (!zephyrus_omnibox_focus_animation_) {
     zephyrus_omnibox_focus_animation_ =
-        std::make_unique<ZephyrusOmniboxFocusAnimation>(base::BindRepeating(
-            [](ToolbarView* toolbar) { toolbar->InvalidateLayout(); },
-            base::Unretained(this)));
+        std::make_unique<ZephyrusOmniboxFocusAnimation>(
+            this, base::BindRepeating(
+                      [](ToolbarView* toolbar) { toolbar->InvalidateLayout(); },
+                      base::Unretained(this)));
   }
   zephyrus_omnibox_focus_animation_->SetFocused(focused);
 }

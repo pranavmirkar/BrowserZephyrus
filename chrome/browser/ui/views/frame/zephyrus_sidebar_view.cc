@@ -81,6 +81,7 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/cursor/cursor.h"
+#include "ui/views/animation/animation_delegate_views.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
@@ -2892,7 +2893,10 @@ END_METADATA
 // to its own bounds, and would not route a click outside them either.
 class ZephyrusOmniboxOverlay : public views::View,
                                public views::MaskedTargeterDelegate,
-                               public gfx::AnimationDelegate {
+                               // Frame-aligned: ticks on the compositor's frames,
+                               // not a ~40fps timer (see the omnibox's own
+                               // grow animation in toolbar_view.cc).
+                               public views::AnimationDelegateViews {
   METADATA_HEADER(ZephyrusOmniboxOverlay, views::View)
 
  public:
@@ -2907,7 +2911,8 @@ class ZephyrusOmniboxOverlay : public views::View,
 
   ZephyrusOmniboxOverlay(base::RepeatingClosure on_escape,
                          base::RepeatingClosure on_collapsed)
-      : on_escape_(std::move(on_escape)),
+      : views::AnimationDelegateViews(this),
+        on_escape_(std::move(on_escape)),
         on_collapsed_(std::move(on_collapsed)) {
     // Its own layer, to stack above the sidebar's and the page's. This outer
     // view paints the shadow and the fill; it cannot clip, or the shadow would
