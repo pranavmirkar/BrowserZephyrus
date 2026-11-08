@@ -62,6 +62,10 @@
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/highlight_path_generator.h"
 #include "ui/views/controls/label.h"
+#include "ui/events/event_observer.h"
+#include "ui/views/view_shadow.h"
+#include "ui/views/controls/scroll_view.h"
+#include "ui/views/event_monitor.h"
 #include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/textfield/textfield_controller.h"
@@ -286,7 +290,8 @@ class StripTab : public Segment {
            bool active,
            bool pinned,
            Tone tone,
-           bool morph_in)
+           bool morph_in,
+           bool row = false)
       : Segment(base::BindRepeating(&StripTab::OnPressed,
                                     base::Unretained(this))),
         strip_(strip),
@@ -295,6 +300,7 @@ class StripTab : public Segment {
         active_(active),
         pinned_(pinned),
         tone_(tone),
+        row_(row),
         morph_(this) {
     const std::u16string title = GetTitle(contents);
     GetViewAccessibility().SetRole(ax::mojom::Role::kTab);
@@ -381,6 +387,10 @@ class StripTab : public Segment {
     if (!label_) {
       return;
     }
+    if (row_) {
+      LayoutRow();
+      return;
+    }
     const bool narrow = width() < kCloseMinWidth;
     const bool show_close =
         close_ && (active_ || IsMouseHovered() || HasFocus()) &&
@@ -422,6 +432,29 @@ class StripTab : public Segment {
   }
 
   void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (row_) {
+      // A list row: quiet at rest, a state layer under the pointer, and the
+      // active tab in the secondary container, as in the sidebar.
+      const SkRRect shape =
+          SkRRect::MakeRectXY(gfx::RectToSkRect(GetLocalBounds()), 12, 12);
+      cc::PaintFlags flags;
+      flags.setAntiAlias(true);
+      SkColor fill =
+          active_ ? zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer)
+                  : SK_ColorTRANSPARENT;
+      const bool hot =
+          GetState() == STATE_HOVERED || GetState() == STATE_PRESSED;
+      if (hot) {
+        const uint8_t layer = GetState() == STATE_PRESSED
+                                  ? zephyrus::m3::kPressed
+                                  : zephyrus::m3::kHover;
+        fill = active_ ? zephyrus::m3::WithStateLayer(fill, Ink(), layer)
+                       : zephyrus::m3::StateLayer(Ink(), layer);
+      }
+      flags.setColor(fill);
+      canvas->sk_canvas()->drawRRect(shape, flags);
+      return;
+    }
     const double t = std::max(morph_.GetCurrentValue(), dragged_ ? 1.0 : 0.0);
     const SkRRect plate = SegmentShape(PlateBounds(), LeadRadius(), TrailRadius());
     const bool hovered = GetState() == STATE_HOVERED;
@@ -469,7 +502,8 @@ class StripTab : public Segment {
 
   void PaintButtonContents(gfx::Canvas* canvas) override {
     const int x = pinned_ ? (width() - kFaviconSize) / 2 : content_x_;
-    const int y = (kTabHeight - kFaviconSize) / 2;
+    const int y = row_ ? (height() - kFaviconSize) / 2
+                       : (kTabHeight - kFaviconSize) / 2;
     if (!favicon_.isNull()) {
       canvas->DrawImageInt(favicon_, 0, 0, favicon_.width(), favicon_.height(),
                            x, y, kFaviconSize, kFaviconSize, true);
@@ -509,7 +543,7 @@ class StripTab : public Segment {
     // Pinned tabs and split halves stay put: a pinned tab's place is the
     // pinned group, and dragging half a pair out of it is breaking the split,
     // which has its own control.
-    if (pinned_ || in_split()) {
+    if (pinned_ || in_split() || row_) {
       return Segment::OnMouseDragged(event);
     }
     if (!dragging_ && std::abs(event.x() - press_x_) < 6) {
@@ -518,7 +552,7 @@ class StripTab : public Segment {
     dragging_ = true;
     gfx::Point point = event.location();
     views::View::ConvertPointToTarget(this, strip_, &point);
-    strip_->OnTabDragged(this, point.x() - press_x_);
+    strip_->OnTabDragged(this, point.x() - press_x_, point.x());
     return true;
   }
 
@@ -564,8 +598,38 @@ class StripTab : public Segment {
     if (tone_ == Tone::kSplit) {
       return zephyrus::m3::Role(*this, kColorZephyrusOnTertiaryContainer);
     }
+    if (row_) {
+      return zephyrus::m3::Role(*this, active_
+                                           ? kColorZephyrusOnSecondaryContainer
+                                           : kColorZephyrusOnSurface);
+    }
     return zephyrus::m3::Role(*this, active_ ? kColorZephyrusOnSurface
                                              : kColorZephyrusOnSurfaceVariant);
+  }
+
+  void LayoutRow() {
+    constexpr int kPad = 12;
+    const int mid = (height() - kCloseSize) / 2;
+    int right = width() - kPad;
+    const bool show_close =
+        close_ && (active_ || IsMouseHovered() || HasFocus());
+    close_->SetVisible(show_close);
+    if (show_close) {
+      close_->SetBounds(right - kCloseSize, mid, kCloseSize, kCloseSize);
+      right -= kCloseSize + 6;
+    }
+    const bool show_audio = audio_ && audio_->wanted();
+    audio_->SetVisible(show_audio);
+    if (show_audio) {
+      audio_->SetBounds(right - kCloseSize, mid, kCloseSize, kCloseSize);
+      right -= kCloseSize + 6;
+    }
+    content_x_ = kPad;
+    const int text_x = kPad + kFaviconSize + 10;
+    label_->SetBounds(text_x, 0, std::max(0, right - text_x), height());
+    SetTooltipText(label_->IsDisplayTextTruncated()
+                       ? std::u16string(label_->GetText())
+                       : std::u16string());
   }
 
   void OnPressed(const ui::Event& event) {
@@ -575,6 +639,11 @@ class StripTab : public Segment {
       return;
     }
     strip_->ActivateTab(contents_);
+    if (row_) {
+      // The list is done with once a tab is chosen (it closes with an
+      // animation, so the row being clicked is not pulled out from under it).
+      strip_->CloseSetDropdown();
+    }
   }
 
   void Close(const ui::Event& event) { strip_->CloseTab(contents_); }
@@ -589,6 +658,8 @@ class StripTab : public Segment {
   const bool active_;
   const bool pinned_;
   const Tone tone_;
+  // A row of the set dropdown: favicon, title, trailing controls, 40dp tall.
+  const bool row_;
   gfx::ImageSkia favicon_;
   raw_ptr<views::Label> label_ = nullptr;
   raw_ptr<StripCloseButton> close_ = nullptr;
@@ -835,7 +906,6 @@ class SetPill : public views::Button, public views::TextfieldController {
         strip_(strip),
         id_(id),
         title_(title),
-        collapsed_(collapsed),
         has_active_(has_active) {
     icon_ = zephyrus::FindWorkspaceIcon(icon_key);
     if (!icon_) {
@@ -865,6 +935,14 @@ class SetPill : public views::Button, public views::TextfieldController {
   ~SetPill() override = default;
 
   const tab_groups::TabGroupId& set_id() const { return id_; }
+
+  // Whether this set's dropdown is open: the chevron points down.
+  void SetOpen(bool open) {
+    if (open_ != open) {
+      open_ = open;
+      SchedulePaint();
+    }
+  }
 
   // A tab being dragged would join this set: it is ringed.
   void SetDropHighlight(bool on) {
@@ -951,7 +1029,7 @@ class SetPill : public views::Button, public views::TextfieldController {
     canvas->Save();
     cc::PaintCanvas* const paint = canvas->sk_canvas();
     paint->translate(box.CenterPoint().x(), box.CenterPoint().y());
-    paint->rotate(collapsed_ ? -90.f : 0.f);
+    paint->rotate(open_ ? 0.f : -90.f);
     paint->translate(-kChevron / 2.f, -kChevron / 2.f);
     gfx::PaintVectorIcon(canvas, kZephyrusExpandMoreIcon, kChevron, Ink());
     canvas->Restore();
@@ -971,6 +1049,7 @@ class SetPill : public views::Button, public views::TextfieldController {
       return;
     }
     renaming_ = true;
+    strip_->CloseSetDropdown();
     strip_->SetRenameActive(true);
     editor_->SetText(title_);
     label_->SetVisible(false);
@@ -987,9 +1066,15 @@ class SetPill : public views::Button, public views::TextfieldController {
       chevron.Inset(-2);
       if (chevron.Contains(event.location())) {
         chevron_pressed_ = true;
+        pending_toggle_ = true;
         SchedulePaint();
-        strip_->ToggleSetCollapsed(id_);
         return true;
+      }
+      if (event.GetClickCount() == 1) {
+        // The whole pill is the control: it toggles on release, unless the
+        // press turns into a drag.
+        pending_toggle_ = true;
+        return views::Button::OnMousePressed(event);
       }
       if (event.GetClickCount() == 2) {
         if (event.x() < kLead + kGlyph + 3) {
@@ -1030,8 +1115,14 @@ class SetPill : public views::Button, public views::TextfieldController {
     }
     if (!dragging_) {
       views::Button::OnMouseReleased(event);
+      if (pending_toggle_ && !renaming_) {
+        pending_toggle_ = false;
+        strip_->ToggleSetDropdown(id_);
+      }
+      pending_toggle_ = false;
       return;
     }
+    pending_toggle_ = false;
     dragging_ = false;
     if (GetWidget()) {
       GetWidget()->ReleaseCapture();
@@ -1083,7 +1174,7 @@ class SetPill : public views::Button, public views::TextfieldController {
     }
   }
 
-  bool Lit() const { return has_active_ && collapsed_; }
+  bool Lit() const { return has_active_; }
 
   SkColor Ink() const {
     return zephyrus::m3::Role(*this, Lit() ? kColorZephyrusOnSecondaryContainer
@@ -1115,7 +1206,6 @@ class SetPill : public views::Button, public views::TextfieldController {
   raw_ptr<ZephyrusTabStrip> strip_;
   const tab_groups::TabGroupId id_;
   const std::u16string title_;
-  const bool collapsed_;
   const bool has_active_;
   raw_ptr<const zephyrus::WorkspaceIcon> icon_ = nullptr;
   raw_ptr<views::Label> label_ = nullptr;
@@ -1125,6 +1215,9 @@ class SetPill : public views::Button, public views::TextfieldController {
   bool drop_highlight_ = false;
   bool chevron_hovered_ = false;
   bool chevron_pressed_ = false;
+  bool open_ = false;
+  // A press that is a click (not the start of a drag) opens or closes the list.
+  bool pending_toggle_ = false;
   int press_x_ = 0;
 };
 
@@ -1148,6 +1241,314 @@ std::string KeyOf(views::View* view) {
 }
 
 }  // namespace
+
+
+constexpr int kDropdownRowHeight = 40;
+constexpr int kDropdownGap = 2;
+
+// The rows' column: full width, 2dp apart.
+class SetDropdownList : public views::View {
+  METADATA_HEADER(SetDropdownList, views::View)
+
+ public:
+  SetDropdownList() = default;
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    int h = 0;
+    for (const views::View* child : children()) {
+      if (child->GetVisible()) {
+        h += kDropdownRowHeight + kDropdownGap;
+      }
+    }
+    return gfx::Size(0, std::max(0, h - kDropdownGap));
+  }
+  void Layout(PassKey) override {
+    int y = 0;
+    for (views::View* child : children()) {
+      if (!child->GetVisible()) {
+        continue;
+      }
+      child->SetBounds(0, y, width(), kDropdownRowHeight);
+      y += kDropdownRowHeight + kDropdownGap;
+    }
+  }
+};
+
+// "New tab in set".
+class SetDropdownNewTab : public views::Button {
+  METADATA_HEADER(SetDropdownNewTab, views::Button)
+
+ public:
+  explicit SetDropdownNewTab(PressedCallback callback)
+      : views::Button(std::move(callback)) {
+    GetViewAccessibility().SetName(u"New tab in set");
+    label_ = AddChildView(std::make_unique<views::Label>(u"New tab in set"));
+    label_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelLarge));
+    label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    label_->SetAutoColorReadabilityEnabled(false);
+    label_->SetSubpixelRenderingEnabled(false);
+    label_->SetCanProcessEventsWithinSubtree(false);
+  }
+  void OnThemeChanged() override {
+    views::Button::OnThemeChanged();
+    label_->SetEnabledColor(
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant));
+  }
+  void StateChanged(ButtonState old_state) override {
+    views::Button::StateChanged(old_state);
+    SchedulePaint();
+  }
+  void Layout(PassKey) override {
+    label_->SetBounds(12 + 16 + 10, 0, std::max(0, width() - 38 - 12),
+                      height());
+  }
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (GetState() != STATE_HOVERED && GetState() != STATE_PRESSED) {
+      return;
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(zephyrus::m3::StateLayer(
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurface),
+        GetState() == STATE_PRESSED ? zephyrus::m3::kPressed
+                                    : zephyrus::m3::kHover));
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 12.f, flags);
+  }
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    canvas->Save();
+    canvas->Translate(gfx::Vector2d(12, (height() - 16) / 2));
+    gfx::PaintVectorIcon(
+        canvas, kAddIcon, 16,
+        zephyrus::m3::Role(*this, kColorZephyrusOnSurfaceVariant));
+    canvas->Restore();
+  }
+
+ private:
+  raw_ptr<views::Label> label_ = nullptr;
+};
+
+BEGIN_METADATA(SetDropdownList)
+END_METADATA
+
+BEGIN_METADATA(SetDropdownNewTab)
+END_METADATA
+
+// The list a set's pill opens over the page: its tabs as rows, and a row to
+// add a tab to it. A child of the BrowserView (above the page, like the
+// sidebar), fading and sliding in under its pill, closed by a click anywhere
+// else, Escape, or choosing a tab.
+class SetDropdown : public views::View,
+                    public ui::EventObserver,
+                    public gfx::AnimationDelegate {
+  METADATA_HEADER(SetDropdown, views::View)
+
+ public:
+  static constexpr int kRowHeight = kDropdownRowHeight;
+  static constexpr int kPad = 8;
+  static constexpr int kRadius = 16;
+  static constexpr int kSlide = 6;
+
+  SetDropdown(base::WeakPtr<ZephyrusTabStrip> strip,
+              const tab_groups::TabGroupId& id)
+      : strip_(strip), id_(id), anim_(this) {
+    GetViewAccessibility().SetRole(ax::mojom::Role::kList);
+    GetViewAccessibility().SetName(u"Tabs in set");
+    SetPaintToLayer();
+    layer()->SetFillsBoundsOpaquely(false);
+    layer()->SetOpacity(0.f);
+    scroll_ = AddChildView(std::make_unique<views::ScrollView>());
+    scroll_->SetBackgroundColor(std::nullopt);
+    scroll_->SetDrawOverflowIndicator(false);
+    // Bounded, so the list is given the viewport's width (an unbounded scroll
+    // view leaves a contents view to size itself).
+    scroll_->ClipHeightTo(0, 100000);
+    scroll_->SetHorizontalScrollBarMode(
+        views::ScrollView::ScrollBarMode::kDisabled);
+    scroll_->SetVerticalScrollBarMode(
+        views::ScrollView::ScrollBarMode::kHiddenButEnabled);
+    list_ = scroll_->SetContents(std::make_unique<SetDropdownList>());
+    footer_ = AddChildView(std::make_unique<SetDropdownNewTab>(base::BindRepeating(
+        [](base::WeakPtr<ZephyrusTabStrip> strip,
+           tab_groups::TabGroupId id, const ui::Event&) {
+          if (strip) {
+            strip->NewTabInSet(id);
+          }
+        },
+        strip_, id_)));
+    anim_.SetTweenType(gfx::Tween::EASE_OUT);
+  }
+  SetDropdown(const SetDropdown&) = delete;
+  SetDropdown& operator=(const SetDropdown&) = delete;
+  ~SetDropdown() override = default;
+
+  bool closing() const { return closing_; }
+
+  void SetRows(const std::vector<base::WeakPtr<content::WebContents>>& tabs,
+               content::WebContents* active) {
+    list_->RemoveAllChildViews();
+    for (const base::WeakPtr<content::WebContents>& wp : tabs) {
+      content::WebContents* contents = wp.get();
+      if (!contents || !strip_) {
+        continue;
+      }
+      auto row = std::make_unique<StripTab>(
+          strip_.get(), contents, contents == active, /*pinned=*/false,
+          Tone::kNormal, /*morph_in=*/false, /*row=*/true);
+      row->set_context_menu_controller(strip_.get());
+      list_->AddChildView(std::move(row));
+    }
+    list_->InvalidateLayout();
+    InvalidateLayout();
+  }
+
+  // The height the whole list wants, before it is capped to the room there is.
+  int PreferredHeight() const {
+    return list_->GetPreferredSize(views::SizeBounds()).height() + kRowHeight +
+           3 * kPad;
+  }
+
+  // Where it rests; while it opens it is offset from there.
+  void SetTargetBounds(const gfx::Rect& target) {
+    target_ = target;
+    ApplyBounds();
+  }
+
+  void Open() {
+    if (!gfx::Animation::ShouldRenderRichAnimation()) {
+      anim_.Reset(1.0);
+      ApplyBounds();
+      layer()->SetOpacity(1.f);
+      OnOpened();
+      return;
+    }
+    anim_.SetSlideDuration(base::Milliseconds(200));
+    anim_.Show();
+  }
+
+  void Close() {
+    if (closing_) {
+      return;
+    }
+    // The monitor is NOT reset here: Close() is called from inside its own
+    // callback (a press elsewhere), and closing_ already makes it inert.
+    closing_ = true;
+    shadow_.reset();
+    if (!gfx::Animation::ShouldRenderRichAnimation() ||
+        anim_.GetCurrentValue() <= 0.0) {
+      Finished();
+      return;
+    }
+    anim_.SetSlideDuration(base::Milliseconds(120));
+    anim_.Hide();
+  }
+
+  // views::View:
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh));
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()),
+                          static_cast<float>(kRadius), flags);
+  }
+
+  void Layout(PassKey) override {
+    const int w = std::max(0, width() - 2 * kPad);
+    const int footer_y = std::max(kPad, height() - kPad - kRowHeight);
+    footer_->SetBounds(kPad, footer_y, w, kRowHeight);
+    scroll_->SetBounds(kPad, kPad, w, std::max(0, footer_y - kPad - kPad));
+  }
+
+  void AddedToWidget() override {
+    views::View::AddedToWidget();
+    // Pressed anywhere else, or Escape, closes it -- observed, never consumed,
+    // so the click still reaches what it was aimed at.
+    monitor_ = views::EventMonitor::CreateWindowMonitor(
+        this, GetWidget()->GetNativeWindow(),
+        {ui::EventType::kMousePressed, ui::EventType::kKeyPressed});
+  }
+
+  // ui::EventObserver (View has its own, different, OnEvent):
+  using views::View::OnEvent;
+  void OnEvent(const ui::Event& event) override {
+    if (closing_ || !strip_) {
+      return;
+    }
+    if (event.IsKeyEvent()) {
+      if (event.AsKeyEvent()->key_code() == ui::VKEY_ESCAPE) {
+        strip_->CloseSetDropdown();
+      }
+      return;
+    }
+    if (!event.IsMouseEvent()) {
+      return;
+    }
+    const gfx::Point widget_point = event.AsLocatedEvent()->root_location();
+    gfx::Point in_me = widget_point;
+    views::View::ConvertPointFromWidget(this, &in_me);
+    if (GetLocalBounds().Contains(in_me)) {
+      return;
+    }
+    // The pill handles its own press (it toggles).
+    if (strip_->PillContainsWidgetPoint(id_, widget_point)) {
+      return;
+    }
+    strip_->CloseSetDropdown();
+  }
+
+  // gfx::AnimationDelegate:
+  void AnimationProgressed(const gfx::Animation* animation) override {
+    layer()->SetOpacity(static_cast<float>(anim_.GetCurrentValue()));
+    ApplyBounds();
+  }
+  void AnimationEnded(const gfx::Animation* animation) override {
+    if (closing_) {
+      Finished();
+    } else {
+      OnOpened();
+    }
+  }
+
+ private:
+  void ApplyBounds() {
+    const double t = anim_.GetCurrentValue();
+    gfx::Rect bounds = target_;
+    bounds.Offset(0, -static_cast<int>(std::lround(kSlide * (1.0 - t))));
+    if (bounds != this->bounds()) {
+      SetBoundsRect(bounds);
+    }
+  }
+
+  void OnOpened() {
+    if (closing_) {
+      return;
+    }
+    // At rest it has a low shadow; during the slide it would not travel with
+    // the card.
+    shadow_ = std::make_unique<views::ViewShadow>(this, 3);
+    shadow_->SetRoundedCornerRadius(kRadius);
+  }
+
+  void Finished() {
+    if (strip_) {
+      strip_->OnSetDropdownClosed();
+    }
+  }
+
+  base::WeakPtr<ZephyrusTabStrip> strip_;
+  const tab_groups::TabGroupId id_;
+  gfx::SlideAnimation anim_;
+  gfx::Rect target_;
+  bool closing_ = false;
+  raw_ptr<views::ScrollView> scroll_ = nullptr;
+  raw_ptr<views::View> list_ = nullptr;
+  raw_ptr<views::Button> footer_ = nullptr;
+  std::unique_ptr<views::EventMonitor> monitor_;
+  std::unique_ptr<views::ViewShadow> shadow_;
+};
+
+BEGIN_METADATA(SetDropdown)
+END_METADATA
+
 
 ZephyrusTabStrip::ZephyrusTabStrip(BrowserView* browser_view)
     : browser_view_(browser_view),
@@ -1220,6 +1621,7 @@ void ZephyrusTabStrip::Rebuild() {
   order_.clear();
   gap_before_.clear();
   set_spans_.clear();
+  set_tabs_.clear();
   new_tab_button_ = nullptr;
   first_flexible_ = 0;
 
@@ -1350,15 +1752,20 @@ void ZephyrusTabStrip::Rebuild() {
     }
     auto* pill = AddChildView(std::make_unique<SetPill>(
         this, id, data && !data->title().empty() ? data->title() : u"Set",
-        info.icon, info.collapsed, static_cast<int>(members.size()),
+        info.icon, /*collapsed=*/true, static_cast<int>(members.size()),
         has_active));
     pill->set_context_menu_controller(this);
     items_.push_back(pill);
-    // A closed set shows only its pill; the pill is lit when the active tab is
-    // inside it.
-    if (!info.collapsed) {
-      emit_tabs(members);
+    // A set is its pill here: the pill is lit when the active tab is inside it,
+    // and its tabs are the dropdown's (set_tabs_), never the strip's.
+    std::vector<base::WeakPtr<content::WebContents>> set_contents;
+    for (int member : members) {
+      if (content::WebContents* contents =
+              tab_strip_model_->GetWebContentsAt(member)) {
+        set_contents.push_back(contents->GetWeakPtr());
+      }
     }
+    set_tabs_.emplace_back(id, std::move(set_contents));
     set_spans_.emplace_back(begin, items_.size());
   }
   if (!loose.empty()) {
@@ -1458,6 +1865,7 @@ void ZephyrusTabStrip::Rebuild() {
   }
   InvalidateLayout();
   ScrollActiveIntoView();
+  UpdateSetDropdown();
 }
 
 void ZephyrusTabStrip::ClearGhosts() {
@@ -1821,6 +2229,7 @@ void ZephyrusTabStrip::Layout(PassKey key) {
       ghosts_[g].view->layer()->SetOpacity(static_cast<float>(1.0 - t));
     }
   }
+  PositionSetDropdown();
 }
 
 gfx::Size ZephyrusTabStrip::CalculatePreferredSize(
@@ -1849,6 +2258,8 @@ void ZephyrusTabStrip::SetOneStrip(bool on) {
     return;
   }
   one_strip_ = on;
+  RemoveSetDropdownNow();
+  dropdown_set_.reset();
   top_inset_ = on ? 0 : kTopInsetAlone;
   scroll_offset_ = 0;
   // In the title bar the strip has neighbours it must not paint over when its
@@ -1920,6 +2331,10 @@ void ZephyrusTabStrip::OnThemeChanged() {
 
 void ZephyrusTabStrip::VisibilityChanged(views::View* starting_from,
                                          bool is_visible) {
+  if (!is_visible) {
+    RemoveSetDropdownNow();
+    dropdown_set_.reset();
+  }
   if (is_visible) {
     ScheduleRebuild();
   }
@@ -2097,7 +2512,9 @@ std::optional<tab_groups::TabGroupId> SetAt(
 
 }  // namespace
 
-void ZephyrusTabStrip::OnTabDragged(views::View* tab, int x_in_strip) {
+void ZephyrusTabStrip::OnTabDragged(views::View* tab,
+                                    int x_in_strip,
+                                    int pointer_x) {
   if (!dragging_) {
     BeginDragPreview();
     if (auto* held = views::AsViewClass<StripTab>(tab)) {
@@ -2109,6 +2526,7 @@ void ZephyrusTabStrip::OnTabDragged(views::View* tab, int x_in_strip) {
   dragging_ = true;
   drag_view_ = tab;
   drag_x_ = x_in_strip;
+  drag_pointer_x_ = pointer_x;
 
   // Live reorder among the tabs it may move between: it takes the slot whose
   // neighbours' middles it has passed, and they slide to make room.
@@ -2148,7 +2566,7 @@ void ZephyrusTabStrip::OnTabDragged(views::View* tab, int x_in_strip) {
   }
   // Over another set: it lights, and letting go adds the tab to it.
   std::optional<tab_groups::TabGroupId> over =
-      SetAt(x_in_strip + tab->width() / 2, items_, set_spans_, targets_);
+      SetAt(pointer_x, items_, set_spans_, targets_);
   if (over) {
     if (auto* strip_tab = views::AsViewClass<StripTab>(tab)) {
       const int index = strip_tab->contents()
@@ -2162,6 +2580,13 @@ void ZephyrusTabStrip::OnTabDragged(views::View* tab, int x_in_strip) {
     }
   }
   SetDropHighlight(over);
+  // Over a set's pill, the pill is lifted above the held tab so its ring shows;
+  // otherwise the held tab is on top again.
+  if (over && PillFor(*over)) {
+    ReorderChildView(PillFor(*over), children().size() - 1);
+  } else {
+    ReorderChildView(tab, children().size() - 1);
+  }
   InvalidateLayout();
 }
 
@@ -2259,7 +2684,7 @@ void ZephyrusTabStrip::OnTabDragEnded(
   // The slot the pointer ended over: the flexible item whose centre is
   // nearest the dragged tab's centre. Model indices, not view indices, since
   // the strip shows only this workspace's slice of the model.
-  const int drop_center = drag_x_ + tab->width() / 2;
+  const int drop_center = drag_pointer_x_;
   SetDropHighlight(std::nullopt);
   // The tab eases into its place from where it was let go.
   SlideFromCurrent(/*include_held=*/true);
@@ -2352,6 +2777,11 @@ void ZephyrusTabStrip::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
+  // Another tab came to the front (a key, a click elsewhere): the list is
+  // done with.
+  if (selection.active_tab_changed()) {
+    CloseSetDropdown();
+  }
   ScheduleRebuild();
 }
 
@@ -2384,6 +2814,154 @@ void ZephyrusTabStrip::TabGroupedStateChanged(
 
 void ZephyrusTabStrip::OnTabGroupChanged(const TabGroupChange& change) {
   ScheduleRebuild();
+}
+
+
+views::View* ZephyrusTabStrip::PillFor(const tab_groups::TabGroupId& id) const {
+  for (views::View* item : items_) {
+    if (auto* pill = views::AsViewClass<SetPill>(item);
+        pill && pill->set_id() == id) {
+      return pill;
+    }
+  }
+  return nullptr;
+}
+
+const std::vector<base::WeakPtr<content::WebContents>>*
+ZephyrusTabStrip::TabsInSet(const tab_groups::TabGroupId& id) const {
+  for (const auto& entry : set_tabs_) {
+    if (entry.first == id) {
+      return &entry.second;
+    }
+  }
+  return nullptr;
+}
+
+bool ZephyrusTabStrip::PillContainsWidgetPoint(
+    const tab_groups::TabGroupId& id,
+    const gfx::Point& point) const {
+  const views::View* pill = PillFor(id);
+  if (!pill) {
+    return false;
+  }
+  gfx::Point local = point;
+  views::View::ConvertPointFromWidget(pill, &local);
+  return pill->GetLocalBounds().Contains(local);
+}
+
+void ZephyrusTabStrip::NewTabInSet(const tab_groups::TabGroupId& id) {
+  if (ZephyrusSidebarView* sidebar = FindZephyrusSidebar(browser_view_)) {
+    sidebar->NewTabInSet(id);
+  }
+  CloseSetDropdown();
+}
+
+void ZephyrusTabStrip::UpdatePillsOpen() {
+  for (views::View* item : items_) {
+    if (auto* pill = views::AsViewClass<SetPill>(item)) {
+      pill->SetOpen(dropdown_set_ && pill->set_id() == *dropdown_set_);
+    }
+  }
+}
+
+void ZephyrusTabStrip::ToggleSetDropdown(const tab_groups::TabGroupId& id) {
+  if (dropdown_set_ && *dropdown_set_ == id) {
+    CloseSetDropdown();
+  } else {
+    OpenSetDropdown(id);
+  }
+}
+
+void ZephyrusTabStrip::OpenSetDropdown(const tab_groups::TabGroupId& id) {
+  RemoveSetDropdownNow();
+  const auto* tabs = TabsInSet(id);
+  if (!tabs || tabs->empty() || !GetWidget()) {
+    dropdown_set_.reset();
+    UpdatePillsOpen();
+    return;
+  }
+  dropdown_set_ = id;
+  auto dropdown = std::make_unique<SetDropdown>(weak_factory_.GetWeakPtr(), id);
+  dropdown->SetRows(*tabs, tab_strip_model_->GetActiveWebContents());
+  dropdown_ = browser_view_->AddChildView(std::move(dropdown));
+  UpdatePillsOpen();
+  PositionSetDropdown();
+  static_cast<SetDropdown*>(dropdown_.get())->Open();
+}
+
+void ZephyrusTabStrip::CloseSetDropdown() {
+  if (dropdown_) {
+    static_cast<SetDropdown*>(dropdown_.get())->Close();
+  }
+  dropdown_set_.reset();
+  UpdatePillsOpen();
+}
+
+void ZephyrusTabStrip::OnSetDropdownClosed() {
+  // Removed on a posted task: this is called from inside the dropdown's own
+  // animation.
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+                     [](base::WeakPtr<ZephyrusTabStrip> strip) {
+                       // Only a dropdown that is closing and unwanted: one that
+                       // was opened again meanwhile is left alone.
+                       if (strip && !strip->dropdown_set_) {
+                         strip->RemoveSetDropdownNow();
+                       }
+                     },
+                     weak_factory_.GetWeakPtr()));
+}
+
+void ZephyrusTabStrip::RemoveSetDropdownNow() {
+  if (!dropdown_) {
+    return;
+  }
+  views::View* const dropdown = dropdown_;
+  dropdown_ = nullptr;
+  if (dropdown->parent()) {
+    dropdown->parent()->RemoveChildViewT(dropdown);
+  }
+}
+
+void ZephyrusTabStrip::UpdateSetDropdown() {
+  UpdatePillsOpen();
+  if (!dropdown_ || !dropdown_set_) {
+    return;
+  }
+  const auto* tabs = TabsInSet(*dropdown_set_);
+  if (!tabs || tabs->empty()) {
+    CloseSetDropdown();
+    return;
+  }
+  auto* dropdown = static_cast<SetDropdown*>(dropdown_.get());
+  dropdown->SetRows(*tabs, tab_strip_model_->GetActiveWebContents());
+  PositionSetDropdown();
+}
+
+void ZephyrusTabStrip::PositionSetDropdown() {
+  if (!dropdown_ || !dropdown_set_ || !browser_view_) {
+    return;
+  }
+  const views::View* pill = PillFor(*dropdown_set_);
+  if (!pill) {
+    CloseSetDropdown();
+    return;
+  }
+  auto* dropdown = static_cast<SetDropdown*>(dropdown_.get());
+  const gfx::Rect anchor = views::View::ConvertRectToTarget(
+      pill, browser_view_, pill->GetLocalBounds());
+  constexpr int kWidth = 300;
+  constexpr int kMargin = 8;
+  const int width = std::clamp(kWidth, 200, std::max(200, browser_view_->width() -
+                                                          2 * kMargin));
+  const int x = std::clamp(anchor.x(), kMargin,
+                           std::max(kMargin, browser_view_->width() - width -
+                                                 kMargin));
+  const int y = anchor.bottom() + 6;
+  const int room = std::max(SetDropdown::kRowHeight + 3 * SetDropdown::kPad,
+                            browser_view_->height() - y - 16);
+  dropdown->SetTargetBounds(
+      gfx::Rect(x, y, width, std::min(dropdown->PreferredHeight(), room)));
 }
 
 void ZephyrusTabStrip::ToggleSetCollapsed(const tab_groups::TabGroupId& id) {

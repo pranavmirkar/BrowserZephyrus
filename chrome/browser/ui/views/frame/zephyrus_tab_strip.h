@@ -99,9 +99,27 @@ class ZephyrusTabStrip : public views::View,
   void BreakSplit(split_tabs::SplitTabId split_id);
   void NewTab();
 
+  // SETS in the horizontal layout are a pill, not a run of tabs: the pill opens
+  // a DROPDOWN LIST of the set's tabs over the page, so the strip stays as
+  // short as it is without sets.
+  void ToggleSetDropdown(const tab_groups::TabGroupId& id);
+  void CloseSetDropdown();
+  void NewTabInSet(const tab_groups::TabGroupId& id);
+  // The tabs of a set, in order, as last built; null for an unknown set.
+  const std::vector<base::WeakPtr<content::WebContents>>* TabsInSet(
+      const tab_groups::TabGroupId& id) const;
+  // Whether a point (in widget coordinates) is on that set's pill: a press there
+  // is the pill's to handle, not an "outside" click.
+  bool PillContainsWidgetPoint(const tab_groups::TabGroupId& id,
+                               const gfx::Point& point) const;
+  // The dropdown has finished closing; it is removed on a posted task.
+  void OnSetDropdownClosed();
+
   // Drag to reorder: the dragged view follows the pointer, and the model moves
   // once, on release.
-  void OnTabDragged(views::View* tab, int x_in_strip);
+  // `pointer_x` is where the pointer is: a set is hit by the POINTER, since the
+  // held tab is wide and its middle is rarely over a small pill.
+  void OnTabDragged(views::View* tab, int x_in_strip, int pointer_x);
   void OnTabDragEnded(views::View* tab,
                       base::WeakPtr<content::WebContents> contents);
   // The same for a set's pill: the set (its tabs with it) follows the pointer,
@@ -206,6 +224,12 @@ class ZephyrusTabStrip : public views::View,
 
   void ScheduleRebuild();
   void Rebuild();
+  void OpenSetDropdown(const tab_groups::TabGroupId& id);
+  void UpdateSetDropdown();
+  void PositionSetDropdown();
+  void RemoveSetDropdownNow();
+  void UpdatePillsOpen();
+  views::View* PillFor(const tab_groups::TabGroupId& id) const;
   // Keeps the active tab inside the visible span after a rebuild or resize.
   void ScrollActiveIntoView();
   int ContentWidth() const;
@@ -240,6 +264,12 @@ class ZephyrusTabStrip : public views::View,
   bool ignore_anim_end_ = false;
 
   int scroll_offset_ = 0;
+  // The open set and its dropdown (a child of the BrowserView, above the page).
+  std::optional<tab_groups::TabGroupId> dropdown_set_;
+  raw_ptr<views::View> dropdown_ = nullptr;
+  std::vector<std::pair<tab_groups::TabGroupId,
+                        std::vector<base::WeakPtr<content::WebContents>>>>
+      set_tabs_;
   bool one_strip_ = false;
   int top_inset_ = kTopInsetAlone;
   bool rebuild_pending_ = false;
@@ -248,6 +278,7 @@ class ZephyrusTabStrip : public views::View,
   bool rename_active_ = false;
   raw_ptr<views::View> drag_view_ = nullptr;
   int drag_x_ = 0;
+  int drag_pointer_x_ = 0;
   // While a pill is dragged: its set's items, which move with it.
   std::pair<size_t, size_t> drag_span_ = {0, 0};
 
