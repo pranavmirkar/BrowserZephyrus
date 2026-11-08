@@ -63,6 +63,11 @@ ZephyrusEnginePill::ZephyrusEnginePill(Profile* profile)
   SetBorder(views::CreateEmptyBorder(gfx::Insets()));
   SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
   SetImageCentered(true);
+  // The mark sits in the middle of the circle. LabelButton only centres an
+  // image under ALIGN_CENTER (its default places it at the leading edge), and
+  // the hover circle below is drawn about the view's centre: with the mark 2dp
+  // to the left of it the circle was off-centre around the icon.
+  SetHorizontalAlignment(gfx::ALIGN_CENTER);
   // A round target for the focus ring: the state layer painted below is a
   // circle, and a square highlight would show at its corners.
   views::InstallCircleHighlightPathGenerator(this);

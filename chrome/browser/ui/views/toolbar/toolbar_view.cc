@@ -3855,6 +3855,30 @@ bool ToolbarView::GetZephyrusButtonShape(const views::View* button,
         const gfx::Rect bounds = views::View::ConvertRectToTarget(
             button, this, button->GetLocalBounds());
         shape->offset(-bounds.x(), -bounds.y());
+        // The shape is drawn into the button's own layer, which stops at the
+        // button's bounds. A narrow button (24dp wide in a 26dp container) had
+        // the shape widened past them, so its hover circle came out with both
+        // sides sliced flat -- an oval 36 wide and 39 tall at 150%. Where the
+        // shape would leave the button, it is the largest circle that fits,
+        // about the same centre: round, and centred on the glyph.
+        const SkRect local = SkRect::MakeWH(button->width(), button->height());
+        const SkRect rect = shape->rect();
+        if (rect.left() < local.left() - 0.5f ||
+            rect.right() > local.right() + 0.5f ||
+            rect.top() < local.top() - 0.5f ||
+            rect.bottom() > local.bottom() + 0.5f) {
+          const float side = std::min({rect.width(), rect.height(),
+                                       local.width(), local.height()});
+          const float radius =
+              std::min(shape->getSimpleRadii().x(), side / 2.f);
+          const float cx = local.centerX();
+          const float cy = std::clamp(rect.centerY(), side / 2.f,
+                                      std::max(side / 2.f,
+                                               local.height() - side / 2.f));
+          *shape = SkRRect::MakeRectXY(
+              SkRect::MakeXYWH(cx - side / 2.f, cy - side / 2.f, side, side),
+              radius, radius);
+        }
         return true;
       }
     }
