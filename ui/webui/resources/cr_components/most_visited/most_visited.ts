@@ -408,6 +408,10 @@ export class MostVisitedElement extends MostVisitedElementBase {
     super.updated(changedProperties);
 
     this.maxVisibleTiles_ = this.computeMaxVisibleTiles_();
+    if ((changedProperties as Map<PropertyKey, unknown>).has('reordering_') &&
+        !this.reordering_) {
+      this.releaseDockSize_();
+    }
     this.notifyDock_();
 
     const changedPrivateProperties =
@@ -459,6 +463,18 @@ export class MostVisitedElement extends MostVisitedElementBase {
         window.innerHeight - 2 * DOCK_EDGE - 16 :
         (window.innerWidth - 420) / 2 - DOCK_GAP - DOCK_EDGE - 16;
     return Math.max(3, Math.min(11, Math.floor(room / DOCK_TILE_PITCH)));
+  }
+
+  private holdDockSize_() {
+    const container = this.$.container;
+    const rect = container.getBoundingClientRect();
+    container.style.width = `${rect.width}px`;
+    container.style.height = `${rect.height}px`;
+  }
+
+  private releaseDockSize_() {
+    this.$.container.style.width = '';
+    this.$.container.style.height = '';
   }
 
   private lastDockNotice_: string = '';
@@ -786,6 +802,10 @@ export class MostVisitedElement extends MostVisitedElementBase {
     // Get all the rects first before setting the absolute positions.
     const allRects = visibleElements.map(t => t.getBoundingClientRect());
     this.tileRects_ = allRects.slice(0, numTiles);
+    // Zephyrus: the tiles are about to leave the dock's flow, which would
+    // shrink it, and the search pill laid out against it would slide over the
+    // tiles being dragged. Hold its size until the drag is over.
+    this.holdDockSize_();
 
     visibleElements.forEach((el, i) => {
       setTilePosition(el, allRects[i]!);

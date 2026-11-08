@@ -579,7 +579,7 @@ ntp-lens-upload-dialog {
   --z-ease: 300ms cubic-bezier(0.2, 0, 0, 1);
   --z-edge: 16px;
   --z-gap: 12px;
-  --z-search-h: 48px;
+  --z-search-h: 72px;
   --z-search-open-w: clamp(
       320px,
       calc(100vw - 2 * (var(--zd-w, 0px) + var(--z-gap) + var(--z-edge))),
@@ -649,10 +649,15 @@ ntp-lens-upload-dialog {
   --color-searchbox-search-icon-background: var(--z-ink-dim);
   --color-searchbox-dropdown-divider:
       color-mix(in srgb, var(--z-ink) 12%, transparent);
-  --cr-searchbox-border-radius: 8px;
-  --cr-searchbox-font-size: 14px;
+  --cr-searchbox-border-radius: 24px;
+  --cr-searchbox-font-size: 16px;
   --cr-searchbox-height: var(--z-search-h);
-  --cr-searchbox-icon-left-position: 14px;
+  --cr-searchbox-icon-left-position: 26px;
+  --cr-searchbox-match-end-radius: 18px;
+  --cr-searchbox-match-margin-inline-end: 4px;
+  --cr-searchbox-match-margin-inline-start: 4px;
+  --cr-searchbox-match-start-radius: 18px;
+  --color-searchbox-results-focus-indicator: transparent;
   --cr-searchbox-shadow: none;
   --cr-searchbox-width: var(--z-search-w);
   --z-base: var(--color-new-tab-page-background, #3c3c3c);

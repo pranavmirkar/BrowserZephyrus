@@ -418,3 +418,43 @@ cr-searchbox-dropdown::part(dropdown-content) {
 :host([dropup][ntp-realbox-next-enabled]) .dropdownContainer {
   border-radius: var(--cr-searchbox-border-radius) var(--cr-searchbox-border-radius) 0 0;
 }
+
+/* ===== Zephyrus: beside the dock, the field is the dock's glass. ==========
+ * The field is a glass rounded rectangle like the dock (the same fill, edge
+ * and lift). The suggestions are a card of their own under it, the omnibox's:
+ * a tonal surface, rows that are pills inset 4px, the selection a state layer
+ * and not a stripe. */
+:host([zdock]) #inputWrapper {
+  background: transparent;
+  box-shadow: none;
+}
+
+:host([zdock]) cr-searchbox-input {
+  backdrop-filter: blur(24px) saturate(150%);
+  background: color-mix(
+      in srgb, var(--color-sys-surface3, #2b2b30) 78%, transparent);
+  border: 1px solid color-mix(
+      in srgb, var(--color-sys-outline, #c4c6d0) 40%, transparent);
+  border-radius: var(--cr-searchbox-border-radius);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.24), 0 1px 3px rgba(0, 0, 0, 0.18);
+  box-sizing: border-box;
+  flex: none;
+  height: var(--cr-searchbox-height);
+}
+
+:host([zdock]) .dropdownContainer {
+  margin-top: 6px;
+}
+
+:host([zdock][dropup]) .dropdownContainer {
+  margin-bottom: 6px;
+  margin-top: 0;
+}
+
+:host([zdock]) cr-searchbox-dropdown::part(dropdown-content) {
+  background-color: var(--color-searchbox-results-background);
+  border-radius: 22px;
+  box-shadow: none;
+  padding-bottom: 4px;
+  padding-top: 4px;
+}

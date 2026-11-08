@@ -64,6 +64,7 @@ import {SubmitButtonIconType} from '//resources/cr_components/composebox/compose
         .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled_}"
         .contextManagementInComposeboxEnabled="${this.contextManagementInComposeboxEnabled_}"
         ?multi-line-enabled="${this.multiLineEnabled_}"
+        ?zdock="${!!this.zDock_}"
         ?zcompact="${!!this.zDock_ && !this.zSearchOpen_}"
         ?dropup="${this.zDock_ === 'bottom'}"
         ?inert="${!this.realboxShown_}">
