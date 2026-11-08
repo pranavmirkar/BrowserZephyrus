@@ -226,8 +226,6 @@ const PrefsUtil::TypedPrefMap& PrefsUtil::GetAllowlistedKeys() {
   // it still has to be allowlisted here or the toggle silently reads as unset.
   (*s_allowlist)["zephyrus.privacy.auto_reset_ids"] =
       settings_api::PrefType::kBoolean;
-  (*s_allowlist)["zephyrus.appearance.m3_containers"] =
-      settings_api::PrefType::kBoolean;
   // Zephyrus Shield DNS (threat protection). Local state, like the pref above.
   (*s_allowlist)["zephyrus.threat.shield_dns"] =
       settings_api::PrefType::kBoolean;

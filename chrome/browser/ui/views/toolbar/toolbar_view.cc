@@ -3369,7 +3369,8 @@ class ZephyrusDialogButton : public views::LabelButton {
   // The container fill for the current state. Split out because the morph
   // repaints the background too and the two must not disagree about colour.
   SkColor FillColor() const {
-    constexpr SkAlpha kContainer = 0x14;  // resting tonal fill
+    // No resting container: bare at rest, a state layer under the pointer.
+    constexpr SkAlpha kContainer = 0;
     const ButtonState state = GetState();
     SkAlpha alpha = kContainer;
     if (state == STATE_PRESSED) {

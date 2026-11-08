@@ -227,12 +227,6 @@ export function getHtml(this: SettingsAppearancePageElement) {
         ?hidden="${this.showOrganizerPanelEnabled_}">
     </settings-toggle-button>
 
-    <settings-toggle-button class="hr" id="zephyrusM3Containers"
-        pref-key="zephyrus.appearance.m3_containers"
-        label="$i18n{zephyrusM3ContainersLabel}"
-        sub-label="$i18n{zephyrusM3ContainersSubLabel}">
-    </settings-toggle-button>
-
     ${this.showCtrlTabMru_ ? html`
       <settings-toggle-button class="hr" id="ctrlTabMru"
           pref-key="browser.ctrl_tab_mru"

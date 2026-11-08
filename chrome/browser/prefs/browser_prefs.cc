@@ -1904,11 +1904,6 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   // sidebar (the default -- zephyrus::kDefaultUiLayout). Mirrored by
   // zephyrus::kUiLayoutPref / zephyrus::UiLayout; read clamped.
   registry->RegisterIntegerPref("zephyrus.ui_layout", 2);
-  // Whether the title-bar controls (back/forward/reload/new tab and the window
-  // buttons) sit in tonal Material 3 containers. Appearance settings toggle;
-  // ToolbarView observes it and repaints live. Literal for the layering reason
-  // above; mirrored by kZephyrusContainersPref in toolbar_view.cc.
-  registry->RegisterBooleanPref("zephyrus.appearance.m3_containers", true);
   // Sets (tab groups): each one's icon, whether it is pinned to the top and
   // whether it is closed, keyed by the group's token; and the order the user
   // keeps them in. Literals, as above.

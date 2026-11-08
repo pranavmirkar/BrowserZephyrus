@@ -378,12 +378,6 @@ class ZephyrusSidebarView : public views::View,
   raw_ptr<views::View> compact_chrome_ = nullptr;
   raw_ptr<views::View> compact_address_row_ = nullptr;
   raw_ptr<views::View> compact_controls_row_ = nullptr;
-  // Settings > Appearance > "containers" (zephyrus.appearance.m3_containers):
-  // the compact control row, the tab and favourite rows and the New tab button
-  // follow it as the title bar does.
-  PrefChangeRegistrar containers_pref_;
-  bool ContainersOn() const;
-  void OnContainersChanged();
   raw_ptr<views::View> compact_hidden_ = nullptr;
   // The workspace switcher's place at the foot of the panel.
   raw_ptr<views::View> compact_workspaces_ = nullptr;
