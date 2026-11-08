@@ -607,18 +607,22 @@ class ZephyrusActionRow : public views::LabelButton {
     SchedulePaint();
   }
 
-  // Bare at rest, as the tab rows are: only hover and press fill, as a whole
-  // pill.
+  // A filled segment in every state, like the tab rows below it: two lists in
+  // one column must not use two different shapes.
   void OnPaintBackground(gfx::Canvas* canvas) override {
     const bool pressed = GetState() == views::Button::STATE_PRESSED;
     const bool hovered = GetState() == views::Button::STATE_HOVERED;
-    if (pressed || hovered) {
-      PaintSegment(canvas, GetLocalBounds(),
-                   zephyrus::m3::StateLayer(
-                       foreground_, pressed ? zephyrus::m3::kPressed
-                                            : zephyrus::m3::kHover),
-                   true, true);
+    const SkColor container =
+        zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
+    SkColor fill = container;
+    if (pressed) {
+      fill = zephyrus::m3::WithStateLayer(container, foreground_,
+                                          zephyrus::m3::kPressed);
+    } else if (hovered) {
+      fill = zephyrus::m3::WithStateLayer(container, foreground_,
+                                          zephyrus::m3::kHover);
     }
+    PaintSegment(canvas, GetLocalBounds(), fill, first_in_run_, last_in_run_);
   }
 
   // The tab rows' height: two segmented lists in one column, one metric.
@@ -2615,11 +2619,7 @@ class ZephyrusTabRow : public views::Button {
     } else {
       fill = colors_.idle_bg;
     }
-    // A bare row at rest, and any fill a whole pill (an M3 navigation-drawer
-    // item): there is no run to be a segment of. idle_bg is transparent.
-    if (SkColorGetA(fill) != SK_AlphaTRANSPARENT) {
-      PaintSegment(canvas, GetLocalBounds(), fill, true, true);
-    }
+    PaintSegment(canvas, GetLocalBounds(), fill, first_in_run_, last_in_run_);
   }
 
   void UpdateBackground() {
@@ -5194,16 +5194,22 @@ void ZephyrusSidebarView::RebuildTabList() {
   // secondary-container, fully rounded. It replaced both the inversion and the
   // accent bar that briefly stood in for it -- a filled pill and a separate
   // marker were the same statement made twice.
-  // No tonal container behind the rows: idle rows are bare, and hover, press
-  // and the active row are each a whole pill of their own.
+  // The TAB rows are the settings rail's segmented tonal cards. (Only the
+  // controls around them -- the control row, the New tab button -- are bare.)
   const SkColor on_surface = zephyrus::m3::Role(*this, kColorZephyrusOnSurface);
+  const SkColor row_container =
+      zephyrus::m3::Role(*this, kColorZephyrusSurfaceContainerHigh);
   const ZephyrusRowColors row_colors{
       .foreground = fg,
-      .idle_bg = SK_ColorTRANSPARENT,
+      // One step ABOVE the panel, which already paints surface-container:
+      // a segment filled with its own background is an invisible segment
+      // (measured -- rows and panel came out at exactly 31,32,32).
+      .idle_bg = row_container,
       .active_bg = zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
-      .hover_bg = zephyrus::m3::StateLayer(on_surface, zephyrus::m3::kHover),
-      .pressed_bg =
-          zephyrus::m3::StateLayer(on_surface, zephyrus::m3::kPressed),
+      .hover_bg = zephyrus::m3::WithStateLayer(row_container, on_surface,
+                                               zephyrus::m3::kHover),
+      .pressed_bg = zephyrus::m3::WithStateLayer(row_container, on_surface,
+                                                 zephyrus::m3::kPressed),
       .active_pressed_bg = zephyrus::m3::WithStateLayer(
           zephyrus::m3::Role(*this, kColorZephyrusSecondaryContainer),
           zephyrus::m3::Role(*this, kColorZephyrusOnSecondaryContainer),
