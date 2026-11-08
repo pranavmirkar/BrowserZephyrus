@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/webui/cr_components/most_visited/most_visited_handler.h"
 #include "chrome/browser/ui/webui/cr_components/most_visited/zephyrus_most_visited_filter.h"
 
+#include <algorithm>
 #include <map>
 #include <vector>
 
@@ -447,6 +448,9 @@ void MostVisitedHandler::OnURLsAvailable(
   result->enterprise_shortcuts_enabled =
       most_visited_sites_->IsEnterpriseShortcutsEnabled();
   result->visible = most_visited_sites_->IsShortcutsVisible();
+  result->dock_position = std::clamp(
+      profile_->GetPrefs()->GetInteger(ntp_prefs::kNtpZephyrusDockPosition), 0,
+      4);
   page_->SetMostVisitedInfo(std::move(result));
 }
 
