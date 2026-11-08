@@ -386,9 +386,9 @@ cr-toast-manager {
 }
 
 /* ===== Zephyrus: the shortcuts are a dock. ================================
- * One line of icon tiles on a Material 3 surface-container pill. The dock sits
- * under the search box ("middle") or is pinned to an edge of the page; the
- * browser's Customize panel picks which. The tile's name is a tooltip, not a
+ * One line of icon tiles on a Material 3 surface-container pill. The page
+ * positions it (middle, top, bottom, left or right of the page, beside the
+ * search pill); the browser's Customize panel picks which. The tile's name is a tooltip, not a
  * caption. The glass is a pseudo-element: a backdrop-filter on #container
  * itself would make it the containing block of the fixed-position tile that
  * is being dragged. */
@@ -420,32 +420,14 @@ cr-toast-manager {
 :host([dock_=right]) #container {
   flex-direction: column;
   height: fit-content;
-  margin: auto 0;
+  margin: 0;
   width: auto;
 }
 
-:host([dock_=top]) #container,
-:host([dock_=bottom]) #container,
-:host([dock_=left]) #container,
-:host([dock_=right]) #container {
-  position: fixed;
-  z-index: 5;
-}
-
-:host([dock_=top]) #container {
-  inset: var(--dock-edge) 0 auto 0;
-}
-
-:host([dock_=bottom]) #container {
-  inset: auto 0 var(--dock-edge) 0;
-}
-
-:host([dock_=left]) #container {
-  inset: 0 auto 0 var(--dock-edge);
-}
-
-:host([dock_=right]) #container {
-  inset: 0 var(--dock-edge) 0 auto;
+/* The page (the NTP app) places the dock beside the search pill; the dock
+ * itself is only a line of tiles. */
+:host([dock_]) #container {
+  margin: 0;
 }
 
 .tile,

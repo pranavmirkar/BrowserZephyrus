@@ -385,3 +385,36 @@ cr-searchbox-dropdown::part(dropdown-content) {
 :host-context([webui-rounded-icons]):host([use-webkit-search-icons_]) #voiceSearchButton {
   -webkit-mask-image: url(//resources/cr_components/searchbox/icons/mic.svg);
 }
+
+/* ===== Zephyrus: the search pill (see app.css). =========================== */
+:host([zcompact]) {
+  cursor: pointer;
+  overflow: hidden;
+}
+
+:host([zcompact]) cr-searchbox-input::part(searchbox-input) {
+  opacity: 0;
+}
+
+:host([zcompact]) .searchbox-icon-button-container,
+:host([zcompact]) .contextualEntrypointContainer,
+:host([zcompact]) cr-searchbox-compose-button {
+  display: none;
+}
+
+/* A dock along the bottom: the suggestions open upward. */
+:host([dropup]) {
+  position: relative;
+}
+
+:host([dropup]) #inputWrapper {
+  bottom: 0;
+  flex-direction: column-reverse;
+  left: 0;
+  position: absolute;
+}
+
+:host([dropup]) .dropdownContainer,
+:host([dropup][ntp-realbox-next-enabled]) .dropdownContainer {
+  border-radius: var(--cr-searchbox-border-radius) var(--cr-searchbox-border-radius) 0 0;
+}

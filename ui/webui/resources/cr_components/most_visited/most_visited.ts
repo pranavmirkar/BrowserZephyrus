@@ -38,6 +38,9 @@ import {MostVisitedWindowProxy} from './window_proxy.js';
 const DOCK_POSITIONS = ['middle', 'top', 'bottom', 'left', 'right'];
 // The dock's tile pitch: the 56px tile and the 4px gap.
 const DOCK_TILE_PITCH = 60;
+// The dock's distance from the page's edge, and from the search pill.
+const DOCK_EDGE = 16;
+const DOCK_GAP = 12;
 
 function resetTilePosition(tile: HTMLElement) {
   tile.style.position = '';
@@ -393,6 +396,7 @@ export class MostVisitedElement extends MostVisitedElementBase {
   }
 
   override firstUpdated() {
+    new ResizeObserver(() => this.notifyDock_()).observe(this.$.container);
     this.boundOnDocumentKeyDown_ = e => this.onDocumentKeyDown_(e);
     this.ownerDocument.addEventListener(
         'keydown', this.boundOnDocumentKeyDown_);
@@ -404,6 +408,7 @@ export class MostVisitedElement extends MostVisitedElementBase {
     super.updated(changedProperties);
 
     this.maxVisibleTiles_ = this.computeMaxVisibleTiles_();
+    this.notifyDock_();
 
     const changedPrivateProperties =
         changedProperties as Map<PropertyKey, unknown>;
@@ -446,9 +451,33 @@ export class MostVisitedElement extends MostVisitedElementBase {
    * the limit is the room along that line, not the stock column media queries.
    */
   private computeDockCapacity_(): number {
-    const room = this.isVerticalDock_() ? window.innerHeight - 64 :
-                                          window.innerWidth - 200;
+    // A row of tiles shares the line with the search pill: when the pill opens
+    // it is centered on the page and the dock is pushed to its left, so the
+    // dock must fit in what is left of half the page (the pill is at least
+    // 420px wide). A column has the page's whole height.
+    const room = this.isVerticalDock_() ?
+        window.innerHeight - 2 * DOCK_EDGE - 16 :
+        (window.innerWidth - 420) / 2 - DOCK_GAP - DOCK_EDGE - 16;
     return Math.max(3, Math.min(11, Math.floor(room / DOCK_TILE_PITCH)));
+  }
+
+  private lastDockNotice_: string = '';
+
+  /**
+   * Zephyrus: tells the page where the dock is, whether it is showing and how
+   * big it is: the page lays the search pill out against it.
+   */
+  private notifyDock_() {
+    const container = this.$.container;
+    const width = container.offsetWidth;
+    const height = container.offsetHeight;
+    const visible = this.visible_ && width > 0;
+    const notice = `${this.dock_}|${visible}|${width}|${height}`;
+    if (notice === this.lastDockNotice_) {
+      return;
+    }
+    this.lastDockNotice_ = notice;
+    this.fire('dock-changed', {position: this.dock_, visible, width, height});
   }
 
   /** Zephyrus: the number of tiles in the dock, the add tile included. */
