@@ -912,7 +912,8 @@ class SetPill : public views::Button, public views::TextfieldController {
       icon_ = zephyrus::FindWorkspaceIcon(std::string_view("files"));
     }
     label_ = AddChildView(std::make_unique<views::Label>(
-        collapsed ? title + u"  " + base::NumberToString16(count) : title));
+        collapsed ? title + u" · " + base::NumberToString16(count)
+                  : title));
     label_->SetFontList(zephyrus::m3::Font(zephyrus::m3::Type::kLabelMedium));
     label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label_->SetElideBehavior(gfx::ELIDE_TAIL);
