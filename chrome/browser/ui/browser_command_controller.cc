@@ -1232,6 +1232,11 @@ void BrowserCommandController::HandleCommandWithDisposition(
       break;
     case IDC_FOCUS_LOCATION:
       if (!window()->IsLocationBarVisible()) {
+        // Zephyrus: the address bar lives on the title bar, and a hidden title
+        // bar takes it out of sight. The window brings the bar out and focuses
+        // the address once it is on screen; a window with no location bar at
+        // all does nothing, as before.
+        window()->SetFocusToLocationBar(/*is_user_initiated=*/true);
         break;
       }
       base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));

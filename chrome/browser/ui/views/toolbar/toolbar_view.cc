@@ -2241,42 +2241,6 @@ void ToolbarView::Layout(PassKey) {
         right -= kZephyrusCaptionCell + kZephyrusGap;
       }
     }
-    // While the page controls are lent to the sidebar, what is left on the bar
-    // is the pin button and the user's own containers, and the flex layout has
-    // nothing to lay them out against, so they are placed here: pin first,
-    // then the containers, running leftwards from the window controls.
-    if (zephyrus_compact_) {
-      if (zephyrus_pin_button_ && zephyrus_pin_button_->GetVisible()) {
-        zephyrus_pin_button_->SetBounds(right - kZephyrusCaptionCell, 0,
-                                        kZephyrusCaptionCell, height());
-        right -= kZephyrusCaptionCell;
-      }
-      // The user's containers stand CLEAR of the window controls rather than
-      // beside them at a seam's distance. A pinned action and a close button
-      // are not the same kind of control, and a gap wider than kZephyrusMaxJoin
-      // is what tells the group painter to draw them as separate runs -- at
-      // kZephyrusGap it drew one control's container overlapping the next.
-      constexpr int kCompactGroupGap = kZephyrusMaxJoin + 2;
-      bool leading = true;
-      for (views::View* child : children()) {
-        if (!views::AsViewClass<ToolbarIconContainerView>(child) ||
-            !child->GetVisible()) {
-          continue;
-        }
-        right -= leading ? kCompactGroupGap : kZephyrusGap;
-        leading = false;
-        const gfx::Size size = child->GetPreferredSize();
-        // PREFERRED height, centred in the bar -- not the bar's full height.
-        // Stretched, the container top-aligns the button inside it, and the
-        // group painter centres each container on its CONTROL: the button rode
-        // high, so its container did too, and the bar's top edge clipped it.
-        const int container_height = std::min(height(), size.height());
-        child->SetBounds(right - size.width(),
-                         (height() - container_height) / 2, size.width(),
-                         container_height);
-        right -= size.width();
-      }
-    }
     // The caption separator is GONE. It existed to divide the window controls
     // from the toolbar actions; the two are now separate connected groups, and
     // the gap between the groups says the same thing without a drawn rule.
@@ -2293,12 +2257,10 @@ void ToolbarView::Layout(PassKey) {
   // both sides. The FlexLayout pass above has already reserved the full slot;
   // this shrinks the bar within that slot, so neighbors are never overlapped.
   //
-  // NOT while the page controls are lent to the sidebar: the address bar then
-  // lives in the sidebar's own row, which sizes it, and this toolbar has no
-  // height left to centre it in. Running anyway placed it at (0 - 26) / 2 = -13,
-  // 13dp up into the row of buttons above it.
+  // (The compact sidebar borrows only the page controls now; the address bar
+  // is always this bar's own.)
   if (location_bar_view_ && location_bar_view_->GetVisible() &&
-      !zephyrus_compact_ && display_mode_ == DisplayMode::kNormal) {
+      display_mode_ == DisplayMode::kNormal) {
     const gfx::Rect slot = location_bar_view_->bounds();
     // A small Safari-like domain pill that grows smoothly to a comfortable
     // editing width while the omnibox is focused (animated by
@@ -4003,14 +3965,13 @@ void ToolbarView::AttachZephyrusMotions() {
 }
 
 void ToolbarView::SetZephyrusOmniboxFocused(bool focused) {
-  // Lent to the sidebar, the omnibox is not this bar's to grow: the panel
-  // lifts it out over the page instead.
-  if (zephyrus_compact_) {
+  // Editing the address with the title bar hidden (Ctrl+L, say): bring it out,
+  // or the edit happens somewhere the user cannot see.
+  if (focused) {
     if (BrowserView* browser_view =
             BrowserView::GetBrowserViewForBrowser(browser_)) {
-      browser_view->OnZephyrusCompactOmniboxFocusChanged();
+      browser_view->RevealZephyrusTitlebarForEdit();
     }
-    return;
   }
   if (!zephyrus_omnibox_focus_animation_) {
     zephyrus_omnibox_focus_animation_ =
@@ -4185,18 +4146,17 @@ void ToolbarView::LendZephyrusChromeTo(views::View* host) {
   zephyrus_compact_ = true;
 
   // Snapshot first: reparenting mutates children() as we walk it.
+  //
+  // ONLY the four page controls move to the sidebar: back, forward, reload and
+  // the menu (the three dots). Everything else -- the address bar, the
+  // workspaces, new tab, the user's extensions and pinned actions, the pin,
+  // the window controls -- STAYS on the title bar, which is what the user
+  // expects to find there when it is revealed.
   std::vector<views::View*> movable;
   for (views::View* child : children()) {
-    // What the user added to the bar STAYS on the bar, beside the window
-    // controls: extensions and pinned actions are the user's own furniture,
-    // they change as they install things, and a panel that reflows every time
-    // an extension asks for attention is not a layout.
-    const bool stays = child == zephyrus_minimize_button_ ||
-                       child == zephyrus_maximize_button_ ||
-                       child == zephyrus_close_button_ ||
-                       child == zephyrus_pin_button_ ||
-                       views::AsViewClass<ToolbarIconContainerView>(child);
-    if (!stays) {
+    const bool lent = child == back_ || child == forward_ ||
+                      child == reload_ || child == app_menu_button_;
+    if (lent) {
       movable.push_back(child);
     }
   }
@@ -6486,15 +6446,10 @@ void ToolbarView::ShowZephyrusProfileMenu() {
 #endif  // ZEPHYRUS PROFILES FRONTEND - DISABLED
 
 void ToolbarView::LayoutCommon() {
-  // While the controls are lent to the sidebar they are not children of this
-  // view, and the layout manager CHECKs when asked about a view it does not
-  // own (SetViewHidden on the app menu was the crash). Nothing here applies
-  // to a bar holding only the window controls anyway.
-  if (zephyrus_compact_) {
-    UpdateZephyrusWindowControls();
-    return;
-  }
-
+  // While the page controls are lent to the sidebar they are not children of
+  // this view, and the layout manager CHECKs when asked about a view it does
+  // not own (SetViewHidden on the app menu was the crash). Nothing below asks
+  // it about them: what it is told about is the views that stayed.
   DCHECK(display_mode_ == DisplayMode::kNormal);
 
   gfx::Insets interior_margin =

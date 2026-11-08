@@ -2755,6 +2755,24 @@ void BrowserView::SetFocusToLocationBar(bool is_user_initiated) {
   }
 #endif
   if (!IsLocationBarVisible()) {
+    // Zephyrus: the address bar is on the title bar, and a hidden title bar
+    // takes it out of sight. Ctrl+L brings the bar out, then focuses the
+    // address once it is on screen (the reveal is a short slide).
+    if (!zephyrus_titlebar_pinned_ && toolbar_ &&
+        WindowFeatureController::From(browser_)->SupportsWindowFeature(
+            WindowFeatureController::WindowFeature::kFeatureLocationBar)) {
+      RevealZephyrusTitlebarForEdit();
+      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](base::WeakPtr<BrowserView> self, bool user_initiated) {
+                if (self && self->IsLocationBarVisible()) {
+                  self->SetFocusToLocationBar(user_initiated);
+                }
+              },
+              weak_ptr_factory_.GetWeakPtr(), is_user_initiated),
+          base::Milliseconds(60));
+    }
     return;
   }
 
@@ -4045,6 +4063,12 @@ void BrowserView::UpdateZephyrusTabStripBounds() {
   zephyrus_tab_strip_->SetTopInset(height - ZephyrusTabStrip::kBandHeight);
   zephyrus_tab_strip_->SetBounds(content.x(), content.y() - height,
                                  content.width(), height);
+}
+
+void BrowserView::RevealZephyrusTitlebarForEdit() {
+  if (!zephyrus_titlebar_pinned_ && zephyrus_titlebar_anim_target_ < 1.0) {
+    StartZephyrusTitlebarAnim(1.0);
+  }
 }
 
 void BrowserView::OnZephyrusCompactOmniboxFocusChanged() {

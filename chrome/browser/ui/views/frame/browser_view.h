@@ -916,6 +916,8 @@ class BrowserView : public BrowserWindow,
   // for a full-content view and reveals when the cursor hits the top edge.
   void ToggleZephyrusTitlebarPinned();
   bool IsZephyrusTitlebarPinned() const { return zephyrus_titlebar_pinned_; }
+  // The address bar is being edited: a hidden title bar comes out for it.
+  void RevealZephyrusTitlebarForEdit();
   // Whether the title bar should currently be laid out (pinned, or at all
   // revealed/animating by a top-edge hover while unpinned).
   bool IsZephyrusTitlebarShowing() const {

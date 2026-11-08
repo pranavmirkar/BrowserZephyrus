@@ -4202,15 +4202,14 @@ void ZephyrusSidebarView::RebuildCompactChrome() {
       // Reclaim takes each view back by pointer, whatever it is parented to
       // now.
       toolbar->ReclaimZephyrusChrome();
-      toolbar->SetZephyrusWorkspaceStripCompact(false);
     }
     return;
   }
+  // Only back, forward, reload and the menu come here; the rest of the
+  // controls stay on the title bar.
   if (!toolbar->IsZephyrusCompact()) {
     toolbar->LendZephyrusChromeTo(compact_chrome_);
-    toolbar->SetZephyrusWorkspaceStripCompact(true);
   }
-  EnsureAddWorkspaceButton();
   if (!compact_address_row_ || !compact_controls_row_ || !compact_hidden_ ||
       !compact_workspaces_) {
     return;
