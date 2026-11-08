@@ -579,7 +579,7 @@ ntp-lens-upload-dialog {
   --z-ease: 300ms cubic-bezier(0.2, 0, 0, 1);
   --z-edge: 16px;
   --z-gap: 12px;
-  --z-search-h: 56px;
+  --z-search-h: 48px;
   --z-search-open-w: clamp(
       320px,
       calc(100vw - 2 * (var(--zd-w, 0px) + var(--z-gap) + var(--z-edge))),
@@ -625,12 +625,68 @@ ntp-lens-upload-dialog {
 
 :host(:is([z-dock_=top], [z-dock_=middle], [z-dock_=bottom], [z-dock_=left],
           [z-dock_=right])) ntp-searchbox {
-  --cr-searchbox-border-radius: 28px;
+  /* The browser's omnibox, on the page: an M3 filled field, a tone of the
+   * surface behind it, 8dp corners, no outline or shadow; a 2dp primary ring
+   * says "typing here". Light surfaces settle a little darker, dark ones lift
+   * toward white (the omnibox's own steps: 7% / 12%, hover 10% / 17%). */
+  --color-searchbox-background: var(--z-field);
+  --color-searchbox-foreground: var(--z-ink);
+  --color-searchbox-placeholder: var(--z-ink-dim);
+  --color-searchbox-results-background: var(--z-field);
+  --color-searchbox-results-background-hovered:
+      color-mix(in srgb, var(--z-ink) 8%, var(--z-field));
+  --color-searchbox-results-background-selected:
+      color-mix(in srgb, var(--z-ink) 12%, var(--z-field));
+  --color-searchbox-results-foreground: var(--z-ink);
+  --color-searchbox-results-foreground-dimmed: var(--z-ink-dim);
+  --color-searchbox-results-foreground-selected: var(--z-ink);
+  --color-searchbox-results-dim-selected: var(--z-ink-dim);
+  --color-searchbox-results-url: var(--z-ink-dim);
+  --color-searchbox-results-url-selected: var(--z-ink-dim);
+  --color-searchbox-results-icon: var(--z-ink-dim);
+  --color-searchbox-results-icon-selected: var(--z-ink);
+  --color-searchbox-results-typed-prefix: var(--z-ink);
+  --color-searchbox-search-icon-background: var(--z-ink-dim);
+  --color-searchbox-dropdown-divider:
+      color-mix(in srgb, var(--z-ink) 12%, transparent);
+  --cr-searchbox-border-radius: 8px;
+  --cr-searchbox-font-size: 14px;
   --cr-searchbox-height: var(--z-search-h);
-  --cr-searchbox-icon-left-position: 18px;
+  --cr-searchbox-icon-left-position: 14px;
+  --cr-searchbox-shadow: none;
   --cr-searchbox-width: var(--z-search-w);
+  --z-base: var(--color-new-tab-page-background, #3c3c3c);
+  --z-field: color-mix(in srgb, black 7%, var(--z-base));
+  --z-field-hover: color-mix(in srgb, black 10%, var(--z-base));
+  --z-ink: var(--color-sys-on-surface, #1b1b1f);
+  --z-ink-dim: var(--color-sys-on-surface-variant, #5f6368);
   transition: width var(--z-ease);
   width: var(--z-search-w);
+}
+
+:host(:is([z-dock_=top], [z-dock_=middle], [z-dock_=bottom], [z-dock_=left],
+          [z-dock_=right])) ntp-searchbox[is-dark] {
+  --z-field: color-mix(in srgb, white 12%, var(--z-base));
+  --z-field-hover: color-mix(in srgb, white 17%, var(--z-base));
+}
+
+/* Hover lifts the field one step; open, the field and its suggestions are
+ * one surface. */
+:host(:is([z-dock_=top], [z-dock_=middle], [z-dock_=bottom], [z-dock_=left],
+          [z-dock_=right])) ntp-searchbox:hover:not([dropdown-is-visible]) {
+  --color-searchbox-background: var(--z-field-hover);
+}
+
+:host(:is([z-dock_=top], [z-dock_=middle], [z-dock_=bottom], [z-dock_=left],
+          [z-dock_=right])) ntp-searchbox[dropdown-is-visible] {
+  --cr-searchbox-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+}
+
+/* The ring: the field only, not the suggestions under it. */
+:host(:is([z-dock_=top], [z-dock_=middle], [z-dock_=bottom], [z-dock_=left],
+          [z-dock_=right])) ntp-searchbox:focus-within {
+  outline: 2px solid var(--color-sys-primary, var(--color-new-tab-page-focus-ring));
+  outline-offset: 0;
 }
 
 /* A row: top, middle, bottom. */
