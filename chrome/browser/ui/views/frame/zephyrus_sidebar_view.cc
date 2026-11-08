@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -82,6 +83,9 @@
 #include "ui/base/models/image_model.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/views/animation/animation_delegate_views.h"
+#include "ui/views/animation/ink_drop.h"
+#include "ui/views/animation/ink_drop_host.h"
+#include "base/callback_list.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/base/cursor/mojom/cursor_type.mojom-shared.h"
@@ -168,10 +172,9 @@ constexpr int kSegmentInnerRadius = 4;
 
 // Gap between the title bar's controls once they are in the panel. The bar
 // spaced them with its own pitch, which a 230dp column has no room for.
-// The run's own metrics in the panel: 2dp seams between cells, 4dp corners
-// inside the run, and a little height around the glyphs.
+// The run's own metrics in the panel: 2dp seams between cells and a little
+// height around the glyphs.
 constexpr int kZephyrusCompactSeam = 2;
-constexpr int kZephyrusCompactInnerRadius = 4;
 // The run's height, fixed. It was the tallest control plus 3dp above and below
 // -- 38dp, a toolbar cell and then some, which in a 180dp column made the run
 // the heaviest thing in the panel. The controls fill the cell now; their 16dp
@@ -265,15 +268,42 @@ class ZephyrusControlRow : public views::View {
       }
       fill.setColor(zephyrus::m3::StateLayer(
           ink, pressed ? zephyrus::m3::kPressed : zephyrus::m3::kHover));
-      const SkScalar outer = cell.height() / 2.f;
-      const SkScalar inner = kZephyrusCompactInnerRadius;
-      const SkScalar left = i == 0 ? outer : inner;
-      const SkScalar right = i + 1 == count ? outer : inner;
-      const SkVector radii[4] = {{left, left}, {right, right},
-                                 {right, right}, {left, left}};
-      SkRRect rrect;
-      rrect.setRectRadii(gfx::RectToSkRect(cell), radii);
-      canvas->sk_canvas()->drawRRect(rrect, fill);
+      // A plain circle, the size of the cell's shorter side.
+      canvas->DrawCircle(gfx::PointF(cell.CenterPoint()),
+                         std::min(cell.width(), cell.height()) / 2.f, fill);
+    }
+  }
+
+  // The row draws the one highlight, a plain circle. A control's own hover
+  // disc (an oval the size of its toolbar cell, clipped to it) would be a
+  // second one, so it is switched off while the control is in this row and
+  // given back when it leaves. And the row repaints on every state change of
+  // a control: a circle painted by the row is not cleared by the control
+  // repainting itself, which left the old one behind.
+  void ViewHierarchyChanged(
+      const views::ViewHierarchyChangedDetails& details) override {
+    views::View::ViewHierarchyChanged(details);
+    if (details.parent != this) {
+      return;
+    }
+    auto* button = views::AsViewClass<views::Button>(details.child);
+    if (!button) {
+      return;
+    }
+    views::InkDropHost* ink_drop = views::InkDrop::Get(button);
+    if (details.is_add) {
+      saved_ink_modes_[button] = ink_drop->GetMode();
+      ink_drop->SetMode(views::InkDropHost::InkDropMode::OFF);
+      state_subscriptions_[button] = button->AddStateChangedCallback(
+          base::BindRepeating(&views::View::SchedulePaint,
+                              base::Unretained(this)));
+    } else {
+      const auto saved = saved_ink_modes_.find(button);
+      if (saved != saved_ink_modes_.end()) {
+        ink_drop->SetMode(saved->second);
+        saved_ink_modes_.erase(saved);
+      }
+      state_subscriptions_.erase(button);
     }
   }
 
@@ -284,12 +314,13 @@ class ZephyrusControlRow : public views::View {
     SchedulePaint();
   }
 
-  // The containers track the pointer, so the row repaints on state changes:
-  // a child repainting itself only covers its glyph.
   void OnMouseMoved(const ui::MouseEvent& event) override { SchedulePaint(); }
   void OnMouseExited(const ui::MouseEvent& event) override { SchedulePaint(); }
 
  private:
+  std::map<views::View*, views::InkDropHost::InkDropMode> saved_ink_modes_;
+  std::map<views::View*, base::CallbackListSubscription> state_subscriptions_;
+
   std::vector<views::View*> VisibleChildren() const {
     std::vector<views::View*> cells;
     for (views::View* child : children()) {
@@ -300,65 +331,26 @@ class ZephyrusControlRow : public views::View {
     return cells;
   }
 
-  // Widths for the whole run, so Layout() and OnPaintBackground() cannot
-  // disagree about where a seam is.
-  //
-  // Cells are equal EXCEPT for one that genuinely needs more: the shield grows
-  // into a pill carrying the blocked-request count, and an equal cell clips
-  // that number off -- which is what drew a capsule with nothing in it. A
-  // counter you cannot read is worse than an uneven run, so the pill keeps its
-  // own width and the others divide what is left.
+  // Where each control sits, so Layout() and OnPaintBackground() cannot
+  // disagree. Square cells: the page controls (back, forward, reload) sit
+  // together at the leading edge, and the last control -- the menu -- stands
+  // at the trailing edge, the way the title bar's own run is read. Spread
+  // evenly across a 220dp panel they were four loose glyphs with 80dp gaps.
   std::vector<gfx::Rect> CellRects(const std::vector<views::View*>& cells,
                                    int span) const {
     const int count = static_cast<int>(cells.size());
-    const int seams = (count - 1) * kZephyrusCompactSeam;
-    const int usable = std::max(0, span - seams);
-    const int share = usable / count;
-    // A wide control may not starve its neighbours: whatever it claims, it
-    // leaves every other cell at least kFloor. (With a single control there is
-    // nothing to protect, so the cap is the whole run -- halving it there would
-    // draw one control in half a strip.)
-    constexpr int kFloor = 16;
-    const int cap = std::max(share, usable - (count - 1) * kFloor);
-
-    std::vector<int> widths(count, 0);
-    int claimed = 0;
-    int equal_cells = 0;
-    for (int i = 0; i < count; ++i) {
-      // Only a control carrying TEXT may outgrow its share. Nothing lent to
-      // the panel does today -- the blocked-request count is a badge ON the
-      // shield now, so the shield is an ordinary cell -- but the rule is what
-      // keeps the run even: a glyph is legible in any cell the run can offer,
-      // and letting wide glyph buttons claim their preferred width made the
-      // run ragged, three cell widths across five controls.
-      const auto* labelled = views::AsViewClass<views::LabelButton>(cells[i]);
-      const int preferred = cells[i]->GetPreferredSize().width();
-      if (labelled && !labelled->GetText().empty() && preferred > share) {
-        widths[i] = std::min(preferred, cap);
-        claimed += widths[i];
-      } else {
-        ++equal_cells;
-      }
-    }
-    if (equal_cells > 0) {
-      const int rest = std::max(0, usable - claimed);
-      // Distribute the remainder one pixel at a time rather than letting it
-      // fall off the end, or the last cell is short of the panel edge.
-      const int base = rest / equal_cells;
-      int extra = rest % equal_cells;
-      for (int i = 0; i < count; ++i) {
-        if (widths[i] == 0) {
-          widths[i] = base + (extra-- > 0 ? 1 : 0);
-        }
-      }
-    }
-
+    const int cell = std::min(kZephyrusCompactRowHeight, height());
     std::vector<gfx::Rect> rects;
     rects.reserve(count);
     int x = 0;
     for (int i = 0; i < count; ++i) {
-      rects.emplace_back(x, 0, widths[i], height());
-      x += widths[i] + kZephyrusCompactSeam;
+      const bool trailing = count > 1 && i == count - 1;
+      if (trailing) {
+        rects.emplace_back(std::max(x, span - cell), 0, cell, height());
+      } else {
+        rects.emplace_back(x, 0, cell, height());
+        x += cell + kZephyrusCompactSeam;
+      }
     }
     return rects;
   }
@@ -4202,14 +4194,18 @@ void ZephyrusSidebarView::RebuildCompactChrome() {
       // Reclaim takes each view back by pointer, whatever it is parented to
       // now.
       toolbar->ReclaimZephyrusChrome();
+      toolbar->SetZephyrusWorkspaceStripCompact(false);
     }
     return;
   }
-  // Only back, forward, reload and the menu come here; the rest of the
-  // controls stay on the title bar.
+  // Back, forward, reload and the menu come here, and the workspace switcher
+  // (to the foot of the panel); the rest of the controls stay on the title
+  // bar.
   if (!toolbar->IsZephyrusCompact()) {
     toolbar->LendZephyrusChromeTo(compact_chrome_);
+    toolbar->SetZephyrusWorkspaceStripCompact(true);
   }
+  EnsureAddWorkspaceButton();
   if (!compact_address_row_ || !compact_controls_row_ || !compact_hidden_ ||
       !compact_workspaces_) {
     return;

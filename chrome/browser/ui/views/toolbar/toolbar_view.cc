@@ -4147,15 +4147,16 @@ void ToolbarView::LendZephyrusChromeTo(views::View* host) {
 
   // Snapshot first: reparenting mutates children() as we walk it.
   //
-  // ONLY the four page controls move to the sidebar: back, forward, reload and
-  // the menu (the three dots). Everything else -- the address bar, the
-  // workspaces, new tab, the user's extensions and pinned actions, the pin,
-  // the window controls -- STAYS on the title bar, which is what the user
-  // expects to find there when it is revealed.
+  // ONLY these move to the sidebar: back, forward, reload, the menu (the three
+  // dots) and the workspace switcher, which goes to the foot of the panel.
+  // Everything else -- the address bar, new tab, the user's extensions and
+  // pinned actions, the pin, the window controls -- STAYS on the title bar,
+  // which is what the user expects to find there when it is revealed.
   std::vector<views::View*> movable;
   for (views::View* child : children()) {
     const bool lent = child == back_ || child == forward_ ||
-                      child == reload_ || child == app_menu_button_;
+                      child == reload_ || child == app_menu_button_ ||
+                      child == zephyrus_workspace_strip_;
     if (lent) {
       movable.push_back(child);
     }
