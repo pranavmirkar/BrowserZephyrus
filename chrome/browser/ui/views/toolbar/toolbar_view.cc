@@ -6607,12 +6607,17 @@ void ToolbarView::LayoutCommon() {
     }
   } else {
     if (back_) {
-      back_->SetLeadingMargin(margin);
+      // Maximized, the outer buttons grow an edge margin so the screen corner
+      // still hits them (Fitts's law). A button lent to the compact sidebar is
+      // nowhere near a screen edge, and the margin would push its icon off the
+      // centre of the circle drawn about its cell (5px at 150%).
+      back_->SetLeadingMargin(back_->parent() == this ? margin : 0);
     }
   }
 
+  const bool app_menu_lent = app_menu_button_ && app_menu_button_->parent() != this;
   GetAppMenuControl()->SetIsMaximizedOrFullscreen(
-      ShouldAppMenuApplyFittsLaw(is_maximized_or_fullscreen));
+      !app_menu_lent && ShouldAppMenuApplyFittsLaw(is_maximized_or_fullscreen));
 
   if (toolbar_divider_ && extensions_container_) {
     views::ManualLayoutUtil(layout_manager_)
