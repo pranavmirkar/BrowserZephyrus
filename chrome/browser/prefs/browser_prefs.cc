@@ -1908,6 +1908,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
   // sidebar (the default -- zephyrus::kDefaultUiLayout). Mirrored by
   // zephyrus::kUiLayoutPref / zephyrus::UiLayout; read clamped.
   registry->RegisterIntegerPref("zephyrus.ui_layout", 2);
+  // Northern lights across the title bar, in the active page's colours.
+  // Appearance settings toggle; BrowserView observes it and applies it live.
+  // Literal for the layering reason above; mirrored by zephyrus::kAuroraPref in
+  // zephyrus_aurora_view.h.
+  registry->RegisterBooleanPref("zephyrus.appearance.aurora", true);
   // Sets (tab groups): each one's icon, whether it is pinned to the top and
   // whether it is closed, keyed by the group's token; and the order the user
   // keeps them in. Literals, as above.

@@ -189,6 +189,7 @@
 #include "chrome/browser/ui/views/frame/tab_modal_dialog_host.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
+#include "chrome/browser/ui/views/frame/zephyrus_aurora_view.h"
 #include "chrome/browser/ui/views/frame/zephyrus_empty_background.h"
 #include "chrome/browser/ui/views/frame/zephyrus_m3.h"
 #include "chrome/browser/ui/views/frame/zephyrus_window_backdrop.h"
@@ -1162,6 +1163,16 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
   top_container_separator_->SetProperty(views::kElementIdentifierKey,
                                         kContentsSeparatorTopEdgeElementId);
 
+  // Zephyrus: the aurora, behind everything in the bar (it IS the bar's
+  // background while it shows, so the light never lies over a control). Not in a
+  // private window, whose chrome is a deliberate flat grey
+  // that must not borrow colour from the page.
+  if (zephyrus::IsTypeNormal(browser_) && !browser_->GetProfile()->IsOffTheRecord()) {
+    // The FIRST child, so everything else in the bar paints on top of it.
+    zephyrus_aurora_ = top_container_->AddChildViewAt(
+        std::make_unique<zephyrus::ZephyrusAuroraView>(this), 0);
+  }
+
   auto multi_contents_view = std::make_unique<MultiContentsView>(
       this, std::make_unique<MultiContentsViewDelegateImpl>(*browser_));
   multi_contents_view_ = AddChildView(std::move(multi_contents_view));
@@ -1395,6 +1406,12 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
       base::BindRepeating(&BrowserView::UpdateFullscreenAllowedFromPolicy,
                           base::Unretained(this), CanFullscreen()));
   UpdateFullscreenAllowedFromPolicy(CanFullscreen());
+  if (zephyrus_aurora_) {
+    registrar_.Add(zephyrus::kAuroraPref,
+                   base::BindRepeating(&BrowserView::OnZephyrusAuroraPrefChanged,
+                                       base::Unretained(this)));
+    OnZephyrusAuroraPrefChanged();
+  }
   if (zephyrus_tab_strip_) {
     // Every window follows the layout live, the same moment it is picked.
     registrar_.Add(zephyrus::kUiLayoutPref,
@@ -1482,6 +1499,7 @@ BrowserView::~BrowserView() {
   browser_widget_ = nullptr;
   main_background_region_ = nullptr;
   top_container_ = nullptr;
+  zephyrus_aurora_ = nullptr;
   web_app_frame_toolbar_ = nullptr;
   web_app_window_title_ = nullptr;
   horizontal_tab_strip_region_view_ = nullptr;
@@ -2512,6 +2530,10 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
   // Update all the UI bits.
   UpdateTitleBar();
 
+  // Zephyrus: after the split view has been shown or hidden above, so the
+  // pages reported are the ones actually on show.
+  NotifyZephyrusAuroraPanes();
+
   CHECK_DEREF(TranslateBubbleController::From(browser_.get())).CloseBubble();
 }
 
@@ -3469,7 +3491,40 @@ void BrowserView::DidStartLoading() {
   }
 }
 
+bool BrowserView::IsZephyrusAuroraBackgroundFor(const views::View* view) const {
+  return zephyrus_aurora_ && zephyrus_aurora_->IsShowing() &&
+         (view == toolbar_ || view == top_container_);
+}
+
+void BrowserView::NotifyZephyrusAuroraPanes() {
+  if (!zephyrus_aurora_ || !multi_contents_view_) {
+    return;
+  }
+  std::vector<content::WebContents*> panes;
+  if (multi_contents_view_->IsInSplitView()) {
+    for (const auto& container :
+         multi_contents_view_->contents_container_views()) {
+      if (container && container->contents_view()) {
+        panes.push_back(container->contents_view()->web_contents());
+      }
+    }
+  } else if (content::WebContents* active = web_contents()) {
+    panes.push_back(active);
+  }
+  zephyrus_aurora_->OnPanesChanged(panes);
+}
+
+void BrowserView::OnZephyrusAuroraPrefChanged() {
+  if (zephyrus_aurora_) {
+    zephyrus_aurora_->SetAuroraEnabled(
+        browser_->GetProfile()->GetPrefs()->GetBoolean(zephyrus::kAuroraPref));
+  }
+}
+
 void BrowserView::DidStopLoading() {
+  if (zephyrus_aurora_) {
+    zephyrus_aurora_->OnPageSettled(web_contents());
+  }
   if (LocationBarView* location_bar = GetLocationBarView()) {
     location_bar->SetZephyrusLoading(false);
   }
@@ -4790,6 +4845,11 @@ void BrowserView::OnSplitTabChanged(const SplitTabChange& change) {
   // TabDialogManager handles updates based on web contents resizing.
   if (change.type != SplitTabChange::Type::kVisualsChanged) {
     UpdateTabModalDialogHost();
+  }
+
+  // Zephyrus: a split was made, unmade or had its pages swapped.
+  if (change.type != SplitTabChange::Type::kVisualsChanged) {
+    NotifyZephyrusAuroraPanes();
   }
 }
 

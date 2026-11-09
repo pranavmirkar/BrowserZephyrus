@@ -227,6 +227,12 @@ export function getHtml(this: SettingsAppearancePageElement) {
         ?hidden="${this.showOrganizerPanelEnabled_}">
     </settings-toggle-button>
 
+    <settings-toggle-button class="hr" id="zephyrusAurora"
+        pref-key="zephyrus.appearance.aurora"
+        label="$i18n{zephyrusAuroraLabel}"
+        sub-label="$i18n{zephyrusAuroraSubLabel}">
+    </settings-toggle-button>
+
     ${this.showCtrlTabMru_ ? html`
       <settings-toggle-button class="hr" id="ctrlTabMru"
           pref-key="browser.ctrl_tab_mru"

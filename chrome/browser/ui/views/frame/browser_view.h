@@ -113,6 +113,7 @@ class ZephyrusSearchOverlay;
 class ZephyrusGlanceView;
 class ZephyrusGlanceController;
 namespace zephyrus {
+class ZephyrusAuroraView;
 class ZephyrusOnboarding;
 }  // namespace zephyrus
 
@@ -820,6 +821,17 @@ class BrowserView : public BrowserWindow,
   // Zephyrus: updates the title bar tint to match the active web page's color.
   void UpdateZephyrusTitlebarColor();
 
+  // Zephyrus: the Appearance toggle for the aurora changed.
+  void OnZephyrusAuroraPrefChanged();
+
+  // Zephyrus: whether the aurora is painting `view`'s background for it, in
+  // which case `view` (the toolbar or the top container) must not paint a fill.
+  bool IsZephyrusAuroraBackgroundFor(const views::View* view) const;
+
+  // Zephyrus: tells the aurora which pages are on show (one, or two in a split
+  // view). Called wherever that can change.
+  void NotifyZephyrusAuroraPanes();
+
   // Zephyrus: the active page's color used for dynamic theming (nullopt when it
   // can't be determined). Consumed by the dynamically-themed popups (downloads,
   // app menu) so they adapt to the page like the title bar/omnibox/sidebar.
@@ -1471,6 +1483,10 @@ class BrowserView : public BrowserWindow,
   // Ctrl+Tab switcher. Also a view rather than a bubble, for the blur.
   raw_ptr<ZephyrusTabSwitcher> zephyrus_tab_switcher_ = nullptr;
   raw_ptr<ZephyrusSidebarHotZone> zephyrus_sidebar_hotzone_ = nullptr;
+  // Northern lights across the title bar and toolbar, in the active page's
+  // colours. A child of the top container so it travels with the bar. Null in
+  // popups and private windows.
+  raw_ptr<zephyrus::ZephyrusAuroraView> zephyrus_aurora_ = nullptr;
   // Drag-to-resize strip over the sidebar/page seam. Owned here rather than by
   // the sidebar because the seam falls partly outside the panel's bounds; see
   // the class comment.

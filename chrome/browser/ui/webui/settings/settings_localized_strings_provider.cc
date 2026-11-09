@@ -899,6 +899,12 @@ void AddZephyrusAdblockStrings(content::WebUIDataSource* html_source) {
       u"paths, search parameters, cookies and account details. Shield DNS "
       u"skips Incognito and recognized local names. The built-in threat list "
       u"checks sites on this device.");
+  html_source->AddString("zephyrusAuroraLabel", u"Aurora");
+  html_source->AddString(
+      "zephyrusAuroraSubLabel",
+      u"Soft northern lights across the title bar, in the colours of the page "
+      u"you are on. The page is looked at on this device only and nothing is "
+      u"stored or sent.");
   html_source->AddString("zephyrusAdblockEnabledLabel",
                          u"Block ads and trackers");
   html_source->AddString(

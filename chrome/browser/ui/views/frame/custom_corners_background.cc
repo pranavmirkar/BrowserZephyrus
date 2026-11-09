@@ -333,6 +333,14 @@ void CustomCornersBackground::Paint(gfx::Canvas* canvas,
     return;
   }
 
+  // Zephyrus: the aurora is the bar's background while it shows (it paints the
+  // same fill itself, with the light in it), and it sits underneath this view,
+  // so a fill here would hide it. Both the toolbar and the top container own one
+  // of these.
+  if (browser_view().IsZephyrusAuroraBackgroundFor(view)) {
+    return;
+  }
+
   if (view->layer()) {
     CHECK(!view->layer()->fills_bounds_opaquely());
   }
