@@ -2268,9 +2268,12 @@ void ToolbarView::Layout(PassKey) {
   // both sides. The FlexLayout pass above has already reserved the full slot;
   // this shrinks the bar within that slot, so neighbors are never overlapped.
   //
-  // (The compact sidebar borrows only the page controls now; the address bar
-  // is always this bar's own.)
+  // NOT while the address bar is lent to the compact sidebar: it then lives in
+  // the sidebar's own row, which sizes it, and this toolbar has no height left
+  // to centre it in. Running anyway placed it at (0 - 26) / 2 = -13, 13dp up
+  // into the row of buttons above it.
   if (location_bar_view_ && location_bar_view_->GetVisible() &&
+      location_bar_view_->parent() == this &&
       display_mode_ == DisplayMode::kNormal) {
     const gfx::Rect slot = location_bar_view_->bounds();
     // A small Safari-like domain pill that grows smoothly to a comfortable
@@ -4000,6 +4003,15 @@ void ToolbarView::AttachZephyrusMotions() {
 }
 
 void ToolbarView::SetZephyrusOmniboxFocused(bool focused) {
+  // Lent to the sidebar, the omnibox is not this bar's to grow: the panel
+  // lifts it out over the page instead.
+  if (location_bar_view_ && location_bar_view_->parent() != this) {
+    if (BrowserView* browser_view =
+            BrowserView::GetBrowserViewForBrowser(browser_)) {
+      browser_view->OnZephyrusCompactOmniboxFocusChanged();
+    }
+    return;
+  }
   // Editing the address with the title bar hidden (Ctrl+L, say): bring it out,
   // or the edit happens somewhere the user cannot see.
   if (focused) {
@@ -4183,14 +4195,16 @@ void ToolbarView::LendZephyrusChromeTo(views::View* host) {
   // Snapshot first: reparenting mutates children() as we walk it.
   //
   // ONLY these move to the sidebar: back, forward, reload, the menu (the three
-  // dots) and the workspace switcher, which goes to the foot of the panel.
-  // Everything else -- the address bar, new tab, the user's extensions and
-  // pinned actions, the pin, the window controls -- STAYS on the title bar,
-  // which is what the user expects to find there when it is revealed.
+  // dots), the address bar (under them, in its own row) and the workspace
+  // switcher, which goes to the foot of the panel. Everything else -- new tab,
+  // the user's extensions and pinned actions, the pin, the window controls --
+  // STAYS on the title bar, which is what the user expects to find there when
+  // it is revealed.
   std::vector<views::View*> movable;
   for (views::View* child : children()) {
     const bool lent = child == back_ || child == forward_ ||
                       child == reload_ || child == app_menu_button_ ||
+                      child == location_bar_view_ ||
                       child == zephyrus_workspace_strip_;
     if (lent) {
       movable.push_back(child);
