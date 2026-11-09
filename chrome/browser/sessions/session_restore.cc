@@ -947,10 +947,23 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
         chrome::CloseWebContents(browser, active_tab, true);
       }
 
-      // Sanity check: A restored browser should have an active tab.
-      // TODO(crbug.com/40662817): Change to DCHECK once we understand
-      // why some browsers don't have an active tab on startup.
-      CHECK(browser->GetTabStripModel()->GetActiveWebContents());
+      // Zephyrus: a restored window can end up with no active tab (a saved
+      // window whose tabs were all dropped, or whose active index points at
+      // nothing). Stock Chromium CHECKs here, which turns one bad session file
+      // into a browser that crashes on every launch -- and since Zephyrus
+      // restores by default, the session file is read on every launch. Recover
+      // instead: activate the first tab, or open a New Tab page if there is
+      // none, so the window is usable.
+      if (!browser->GetTabStripModel()->GetActiveWebContents()) {
+        if (browser->GetTabStripModel()->count() > 0) {
+          browser->GetTabStripModel()->ActivateTabAt(0);
+        }
+        if (!browser->GetTabStripModel()->GetActiveWebContents()) {
+          chrome::AddSelectedTabWithURL(
+              browser, GURL(chrome::kChromeUINewTabURL),
+              ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+        }
+      }
     }
 
     if (browser_to_activate && browser_to_activate->GetType() ==
