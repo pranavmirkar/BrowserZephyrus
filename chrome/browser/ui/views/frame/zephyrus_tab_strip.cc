@@ -1946,7 +1946,10 @@ void ZephyrusTabStrip::OnPaintBackground(gfx::Canvas* canvas) {
   // debug blue), most visibly in the gaps between tabs and right of "+".
   //
   // In the title bar (one strip) the bar paints its own background.
-  if (!one_strip_) {
+  //
+  // Zephyrus: with the aurora showing it paints this band itself (the same
+  // colour), so the light from the page card's top edge reaches through.
+  if (!one_strip_ && !browser_view_->IsZephyrusAuroraBackgroundFor(this)) {
     canvas->DrawColor(browser_view_->GetZephyrusThemeColor());
   }
 

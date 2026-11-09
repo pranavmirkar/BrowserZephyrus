@@ -222,6 +222,14 @@ const gfx::RoundedCornersF& MultiContentsView::GetBackgroundRadii() const {
   return background_view_->GetRoundedCorners();
 }
 
+void MultiContentsView::SetZephyrusBackgroundHidden(bool hidden) {
+  if (zephyrus_background_hidden_ == hidden) {
+    return;
+  }
+  zephyrus_background_hidden_ = hidden;
+  InvalidateLayout();
+}
+
 void MultiContentsView::SetBackgroundRadii(const gfx::RoundedCornersF& radii) {
   if (radii == GetBackgroundRadii()) {
     return;
@@ -510,7 +518,8 @@ views::ProposedLayout MultiContentsView::CalculateProposedLayout(
   gfx::Rect available_space = gfx::Rect(width, height);
 
   const bool show_background =
-      drop_target_view_->GetVisible() || IsInSplitView();
+      drop_target_view_->GetVisible() ||
+      (IsInSplitView() && !zephyrus_background_hidden_);
   layouts.child_layouts.emplace_back(background_view_.get(), show_background,
                                      available_space);
 

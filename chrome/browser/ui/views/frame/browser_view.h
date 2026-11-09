@@ -6,6 +6,7 @@
 #define CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_VIEW_H_
 
 #include <map>
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -828,6 +829,10 @@ class BrowserView : public BrowserWindow,
   // which case `view` (the toolbar or the top container) must not paint a fill.
   bool IsZephyrusAuroraBackgroundFor(const views::View* view) const;
 
+  // Zephyrus: tells the aurora where the page cards, the title bar and the
+  // docked sidebar column are. Called after every layout.
+  void UpdateZephyrusAurora();
+
   // Zephyrus: tells the aurora which pages are on show (one, or two in a split
   // view). Called wherever that can change.
   void NotifyZephyrusAuroraPanes();
@@ -1487,6 +1492,9 @@ class BrowserView : public BrowserWindow,
   // colours. A child of the top container so it travels with the bar. Null in
   // popups and private windows.
   raw_ptr<zephyrus::ZephyrusAuroraView> zephyrus_aurora_ = nullptr;
+  // Whether the aurora stood in for the top container, the sidebar and the tab
+  // strip at the last layout; see UpdateZephyrusAurora().
+  std::array<bool, 3> zephyrus_aurora_stand_in_{};
   // Drag-to-resize strip over the sidebar/page seam. Owned here rather than by
   // the sidebar because the seam falls partly outside the panel's bounds; see
   // the class comment.

@@ -3502,6 +3502,13 @@ void ZephyrusSidebarView::OnPaintBackground(gfx::Canvas* canvas) {
   // Floating (not attached) the card is over the PAGE, not over window ground
   // the desktop shows through, so it must be opaque there: transparent, the
   // page's text would run straight through the tab list.
+  //
+  // Zephyrus: docked, with the aurora showing, the column stands aside and the
+  // aurora paints this fill itself, so the light from the page card's left edge
+  // reaches through the column.
+  if (browser_view_->IsZephyrusAuroraBackgroundFor(this)) {
+    return;
+  }
   if (!zephyrus::HasWindowBackdrop(GetWidget()) ||
       !browser_view_->IsZephyrusSidebarAttached()) {
     views::View::OnPaintBackground(canvas);

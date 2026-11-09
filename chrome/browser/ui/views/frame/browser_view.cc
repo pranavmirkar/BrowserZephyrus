@@ -1152,6 +1152,16 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
       views::kElementIdentifierKey,
       BrowserViewLayoutViews::kMainBackgroundRegionElementId);
 
+  // Zephyrus: the aurora is the window ground -- the first view after the plain
+  // background, so every surface of the chrome paints on top of it and the light
+  // lies behind every control. Not in a private window, whose chrome is a
+  // deliberate flat grey that must not borrow colour from the page.
+  if (zephyrus::IsTypeNormal(browser_) &&
+      !browser_->GetProfile()->IsOffTheRecord()) {
+    zephyrus_aurora_ =
+        AddChildView(std::make_unique<zephyrus::ZephyrusAuroraView>(this));
+  }
+
   top_container_ = AddChildView(std::make_unique<TopContainerView>(this));
   top_container_insertion_index_ = GetIndexOf(top_container_.get());
 
@@ -1162,16 +1172,6 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
       ContentsSeparator::CreateContentsSeparator());
   top_container_separator_->SetProperty(views::kElementIdentifierKey,
                                         kContentsSeparatorTopEdgeElementId);
-
-  // Zephyrus: the aurora, behind everything in the bar (it IS the bar's
-  // background while it shows, so the light never lies over a control). Not in a
-  // private window, whose chrome is a deliberate flat grey
-  // that must not borrow colour from the page.
-  if (zephyrus::IsTypeNormal(browser_) && !browser_->GetProfile()->IsOffTheRecord()) {
-    // The FIRST child, so everything else in the bar paints on top of it.
-    zephyrus_aurora_ = top_container_->AddChildViewAt(
-        std::make_unique<zephyrus::ZephyrusAuroraView>(this), 0);
-  }
 
   auto multi_contents_view = std::make_unique<MultiContentsView>(
       this, std::make_unique<MultiContentsViewDelegateImpl>(*browser_));
@@ -3492,8 +3492,130 @@ void BrowserView::DidStartLoading() {
 }
 
 bool BrowserView::IsZephyrusAuroraBackgroundFor(const views::View* view) const {
-  return zephyrus_aurora_ && zephyrus_aurora_->IsShowing() &&
-         (view == toolbar_ || view == top_container_);
+  if (!zephyrus_aurora_ || !zephyrus_aurora_->IsShowing()) {
+    return false;
+  }
+  // The title bar and toolbar -- unless the bar is floating over the page in
+  // its own layer (a hover reveal in the clipping layout), where a missing fill
+  // would show the page through it.
+  if (view == toolbar_ || view == top_container_) {
+    return top_container_ && !top_container_->layer();
+  }
+  // The docked sidebar column: the glow shows through it. Floating over the page
+  // it stays opaque, or the page's text would run through the tab list.
+  if (view == zephyrus_sidebar_) {
+    return zephyrus_sidebar_attached_;
+  }
+  // The band the horizontal layout's tab strip owns, between the bar and the
+  // page card.
+  if (view == zephyrus_tab_strip_) {
+    return !top_container_ || !top_container_->layer();
+  }
+  return false;
+}
+
+void BrowserView::UpdateZephyrusAurora() {
+  if (!zephyrus_aurora_) {
+    return;
+  }
+  // The surfaces the aurora stands in for decide whether to paint their own fill
+  // when they PAINT, and a view that has not been invalidated does not paint
+  // again: the docked sidebar's layer kept the opaque fill it painted while it
+  // was still floating, and hid the glow behind a stale slab. So the moment
+  // "does the aurora stand in for this view" changes, that view repaints.
+  const std::array<views::View*, 3> stand_ins = {
+      top_container_, zephyrus_sidebar_.get(), zephyrus_tab_strip_.get()};
+  for (size_t i = 0; i < stand_ins.size(); ++i) {
+    const bool now = stand_ins[i] && IsZephyrusAuroraBackgroundFor(stand_ins[i]);
+    if (now != zephyrus_aurora_stand_in_[i]) {
+      zephyrus_aurora_stand_in_[i] = now;
+      stand_ins[i]->SchedulePaint();
+      if (i == 0 && toolbar_) {
+        toolbar_->SchedulePaint();
+      }
+    }
+  }
+  zephyrus_aurora_->SetBoundsRect(GetLocalBounds());
+  // A split view paints an opaque slab behind its two pages; with the aurora
+  // showing the slab goes, so the glow reaches the gap and the margin round each
+  // page. And every pane's container, not just the active one: the other pane's
+  // container keeps whatever ground it was last given, and that would hide it.
+  if (multi_contents_view_) {
+    multi_contents_view_->SetZephyrusBackgroundHidden(
+        zephyrus_aurora_->IsShowing());
+  }
+  if (zephyrus_aurora_->IsShowing() && multi_contents_view_) {
+    for (const auto& container :
+         multi_contents_view_->contents_container_views()) {
+      if (container && container->background()) {
+        container->SetBackground(nullptr);
+      }
+    }
+  }
+  const ui::ColorProvider* provider = GetColorProvider();
+  if (!GetWidget() || !provider) {
+    return;
+  }
+
+  std::vector<zephyrus::ZephyrusAuroraView::Surface> surfaces;
+  // The title bar and toolbar.
+  if (top_container_ && top_container_->GetVisible() &&
+      !top_container_->layer() && !top_container_->bounds().IsEmpty()) {
+    surfaces.push_back({top_container_->bounds(), provider->GetColor(kColorToolbar)});
+  }
+  // The docked sidebar column, in its own fill: where the page card has been
+  // pushed aside, the glow comes through the column the card left behind.
+  if (zephyrus_sidebar_attached_ && zephyrus_sidebar_ && contents_container()) {
+    const int open = ZephyrusSidebarOpenWidth();
+    const gfx::Rect container = contents_container()->bounds();
+    if (open > 0 && !container.IsEmpty() && zephyrus_sidebar_->background()) {
+      surfaces.push_back(
+          {gfx::Rect(container.x() - open, container.y(), open,
+                     container.height()),
+           zephyrus_sidebar_->background()->color().ResolveToSkColor(provider)});
+    }
+  }
+
+  // Every page card on show: one, or two in a split view.
+  std::vector<zephyrus::ZephyrusAuroraView::Card> cards;
+  if (multi_contents_view_ && multi_contents_view_->GetVisible()) {
+    const gfx::RoundedCornersF& radii = multi_contents_view_->GetBackgroundRadii();
+    const float radius =
+        std::max({radii.upper_left(), radii.upper_right(), radii.lower_left(),
+                  radii.lower_right(), 12.0f});
+    // Each visible page is a card: one, or two side by side in a split view.
+    for (const auto& container :
+         multi_contents_view_->contents_container_views()) {
+      views::View* contents = container ? container->contents_view() : nullptr;
+      if (!contents || !contents->GetVisible() ||
+          contents->bounds().IsEmpty()) {
+        continue;
+      }
+      gfx::Rect card = views::View::ConvertRectToTarget(
+          contents, this, contents->GetLocalBounds());
+      // A sidebar floating over the page (hover reveal, not docked) covers the
+      // card's leading edge, so the visible card starts where the sidebar ends.
+      // Without this the glow would run on along the top edge above the sidebar
+      // and stop dead against it.
+      if (zephyrus_sidebar_ && !zephyrus_sidebar_attached_ &&
+          zephyrus_sidebar_->GetVisible()) {
+        const int covered_right =
+            zephyrus_sidebar_->bounds().x() +
+            base::ClampFloor(zephyrus_sidebar_->GetSidebarWidth() *
+                             ZephyrusSidebarRevealAmount());
+        if (covered_right > card.x()) {
+          card.Inset(gfx::Insets::TLBR(
+              0, std::min(covered_right - card.x(), card.width()), 0, 0));
+        }
+      }
+      if (card.IsEmpty()) {
+        continue;
+      }
+      cards.push_back({card, radius});
+    }
+  }
+  zephyrus_aurora_->SetGeometry(GetZephyrusThemeColor(), std::move(surfaces),
+                                std::move(cards));
 }
 
 void BrowserView::NotifyZephyrusAuroraPanes() {
@@ -3515,10 +3637,18 @@ void BrowserView::NotifyZephyrusAuroraPanes() {
 }
 
 void BrowserView::OnZephyrusAuroraPrefChanged() {
-  if (zephyrus_aurora_) {
-    zephyrus_aurora_->SetAuroraEnabled(
-        browser_->GetProfile()->GetPrefs()->GetBoolean(zephyrus::kAuroraPref));
+  if (!zephyrus_aurora_) {
+    return;
   }
+  zephyrus_aurora_->SetAuroraEnabled(
+      browser_->GetProfile()->GetPrefs()->GetBoolean(zephyrus::kAuroraPref));
+  // Every surface the aurora stands in for has to pick its own fill up again (or
+  // put it down): the page card's margin has to be re-decided, and everything
+  // repaints.
+  zephyrus_last_contents_container_ = 0;
+  UpdateZephyrusTitlebarColor();
+  UpdateZephyrusAurora();
+  SchedulePaint();
 }
 
 void BrowserView::DidStopLoading() {
@@ -3630,7 +3760,8 @@ void BrowserView::UpdateZephyrusTitlebarColor() {
       // covering the glass -- it spans the whole client area behind the page
       // card. Leaving it unpainted is what lets the backdrop show in the margin
       // around the card and beside the sidebar.
-      if (zephyrus::HasWindowBackdrop(GetWidget())) {
+      if (zephyrus::HasWindowBackdrop(GetWidget()) ||
+          (zephyrus_aurora_ && zephyrus_aurora_->IsShowing())) {
         contents_container->SetBackground(nullptr);
       } else {
         contents_container->SetBackground(
@@ -3687,7 +3818,8 @@ void BrowserView::UpdateZephyrusEmptyState() {
     // whole client area. Suppressed under the DWM backdrop for the same reason
     // as the one in UpdateZephyrusTitlebarColor -- an opaque fill here hides
     // the glass everywhere except the non-client edge.
-    if (zephyrus::HasWindowBackdrop(GetWidget())) {
+    if (zephyrus::HasWindowBackdrop(GetWidget()) ||
+        (zephyrus_aurora_ && zephyrus_aurora_->IsShowing())) {
       contents_container()->SetBackground(nullptr);
     } else {
       contents_container()->SetBackground(
@@ -6495,6 +6627,9 @@ void BrowserView::Layout(PassKey) {
   }
   UpdateZephyrusCustomizePanelBounds();
   ApplyZephyrusSidebarReveal();
+  // The aurora follows the cards and the docked column, frame by frame while
+  // they slide.
+  UpdateZephyrusAurora();
 
   // Zephyrus: stop here while the sidebar column is sliding.
   //
@@ -6856,6 +6991,7 @@ void BrowserView::OnThemeChanged() {
   // refresh: the toolbar's token can move even when the frame's does not.
   zephyrus_page_color_.reset();
   UpdateZephyrusTitlebarColor();
+  UpdateZephyrusAurora();
 
   // Publish the resolved palette for every Zephyrus surface that cannot reach a
   // ColorProvider of its own.

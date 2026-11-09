@@ -5,19 +5,22 @@
 #include "chrome/browser/ui/views/frame/zephyrus_aurora_view.h"
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "cc/paint/paint_filter.h"
 #include "cc/paint/paint_flags.h"
 #include "cc/paint/paint_shader.h"
-#include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/visibility.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "skia/ext/image_operations.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -25,20 +28,22 @@
 #include "ui/gfx/animation/linear_animation.h"
 #include "ui/gfx/animation/tween.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/scoped_canvas.h"
 #include "ui/gfx/color_utils.h"
+#include "ui/gfx/geometry/skia_conversions.h"
+#include "ui/gfx/scoped_canvas.h"
 #include "ui/views/animation/animation_delegate_views.h"
-#include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 
 namespace zephyrus {
 
 namespace {
 
-// How far down the page the picture is taken at, and how long a page gets to
-// settle before it is read. Pages keep painting for a moment after "loaded"
-// (fonts, hero images), and a picture of the half-built page would be the wrong
-// colour for the whole time the page is open.
+using Palette = std::array<SkColor, aurora::kSlots>;
+
+// How big the picture of the page is, and how long a page gets to settle before
+// it is read. Pages keep painting for a moment after "loaded" (fonts, hero
+// images), and a picture of the half-built page would be the wrong colour for
+// the whole time the page is open.
 constexpr int kCaptureWidth = 128;
 constexpr int kCaptureHeight = 80;
 constexpr int kReadWidth = 32;
@@ -52,35 +57,28 @@ constexpr base::TimeDelta kMinCaptureGap = base::Seconds(3);
 constexpr base::TimeDelta kPictureTrusted = base::Minutes(5);
 
 constexpr base::TimeDelta kMorphDuration = base::Milliseconds(700);
-// Opacity at the brightest point of a curtain, as a fraction. The chrome has
-// text and icons under it, so this is a tint, never a fill: a light chrome
-// takes less than a dark one, because colour on a light surface reads as
-// stronger than the same colour on a dark one.
-constexpr float kPeakOnDark = 0.40f;
-constexpr float kPeakOnLight = 0.28f;
-// Each curtain's share of the peak: the front one is brightest, which is what
-// gives the stack depth.
-constexpr std::array<float, aurora::kSlots> kCurtainStrength = {1.0f, 0.8f,
-                                                                0.9f};
 
-// Where each curtain sits across the width (its left edge, as a fraction of
-// the width) and how wide it is (a fraction too). They overlap, so there is
-// never a bare gap between them. Each is brightest at the bottom edge of the
-// bar, which is the top edge of the page card, and rises from there.
-// How tall a curtain is, as a multiple of the bar: over 1 so a little light
-// still reaches the top edge of the window.
-constexpr std::array<float, aurora::kSlots> kCurtainLeft = {-0.06f, 0.26f,
-                                                            0.56f};
-constexpr std::array<float, aurora::kSlots> kCurtainWidth = {0.50f, 0.48f,
-                                                             0.50f};
-constexpr float kCurtainRise = 1.15f;
+// The glow is a rounded rectangle the size of the card, filled with the page's
+// colours and blurred. The blur is what makes it light and not a border: the
+// card hides the inner half, and the outer half falls away over about twice the
+// sigma. The rectangle is pushed out a little so the glow is brightest right at
+// the card's edge instead of half-strength there.
+constexpr float kHaloSigma = 12.0f;
+constexpr float kHaloOutset = 8.0f;
+// Opacity of the fill before the blur takes half of it away at the edge. The
+// chrome has text and icons over it, so this is a tint and never a fill: light
+// chrome takes less than dark, because colour on a light surface reads as
+// stronger than the same colour on a dark one.
+constexpr float kHaloOpacityOnDark = 0.95f;
+constexpr float kHaloOpacityOnLight = 0.70f;
+
 // The last picture of a page, kept with the tab so switching back to it does
 // not wait on a new one.
 class AuroraTabData : public content::WebContentsUserData<AuroraTabData> {
  public:
   ~AuroraTabData() override = default;
 
-  std::array<SkColor, aurora::kSlots> colors{};
+  Palette colors{};
   base::TimeTicks taken;
 
  private:
@@ -125,7 +123,7 @@ class ZephyrusAuroraView::Morph : public views::AnimationDelegateViews {
 
 ZephyrusAuroraView::ZephyrusAuroraView(BrowserView* browser_view)
     : browser_view_(browser_view) {
-  // Behind the bar, and out of the pointer's way entirely.
+  // Behind everything, and out of the pointer's way entirely.
   SetCanProcessEventsWithinSubtree(false);
   GetViewAccessibility().SetIsIgnored(true);
   morph_ = std::make_unique<Morph>(
@@ -134,7 +132,7 @@ ZephyrusAuroraView::ZephyrusAuroraView(BrowserView* browser_view)
 }
 
 ZephyrusAuroraView::~ZephyrusAuroraView() {
-  // The timers die with this view; the pending capture's callback holds a weak
+  // The timer dies with this view; a pending capture's callback holds a weak
   // pointer, so a late result finds nobody.
   capture_timer_.Stop();
 }
@@ -148,16 +146,9 @@ void ZephyrusAuroraView::SetAuroraEnabled(bool enabled) {
     capture_timer_.Stop();
     morph_->Stop();
     SetVisible(false);
-    // The toolbar paints its own fill again; make it do so now.
-    if (parent()) {
-      parent()->SchedulePaint();
-    }
     return;
   }
   SetVisible(true);
-  if (parent()) {
-    parent()->SchedulePaint();
-  }
   std::vector<content::WebContents*> panes;
   for (const auto& pane : panes_) {
     if (pane) {
@@ -165,6 +156,18 @@ void ZephyrusAuroraView::SetAuroraEnabled(bool enabled) {
     }
   }
   OnPanesChanged(panes);
+}
+
+void ZephyrusAuroraView::SetGeometry(SkColor ground,
+                                     std::vector<Surface> surfaces,
+                                     std::vector<Card> cards) {
+  if (ground == ground_ && surfaces == surfaces_ && cards == cards_) {
+    return;
+  }
+  ground_ = ground;
+  surfaces_ = std::move(surfaces);
+  cards_ = std::move(cards);
+  SchedulePaint();
 }
 
 void ZephyrusAuroraView::OnPanesChanged(
@@ -209,8 +212,8 @@ void ZephyrusAuroraView::OnPageSettled(content::WebContents* contents) {
   }
 }
 
-std::array<SkColor, aurora::kSlots> ZephyrusAuroraView::Compose() const {
-  std::vector<std::array<SkColor, aurora::kSlots>> pages;
+std::vector<ZephyrusAuroraView::Palette> ZephyrusAuroraView::Compose() const {
+  std::vector<Palette> pages;
   for (const auto& pane : panes_) {
     if (!pane) {
       continue;
@@ -220,56 +223,14 @@ std::array<SkColor, aurora::kSlots> ZephyrusAuroraView::Compose() const {
     }
   }
   if (pages.empty()) {
-    return aurora::FillSlots({}, FallbackColor(nullptr));
+    pages.push_back(aurora::FillSlots({}, FallbackColor(nullptr)));
   }
-  if (pages.size() == 1) {
-    return pages[0];
-  }
-  // Two pages: the left curtain is the left page's, the right curtain is the
-  // right page's, and the one between is where they meet.
-  const SkColor left = pages[0][0];
-  const SkColor right = pages[1][0];
-  return {left,
-          aurora::ToAuroraTone(SkColorSetRGB(
-              (SkColorGetR(left) + SkColorGetR(right)) / 2,
-              (SkColorGetG(left) + SkColorGetG(right)) / 2,
-              (SkColorGetB(left) + SkColorGetB(right)) / 2)),
-          right};
+  return pages;
 }
 
 void ZephyrusAuroraView::OnThemeChanged() {
   views::View::OnThemeChanged();
   SchedulePaint();
-}
-
-void ZephyrusAuroraView::ViewHierarchyChanged(
-    const views::ViewHierarchyChangedDetails& details) {
-  views::View::ViewHierarchyChanged(details);
-  if (details.child != this) {
-    return;
-  }
-  parent_observation_.Reset();
-  if (details.is_add && details.parent) {
-    parent_observation_.Observe(details.parent);
-    FitToParent();
-  }
-}
-
-void ZephyrusAuroraView::OnViewBoundsChanged(views::View* observed_view) {
-  FitToParent();
-}
-
-void ZephyrusAuroraView::OnViewIsDeleting(views::View* observed_view) {
-  // The parent goes before its children; drop the observation while it is still
-  // there to drop, or the scoped observation would remove itself from a view
-  // that is no longer.
-  parent_observation_.Reset();
-}
-
-void ZephyrusAuroraView::FitToParent() {
-  if (parent()) {
-    SetBoundsRect(parent()->GetLocalBounds());
-  }
 }
 
 bool ZephyrusAuroraView::IsDarkChrome() const {
@@ -295,31 +256,32 @@ SkColor ZephyrusAuroraView::FallbackColor(
   return SkColorSetRGB(0x6e, 0x8c, 0xf0);
 }
 
-void ZephyrusAuroraView::ShowColors(
-    const std::array<SkColor, aurora::kSlots>& colors,
-    bool animate) {
-  if (has_colors_ && colors == target_) {
+void ZephyrusAuroraView::ShowColors(const std::vector<Palette>& palettes,
+                                    bool animate) {
+  if (palettes.empty() || palettes == target_) {
     return;
   }
-  if (!has_colors_ || !animate || !gfx::Animation::ShouldRenderRichAnimation() ||
-      !GetVisible()) {
+  if (current_.size() != palettes.size() || !animate ||
+      !gfx::Animation::ShouldRenderRichAnimation() || !GetVisible()) {
     morph_->Stop();
-    current_ = target_ = from_ = colors;
-    has_colors_ = true;
+    current_ = target_ = from_ = palettes;
     SchedulePaint();
     return;
   }
-  // Leave from wherever the last fade had got to, so a quick second change
-  // does not jump back to the old colours first.
+  // Leave from wherever the last fade had got to, so a quick second change does
+  // not jump back to the old colours first.
   from_ = current_;
-  target_ = colors;
+  target_ = palettes;
   morph_->Start();
 }
 
 void ZephyrusAuroraView::OnMorphFrame() {
   const double t = morph_->running() ? morph_->progress() : 1.0;
-  for (size_t i = 0; i < current_.size(); ++i) {
-    current_[i] = gfx::Tween::ColorValueBetween(t, from_[i], target_[i]);
+  for (size_t p = 0; p < current_.size() && p < target_.size(); ++p) {
+    for (size_t i = 0; i < current_[p].size(); ++i) {
+      current_[p][i] =
+          gfx::Tween::ColorValueBetween(t, from_[p][i], target_[p][i]);
+    }
   }
   SchedulePaint();
 }
@@ -329,45 +291,50 @@ void ZephyrusAuroraView::OnPaint(gfx::Canvas* canvas) {
   if (bounds.IsEmpty()) {
     return;
   }
-  // The bar's own fill first: the toolbar stands aside while this is showing, so
-  // this is what the bar looks like with no page colour in it at all.
-  const ui::ColorProvider* provider = GetColorProvider();
-  canvas->FillRect(bounds, provider ? provider->GetColor(kColorToolbar)
-                                    : SK_ColorDKGRAY);
-  if (!has_colors_) {
+  // The ground first: the colour of every surface the glow has to show through.
+  // They stand aside from their own fill while this is showing, so this is what
+  // the window looks like with no page colour in it at all.
+  canvas->FillRect(bounds, ground_);
+  for (const Surface& surface : surfaces_) {
+    canvas->FillRect(surface.rect, surface.color);
+  }
+  if (current_.empty() || cards_.empty()) {
     return;
   }
 
-  const float peak = IsDarkChrome() ? kPeakOnDark : kPeakOnLight;
-  const float width = static_cast<float>(bounds.width());
-  const float height = static_cast<float>(bounds.height());
+  const float opacity =
+      IsDarkChrome() ? kHaloOpacityOnDark : kHaloOpacityOnLight;
   gfx::ScopedCanvas scoped(canvas);
   canvas->ClipRect(bounds);
-  for (size_t i = 0; i < current_.size(); ++i) {
-    const float opacity = peak * kCurtainStrength[i];
-    const float rx = std::max(1.0f, width * kCurtainWidth[i] / 2.0f);
-    const float ry = std::max(1.0f, height * kCurtainRise);
-    const float cx = width * (kCurtainLeft[i] + kCurtainWidth[i] / 2.0f);
-    const SkColor4f base = SkColor4f::FromColor(current_[i]);
-    // Three stops are what makes it a glow and not a disc: a bright core, a long
-    // soft shoulder, then nothing.
-    const SkColor4f colors[] = {
-        {base.fR, base.fG, base.fB, opacity},
-        {base.fR, base.fG, base.fB, opacity * 0.42f},
-        {base.fR, base.fG, base.fB, 0.0f}};
+  for (size_t i = 0; i < cards_.size(); ++i) {
+    const Card& card = cards_[i];
+    if (card.rect.IsEmpty()) {
+      continue;
+    }
+    const Palette& palette = current_[std::min(i, current_.size() - 1)];
+    // The colours run left to right across the card, so the glow along the top
+    // and bottom edges changes colour, and the left and right edges each wear
+    // their own end of it.
+    std::array<SkColor4f, aurora::kSlots> colors;
+    for (size_t c = 0; c < aurora::kSlots; ++c) {
+      const SkColor4f base = SkColor4f::FromColor(palette[c]);
+      colors[c] = {base.fR, base.fG, base.fB, opacity};
+    }
     const SkScalar stops[] = {0.0f, 0.5f, 1.0f};
+    const SkPoint ends[] = {
+        SkPoint::Make(static_cast<float>(card.rect.x()), 0),
+        SkPoint::Make(static_cast<float>(card.rect.right()), 0)};
     cc::PaintFlags flags;
     flags.setAntiAlias(true);
-    // A unit-radius gradient, stretched to the curtain and anchored on the
-    // bottom edge of the bar: the same trick the onboarding haze uses, so the
-    // ellipse is one draw and no mask.
-    flags.setShader(cc::PaintShader::MakeRadialGradient(
-        SkPoint::Make(0, 0), 1.0f, colors, stops, 3, SkTileMode::kClamp));
-    gfx::ScopedCanvas curtain(canvas);
-    canvas->Translate(gfx::Vector2d(static_cast<int>(cx), bounds.height()));
-    canvas->sk_canvas()->scale(rx, ry);
-    canvas->sk_canvas()->drawRect(SkRect::MakeLTRB(-1.0f, -1.0f, 1.0f, 0.0f),
-                                  flags);
+    flags.setShader(cc::PaintShader::MakeLinearGradient(
+        ends, colors.data(), stops, aurora::kSlots, SkTileMode::kClamp));
+    flags.setImageFilter(sk_make_sp<cc::BlurPaintFilter>(
+        kHaloSigma, kHaloSigma, SkTileMode::kDecal, nullptr));
+    SkRect rect = gfx::RectToSkRect(card.rect);
+    rect.outset(kHaloOutset, kHaloOutset);
+    const float radius = card.radius + kHaloOutset;
+    canvas->sk_canvas()->drawRRect(SkRRect::MakeRectXY(rect, radius, radius),
+                                   flags);
   }
 }
 
@@ -425,7 +392,8 @@ void ZephyrusAuroraView::OnCaptured(
       return;
     }
   }
-  AuroraTabData* data = AuroraTabData::GetOrCreateForWebContents(contents.get());
+  AuroraTabData* data =
+      AuroraTabData::GetOrCreateForWebContents(contents.get());
   data->colors = aurora::FillSlots(aurora::ExtractVividColors(small),
                                    FallbackColor(contents.get()));
   data->taken = base::TimeTicks::Now();
