@@ -2,45 +2,45 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Back: a clean stroked chevron.
+// Back: a rounded chevron.
 //
-// This replaces a "dotted chevron" built from 2.86-unit blocks. That staircase
-// was the point of the old glyph, but 2.86 is not a whole number of pixels at
-// any common scale, so every block edge landed mid-pixel and the arrow read as
-// low-resolution rather than as deliberate pixel art.
+// The earlier version closed its stroked path, which joined the two arms with a
+// third edge and drew a hollow TRIANGLE instead of a chevron. This one is open:
+// two arms meeting at a softened tip, with round ends.
 //
-// TWO CANVAS REPS. Chromium picks the rep matching the requested size, so the
-// 16 rep is drawn at 16 rather than scaled down from 24 -- which is what
-// actually makes it crisp in the toolbar. Coordinates in each rep are whole or
-// half units so the stroke sits on the pixel grid.
+// Vector icons have square or butt caps only, so the round ends are small
+// filled circles (the stroke's own diameter) laid over the arm ends, and the tip
+// is rounded by running the stroke through a short quadratic instead of a sharp
+// join. Whole or half units, centred on both axes of the canvas (24: x 9..15,
+// y 6..18; 16: x 6..10, y 4..12), so forward is an exact mirror and the pair
+// does not splay. Keep it symmetric about the canvas centre if the size changes.
 //
-// FLIPS_IN_RTL: a back arrow points the other way in right-to-left locales,
-// and the old glyph never did.
+// FLIPS_IN_RTL: a back arrow points the other way in right-to-left locales.
 //
-// CENTRED IN THE CANVAS, which the first version was not: it spanned x 8..15,
-// centre 11.5 against a canvas centre of 12, and forward was its mirror so it
-// leaned the other way. Half a unit each, in opposite directions, is enough to
-// see -- the pair read as splayed apart inside containers that were themselves
-// perfectly centred, which is exactly what made it look like a layout bug.
-//
-// Both reps are now a 45-degree chevron on WHOLE units, centred on both axes:
-// 24 spans 9..15 and 6..18, 16 spans 6..10 and 4..12. Keep it that way. If the
-// size needs changing, change it symmetrically about the canvas centre.
+// TWO CANVAS REPS: Chromium picks the rep matching the requested size, so the
+// 16 rep is drawn at 16 rather than scaled down from 24, which is what keeps it
+// crisp in the toolbar.
 
 CANVAS_DIMENSIONS, 24,
 FLIPS_IN_RTL,
 STROKE, 2.f,
-CAP_SQUARE,
 MOVE_TO, 15, 6,
-LINE_TO, 9, 12,
+LINE_TO, 10.4, 10.6,
+QUADRATIC_TO, 9, 12, 10.4, 13.4,
 LINE_TO, 15, 18,
-CLOSE
+NEW_PATH,
+CIRCLE, 15, 6, 1,
+NEW_PATH,
+CIRCLE, 15, 18, 1,
 
 CANVAS_DIMENSIONS, 16,
 FLIPS_IN_RTL,
 STROKE, 1.5f,
-CAP_SQUARE,
 MOVE_TO, 10, 4,
-LINE_TO, 6, 8,
+LINE_TO, 7.1, 6.9,
+QUADRATIC_TO, 6, 8, 7.1, 9.1,
 LINE_TO, 10, 12,
-CLOSE
+NEW_PATH,
+CIRCLE, 10, 4, 0.75f,
+NEW_PATH,
+CIRCLE, 10, 12, 0.75f

@@ -2,23 +2,30 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Forward: the mirror of back. See zephyrus_back_arrow.icon for why this is a
-// stroked chevron with two canvas reps rather than a block staircase.
+// Forward: the mirror of back. See zephyrus_back_arrow.icon for why this is an
+// open rounded chevron (round ends from small circles, a softened tip from a
+// quadratic) with two canvas reps.
 
 CANVAS_DIMENSIONS, 24,
 FLIPS_IN_RTL,
 STROKE, 2.f,
-CAP_SQUARE,
 MOVE_TO, 9, 6,
-LINE_TO, 15, 12,
+LINE_TO, 13.6, 10.6,
+QUADRATIC_TO, 15, 12, 13.6, 13.4,
 LINE_TO, 9, 18,
-CLOSE
+NEW_PATH,
+CIRCLE, 9, 6, 1,
+NEW_PATH,
+CIRCLE, 9, 18, 1,
 
 CANVAS_DIMENSIONS, 16,
 FLIPS_IN_RTL,
 STROKE, 1.5f,
-CAP_SQUARE,
 MOVE_TO, 6, 4,
-LINE_TO, 10, 8,
+LINE_TO, 8.9, 6.9,
+QUADRATIC_TO, 10, 8, 8.9, 9.1,
 LINE_TO, 6, 12,
-CLOSE
+NEW_PATH,
+CIRCLE, 6, 4, 0.75f,
+NEW_PATH,
+CIRCLE, 6, 12, 0.75f

@@ -516,13 +516,16 @@ class ZephyrusGlyphMotion {
     // The arrows follow the UI direction, as their icons do.
     const float dir = base::i18n::IsRTL() ? -1.f : 1.f;
     switch (kind_) {
+      // A chevron leans 1.5dp the way it points, and no more: a hover is
+      // acknowledged, not performed. (It was 2.5dp and a 5% swell, which beside
+      // a circular highlight read as the glyph sliding off centre.)
       case ZephyrusGlyph::kNudgeBack:
-        dx = -dir * 2.5f * hover;
-        scale += 0.05f * hover;
+        dx = -dir * 1.5f * hover;
+        scale += 0.02f * hover;
         break;
       case ZephyrusGlyph::kNudgeForward:
-        dx = dir * 2.5f * hover;
-        scale += 0.05f * hover;
+        dx = dir * 1.5f * hover;
+        scale += 0.02f * hover;
         break;
       case ZephyrusGlyph::kSpin:
         // A lean on hover; one full turn, springing past and settling, on click.
@@ -4198,13 +4201,6 @@ void ToolbarView::LendZephyrusChromeTo(views::View* host) {
   }
   for (views::View* child : movable) {
     host->AddChildView(child);
-    // The sidebar draws one plain highlight and the glyph stays put under it:
-    // the arrows' lean, the reload's tilt and the menu's pop belong to the
-    // title bar's own highlight, and with a circle drawn about the cell they
-    // read as an off-centre glyph. They are attached again when the control
-    // returns (AttachZephyrusMotions, on the next layout).
-    std::erase_if(zephyrus_glyph_motions_,
-                  [child](const auto& m) { return m->IsFor(child); });
   }
   PreferredSizeChanged();
   InvalidateLayout();
