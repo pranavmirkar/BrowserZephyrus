@@ -4274,8 +4274,7 @@ void ZephyrusSidebarView::RebuildCompactChrome() {
       } else {
         compact_hidden_->AddChildView(view);
       }
-    } else if (!view->GetVisible() ||
-               view->GetPreferredSize().IsEmpty()) {
+    } else if (view->GetPreferredSize().IsEmpty()) {
       // Zero-width children (the toolbar divider, an empty container) are not
       // controls; giving them a cell each is what put blank cells in the run.
       compact_hidden_->AddChildView(view);
@@ -4283,8 +4282,14 @@ void ZephyrusSidebarView::RebuildCompactChrome() {
       // In the bar's own left-to-right order: back, forward, reload, then the
       // page actions. Nothing reorders them, so the strip in the panel is the
       // strip the user already knows from the title bar.
+      //
+      // A control that is hidden RIGHT NOW still goes into the row: the row
+      // skips hidden children when it lays out and relays out the moment one
+      // is shown. Parking it out of sight instead lost the forward button for
+      // good -- it is hidden until the preference or the history says
+      // otherwise, and nothing came back for it when it was shown.
       compact_controls_row_->AddChildView(view);
-      controls_visible = true;
+      controls_visible = controls_visible || view->GetVisible();
     }
   }
   compact_address_row_->SetVisible(address_visible);
