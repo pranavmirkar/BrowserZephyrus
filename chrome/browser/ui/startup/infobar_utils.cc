@@ -213,15 +213,8 @@ void AddInfoBarsIfNecessary(BrowserWindowInterface* browser,
     return;
   }
 
-  // Web apps should not display the session restore bubble (crbug.com/40800614)
-  const bool should_display_bubble =
-      !is_web_app && HasPendingUncleanExit(browser->GetProfile());
-  base::UmaHistogramBoolean("Startup.CrashBubbleShown", should_display_bubble);
-  if (should_display_bubble) {
-    SessionCrashedBubble::ShowIfNotOffTheRecordProfile(
-        browser,
-        /*skip_tab_checking=*/false);
-  }
+  // Zephyrus: no "Restore pages?" bubble. The session comes back by itself
+  // (see DetermineURLsAndLaunch), so there is nothing to ask.
 
   // These info bars are not shown when the browser is being controlled by
   // automated tests, so that they don't interfere with tests that assume no

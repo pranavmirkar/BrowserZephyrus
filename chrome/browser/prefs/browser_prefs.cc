@@ -1523,6 +1523,10 @@ std::string GetCountry() {
 }
 
 void RegisterLocalState(PrefRegistrySimple* registry) {
+  // Zephyrus: how many launches in a row followed a crash and restored the
+  // session; cleared once the browser stays up. See
+  // StartupBrowserCreatorImpl::DetermineURLsAndLaunch. Literal for layering.
+  registry->RegisterIntegerPref("zephyrus.session.crash_restores", 0);
   // Zephyrus: whether the one-time profile setup (naming the first profile) has
   // been completed. Local state, so it runs once per install rather than per
   // profile. Literal to avoid a layering dependency on //chrome/browser/ui.
