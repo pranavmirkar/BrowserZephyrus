@@ -185,13 +185,37 @@ var zephyrusScriptlets = (function(){
         } catch(e){}
         return;
       }
-      var existing = owner[prop];
-      if (existing && typeof existing === 'object'){ install(existing, i + 1); return; }
-      var next;
+      var existing;
+      try { existing = owner[prop]; } catch(e){ return; }
+      // Through functions as well as objects: "Object.prototype.x" passes
+      // through the Object constructor. MEASURED (gamerant, cbr, screenrant,
+      // androidpolice, cnet, 2026-11-12): only objects were walked, so the
+      // global Object itself was replaced by a placeholder reading undefined,
+      // and every script on the page that used Object.freeze threw.
+      if (existing != null &&
+          (typeof existing === 'object' || typeof existing === 'function')){
+        install(existing, i + 1);
+        return;
+      }
+      var next = existing;
       try {
         Object.defineProperty(owner, prop, {
           get: function(){ return next; },
-          set: function(nv){ next = nv; if (nv && typeof nv === 'object') install(nv, i + 1); },
+          set: function(nv){
+            // Assigned on an object that only INHERITS this placeholder (it
+            // sits on a prototype): that object gets its own property, as it
+            // would have without us, and the path continues inside it. One
+            // shared value for every object would rewire unrelated code.
+            if (this !== owner && this != null){
+              try {
+                Object.defineProperty(this, prop, { value: nv, writable: true,
+                                                    enumerable: true, configurable: true });
+              } catch(e){}
+            } else {
+              next = nv;
+            }
+            if (nv != null && (typeof nv === 'object' || typeof nv === 'function')) install(nv, i + 1);
+          },
           configurable: true
         });
       } catch(e){}
@@ -1572,6 +1596,18 @@ var zephyrusScriptlets = (function(){
       }
     } catch(e){}
   }, true);
+  // An abort inside a promise callback is not an 'error' event but an
+  // unhandled rejection, which reached the console as "Uncaught ReferenceError:
+  // zx..." (MEASURED on 4 of 78 popular sites, 2026-11-12).
+  listen(self, 'unhandledrejection', function(ev){
+    try {
+      if (ev && ev.reason instanceof ReferenceError &&
+          String(ev.reason.message).indexOf(abortMagic) !== -1){
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+      }
+    } catch(e){}
+  }, true);
   var abortError = function(){ return new ReferenceError(abortMagic); };
 
   // A uBO needle: '' matches anything, '/re/flags' is a regex, a leading '!'
@@ -1630,7 +1666,15 @@ var zephyrusScriptlets = (function(){
         Object.defineProperty(owner, prop, { configurable: true, enumerable: true,
           get: function(){ return held; },
           set: function(v){
-            held = v;
+            // See setConstant: an inheriting object gets its own property.
+            if (this !== owner && this != null){
+              try {
+                Object.defineProperty(this, prop, { value: v, writable: true,
+                                                    enumerable: true, configurable: true });
+              } catch(e){}
+            } else {
+              held = v;
+            }
             if (v != null && (typeof v === 'object' || typeof v === 'function')) walk(v, i + 1);
           } });
       } catch(e){}

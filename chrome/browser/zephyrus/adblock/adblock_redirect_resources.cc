@@ -136,6 +136,10 @@ const RedirectResource* QuietBlockResource(const GURL& url, ResourceType type) {
   }
   switch (type) {
     case kTypeXhr:
+      // "{}", not nothing: pages parse what they fetch as JSON, and an empty
+      // body throws "Unexpected end of JSON input" (MEASURED on 7 of 78 popular
+      // sites, 2026-11-12). Read as text, "{}" is still harmless.
+      return FindRedirectResource("noop.json");
     case kTypePing:
       return FindRedirectResource("empty");
     case kTypeImage:
@@ -168,7 +172,11 @@ std::string_view RedirectResourceBody(const RedirectResource& resource) {
 
 std::string_view RedirectResourceMime(const RedirectResource& resource,
                                       ResourceType type) {
-  if (resource.name != "empty") {
+  // A plain-text stand-in answers in the type the request expects, as `empty`
+  // does. MEASURED (irctc.co.in, 2026-11-12): a list rule naming noop.txt for
+  // a script got text/plain, which Chromium refuses to run ("strict MIME type
+  // checking"), an error the page sees.
+  if (resource.name != "empty" && resource.mime != "text/plain") {
     return resource.mime;
   }
   switch (type) {

@@ -107,7 +107,7 @@ def report(data):
 def main():
     count = int(sys.argv[1]) if len(sys.argv) > 1 else 80
     arms = (sys.argv[2] if len(sys.argv) > 2 else "zephyrus,zephyrus_off,brave").split(",")
-    urls = EXTRA[:count]
+    urls = os.environ['CRAWL_URLS'].split() if os.environ.get('CRAWL_URLS') else EXTRA[:count]
     data = {}
     for name in arms:
         arm = dict([a for a in R.ARMS if a["name"] == name][0])

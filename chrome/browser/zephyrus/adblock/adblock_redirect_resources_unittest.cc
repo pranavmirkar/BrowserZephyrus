@@ -107,13 +107,18 @@ TEST(AdblockRedirectResourcesTest, BlockedRequestsAreAnsweredInTheirShape) {
   const GURL tracker("https://tracker.example/collect?id=1");
   // A beacon or a fetch gets an empty success, which the empty stand-in can
   // really serve for that kind of request.
-  for (ResourceType type : {kTypeXhr, kTypePing}) {
-    const RedirectResource* quiet = QuietBlockResource(tracker, type);
-    ASSERT_TRUE(quiet);
-    EXPECT_EQ(quiet->name, "empty");
-    EXPECT_TRUE(RedirectResourceServes(*quiet, type));
-    EXPECT_EQ(RedirectResourceBody(*quiet), "");
-  }
+  // A fetch or XHR gets an empty JSON object, which a page can parse; a ping
+  // gets nothing.
+  const RedirectResource* fetched = QuietBlockResource(tracker, kTypeXhr);
+  ASSERT_TRUE(fetched);
+  EXPECT_EQ(RedirectResourceBody(*fetched), "{}");
+  EXPECT_TRUE(RedirectResourceServes(*fetched, kTypeXhr));
+  const RedirectResource* pinged = QuietBlockResource(tracker, kTypePing);
+  ASSERT_TRUE(pinged);
+  EXPECT_EQ(RedirectResourceBody(*pinged), "");
+  // A plain-text stand-in served for a script is served as a script.
+  EXPECT_EQ(RedirectResourceMime(*FindRedirectResource("noop.txt"), kTypeScript),
+            "text/javascript");
   // An image gets a transparent image: a pixel for a pixel, an icon for an
   // icon (detectors load an ad server's favicon and call anything under 2px
   // wide a stand-in), and 2x2 for anything else.

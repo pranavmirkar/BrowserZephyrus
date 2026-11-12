@@ -321,5 +321,17 @@ test('every new scriptlet name resolves to a function', () => {
     assert.strictEqual(typeof ctx.__lib[n], 'function', n);
 });
 
+test('set through a constructor leaves the constructor alone and objects their own values', () => {
+  // gamerant.com's rule. The old walk replaced window.Object with undefined.
+  const ctx = page();
+  ctx.__lib['set']('Object.prototype.ads.nopreroll_', 'true');
+  assert.strictEqual(vm.runInContext('typeof Object.freeze', ctx), 'function');
+  assert.strictEqual(vm.runInContext('typeof Object.defineProperty', ctx), 'function');
+  // The page's config object gets the constant once it is created...
+  assert.strictEqual(vm.runInContext('(() => { const cfg = {}; cfg.ads = {nopreroll_: false}; return cfg.ads.nopreroll_; })()', ctx), true);
+  // ...and two unrelated objects do not share one value.
+  assert.deepStrictEqual(Array.from(vm.runInContext('(() => { const a = {}, b = {}; a.ads = 1; b.ads = 2; return [a.ads, b.ads, Object.keys(a).length]; })()', ctx)), [1, 2, 1]);
+});
+
 console.log(passed + ' passed, ' + failures + ' failed');
 process.exitCode = failures ? 1 : 0;
