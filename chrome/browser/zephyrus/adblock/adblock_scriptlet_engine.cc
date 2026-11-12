@@ -20,6 +20,8 @@ namespace {
 // `zephyrusScriptlets[name](...args)`.
 constexpr char kScriptletLibrary[] = R"JS(
 var zephyrusScriptlets = (function(){
+  var realJsonParse = JSON.parse;
+  var realJsonStringify = JSON.stringify;
   var toValue = function(raw){
     switch (raw) {
       case 'true': return true;
@@ -454,9 +456,24 @@ var zephyrusScriptlets = (function(){
   // rmnt / trusted-rpnt — remove or replace text inside matching nodes.
   // rmnt(selector, pattern) deletes matching text; trusted-rpnt adds a
   // replacement string.
-  var replaceNodeText = function(rawSelector, rawPattern, rawReplacement){
-    // A selector is required. Defaulting to '*' would run querySelectorAll('*')
-    // on every DOM mutation, which on a page like YouTube is ruinous.
+  //
+  // The rules aim at INLINE scripts, and an inline script runs as soon as the
+  // parser has it, so the edit has to land first. A mutation observer's
+  // callback is a microtask, and the parser performs a microtask checkpoint
+  // before it runs a script it has just inserted: the callback sees the node
+  // with its text and before it executes. So matching nodes are edited inside
+  // the callback, as they are added. MEASURED (YouTube, 2026-11-12): the old
+  // version re-scanned the document 100 ms after a burst of mutations, long
+  // after the scripts had run, so its edits never took effect.
+  //
+  // Pages that enforce Trusted Types (YouTube: require-trusted-types-for
+  // 'script') refuse plain strings as script text, and each refusal is a
+  // logged CSP violation that the page's report-uri can collect. The text is
+  // written through a policy created here, at document start, before any page
+  // script runs.
+  var makeNodeTextEditor = function(removeWhole){ return function(rawSelector, rawPattern, rawReplacement){
+    // A selector is required. Defaulting to '*' would match every node the
+    // page ever adds.
     if (!rawSelector) return;
     var selector = rawSelector;
     var pattern = rawPattern || '';
@@ -469,68 +486,151 @@ var zephyrusScriptlets = (function(){
         catch(e){ re = null; }
       }
     }
-    var apply = function(){
-      var nodes;
-      try { nodes = document.querySelectorAll(selector); } catch(e){ return; }
-      for (var i = 0; i < nodes.length; i++){
-        var node = nodes[i];
-        var text = node.textContent;
-        if (!text) continue;
-        var next = re ? text.replace(re, replacement)
-                      : text.split(pattern).join(replacement);
-        if (next === text) continue;
-        // Pages with Trusted Types (YouTube among them) throw when script text
-        // is assigned. Swallow it: an uncaught error here both spams the
-        // console and is itself a signal a blocker is present.
+    // Named options after the replacement, in pairs:
+    //   condition <text|/re/>  only nodes whose text has it
+    //   excludes  <text|/re/>  never nodes whose text has it
+    //   sedCount / quitAfter <n>  stop after n edits in all
+    // MEASURED (YouTube): ignoring `condition` put YouTube's fix into the
+    // first script that matched the pattern, an early one that runs before the
+    // page's client config exists, where it threw and stalled the player.
+    var toTester = function(raw){
+      if (raw === undefined || raw === '') return null;
+      raw = String(raw);
+      var m = raw.match(/^\/([\s\S]+)\/([a-z]*)$/);
+      if (m){
         try {
-          node.textContent = next;
-        } catch(e){}
+          var r = new RegExp(m[1], m[2].replace('g', ''));
+          return function(t){ return r.test(t); };
+        } catch(e){ return function(){ return false; }; }
+      }
+      return function(t){ return t.indexOf(raw) !== -1; };
+    };
+    // rmnt takes no replacement: its options start one place earlier.
+    var firstOption = removeWhole ? 2 : 3;
+    if (removeWhole) replacement = '';
+    var condition = null, excludes = null, budget = Infinity;
+    for (var o = firstOption; o + 1 < arguments.length; o += 2){
+      var key = arguments[o], val = arguments[o + 1];
+      if (key === 'condition') condition = toTester(val);
+      else if (key === 'excludes') excludes = toTester(val);
+      else if (key === 'sedCount' || key === 'quitAfter'){
+        var nval = parseInt(val, 10);
+        if (nval > 0) budget = Math.min(budget, nval);
+      }
+    }
+    var observer = null;
+    var policy = textPolicy();
+    var edit = function(node){
+      if (budget <= 0) return;
+      var text = node.textContent;
+      if (!text) return;
+      if (condition && !condition(text)) return;
+      if (excludes && excludes(text)) return;
+      var next;
+      if (removeWhole){
+        // uBO's remove-node-text empties the whole node when the pattern is
+        // in it; removing only the matched words leaves broken script that
+        // throws, which the page can see.
+        var hit = re ? (re.lastIndex = 0, re.test(text)) : text.indexOf(pattern) !== -1;
+        next = hit ? '' : text;
+      } else {
+        next = re ? text.replace(re, replacement)
+                  : text.split(pattern).join(replacement);
+      }
+      if (next === text) return;
+      try {
+        node.textContent = (policy && node.nodeName === 'SCRIPT')
+            ? policy.createScript(next) : next;
+      } catch(e){ return; }
+      if (--budget <= 0 && observer){
+        try { observer.disconnect(); } catch(e){}
       }
     };
-    apply();
-    // Coalesce mutation bursts; re-scanning the document per mutation is far
-    // too expensive on script-heavy pages.
-    var pending = false;
-    var schedule = function(){
-      if (pending) return;
-      pending = true;
-      setTimeout(function(){ pending = false; apply(); }, 100);
+    var matches = function(node){
+      try { return node.nodeType === 1 && node.matches(selector); }
+      catch(e){ return false; }
     };
     try {
-      new MutationObserver(schedule).observe(document.documentElement || document,
-                                             { childList: true, subtree: true });
+      var existing = document.querySelectorAll(selector);
+      for (var i = 0; i < existing.length; i++) edit(existing[i]);
+    } catch(e){ return; }
+    if (budget <= 0) return;
+    try {
+      observer = new RealMutationObserver(function(records){
+        for (var r = 0; r < records.length; r++){
+          var added = records[r].addedNodes;
+          for (var a = 0; a < added.length; a++){
+            var node = added[a];
+            if (matches(node)){
+              edit(node);
+            } else if (node.nodeType === 1 && node.firstElementChild){
+              var inner;
+              try { inner = node.querySelectorAll(selector); } catch(e){ continue; }
+              for (var n = 0; n < inner.length; n++) edit(inner[n]);
+            }
+          }
+        }
+      });
+      observer.observe(document.documentElement || document,
+                       { childList: true, subtree: true });
     } catch(e){}
+  }; };
+  var replaceNodeText = makeNodeTextEditor(false);
+  var removeNodeText = makeNodeTextEditor(true);
+
+  // One Trusted Types policy for script text, made the first time a scriptlet
+  // needs it (at document start, before the page's own scripts) and only on a
+  // page where Trusted Types exist. Null if the page's policy forbids it.
+  var textPolicyValue;
+  var textPolicy = function(){
+    if (textPolicyValue !== undefined) return textPolicyValue;
+    textPolicyValue = null;
+    try {
+      var tt = self.trustedTypes;
+      if (tt && typeof tt.createPolicy === 'function'){
+        textPolicyValue = tt.createPolicy(
+            'p' + Math.random().toString(36).slice(2, 10),
+            { createScript: function(s){ return s; } });
+      }
+    } catch(e){}
+    return textPolicyValue;
   };
 
 
-  // trusted-json-edit-xhr-request(edit, propsToMatch, <urlPattern>)
-  // Rewrites the JSON body of an outgoing XHR. YouTube's anti-adblock fixes use
-  // this on the /player request (spoofing clientScreen, stamping
-  // lactMilliseconds, tagging the referer) so the response returns without ad
-  // payloads.
+  // uBO's JSON edit language, as the live rules use it. Compiled once per rule
+  // into { matches(root), apply(root) }; null when the text is outside what is
+  // understood, so nothing is half-applied: a malformed player request breaks
+  // playback, which is worse than an ad.
   //
-  // uBO expresses the edit in a small JSONPath-like DSL. This implements the
-  // subset the live YouTube rules actually use:
-  //   [?<path><op><val>]   leading guard - apply only if it holds
-  //   ..name               recursive descent to every key of that name
-  //   .name                child access
-  //   [?.name==<v>]        predicate on the current node
-  //   ops: ==   *= (contains)   =/regex/
-  //   actions: = <value>  assign     += {json}  shallow-merge
-  //   values: "text", ${now}, repl({"regex":..,"replacement":..})
-  // Anything outside this subset is ignored rather than half-applied: a
-  // malformed player request breaks playback, which is worse than an ad.
-  var jsonEditXhrRequest = function(editSpec, propName, propValue){
-    if (!editSpec) return;
-    var urlNeedle = '';
-    if (propName === 'propsToMatch' && propValue) urlNeedle = String(propValue);
+  //   [?<pred>][?<pred>]...  leading guards, every one must hold
+  //   <pred>:  [!].path | [!].path<op><value>     (.. = at any depth)
+  //            ops ==  *= (contains)  ^= (starts)  $= (ends)  =/regex/
+  //   .name / ..name         child / every descendant of that name
+  //   .name[?<pred>]         ... that satisfies the predicate
+  //   actions:  = <value>  assign      += {json}  shallow-merge
+  //   values:   "text", number, true/false, {json}, ${now},
+  //             repl({"regex": "...", "replacement": "..."})
+  var compileJsonEdit = function(editSpec){
+    if (!editSpec) return null;
+    var hasOwn = function(o, k){
+      return Object.prototype.hasOwnProperty.call(o, k);
+    };
 
     var parseValue = function(raw){
       raw = String(raw).trim();
       if (raw.indexOf('repl(') === 0 && raw.charAt(raw.length - 1) === ')'){
         try {
-          var spec = JSON.parse(raw.slice(5, -1));
-          return { kind: 'repl', regex: spec.regex,
+          // Rule authors write REGEX escapes here (\b, \d, \s, \w), which JSON
+          // would read as its own (\b is a backspace) or reject. Keep every
+          // backslash for the regex unless it escapes a quote or a backslash.
+          var specText = raw.slice(5, -1).replace(/\\(?![\\"])/g, '\\\\');
+          var spec = JSON.parse(specText);
+          var body = String(spec.regex || '');
+          var flags = '';
+          // "/.../flags" is a regex literal written as a string.
+          var m = body.match(/^\/([\s\S]*)\/([a-z]*)$/);
+          if (m){ body = m[1]; flags = m[2]; }
+          return { kind: 'repl', regex: new RegExp(body, flags),
                    replacement: spec.replacement || '' };
         } catch(e){ return null; }
       }
@@ -542,7 +642,8 @@ var zephyrusScriptlets = (function(){
       // with quotes, and checking first left the literal text in the request.
       var quoted = false;
       var q = raw.charAt(0);
-      if ((q === '"' || q === "'") && raw.charAt(raw.length - 1) === q){
+      if ((q === '"' || q === "'") && raw.length > 1 &&
+          raw.charAt(raw.length - 1) === q){
         raw = raw.slice(1, -1);
         quoted = true;
       }
@@ -553,6 +654,7 @@ var zephyrusScriptlets = (function(){
       }
       if (raw === 'true') return { kind: 'literal', value: true };
       if (raw === 'false') return { kind: 'literal', value: false };
+      if (raw === 'null') return { kind: 'literal', value: null };
       return { kind: 'literal', value: raw };
     };
 
@@ -564,63 +666,115 @@ var zephyrusScriptlets = (function(){
         return;
       }
       for (var k in node){
-        if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+        if (!hasOwn(node, k)) continue;
         if (k === name) out.push({ parent: node, key: k, value: node[k] });
         descend(node[k], name, out);
       }
     };
 
+    // ".a.b" or "..a.b" read from `node`: every value it names.
+    var resolve = function(node, recursive, names){
+      var current = [];
+      if (recursive){
+        descend(node, names[0], current);
+      } else if (node && typeof node === 'object' && hasOwn(node, names[0])){
+        current.push({ parent: node, key: names[0], value: node[names[0]] });
+      }
+      for (var i = 1; i < names.length; i++){
+        var next = [];
+        for (var j = 0; j < current.length; j++){
+          var v = current[j].value;
+          if (v && typeof v === 'object' && hasOwn(v, names[i])){
+            next.push({ parent: v, key: names[i], value: v[names[i]] });
+          }
+        }
+        current = next;
+      }
+      return current;
+    };
+
     var compare = function(actual, op, expected){
+      if (op === 'exists') return actual !== undefined;
       if (actual === undefined || actual === null) return false;
       var a = String(actual);
       if (op === '==') return a === String(expected);
       if (op === '*=') return a.indexOf(String(expected)) !== -1;
-      if (op === '=~'){
-        var body = String(expected);
-        if (body.charAt(0) !== '/') return false;
-        var end = body.lastIndexOf('/');
-        try {
-          return new RegExp(body.slice(1, end), body.slice(end + 1)).test(a);
-        } catch(e){ return false; }
+      if (op === '^=') return a.indexOf(String(expected)) === 0;
+      if (op === '$=') {
+        var e = String(expected);
+        return a.length >= e.length && a.slice(a.length - e.length) === e;
       }
+      if (op === '=~') return expected.test(a);
       return false;
     };
 
+    // "[?...]" -> function(node) -> bool, or null if not understood.
     var parsePredicate = function(text){
-      var m = text.match(/^\[\?(\.{1,2})([A-Za-z0-9_$]+)(==|\*=|=)([\s\S]*)\]$/);
+      var m = text.match(/^\[\?(!?)(\.{1,2})([A-Za-z0-9_$]+(?:\.[A-Za-z0-9_$]+)*)(?:(==|\*=|\^=|\$=|=)([\s\S]*))?\]$/);
       if (!m) return null;
-      var recursive = m[1] === '..';
-      var name = m[2];
-      var op = m[3];
-      var rawVal = m[4].trim();
-      if (op === '=' && rawVal.charAt(0) === '/') op = '=~';
-      var expected = (op === '=~') ? rawVal : (parseValue(rawVal) || {}).value;
+      var negate = m[1] === '!';
+      var recursive = m[2] === '..';
+      var names = m[3].split('.');
+      var op = m[4] || 'exists';
+      var expected;
+      if (op !== 'exists'){
+        var rawVal = m[5].trim();
+        if (op === '=' && rawVal.charAt(0) === '/'){
+          var rm = rawVal.match(/^\/([\s\S]*)\/([a-z]*)$/);
+          if (!rm) return null;
+          try { expected = new RegExp(rm[1], rm[2]); } catch(e){ return null; }
+          op = '=~';
+        } else if (op === '='){
+          return null;
+        } else {
+          var parsed = parseValue(rawVal);
+          if (!parsed || parsed.kind !== 'literal') return null;
+          expected = parsed.value;
+        }
+      }
       return function(node){
-        var hits = [];
-        if (recursive){
-          descend(node, name, hits);
-        } else if (node && typeof node === 'object' &&
-                   Object.prototype.hasOwnProperty.call(node, name)){
-          hits.push({ parent: node, key: name, value: node[name] });
+        var hits = resolve(node, recursive, names);
+        var hold = false;
+        for (var i = 0; i < hits.length && !hold; i++){
+          hold = compare(hits[i].value, op, expected);
         }
-        for (var i = 0; i < hits.length; i++){
-          if (compare(hits[i].value, op, expected)) return true;
-        }
-        return false;
+        return negate ? !hold : hold;
       };
     };
 
+    // The "[...]" group at the start of `text`, brackets balanced and quoted
+    // text skipped; -1 if there is none.
+    var groupEnd = function(text){
+      if (text.charAt(0) !== '[') return -1;
+      var depth = 0;
+      var quote = '';
+      for (var i = 0; i < text.length; i++){
+        var ch = text.charAt(i);
+        if (quote){
+          if (ch === '\\') { i++; continue; }
+          if (ch === quote) quote = '';
+          continue;
+        }
+        if (ch === '"') { quote = ch; continue; }
+        if (ch === '[') depth++;
+        else if (ch === ']' && --depth === 0) return i;
+      }
+      return -1;
+    };
+
     var spec = String(editSpec).trim();
-    var guard = null;
-    if (spec.charAt(0) === '['){
-      var close = spec.indexOf(']');
-      if (close === -1) return;
-      guard = parsePredicate(spec.slice(0, close + 1));
+    var guards = [];
+    while (spec.charAt(0) === '['){
+      var close = groupEnd(spec);
+      if (close === -1) return null;
+      var guard = parsePredicate(spec.slice(0, close + 1));
+      if (!guard) return null;
+      guards.push(guard);
       spec = spec.slice(close + 1);
     }
 
-    // Find the action operator OUTSIDE any predicate, so "==" inside [?...]
-    // is not mistaken for the assignment.
+    // The action operator OUTSIDE any predicate, so "==" inside [?...] is not
+    // mistaken for the assignment.
     var depth = 0;
     var opIndex = -1;
     var action = 'assign';
@@ -634,39 +788,49 @@ var zephyrusScriptlets = (function(){
         break;
       }
     }
-    if (opIndex === -1) return;
+    if (opIndex === -1) return null;
     var pathText = spec.slice(0, opIndex);
     var valueText = spec.slice(opIndex + (action === 'merge' ? 2 : 1));
     var parsedValue = parseValue(valueText);
-    if (!parsedValue) return;
+    if (!parsedValue) return null;
+    if (action === 'merge' && parsedValue.kind !== 'json') return null;
 
     var tokens = [];
-    var re = /(\.{1,2})([A-Za-z0-9_$]+)(\[\?[^\]]*\])?/g;
-    var tm;
-    while ((tm = re.exec(pathText)) !== null){
-      tokens.push({ recursive: tm[1] === '..', name: tm[2],
-                    filter: tm[3] ? parsePredicate(tm[3]) : null });
+    var rest = pathText;
+    while (rest.length){
+      var tm = rest.match(/^(\.{1,2})([A-Za-z0-9_$]+)/);
+      if (!tm) return null;
+      var token = { recursive: tm[1] === '..', name: tm[2], filter: null };
+      rest = rest.slice(tm[0].length);
+      if (rest.charAt(0) === '['){
+        var end = groupEnd(rest);
+        if (end === -1) return null;
+        token.filter = parsePredicate(rest.slice(0, end + 1));
+        if (!token.filter) return null;
+        rest = rest.slice(end + 1);
+      }
+      tokens.push(token);
     }
-    if (!tokens.length) return;
+    if (!tokens.length) return null;
 
-    var applyEdit = function(root){
-      if (guard && !guard(root)) return false;
+    var matches = function(root){
+      if (!root || typeof root !== 'object') return false;
+      for (var g = 0; g < guards.length; g++){
+        if (!guards[g](root)) return false;
+      }
+      return true;
+    };
+
+    var apply = function(root){
+      if (!matches(root)) return false;
       var current = [{ parent: null, key: null, value: root }];
       for (var t = 0; t < tokens.length; t++){
-        var token = tokens[t];
+        var tok = tokens[t];
         var next = [];
         for (var c = 0; c < current.length; c++){
-          var node = current[c].value;
-          var hits = [];
-          if (token.recursive){
-            descend(node, token.name, hits);
-          } else if (node && typeof node === 'object' &&
-                     Object.prototype.hasOwnProperty.call(node, token.name)){
-            hits.push({ parent: node, key: token.name,
-                        value: node[token.name] });
-          }
+          var hits = resolve(current[c].value, tok.recursive, [tok.name]);
           for (var h = 0; h < hits.length; h++){
-            if (token.filter && !token.filter(hits[h].value)) continue;
+            if (tok.filter && !tok.filter(hits[h].value)) continue;
             next.push(hits[h]);
           }
         }
@@ -678,10 +842,9 @@ var zephyrusScriptlets = (function(){
       for (var n = 0; n < current.length; n++){
         var target = current[n];
         if (action === 'merge'){
-          if (parsedValue.kind !== 'json' || !target.value ||
-              typeof target.value !== 'object') continue;
+          if (!target.value || typeof target.value !== 'object') continue;
           for (var k2 in parsedValue.value){
-            if (Object.prototype.hasOwnProperty.call(parsedValue.value, k2)){
+            if (hasOwn(parsedValue.value, k2)){
               target.value[k2] = parsedValue.value[k2];
               changed = true;
             }
@@ -693,10 +856,7 @@ var zephyrusScriptlets = (function(){
           newValue = String(Date.now());
         } else if (parsedValue.kind === 'repl'){
           var text = String(target.value === undefined ? '' : target.value);
-          try {
-            newValue = text.replace(new RegExp(parsedValue.regex),
-                                    parsedValue.replacement);
-          } catch(e){ continue; }
+          newValue = text.replace(parsedValue.regex, parsedValue.replacement);
         } else {
           newValue = parsedValue.value;
         }
@@ -708,6 +868,17 @@ var zephyrusScriptlets = (function(){
       return changed;
     };
 
+    return { matches: matches, apply: apply };
+  };
+
+  // trusted-json-edit-xhr-request(edit, propsToMatch, <urlPattern>)
+  // Rewrites the JSON body of an outgoing XHR. Kept for the lists that name
+  // it; NOT registered for YouTube's sake (see the table).
+  var jsonEditXhrRequest = function(editSpec, propName, propValue){
+    var edit = compileJsonEdit(editSpec);
+    if (!edit) return;
+    var urlNeedle = '';
+    if (propName === 'propsToMatch' && propValue) urlNeedle = String(propValue);
     var RealXhr = window.XMLHttpRequest;
     if (!RealXhr || !RealXhr.prototype) return;
     var realOpen = RealXhr.prototype.open;
@@ -722,7 +893,7 @@ var zephyrusScriptlets = (function(){
         if (urlNeedle && url.indexOf(urlNeedle) !== -1 &&
             typeof body === 'string' && body.charAt(0) === '{'){
           var parsed = JSON.parse(body);
-          if (applyEdit(parsed)) arguments[0] = JSON.stringify(parsed);
+          if (edit.apply(parsed)) arguments[0] = JSON.stringify(parsed);
         }
       } catch(e){
         // Never let an edit failure break the request: a broken /player call is
@@ -730,6 +901,45 @@ var zephyrusScriptlets = (function(){
       }
       return realSend.apply(this, arguments);
     };
+  };
+
+  // trusted-edit-inbound-object(fnPath, argPosition, edit)
+  // Edits the object a page passes to a function, before the function sees it.
+  // YouTube's player builds its /player request with JSON.stringify(body); the
+  // rules edit that body (the context it says it is playing in) so the reply
+  // carries no ads. Hooking the serialiser, not the transport, works whether
+  // the request then goes by fetch or by XHR -- the reason the XHR version
+  // above never fired on YouTube.
+  //
+  // The page's own object is never changed: the guards are checked on it, and
+  // only when they hold is a COPY edited and passed on instead. Any failure
+  // passes the original through untouched.
+  var trustedEditInboundObject = function(fnPath, argPosRaw, editSpec){
+    var edit = compileJsonEdit(editSpec);
+    if (!edit || !fnPath) return;
+    var pos = parseInt(argPosRaw, 10);
+    if (!(pos >= 0)) pos = 0;
+    var found = findOwner(self, String(fnPath));
+    if (!found || !found[0]) return;
+    var owner = found[0];
+    var name = found[1];
+    patchMethod(owner, name, function(target, thisArg, args){
+      try {
+        var arg = args[pos];
+        if (arg && typeof arg === 'object' && edit.matches(arg)){
+          // A copy by value, through the real serialiser and parser: the
+          // argument is about to be serialised anyway, so nothing a copy
+          // would lose (functions, undefined) would have survived.
+          var copy = realJsonParse(Reflect.apply(realJsonStringify, JSON, [arg]));
+          if (edit.apply(copy)){
+            var edited = Array.prototype.slice.call(args);
+            edited[pos] = copy;
+            return Reflect.apply(target, thisArg, edited);
+          }
+        }
+      } catch(e){}
+      return Reflect.apply(target, thisArg, args);
+    });
   };
 
   // ---- Defusers: the anti-adblock and ad-script neutralisers ----
@@ -1279,6 +1489,10 @@ var zephyrusScriptlets = (function(){
     'aopr': abortOnPropertyRead,
     'trusted-replace-fetch-response': trustedReplaceFetchResponse,
     'trusted-replace-xhr-response': trustedReplaceXhrResponse,
+    // uBO's short names for the two above.
+    'trusted-rpfr': trustedReplaceFetchResponse,
+    'trusted-rpxr': trustedReplaceXhrResponse,
+    'trusted-edit-inbound-object': trustedEditInboundObject,
     'trusted-prevent-dom-bypass': trustedPreventDomBypass,
     'nano-setTimeout-booster': nanoBooster('setTimeout'),
     'nano-stb': nanoBooster('setTimeout'),
@@ -1352,8 +1566,8 @@ var zephyrusScriptlets = (function(){
     // cannot gain anything here. If it is ever needed, port it to the fetch
     // path (see hookFetch above) and mask the patch's toString.
     'no-xhr-if': noXhrIf,
-    'rmnt': replaceNodeText,
-    'remove-node-text': replaceNodeText,
+    'rmnt': removeNodeText,
+    'remove-node-text': removeNodeText,
     'trusted-rpnt': replaceNodeText,
     'rpnt': replaceNodeText,
     'trusted-replace-node-text': replaceNodeText,
