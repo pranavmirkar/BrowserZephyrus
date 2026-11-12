@@ -6,6 +6,8 @@
 
 #include <stdint.h>
 
+#include "base/memory/weak_ptr.h"
+#include "base/time/time.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_redirect_resources.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -47,8 +49,13 @@ class ZephyrusAdblockStandIn : public network::mojom::URLLoader {
       mojo::PendingRemote<network::mojom::URLLoaderClient> client);
   ~ZephyrusAdblockStandIn() override;
 
+  // Answers after `delay`: see Start().
+  void RespondAfter(base::TimeDelta delay,
+                    const network::ResourceRequest& request,
+                    uint16_t resource_id,
+                    ResourceType type);
   void Respond(const network::ResourceRequest& request,
-               const RedirectResource& resource,
+               uint16_t resource_id,
                ResourceType type);
   void DeleteSelf();
 
@@ -61,6 +68,10 @@ class ZephyrusAdblockStandIn : public network::mojom::URLLoader {
 
   mojo::Receiver<network::mojom::URLLoader> receiver_{this};
   mojo::Remote<network::mojom::URLLoaderClient> client_;
+  // When the page asked: the response's timing is measured from here.
+  base::TimeTicks requested_ = base::TimeTicks::Now();
+  base::Time requested_time_ = base::Time::Now();
+  base::WeakPtrFactory<ZephyrusAdblockStandIn> weak_factory_{this};
 };
 
 }  // namespace zephyrus_adblock

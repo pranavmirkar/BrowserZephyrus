@@ -533,15 +533,48 @@ constexpr RedirectResource kResourceTable[] = {
   // a page that checks `adsbygoogle.loaded` is asking whether the library came.
   var queue = w.adsbygoogle;
   if (queue && queue.loaded === true) { return; }
+  // The real library answers each push by taking the next ad slot it has not
+  // handled yet and marking it: data-adsbygoogle-status="done", and
+  // data-ad-status="unfilled" when there was no ad to show. Anti-adblock
+  // checks read those marks, so a slot that was asked for and never marked
+  // gives the stand-in away. "No ad to show" is an ordinary AdSense answer.
+  function fill() {
+    var doc = w.document;
+    if (!doc || typeof doc.querySelectorAll !== 'function') { return; }
+    var slots = doc.querySelectorAll('ins.adsbygoogle');
+    for (var i = 0; i < slots.length; i++) {
+      var slot = slots[i];
+      if (!slot.hasAttribute('data-adsbygoogle-status')) {
+        slot.setAttribute('data-adsbygoogle-status', 'done');
+        slot.setAttribute('data-ad-status', 'unfilled');
+        return;
+      }
+    }
+  }
+  function push() {
+    for (var i = 0; i < arguments.length; i++) {
+      var item = arguments[i];
+      if (item && typeof item === 'object' && !item.google_ad_client &&
+          !item.params && !item.element) {
+        fill();
+      } else if (item && item.element && item.element.setAttribute) {
+        item.element.setAttribute('data-adsbygoogle-status', 'done');
+        item.element.setAttribute('data-ad-status', 'unfilled');
+      }
+    }
+    return arguments.length;
+  }
   var stub = {
     loaded: true,
-    push: function() { return arguments.length; },
+    push: push,
     pauseAdRequests: 0
   };
   if (Array.isArray(queue)) {
+    var pending = queue.slice();
     queue.length = 0;
     queue.loaded = true;
-    queue.push = stub.push;
+    queue.push = push;
+    for (var j = 0; j < pending.length; j++) { push(pending[j]); }
   } else {
     w.adsbygoogle = stub;
   }
@@ -957,6 +990,30 @@ constexpr RedirectResource kResourceTable[] = {
   sa.loaded = true;
   w.sensorsDataAnalytic201505 = sa;
   w.sa = w.sa || sa;
+})();
+)ZRES", ""},
+    {41, "adblockanalytics_bait.js", "text/javascript", kTypeScript | kTypeXhr | kTypeOther | kTypeObject | kTypePing,
+     R"ZRES((function() {
+  'use strict';
+  // Adblock Analytics' detection bait (adblockanalytics.com/google-adsense.js,
+  // used by detectadblock.com and the sites that embed its check). The real
+  // file does one thing: it adds a hidden element with a fixed id, and the page
+  // decides "no ad blocker" when that element exists. Answered here with the
+  // same element and nothing else, so the vendor is never contacted and the
+  // page sees what it would without a blocker. The prebid-ads.js flags are set
+  // as well, for checks that look for those instead.
+  var d = window.document;
+  window.canRunAds = true;
+  window.isAdBlockActive = false;
+  if (!d) { return; }
+  function add() {
+    if (!d.body || d.getElementById('nqoybpxnanylgvpfpbz')) { return; }
+    var e = d.createElement('div');
+    e.id = 'nqoybpxnanylgvpfpbz';
+    e.style.display = 'none';
+    d.body.appendChild(e);
+  }
+  if (d.body) { add(); } else { d.addEventListener('DOMContentLoaded', add); }
 })();
 )ZRES", ""},
 };

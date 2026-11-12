@@ -237,6 +237,16 @@ void ZephyrusAdblockProxyingURLLoaderFactory::StartLoader(
           return;
         }
       }
+      // No stand-in named for it: answered in the shape the page expects (an
+      // empty success, a transparent pixel, a working ad library) so that the
+      // page neither reports an error, tries again, nor learns it was blocked.
+      // See kZephyrusAdblockQuietBlock.
+      if (const RedirectResource* quiet =
+              QuietBlockResource(request.url, type)) {
+        ZephyrusAdblockStandIn::Start(std::move(loader_receiver),
+                                      std::move(client), request, *quiet, type);
+        return;
+      }
     }
 
     // Fail the request without contacting the network.

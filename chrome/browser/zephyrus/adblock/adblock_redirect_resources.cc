@@ -18,6 +18,10 @@ BASE_FEATURE(kZephyrusAdblockStandIns,
              "ZephyrusAdblockStandIns",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
+BASE_FEATURE(kZephyrusAdblockQuietBlock,
+             "ZephyrusAdblockQuietBlock",
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 namespace {
 
 #include "chrome/browser/zephyrus/adblock/adblock_redirect_resources_data.inc"
@@ -70,6 +74,86 @@ const RedirectResource* RedirectResourceById(uint16_t id) {
     }
   }
   return nullptr;
+}
+
+namespace {
+
+// The libraries a page calls by name straight after loading them, at their
+// canonical addresses, and the stand-in that answers in their shape.
+struct Surrogate {
+  std::string_view host;
+  std::string_view path_prefix;
+  std::string_view resource;
+};
+constexpr Surrogate kSurrogates[] = {
+    {"pagead2.googlesyndication.com", "/pagead/js/adsbygoogle.js",
+     "googlesyndication_adsbygoogle.js"},
+    {"securepubads.g.doubleclick.net", "/tag/js/gpt.js",
+     "googletagservices_gpt.js"},
+    {"www.googletagservices.com", "/tag/js/gpt.js", "googletagservices_gpt.js"},
+    {"imasdk.googleapis.com", "/js/sdkloader/ima3.js", "google-ima.js"},
+    {"www.googletagmanager.com", "/gtm.js", "googletagmanager_gtm.js"},
+    {"www.google-analytics.com", "/analytics.js",
+     "google-analytics_analytics.js"},
+    {"ssl.google-analytics.com", "/ga.js", "google-analytics_ga.js"},
+    {"www.google-analytics.com", "/ga.js", "google-analytics_ga.js"},
+    {"www.google-analytics.com", "/cx/api.js", "google-analytics_cx_api.js"},
+    {"c.amazon-adsystem.com", "/aax2/apstag.js", "amazon_apstag.js"},
+    {"c.amazon-adsystem.com", "/aax2/amzn_ads.js", "amazon_ads.js"},
+    {"sb.scorecardresearch.com", "/beacon.js", "scorecardresearch_beacon.js"},
+    {"static.chartbeat.com", "/js/chartbeat.js", "chartbeat.js"},
+    {"widgets.outbrain.com", "/outbrain.js", "outbrain-widget.js"},
+    // Detection bait: a file whose only job is to prove that nothing blocked
+    // it. Answered with a local replica of what it does, so the detection
+    // vendor is not contacted and the page sees what it would without a
+    // blocker. MEASURED: detectadblock.com caught Zephyrus, Brave and uBlock
+    // Origin Lite alike with this one.
+    {"www.adblockanalytics.com", "/google-adsense.js", "adblockanalytics_bait.js"},
+};
+
+// A transparent image the size a check would expect. A 1x1 answer for an
+// address that is not a tracking pixel is itself a known sign of a blocker:
+// detection scripts load an ad server's favicon and treat anything narrower
+// than 2 pixels as a stand-in.
+const RedirectResource* ImageStandInFor(const GURL& url) {
+  const std::string_view path = url.path();
+  if (path.ends_with(".ico") || path.find("favicon") != std::string_view::npos) {
+    return FindRedirectResource("32x32.png");
+  }
+  if (path.find("1x1") != std::string_view::npos ||
+      path.find("pixel") != std::string_view::npos ||
+      path.ends_with(".gif")) {
+    return FindRedirectResource("1x1.gif");
+  }
+  return FindRedirectResource("2x2.png");
+}
+
+}  // namespace
+
+const RedirectResource* QuietBlockResource(const GURL& url, ResourceType type) {
+  if (!base::FeatureList::IsEnabled(kZephyrusAdblockQuietBlock)) {
+    return nullptr;
+  }
+  switch (type) {
+    case kTypeXhr:
+    case kTypePing:
+      return FindRedirectResource("empty");
+    case kTypeImage:
+      return ImageStandInFor(url);
+    case kTypeScript:
+      if (!url.SchemeIsHTTPOrHTTPS()) {
+        return nullptr;
+      }
+      for (const Surrogate& s : kSurrogates) {
+        if (url.host() == s.host &&
+            url.path().starts_with(s.path_prefix)) {
+          return FindRedirectResource(s.resource);
+        }
+      }
+      return nullptr;
+    default:
+      return nullptr;
+  }
 }
 
 std::string_view RedirectResourceBody(const RedirectResource& resource) {

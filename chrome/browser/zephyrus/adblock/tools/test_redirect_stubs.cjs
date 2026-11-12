@@ -106,6 +106,35 @@ test('ga.js: _gaq takes both commands and functions', () => {
   assert.ok(win._gat._getTracker('UA-1'));
 });
 
+test('adblockanalytics bait: adds the element the check looks for, once', () => {
+  const added = [];
+  const doc = {body: {appendChild: (e) => added.push(e)}, getElementById: (id) => added.find((e) => e.id === id) || null,
+               createElement: () => ({style: {}}), addEventListener: () => {}};
+  const {win} = load('adblockanalytics_bait.js', (w) => { w.document = doc; });
+  assert.strictEqual(added.length, 1);
+  assert.strictEqual(added[0].id, 'nqoybpxnanylgvpfpbz');
+  assert.strictEqual(added[0].style.display, 'none');
+  assert.strictEqual(win.canRunAds, true);
+  vm.runInContext(fs.readFileSync(path.join(dir, 'adblockanalytics_bait.js'), 'utf8'), vm.createContext(win));
+  assert.strictEqual(added.length, 1);
+});
+
+test('adsbygoogle: each push marks the next unmarked slot as AdSense does', () => {
+  const slot = () => { const attrs = {}; return {attrs, hasAttribute: (k) => k in attrs, setAttribute: (k, v) => { attrs[k] = String(v); }}; };
+  const slots = [slot(), slot()];
+  const {win} = load('googlesyndication_adsbygoogle.js', (w) => {
+    w.document = {querySelectorAll: (sel) => (sel === 'ins.adsbygoogle' ? slots : [])};
+    w.adsbygoogle = [{}];  // a push made before the library arrived
+  });
+  assert.strictEqual(slots[0].attrs['data-adsbygoogle-status'], 'done');
+  assert.strictEqual(slots[0].attrs['data-ad-status'], 'unfilled');
+  assert.strictEqual(slots[1].hasAttribute('data-adsbygoogle-status'), false);
+  win.adsbygoogle.push({});
+  assert.strictEqual(slots[1].attrs['data-adsbygoogle-status'], 'done');
+  // More pushes than slots is harmless.
+  win.adsbygoogle.push({});
+});
+
 test('adsbygoogle: push does not throw and the flag is set', () => {
   const {win} = load('googlesyndication_adsbygoogle.js', (w) => { w.adsbygoogle = []; });
   win.adsbygoogle.push({});

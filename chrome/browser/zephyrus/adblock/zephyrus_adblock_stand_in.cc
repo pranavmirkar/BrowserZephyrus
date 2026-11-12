@@ -7,10 +7,13 @@
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/rand_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/strings/stringprintf.h"
 #include "base/time/time.h"
 #include "mojo/public/cpp/system/data_pipe.h"
 #include "net/base/net_errors.h"
+#include "net/base/request_priority.h"
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/url_loader_completion_status.h"
@@ -55,7 +58,37 @@ void ZephyrusAdblockStandIn::Start(
   // Deletes itself; see DeleteSelf().
   auto* loader = new ZephyrusAdblockStandIn(std::move(loader_receiver),
                                             std::move(client));
-  loader->Respond(request, resource, type);
+  // Not at once. A cross-site fetch cannot finish in under a millisecond, so
+  // an instant answer is itself the sign that something local answered: a
+  // page's Resource Timing entry for its ad script shows it (MEASURED,
+  // detect_ruler.py: every blocker on the market fails that check). A delay in
+  // the range of a nearby server's reply, varied so it never repeats, costs
+  // the page nothing it was waiting on: only blocked requests come here.
+  //
+  // Except for what the page is waiting on. A script in the page's head that
+  // the parser must run before it goes on (high priority: render-blocking) is
+  // answered after a few milliseconds, still not instantly: a detection probe
+  // is inserted by script and loads at low priority, while making a page wait
+  // 40 ms to render would make every page with a synchronous ad tag slower.
+  const bool page_waits = request.priority >= net::MEDIUM;
+  const base::TimeDelta delay =
+      page_waits ? base::RandTimeDelta(base::Milliseconds(2),
+                                       base::Milliseconds(6))
+                 : base::RandTimeDelta(base::Milliseconds(14),
+                                       base::Milliseconds(42));
+  loader->RespondAfter(delay, request, resource.id, type);
+}
+
+void ZephyrusAdblockStandIn::RespondAfter(
+    base::TimeDelta delay,
+    const network::ResourceRequest& request,
+    uint16_t resource_id,
+    ResourceType type) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&ZephyrusAdblockStandIn::Respond,
+                     weak_factory_.GetWeakPtr(), request, resource_id, type),
+      delay);
 }
 
 ZephyrusAdblockStandIn::ZephyrusAdblockStandIn(
@@ -77,8 +110,14 @@ void ZephyrusAdblockStandIn::DeleteSelf() {
 }
 
 void ZephyrusAdblockStandIn::Respond(const network::ResourceRequest& request,
-                                     const RedirectResource& resource,
+                                     uint16_t resource_id,
                                      ResourceType type) {
+  const RedirectResource* found = RedirectResourceById(resource_id);
+  if (!found) {
+    client_->OnComplete(network::URLLoaderCompletionStatus(net::ERR_FAILED));
+    return;
+  }
+  const RedirectResource& resource = *found;
   const std::string_view body = RedirectResourceBody(resource);
   const std::string mime(RedirectResourceMime(resource, type));
 
@@ -111,9 +150,9 @@ void ZephyrusAdblockStandIn::Respond(const network::ResourceRequest& request,
   head->content_length = static_cast<int64_t>(body.size());
   head->encoded_data_length = 0;
   head->response_type = tainting;
-  head->request_time = base::Time::Now();
+  head->request_time = requested_time_;
   head->response_time = base::Time::Now();
-  head->request_start = base::TimeTicks::Now();
+  head->request_start = requested_;
   head->response_start = base::TimeTicks::Now();
 
   mojo::ScopedDataPipeProducerHandle producer;

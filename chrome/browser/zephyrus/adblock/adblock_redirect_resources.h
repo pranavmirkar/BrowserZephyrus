@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/feature_list.h"
+#include "url/gurl.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 
 namespace zephyrus_adblock {
@@ -35,6 +36,19 @@ inline constexpr uint16_t kNoRedirectResource = 0;
 // switch.
 BASE_DECLARE_FEATURE(kZephyrusAdblockStandIns);
 
+// Whether a blocked background request (fetch, XHR, sendBeacon, ping) that no
+// rule names a stand-in for is answered with an empty success instead of a
+// network error. On by default; `--disable-features=ZephyrusAdblockQuietBlock`
+// is the kill switch.
+//
+// MEASURED (shield_ruler.py, 2026-11-10): the Guardian's front page threw 18
+// uncaught "Failed to fetch" errors with Shield on, one for each of its own
+// analytics beacons that was blocked, and one load of cnn.com asked for a
+// blocked address 11,118 times in 30 seconds. A script that is told its
+// request failed reports the failure or tries again; told it succeeded, it
+// moves on. Nothing is sent either way.
+BASE_DECLARE_FEATURE(kZephyrusAdblockQuietBlock);
+
 struct RedirectResource {
   uint16_t id;
   std::string_view name;
@@ -56,6 +70,27 @@ struct RedirectAlias {
 // the name. Null when there is no such resource.
 const RedirectResource* FindRedirectResource(std::string_view name);
 const RedirectResource* RedirectResourceById(uint16_t id);
+
+// What a blocked request for `url`, of kind `type`, is answered with when no
+// rule named a stand-in for it; null means fail it, as before. Null for
+// everything when the feature is off.
+//
+//  - A background request (fetch, XHR, sendBeacon, ping): an empty success.
+//  - An image: a transparent pixel. A blocked image is an ad or a tracking
+//    pixel; failing it shows a broken-image box where the ad was and fires
+//    `onerror`, which anti-adblock scripts listen for.
+//  - A script: the working stand-in for the ad or analytics library it is
+//    (AdSense, Publisher Tag, IMA, Analytics, Tag Manager, ...), whether or not
+//    a list rule named one. Pages and anti-adblock checks call these libraries
+//    straight after loading them. Any other blocked script still fails: a stub
+//    that defines nothing is as detectable as an error, and a page may rely on
+//    a failed load to fall back.
+//  - Frames, media, fonts, styles, documents: null.
+//
+// MEASURED (detect_ruler.py, 2026-11-10): before this, a page could tell
+// Zephyrus was blocking with 7 of 21 published checks, against 4 for Brave and
+// uBlock Origin Lite; AdSense and the Publisher Tag were the difference.
+const RedirectResource* QuietBlockResource(const GURL& url, ResourceType type);
 
 // The bytes to serve, decoded once. Valid for the life of the process.
 std::string_view RedirectResourceBody(const RedirectResource& resource);

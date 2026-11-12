@@ -17,6 +17,7 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/strings/string_split.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/zephyrus/adblock/adblock_filter_engine.h"
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "chrome/browser/zephyrus/adblock/adblock_zindex.h"
@@ -100,6 +101,89 @@ TEST(AdblockRedirectResourcesTest, EmptyAnswersInTheShapeTheRequestExpects) {
   EXPECT_EQ(RedirectResourceMime(empty, kTypeXhr), "text/plain");
   const RedirectResource& gif = *FindRedirectResource("1x1.gif");
   EXPECT_EQ(RedirectResourceMime(gif, kTypeImage), "image/gif");
+}
+
+TEST(AdblockRedirectResourcesTest, BlockedRequestsAreAnsweredInTheirShape) {
+  const GURL tracker("https://tracker.example/collect?id=1");
+  // A beacon or a fetch gets an empty success, which the empty stand-in can
+  // really serve for that kind of request.
+  for (ResourceType type : {kTypeXhr, kTypePing}) {
+    const RedirectResource* quiet = QuietBlockResource(tracker, type);
+    ASSERT_TRUE(quiet);
+    EXPECT_EQ(quiet->name, "empty");
+    EXPECT_TRUE(RedirectResourceServes(*quiet, type));
+    EXPECT_EQ(RedirectResourceBody(*quiet), "");
+  }
+  // An image gets a transparent image: a pixel for a pixel, an icon for an
+  // icon (detectors load an ad server's favicon and call anything under 2px
+  // wide a stand-in), and 2x2 for anything else.
+  const RedirectResource* pixel = QuietBlockResource(
+      GURL("https://tracker.example/1x1.gif?e=view"), kTypeImage);
+  ASSERT_TRUE(pixel);
+  EXPECT_EQ(pixel->name, "1x1.gif");
+  EXPECT_EQ(RedirectResourceMime(*pixel, kTypeImage), "image/gif");
+  const RedirectResource* icon = QuietBlockResource(
+      GURL("https://googleads.g.doubleclick.net/favicon.ico?123"), kTypeImage);
+  ASSERT_TRUE(icon);
+  EXPECT_EQ(icon->name, "32x32.png");
+  const RedirectResource* other = QuietBlockResource(
+      GURL("https://ads.example/creative/300x250.jpg"), kTypeImage);
+  ASSERT_TRUE(other);
+  EXPECT_EQ(other->name, "2x2.png");
+  // Frames, media, fonts, styles and page loads still fail, as does a script
+  // that is not one of the known libraries.
+  for (ResourceType type :
+       {kTypeScript, kTypeStylesheet, kTypeSubdocument, kTypeFont, kTypeMedia,
+        kTypeObject, kTypeOther, kTypeWebsocket, kTypePopup, kTypeDocument}) {
+    EXPECT_FALSE(QuietBlockResource(tracker, type)) << type;
+  }
+}
+
+TEST(AdblockRedirectResourcesTest, AKnownAdLibraryIsAnsweredByItsStandIn) {
+  struct {
+    const char* url;
+    const char* resource;
+  } cases[] = {
+      {"https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1",
+       "googlesyndication_adsbygoogle.js"},
+      {"https://securepubads.g.doubleclick.net/tag/js/gpt.js",
+       "googletagservices_gpt.js"},
+      {"https://imasdk.googleapis.com/js/sdkloader/ima3.js", "google-ima.js"},
+      {"https://www.googletagmanager.com/gtm.js?id=GTM-X",
+       "googletagmanager_gtm.js"},
+      {"https://www.google-analytics.com/analytics.js",
+       "google-analytics_analytics.js"},
+      {"https://www.adblockanalytics.com/google-adsense.js",
+       "adblockanalytics_bait.js"},
+  };
+  for (const auto& c : cases) {
+    const RedirectResource* stand_in =
+        QuietBlockResource(GURL(c.url), kTypeScript);
+    ASSERT_TRUE(stand_in) << c.url;
+    EXPECT_EQ(stand_in->name, c.resource) << c.url;
+    EXPECT_TRUE(RedirectResourceServes(*stand_in, kTypeScript)) << c.url;
+    EXPECT_FALSE(RedirectResourceBody(*stand_in).empty()) << c.url;
+  }
+  // The same host with another path, a look-alike host, and the library's name
+  // on someone else's site are not it.
+  for (const char* url :
+       {"https://pagead2.googlesyndication.com/pagead/show_ads.js",
+        "https://pagead2.googlesyndication.com.evil.example/pagead/js/adsbygoogle.js",
+        "https://cdn.example/pagead/js/adsbygoogle.js"}) {
+    EXPECT_FALSE(QuietBlockResource(GURL(url), kTypeScript)) << url;
+  }
+}
+
+TEST(AdblockRedirectResourcesTest, TheKillSwitchFailsBlockedRequestsAgain) {
+  base::test::ScopedFeatureList off;
+  off.InitAndDisableFeature(kZephyrusAdblockQuietBlock);
+  const GURL tracker("https://tracker.example/x");
+  for (ResourceType type : {kTypeXhr, kTypePing, kTypeImage}) {
+    EXPECT_FALSE(QuietBlockResource(tracker, type)) << type;
+  }
+  EXPECT_FALSE(QuietBlockResource(
+      GURL("https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"),
+      kTypeScript));
 }
 
 TEST(AdblockRedirectResourcesTest, AStandInOnlyAnswersWhatItCan) {

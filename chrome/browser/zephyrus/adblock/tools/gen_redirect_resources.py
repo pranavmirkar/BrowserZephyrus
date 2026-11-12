@@ -74,6 +74,7 @@ R = [
     (38, "nitropay_ads.js", "text/javascript", JS, [], "nitropay_ads.js", None),
     (39, "adthrive_abd.js", "text/javascript", JS, [], "adthrive_abd.js", None),
     (40, "sensors-analytics.js", "text/javascript", JS, [], "sensors-analytics.js", None),
+    (41, "adblockanalytics_bait.js", "text/javascript", JS, [], "adblockanalytics_bait.js", None),
 ]
 
 DELIM = "ZRES"
