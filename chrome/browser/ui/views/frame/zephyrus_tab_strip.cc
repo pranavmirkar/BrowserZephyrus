@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 
+#include "base/memory/raw_ptr.h"
 #include "base/functional/bind.h"
 #include "base/strings/escape.h"
 #include "base/strings/string_number_conversions.h"
@@ -2042,7 +2043,7 @@ void ZephyrusTabStrip::Layout(PassKey key) {
     struct Entry {
       int item = -1;
       int ghost = -1;
-      views::View* view = nullptr;
+      raw_ptr<views::View> view = nullptr;
       double share = 1.0;
       int gap = 0;
       // A width that does not depend on the room, or -1 for a tab.

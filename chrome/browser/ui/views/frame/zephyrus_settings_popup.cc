@@ -20,6 +20,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
 #include "base/memory/ptr_util.h"
+#include "base/memory/raw_ptr_exclusion.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial_params.h"
@@ -233,7 +234,9 @@ struct EntrySpec {
   const char16_t* title;
   const char16_t* supporting;
   const char* url;
-  base::span<const ChildSpec> children;
+  // Only ever points at the constant arrays below, which live for the whole
+  // program, so there is nothing for a raw_span to protect.
+  RAW_PTR_EXCLUSION base::span<const ChildSpec> children;
 };
 
 constexpr ChildSpec kAutofillChildren[] = {
@@ -1001,6 +1004,9 @@ class PrewarmDialog : public views::DialogDelegate {
         gfx::Insets::TLBR(0, 0, 4, 0), 0));
     auto* close_button = header->AddChildView(
         std::make_unique<CloseButton>(base::DoNothing()));
+    // Never shown or reached, but a focusable view with no name fails the
+    // accessibility paint check.
+    close_button->GetViewAccessibility().SetName(u"Close settings");
     close_button->SetPreferredSize(
         gfx::Size(kCloseButtonSize, kCloseButtonSize));
     views::InstallCircleHighlightPathGenerator(close_button);

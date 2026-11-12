@@ -97,6 +97,9 @@ ZephyrusMascotBubble::ZephyrusMascotBubble() {
   title_->SetMultiLine(true);
   title_->SetMaximumWidth(kTextWidth);
   title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  // The bubble is drawn on a see-through layer, where subpixel text has no
+  // opaque ground to blend against.
+  title_->SetSubpixelRenderingEnabled(false);
   title_->SetVisible(false);
 
   body_ = AddChildView(std::make_unique<views::Label>());
@@ -104,6 +107,7 @@ ZephyrusMascotBubble::ZephyrusMascotBubble() {
   body_->SetMultiLine(true);
   body_->SetMaximumWidth(kTextWidth);
   body_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+  body_->SetSubpixelRenderingEnabled(false);
 
   buttons_ = AddChildView(std::make_unique<views::View>());
   auto* row = buttons_->SetLayoutManager(std::make_unique<views::BoxLayout>(
