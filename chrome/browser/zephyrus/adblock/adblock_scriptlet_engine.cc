@@ -112,18 +112,62 @@ var zephyrusScriptlets = (function(){
       return o;
     };
   };
+  // Every built-in this library replaces is replaced by a Proxy of itself, so
+  // it still says "[native code]" when a page asks (Function.prototype.
+  // toString), keeps its name and length, and is the same kind of object.
+  // MEASURED 2026-11-12: json-prune, the fetch hook and the XHR hook replaced
+  // JSON.parse, Response.prototype.json, fetch, open and send with plain
+  // functions, so on every site with such a rule (YouTube among them) one
+  // toString() call showed our source.
+  //
+  // A Proxy alone is not enough: V8 prints any Proxy of a function as
+  // "function () { [native code] }", WITHOUT its name, where the real one says
+  // "function parse() { [native code] }", and a check for the exact string
+  // catches every patch at once. So each proxy is remembered with the original
+  // behind it, and Function.prototype.toString, itself wrapped and remembered,
+  // answers for a proxy with the original's text.
+  var proxiedOriginal = new WeakMap();
+  var toStringShielded = false;
+  var shieldToString = function(){
+    if (toStringShielded) return;
+    toStringShielded = true;
+    try {
+      var realToString = Function.prototype.toString;
+      var shield = new Proxy(realToString, { apply: function(target, thisArg, args){
+        var original = (typeof thisArg === 'function') ? proxiedOriginal.get(thisArg) : undefined;
+        return Reflect.apply(target, original || thisArg, args);
+      }});
+      proxiedOriginal.set(shield, realToString);
+      Function.prototype.toString = shield;
+    } catch(e){}
+  };
+  var nativeProxy = function(real, traps){
+    shieldToString();
+    var proxy = new Proxy(real, traps);
+    // The original under ALL the layers: a function patched twice (YouTube's
+    // rules wrap JSON.stringify seven times) would otherwise answer with the
+    // text of the layer below, itself a proxy, and print nameless.
+    try { proxiedOriginal.set(proxy, proxiedOriginal.get(real) || real); } catch(e){}
+    return proxy;
+  };
+  var nativeWrap = function(real, apply){
+    return nativeProxy(real, { apply: apply });
+  };
   var jsonPrune = function(rawPrune, rawNeedle){
     var prune = makePruner(rawPrune, rawNeedle);
     try {
-      var jsonParse = JSON.parse;
-      JSON.parse = function(){ return prune(jsonParse.apply(this, arguments)); };
+      JSON.parse = nativeWrap(JSON.parse, function(target, thisArg, args){
+        return prune(Reflect.apply(target, thisArg, args));
+      });
     } catch(e){}
     try {
       if (self.Response && Response.prototype.json){
-        var realJson = Response.prototype.json;
-        Response.prototype.json = function(){
-          return realJson.apply(this, arguments).then(function(o){ return prune(o); });
-        };
+        Response.prototype.json = nativeWrap(Response.prototype.json,
+            function(target, thisArg, args){
+              return Reflect.apply(target, thisArg, args).then(function(o){
+                return prune(o);
+              });
+            });
       }
     } catch(e){}
   };
@@ -189,18 +233,18 @@ var zephyrusScriptlets = (function(){
     try {
       var realFetch = self.fetch;
       if (typeof realFetch !== 'function') return;
-      self.fetch = function(input){
-        var ctx = this, args = arguments, url;
+      self.fetch = nativeWrap(realFetch, function(target, thisArg, args){
+        var input = args[0], url;
         try { url = (input && typeof input === 'object' && input.url)
                       ? input.url : String(input); } catch(e){ url = ''; }
-        return realFetch.apply(ctx, args).then(function(resp){
+        return Reflect.apply(target, thisArg, args).then(function(resp){
           try {
             if (!resp || typeof resp.clone !== 'function') return resp;
             return Promise.resolve(handler(url, resp)).then(
                 function(r){ return r || resp; }, function(){ return resp; });
           } catch(e){ return resp; }
         });
-      };
+      });
     } catch(e){}
   };
   var makeResponse = function(body, src){
@@ -250,55 +294,73 @@ var zephyrusScriptlets = (function(){
     var XHR = self.XMLHttpRequest;
     if (!XHR || !XHR.prototype) return;
     var proto = XHR.prototype;
-    var realOpen = proto.open;
-    var realSend = proto.send;
     var textDesc = Object.getOwnPropertyDescriptor(proto, 'responseText');
     var respDesc = Object.getOwnPropertyDescriptor(proto, 'response');
     if (!textDesc || !textDesc.get) return;
-    proto.open = function(method, url){
-      try { this.__zUrl = (typeof url === 'string') ? url
-              : (url && url.href) ? url.href : ''; } catch(e){ this.__zUrl = ''; }
-      return realOpen.apply(this, arguments);
-    };
-    proto.send = function(){
-      var xhr = this;
-      var url = xhr.__zUrl || '';
-      var hs = [];
-      for (var i = 0; i < xhrHandlers.length; i++){
-        try { if (xhrHandlers[i].tester(url)) hs.push(xhrHandlers[i]); } catch(e){}
-      }
-      if (!hs.length) return realSend.apply(this, arguments);
-      var applyText = function(raw){
-        if (typeof raw !== 'string') return raw;
-        for (var i = 0; i < hs.length; i++){
-          if (!hs[i].onText) continue;
-          try { var o = hs[i].onText(raw); if (typeof o === 'string') raw = o; } catch(e){}
-        }
-        return raw;
-      };
+    // What each request was opened for, and which handlers want it. Kept here,
+    // not on the request: a property on it shows in Object.keys(xhr).
+    var urls = new WeakMap();
+    var wanted = new WeakMap();
+    proto.open = nativeWrap(proto.open, function(target, thisArg, args){
       try {
-        Object.defineProperty(xhr, 'responseText', { configurable: true, get: function(){
-          var raw = textDesc.get.call(xhr);
-          return xhr.readyState === 4 ? applyText(raw) : raw;
-        }});
+        var url = args[1];
+        urls.set(thisArg, (typeof url === 'string') ? url
+                            : (url && url.href) ? url.href : String(url || ''));
       } catch(e){}
-      if (respDesc && respDesc.get){
-        try {
-          Object.defineProperty(xhr, 'response', { configurable: true, get: function(){
-            var raw = respDesc.get.call(xhr);
-            if (xhr.readyState !== 4) return raw;
-            if (typeof raw === 'string') return applyText(raw);
+      return Reflect.apply(target, thisArg, args);
+    });
+    proto.send = nativeWrap(proto.send, function(target, thisArg, args){
+      try {
+        var url = urls.get(thisArg) || '';
+        var hs = [];
+        for (var i = 0; i < xhrHandlers.length; i++){
+          try { if (xhrHandlers[i].tester(url)) hs.push(xhrHandlers[i]); } catch(e){}
+        }
+        if (hs.length) wanted.set(thisArg, hs); else wanted.delete(thisArg);
+      } catch(e){}
+      return Reflect.apply(target, thisArg, args);
+    });
+    var applyText = function(hs, raw){
+      if (typeof raw !== 'string') return raw;
+      for (var i = 0; i < hs.length; i++){
+        if (!hs[i].onText) continue;
+        try { var o = hs[i].onText(raw); if (typeof o === 'string') raw = o; } catch(e){}
+      }
+      return raw;
+    };
+    // The prototype's own getters, wrapped: the page reads the edited value
+    // whenever it reads, and the request object has no property of its own.
+    try {
+      Object.defineProperty(proto, 'responseText', {
+        configurable: textDesc.configurable, enumerable: textDesc.enumerable,
+        set: textDesc.set,
+        get: nativeWrap(textDesc.get, function(target, thisArg, args){
+          var raw = Reflect.apply(target, thisArg, args);
+          var hs = wanted.get(thisArg);
+          return (hs && thisArg.readyState === 4) ? applyText(hs, raw) : raw;
+        })
+      });
+    } catch(e){}
+    if (respDesc && respDesc.get){
+      try {
+        Object.defineProperty(proto, 'response', {
+          configurable: respDesc.configurable, enumerable: respDesc.enumerable,
+          set: respDesc.set,
+          get: nativeWrap(respDesc.get, function(target, thisArg, args){
+            var raw = Reflect.apply(target, thisArg, args);
+            var hs = wanted.get(thisArg);
+            if (!hs || thisArg.readyState !== 4) return raw;
+            if (typeof raw === 'string') return applyText(hs, raw);
             if (raw && typeof raw === 'object'){
               for (var i = 0; i < hs.length; i++){
                 if (hs[i].onObj){ try { hs[i].onObj(raw); } catch(e){} }
               }
             }
             return raw;
-          }});
-        } catch(e){}
-      }
-      return realSend.apply(this, arguments);
-    };
+          })
+        });
+      } catch(e){}
+    }
   };
   var trustedReplaceXhrResponse = function(pattern, replacement, urlPat){
     if (pattern === undefined || pattern === '') return;
@@ -406,52 +468,93 @@ var zephyrusScriptlets = (function(){
   };
 
   // no-xhr-if(pattern) — make matching XHRs no-op instead of reaching the net.
-  var noXhrIf = function(rawPattern){
+  // no-xhr-if(pattern [, response]) / prevent-xhr / trusted-prevent-xhr.
+  // A matching XMLHttpRequest is never sent; it finishes as an ordinary
+  // success with an empty body (or, for the trusted form, the body the rule
+  // gives). Done on the prototype with the state in WeakMaps: the old version
+  // replaced the XMLHttpRequest constructor with a plain function and put
+  // open/send/readyState on each request, all visible to the page.
+  var xhrFaked = null;
+  var installXhrFaker = function(){
+    if (xhrFaked) return xhrFaked;
+    xhrFaked = { rules: [], urls: new WeakMap(), state: new WeakMap() };
+    var XHR = self.XMLHttpRequest;
+    if (!XHR || !XHR.prototype) return xhrFaked;
+    var proto = XHR.prototype;
+    var faked = xhrFaked;
+    proto.open = nativeWrap(proto.open, function(target, thisArg, args){
+      try {
+        var url = args[1];
+        faked.urls.set(thisArg, (typeof url === 'string') ? url
+                                 : (url && url.href) ? url.href : String(url || ''));
+        faked.state.delete(thisArg);
+      } catch(e){}
+      return Reflect.apply(target, thisArg, args);
+    });
+    proto.send = nativeWrap(proto.send, function(target, thisArg, args){
+      var url = faked.urls.get(thisArg) || '';
+      var body = null;
+      for (var i = 0; i < faked.rules.length && body === null; i++){
+        try { if (faked.rules[i].matches(url)) body = faked.rules[i].body; } catch(e){}
+      }
+      if (body === null) return Reflect.apply(target, thisArg, args);
+      var xhr = thisArg;
+      faked.state.set(xhr, { readyState: 1, body: body, url: url });
+      var fire = function(type){
+        try { xhr.dispatchEvent(new Event(type)); } catch(e){}
+      };
+      realSetTimeout(function(){
+        var st = faked.state.get(xhr);
+        if (!st) return;
+        st.readyState = 2; fire('readystatechange');
+        st.readyState = 3; fire('readystatechange');
+        st.readyState = 4; fire('readystatechange');
+        fire('load'); fire('loadend');
+      }, 1 + Math.floor(Math.random() * 30));
+    });
+    var fake = function(name, value){
+      var desc = Object.getOwnPropertyDescriptor(proto, name);
+      if (!desc || !desc.get) return;
+      try {
+        Object.defineProperty(proto, name, {
+          configurable: desc.configurable, enumerable: desc.enumerable, set: desc.set,
+          get: nativeWrap(desc.get, function(target, thisArg, args){
+            var st = faked.state.get(thisArg);
+            return st ? value(st) : Reflect.apply(target, thisArg, args);
+          })
+        });
+      } catch(e){}
+    };
+    fake('readyState', function(st){ return st.readyState; });
+    fake('status', function(st){ return st.readyState >= 2 ? 200 : 0; });
+    fake('statusText', function(st){ return st.readyState >= 2 ? 'OK' : ''; });
+    fake('responseText', function(st){ return st.readyState === 4 ? st.body : ''; });
+    fake('response', function(st){ return st.readyState === 4 ? st.body : ''; });
+    fake('responseURL', function(st){ return st.readyState >= 2 ? st.url : ''; });
+    return xhrFaked;
+  };
+  var makeNoXhrIf = function(trusted){ return function(rawPattern, rawBody){
     var pattern = rawPattern || '';
     var re = null;
     if (pattern.length > 2 && pattern.charAt(0) === '/' &&
         pattern.charAt(pattern.length - 1) === '/'){
       try { re = new RegExp(pattern.slice(1, -1)); } catch(e){ re = null; }
     }
-    var matches = function(url){
-      if (!pattern) return true;
-      if (re) { try { return re.test(url); } catch(e){ return false; } }
-      return String(url).indexOf(pattern) !== -1;
-    };
-    var RealXhr = window.XMLHttpRequest;
-    if (!RealXhr) return;
-    var Wrapped = function(){
-      var xhr = new RealXhr();
-      var blocked = false;
-      var realOpen = xhr.open;
-      var realSend = xhr.send;
-      xhr.open = function(method, url){
-        blocked = matches(String(url));
-        return realOpen.apply(xhr, arguments);
-      };
-      xhr.send = function(){
-        if (!blocked) return realSend.apply(xhr, arguments);
-        // Report a benign empty success rather than an error, so page code
-        // that checks status doesn't treat it as "blocker present".
-        Object.defineProperty(xhr, 'readyState', { value: 4, configurable: true });
-        Object.defineProperty(xhr, 'status', { value: 200, configurable: true });
-        Object.defineProperty(xhr, 'responseText', { value: '', configurable: true });
-        Object.defineProperty(xhr, 'response', { value: '', configurable: true });
-        setTimeout(function(){
-          try { if (typeof xhr.onreadystatechange === 'function') xhr.onreadystatechange(); } catch(e){}
-          try { xhr.dispatchEvent(new Event('readystatechange')); } catch(e){}
-          try { xhr.dispatchEvent(new Event('load')); } catch(e){}
-          try { xhr.dispatchEvent(new Event('loadend')); } catch(e){}
-        }, 1);
-      };
-      return xhr;
-    };
-    Wrapped.prototype = RealXhr.prototype;
-    ['UNSENT','OPENED','HEADERS_RECEIVED','LOADING','DONE'].forEach(function(k, i){
-      try { Wrapped[k] = i; } catch(e){}
+    var body = '';
+    if (trusted && rawBody !== undefined && rawBody !== 'true' && rawBody !== '') {
+      body = String(rawBody);
+    }
+    installXhrFaker().rules.push({
+      body: body,
+      matches: function(url){
+        if (!pattern) return true;
+        if (re) { try { return re.test(url); } catch(e){ return false; } }
+        return String(url).indexOf(pattern) !== -1;
+      }
     });
-    window.XMLHttpRequest = Wrapped;
-  };
+  }; };
+  var noXhrIf = makeNoXhrIf(false);
+  var trustedNoXhrIf = makeNoXhrIf(true);
 
   // rmnt / trusted-rpnt — remove or replace text inside matching nodes.
   // rmnt(selector, pattern) deletes matching text; trusted-rpnt adds a
@@ -763,6 +866,8 @@ var zephyrusScriptlets = (function(){
     };
 
     var spec = String(editSpec).trim();
+    // "$" names the root, as in JSONPath.
+    if (spec.charAt(0) === '$') spec = spec.slice(1);
     var guards = [];
     while (spec.charAt(0) === '['){
       var close = groupEnd(spec);
@@ -788,17 +893,23 @@ var zephyrusScriptlets = (function(){
         break;
       }
     }
-    if (opIndex === -1) return null;
-    var pathText = spec.slice(0, opIndex);
-    var valueText = spec.slice(opIndex + (action === 'merge' ? 2 : 1));
-    var parsedValue = parseValue(valueText);
-    if (!parsedValue) return null;
-    if (action === 'merge' && parsedValue.kind !== 'json') return null;
+    var pathText, parsedValue;
+    if (opIndex === -1){
+      // No operator: uBO removes every node the path names.
+      action = 'remove';
+      pathText = spec;
+      parsedValue = { kind: 'none' };
+    } else {
+      pathText = spec.slice(0, opIndex);
+      parsedValue = parseValue(spec.slice(opIndex + (action === 'merge' ? 2 : 1)));
+      if (!parsedValue) return null;
+      if (action === 'merge' && parsedValue.kind !== 'json') return null;
+    }
 
     var tokens = [];
     var rest = pathText;
     while (rest.length){
-      var tm = rest.match(/^(\.{1,2})([A-Za-z0-9_$]+)/);
+      var tm = rest.match(/^(\.{1,2})([A-Za-z0-9_$]+|\*)/);
       if (!tm) return null;
       var token = { recursive: tm[1] === '..', name: tm[2], filter: null };
       rest = rest.slice(tm[0].length);
@@ -828,7 +939,18 @@ var zephyrusScriptlets = (function(){
         var tok = tokens[t];
         var next = [];
         for (var c = 0; c < current.length; c++){
-          var hits = resolve(current[c].value, tok.recursive, [tok.name]);
+          var hits;
+          if (tok.name === '*'){
+            hits = [];
+            var node = current[c].value;
+            if (node && typeof node === 'object'){
+              for (var kk in node){
+                if (hasOwn(node, kk)) hits.push({ parent: node, key: kk, value: node[kk] });
+              }
+            }
+          } else {
+            hits = resolve(current[c].value, tok.recursive, [tok.name]);
+          }
           for (var h = 0; h < hits.length; h++){
             if (tok.filter && !tok.filter(hits[h].value)) continue;
             next.push(hits[h]);
@@ -839,6 +961,17 @@ var zephyrusScriptlets = (function(){
       }
 
       var changed = false;
+      if (action === 'remove'){
+        // Last first, so removing from an array does not shift what is left.
+        for (var rm = current.length - 1; rm >= 0; rm--){
+          var gone = current[rm];
+          if (!gone.parent) continue;
+          if (Array.isArray(gone.parent)) gone.parent.splice(Number(gone.key), 1);
+          else delete gone.parent[gone.key];
+          changed = true;
+        }
+        return changed;
+      }
       for (var n = 0; n < current.length; n++){
         var target = current[n];
         if (action === 'merge'){
@@ -901,6 +1034,474 @@ var zephyrusScriptlets = (function(){
       }
       return realSend.apply(this, arguments);
     };
+  };
+
+  // json-edit(edit) / trusted-json-edit: edit what JSON.parse returns.
+  // json-edit-xhr-response / -fetch-response (edit, propsToMatch, url): edit a
+  // JSON response the page reads. The plain forms may only remove (uBO keeps
+  // assignment for the trusted forms).
+  var optionAfter = function(args, from, key){
+    for (var i = from; i + 1 < args.length; i++){
+      if (args[i] === key) return args[i + 1];
+    }
+    return '';
+  };
+  var makeJsonEdit = function(trusted){ return function(editSpec){
+    var edit = compileJsonEdit(editSpec);
+    if (!edit || (!trusted && !/^[^=]*$/.test(String(editSpec).replace(/\[[^\]]*\]/g, '')))) return;
+    try {
+      JSON.parse = nativeWrap(JSON.parse, function(target, thisArg, args){
+        var out = Reflect.apply(target, thisArg, args);
+        try { if (out && typeof out === 'object') edit.apply(out); } catch(e){}
+        return out;
+      });
+    } catch(e){}
+  }; };
+  var makeJsonEditXhr = function(trusted){ return function(editSpec){
+    var edit = compileJsonEdit(editSpec);
+    if (!edit || (!trusted && !/^[^=]*$/.test(String(editSpec).replace(/\[[^\]]*\]/g, '')))) return;
+    var tester = makeUrlTester(optionAfter(arguments, 1, 'propsToMatch'));
+    registerXhrHandler({
+      tester: tester,
+      onText: function(text){
+        var obj; try { obj = realJsonParse(text); } catch(e){ return null; }
+        return edit.apply(obj) ? Reflect.apply(realJsonStringify, JSON, [obj]) : null;
+      },
+      onObj: function(obj){ try { edit.apply(obj); } catch(e){} }
+    });
+  }; };
+  var makeJsonEditFetch = function(trusted){ return function(editSpec){
+    var edit = compileJsonEdit(editSpec);
+    if (!edit || (!trusted && !/^[^=]*$/.test(String(editSpec).replace(/\[[^\]]*\]/g, '')))) return;
+    var tester = makeUrlTester(optionAfter(arguments, 1, 'propsToMatch'));
+    hookFetch(function(url, resp){
+      if (!tester(url)) return null;
+      return resp.clone().text().then(function(text){
+        var obj; try { obj = realJsonParse(text); } catch(e){ return null; }
+        return edit.apply(obj)
+            ? makeResponse(Reflect.apply(realJsonStringify, JSON, [obj]), resp) : null;
+      }, function(){ return null; });
+    });
+  }; };
+
+  // trusted-replace-argument(fnPath, argPosition, value [, condition, match])
+  // Calls to the function get `value` in place of the argument at that
+  // position ("this" for the receiver), when the original matches `condition`.
+  // value: a literal (as for set-constant), "json:<json>", or
+  // "repl:/regex/replacement/" applied to the original as text.
+  var trustedReplaceArgument = function(fnPath, argPosRaw, rawValue){
+    if (!fnPath || argPosRaw === undefined) return;
+    var found = findOwner(self, String(fnPath));
+    if (!found || !found[0]) return;
+    var pos = argPosRaw === 'this' ? -1 : parseInt(argPosRaw, 10);
+    if (isNaN(pos)) return;
+    var cond = makeMatcher(optionAfter(arguments, 3, 'condition'));
+    var make;
+    var v = rawValue === undefined ? '' : String(rawValue);
+    var rm = /^repl:\/((?:\\\/|[^\/])+)\/((?:\\\/|[^\/])*)\/([gimsu]*)$/.exec(v);
+    if (rm){
+      var re;
+      try { re = new RegExp(rm[1].replace(/\\\//g, '/'), rm[3]); } catch(e){ return; }
+      var to = rm[2].replace(/\\\//g, '/');
+      make = function(orig){ return String(orig).replace(re, to); };
+    } else if (v.indexOf('json:') === 0){
+      var parsed;
+      try { parsed = realJsonParse(v.slice(5)); } catch(e){ return; }
+      make = function(){ return parsed; };
+    } else {
+      var lit = toValue(v);
+      make = function(){ return lit; };
+    }
+    patchMethod(found[0], found[1], function(target, thisArg, args){
+      try {
+        var orig = pos === -1 ? thisArg : args[pos];
+        if (cond(orig)){
+          var next = make(orig);
+          if (pos === -1){
+            thisArg = (typeof orig === 'string') ? String(next) : next;
+          } else {
+            args = Array.prototype.slice.call(args);
+            args[pos] = next;
+          }
+        }
+      } catch(e){}
+      return Reflect.apply(target, thisArg, args);
+    });
+  };
+
+  // spoof-css(selector, property, value [, property, value ...])
+  // Elements the cosmetic rules hide still REPORT the given styles: an
+  // anti-adblock script that checks its bait with getComputedStyle sees
+  // "display: block" and finds nothing hidden. Read-only: nothing is drawn
+  // differently.
+  var spoofCss = function(selector){
+    if (!selector) return;
+    var props = {};
+    var count = 0;
+    for (var i = 1; i + 1 < arguments.length; i += 2){
+      props[String(arguments[i])] = String(arguments[i + 1]);
+      count++;
+    }
+    if (!count) return;
+    var camel = function(p){ return p.replace(/-([a-z])/g, function(_, c){ return c.toUpperCase(); }); };
+    var matches = function(el){
+      try { return el && el.nodeType === 1 && el.matches(selector); } catch(e){ return false; }
+    };
+    patchMethod(self, 'getComputedStyle', function(target, thisArg, args){
+      var style = Reflect.apply(target, thisArg, args);
+      if (!matches(args[0])) return style;
+      try {
+        return new Proxy(style, {
+          get: function(obj, key){
+            var k = String(key);
+            for (var p in props){
+              if (k === p || k === camel(p)) return props[p];
+            }
+            if (k === 'getPropertyValue'){
+              return nativeWrap(obj.getPropertyValue, function(t, self2, a){
+                var asked = String(a[0]);
+                return hasOwnProp(props, asked) ? props[asked] : Reflect.apply(t, obj, a);
+              });
+            }
+            var value = Reflect.get(obj, key, obj);
+            return typeof value === 'function' ? value.bind(obj) : value;
+          }
+        });
+      } catch(e){ return style; }
+    });
+    var rectProps = {};
+    ['top', 'left', 'width', 'height', 'right', 'bottom', 'x', 'y'].forEach(function(p){
+      if (hasOwnProp(props, p)) rectProps[p] = parseFloat(props[p]);
+    });
+    if (Object.keys(rectProps).length && self.Element){
+      patchMethod(Element.prototype, 'getBoundingClientRect', function(target, thisArg, args){
+        var rect = Reflect.apply(target, thisArg, args);
+        if (!matches(thisArg)) return rect;
+        try {
+          var pick = function(a, b, fallback){
+            return hasOwnProp(rectProps, a) ? rectProps[a]
+                 : hasOwnProp(rectProps, b) ? rectProps[b] : fallback;
+          };
+          return new DOMRectReadOnly(pick('left', 'x', rect.x), pick('top', 'y', rect.y),
+                                     pick('width', 'width', rect.width),
+                                     pick('height', 'height', rect.height));
+        } catch(e){ return rect; }
+      });
+    }
+  };
+  var hasOwnProp = function(o, k){ return Object.prototype.hasOwnProperty.call(o, k); };
+
+  // prevent-innerHTML(selector, pattern): an assignment to innerHTML on a
+  // matching element is ignored when the HTML matches.
+  var preventInnerHtml = function(selector, pattern){
+    if (!self.Element) return;
+    var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML');
+    if (!desc || !desc.set) return;
+    var test = makeMatcher(pattern || '');
+    try {
+      Object.defineProperty(Element.prototype, 'innerHTML', {
+        configurable: desc.configurable, enumerable: desc.enumerable, get: desc.get,
+        set: nativeWrap(desc.set, function(target, thisArg, args){
+          try {
+            var hit = (!selector || thisArg.matches(selector)) && test(String(args[0]));
+            if (hit) return undefined;
+          } catch(e){}
+          return Reflect.apply(target, thisArg, args);
+        })
+      });
+    } catch(e){}
+  };
+
+  // A tester for text: "/re/flags" or a substring; empty matches all.
+  var textTester = function(raw){
+    var t = raw === undefined ? '' : String(raw);
+    if (!t) return function(){ return true; };
+    var m = t.match(/^\/([\s\S]+)\/([gimsuy]*)$/);
+    if (m){
+      try {
+        var re = new RegExp(m[1], m[2].replace('g', ''));
+        return function(v){ return re.test(String(v)); };
+      } catch(e){ return function(){ return false; }; }
+    }
+    return function(v){ return String(v).indexOf(t) !== -1; };
+  };
+  var replacerOf = function(pattern, replacement){
+    var t = pattern === undefined ? '' : String(pattern);
+    var to = replacement === undefined ? '' : String(replacement);
+    var m = t.match(/^\/([\s\S]+)\/([gimsuy]*)$/);
+    if (m){
+      var re;
+      try { re = new RegExp(m[1], m[2]); } catch(e){ return null; }
+      return function(text){ return String(text).replace(re, to); };
+    }
+    if (!t) return null;
+    return function(text){ return String(text).split(t).join(to); };
+  };
+  // Runs `apply` now, when the DOM is ready, and whenever the page adds nodes.
+  var everyElement = function(apply){ watchDom(apply); };
+
+  // href-sanitizer(selector [, source]): links that go through a redirector
+  // get their real destination. source: "text" (the link's text, the default),
+  // "[attr]" (another attribute), "?param" (a parameter of the link itself).
+  // Only an http(s) address ever replaces the href.
+  var hrefSanitizer = function(selector, source){
+    if (!selector) return;
+    var src = source || 'text';
+    var realOf = function(a){
+      var v = '';
+      if (src === 'text') v = (a.textContent || '').trim();
+      else if (src.charAt(0) === '[' && src.charAt(src.length - 1) === ']') v = a.getAttribute(src.slice(1, -1)) || '';
+      else if (src.charAt(0) === '?'){
+        try { v = new URL(a.href, document.baseURI).searchParams.get(src.slice(1)) || ''; } catch(e){ v = ''; }
+      }
+      try {
+        var u = new URL(v, document.baseURI);
+        return /^https?:$/.test(u.protocol) ? u.href : '';
+      } catch(e){ return ''; }
+    };
+    everyElement(function(){
+      var links = document.querySelectorAll(selector);
+      for (var i = 0; i < links.length; i++){
+        var real = realOf(links[i]);
+        if (real && links[i].getAttribute('href') !== real) links[i].setAttribute('href', real);
+      }
+    });
+  };
+
+  // set-attr(selector, attr, value): the plain form only sets values that
+  // cannot carry code ("", true/false, numbers, or "[other]" to copy another
+  // attribute); trusted-set-attr sets anything, never an on* handler.
+  var makeSetAttr = function(trusted){ return function(selector, attr, value){
+    if (!selector || !attr || !/^[A-Za-z_][\w:.-]*$/.test(attr) || /^on/i.test(attr)) return;
+    var v = value === undefined ? '' : String(value);
+    var copy = null;
+    if (/^\[[\w:.-]+\]$/.test(v)) copy = v.slice(1, -1);
+    else if (!trusted && !/^(|true|false|-?\d+)$/.test(v)) return;
+    everyElement(function(){
+      var nodes = document.querySelectorAll(selector);
+      for (var i = 0; i < nodes.length; i++){
+        var next = copy ? nodes[i].getAttribute(copy) : v;
+        if (next !== null && nodes[i].getAttribute(attr) !== next) nodes[i].setAttribute(attr, next);
+      }
+    });
+  }; };
+
+  // trusted-replace-outbound-text(fnPath, pattern, replacement [, condition, x])
+  // Text a function RETURNS is edited before the page gets it (ChatGPT's ads
+  // arrive through TextDecoder.prototype.decode).
+  var trustedReplaceOutboundText = function(fnPath, pattern, replacement){
+    if (!fnPath) return;
+    var replace = replacerOf(pattern, replacement);
+    if (!replace) return;
+    var cond = textTester(optionAfter(arguments, 3, 'condition'));
+    var found = findOwner(self, String(fnPath));
+    if (!found || !found[0]) return;
+    patchMethod(found[0], found[1], function(target, thisArg, args){
+      var out = Reflect.apply(target, thisArg, args);
+      try {
+        if (typeof out === 'string' && cond(out)) return replace(out);
+      } catch(e){}
+      return out;
+    });
+  };
+
+  // refresh-defuser([delay]): a <meta http-equiv="refresh"> does not reload
+  // the page (anti-adblock and ad-reload loops use it).
+  var refreshDefuser = function(){
+    var defuse = function(){
+      var metas = document.querySelectorAll('meta[http-equiv]');
+      for (var i = 0; i < metas.length; i++){
+        if (String(metas[i].getAttribute('http-equiv')).toLowerCase() === 'refresh') metas[i].remove();
+      }
+    };
+    everyElement(defuse);
+  };
+
+  // prevent-clipboard-write(pattern): the page cannot put text matching the
+  // pattern on the clipboard. The rules aim it at "paste this into a terminal"
+  // malware pages, so this is a safety rule as much as a blocking one.
+  var preventClipboardWrite = function(pattern){
+    var test = textTester(pattern);
+    if (self.Clipboard && Clipboard.prototype){
+      if (Clipboard.prototype.writeText){
+        patchMethod(Clipboard.prototype, 'writeText', function(target, thisArg, args){
+          if (test(args[0])) return Promise.resolve();
+          return Reflect.apply(target, thisArg, args);
+        });
+      }
+      if (Clipboard.prototype.write){
+        patchMethod(Clipboard.prototype, 'write', function(target, thisArg, args){
+          return Promise.resolve(args[0]).then(function(items){
+            var texts = [];
+            var list = Array.prototype.slice.call(items || []);
+            return Promise.all(list.map(function(item){
+              try {
+                if (item.types && item.types.indexOf('text/plain') !== -1){
+                  return item.getType('text/plain').then(function(b){ return b.text(); })
+                      .then(function(t){ texts.push(t); });
+                }
+              } catch(e){}
+              return null;
+            })).then(function(){
+              for (var i = 0; i < texts.length; i++){ if (test(texts[i])) return undefined; }
+              return Reflect.apply(target, thisArg, args);
+            });
+          });
+        });
+      }
+    }
+    // document.execCommand('copy') copies the selection, or what a 'copy'
+    // listener puts in the event; check both on the way out.
+    listen(document, 'copy', function(ev){
+      try {
+        var t = String(self.getSelection ? self.getSelection() : '');
+        if (test(t)){ ev.stopImmediatePropagation(); ev.preventDefault(); }
+      } catch(e){}
+    }, true);
+    if (self.DataTransfer && DataTransfer.prototype.setData){
+      patchMethod(DataTransfer.prototype, 'setData', function(target, thisArg, args){
+        if (test(args[1])) return undefined;
+        return Reflect.apply(target, thisArg, args);
+      });
+    }
+  };
+
+  // xml-prune(selector, [needle], [url]): nodes of an XML response (VAST ad
+  // tags, MPEG-DASH manifests) are removed before the page reads it.
+  // selector: "xpath(...)" or a CSS selector. Only when the text has `needle`.
+  var xmlPrune = function(selector, needle, urlPattern){
+    if (!selector || !self.DOMParser || !self.XMLSerializer) return;
+    var tester = makeUrlTester(urlPattern || '');
+    var has = textTester(needle);
+    var xpath = null;
+    var xm = String(selector).match(/^xpath\(([\s\S]+)\)$/);
+    if (xm) xpath = xm[1];
+    var prune = function(text){
+      if (typeof text !== 'string' || text.indexOf('<') === -1 || !has(text)) return null;
+      try {
+        var doc = new DOMParser().parseFromString(text, 'text/xml');
+        if (doc.getElementsByTagName('parsererror').length) return null;
+        var nodes = [];
+        if (xpath){
+          var res = doc.evaluate(xpath, doc, null, 7, null);  // ORDERED_NODE_SNAPSHOT
+          for (var i = 0; i < res.snapshotLength; i++) nodes.push(res.snapshotItem(i));
+        } else {
+          nodes = Array.prototype.slice.call(doc.querySelectorAll(selector));
+        }
+        if (!nodes.length) return null;
+        nodes.forEach(function(n){
+          if (n.nodeType === 2 && n.ownerElement) n.ownerElement.removeAttribute(n.name);
+          else if (n.parentNode) n.parentNode.removeChild(n);
+        });
+        return new XMLSerializer().serializeToString(doc);
+      } catch(e){ return null; }
+    };
+    hookFetch(function(url, resp){
+      if (!tester(url)) return null;
+      return resp.clone().text().then(function(text){
+        var out = prune(text);
+        return out === null ? null : makeResponse(out, resp);
+      }, function(){ return null; });
+    });
+    registerXhrHandler({ tester: tester, onText: prune });
+  };
+
+  // m3u-prune(pattern, [url]): lines of an HLS playlist that the pattern
+  // matches (ad segments) are removed.
+  var m3uPrune = function(pattern, urlPattern){
+    var replace = replacerOf(pattern, '');
+    if (!replace) return;
+    var tester = makeUrlTester(urlPattern || '');
+    var prune = function(text){
+      if (typeof text !== 'string' || text.indexOf('#EXTM3U') === -1) return null;
+      var out = replace(text);
+      return out === text ? null : out;
+    };
+    hookFetch(function(url, resp){
+      if (!tester(url)) return null;
+      return resp.clone().text().then(function(text){
+        var out = prune(text);
+        return out === null ? null : makeResponse(out, resp);
+      }, function(){ return null; });
+    });
+    registerXhrHandler({ tester: tester, onText: prune });
+  };
+
+  // jsonl-edit-xhr-response(edit, propsToMatch, url): as json-edit-xhr-response
+  // for a response that is one JSON value per line.
+  var makeJsonlEditXhr = function(trusted){ return function(editSpec){
+    var edit = compileJsonEdit(editSpec);
+    if (!edit || (!trusted && !/^[^=]*$/.test(String(editSpec).replace(/\[[^\]]*\]/g, '')))) return;
+    var tester = makeUrlTester(optionAfter(arguments, 1, 'propsToMatch'));
+    registerXhrHandler({
+      tester: tester,
+      onText: function(text){
+        if (typeof text !== 'string') return null;
+        var changed = false;
+        var lines = text.split('\n').map(function(line){
+          if (!line.trim()) return line;
+          var obj; try { obj = realJsonParse(line); } catch(e){ return line; }
+          if (edit.apply(obj)){ changed = true; return Reflect.apply(realJsonStringify, JSON, [obj]); }
+          return line;
+        });
+        return changed ? lines.join('\n') : null;
+      }
+    });
+  }; };
+
+  // trusted-suppress-native-method(path, signature, [how]): calls whose
+  // arguments match the signature ("|"-separated, each a literal written as
+  // JSON or a /regex/ over the argument as text) do not happen; they return
+  // undefined, or throw for how="abort".
+  var trustedSuppressNativeMethod = function(path, signature, how){
+    if (!path) return;
+    var found = findOwner(self, String(path));
+    if (!found || !found[0]) return;
+    var parts = signature === undefined || signature === '' ? [] : String(signature).split('|');
+    var tests = parts.map(function(p){
+      if (p === '') return function(){ return true; };
+      var m = p.match(/^\/([\s\S]+)\/([imsu]*)$/);
+      if (m){
+        try { var re = new RegExp(m[1], m[2]); return function(v){ return re.test(String(v)); }; }
+        catch(e){ return function(){ return false; }; }
+      }
+      var lit;
+      try { lit = realJsonParse(p); } catch(e){ lit = p; }
+      return function(v){ return v === lit || (typeof lit === 'string' && String(v) === lit); };
+    });
+    patchMethod(found[0], found[1], function(target, thisArg, args){
+      var hit = tests.length > 0 && tests.every(function(t, i){ return t(args[i]); });
+      if (!hit) return Reflect.apply(target, thisArg, args);
+      if (how === 'abort') throw abortError();
+      return undefined;
+    });
+  };
+
+  // trusted-create-html(parent, html, [duration]): the given markup is added to
+  // the parent element (anti-adblock checks look for elements an ad script
+  // would have made); removed again after `duration` ms when one is given.
+  // Parsed with DOMParser, so no TrustedHTML is needed and nothing runs as
+  // the page's script.
+  var trustedCreateHtml = function(parentSelector, html, durationRaw){
+    if (!parentSelector || !html || !self.DOMParser) return;
+    var added = false;
+    var add = function(){
+      if (added) return;
+      var parent = document.querySelector(parentSelector);
+      if (!parent) return;
+      added = true;
+      var body = new DOMParser().parseFromString(String(html), 'text/html').body;
+      var made = [];
+      while (body && body.firstChild){
+        var n = document.importNode(body.firstChild, true);
+        body.removeChild(body.firstChild);
+        parent.appendChild(n);
+        made.push(n);
+      }
+      var ms = parseInt(durationRaw, 10);
+      if (ms > 0) later(function(){ made.forEach(function(n){ try { n.remove(); } catch(e){} }); }, ms);
+    };
+    everyElement(add);
   };
 
   // trusted-edit-inbound-object(fnPath, argPosition, edit)
@@ -1003,7 +1604,7 @@ var zephyrusScriptlets = (function(){
     try {
       var real = owner[name];
       if (typeof real !== 'function') return;
-      owner[name] = new Proxy(real, { apply: function(target, thisArg, args){
+      owner[name] = nativeProxy(real, { apply: function(target, thisArg, args){
         return handler(target, thisArg, args);
       }});
     } catch(e){}
@@ -1185,7 +1786,7 @@ var zephyrusScriptlets = (function(){
 
   // prevent-fetch(props): matching fetches resolve to an empty 200 without
   // leaving the page. `props` is "url:x method:POST ..." or just a URL needle.
-  var preventFetch = function(propsRaw, bodyKind){
+  var makePreventFetch = function(trusted){ return function(propsRaw, bodyKind){
     if (!propsRaw) return;
     var keys = { url: 1, method: 1, body: 1, mode: 1, credentials: 1,
                  cache: 1, redirect: 1, referrer: 1, referrerPolicy: 1 };
@@ -1214,7 +1815,8 @@ var zephyrusScriptlets = (function(){
         return v !== undefined && c[1](v);
       });
       if (!hit) return Reflect.apply(target, thisArg, args);
-      var body = bodyKind === 'emptyObj' ? '{}' : bodyKind === 'emptyArr' ? '[]' : '';
+      var body = bodyKind === 'emptyObj' ? '{}' : bodyKind === 'emptyArr' ? '[]'
+          : (trusted && bodyKind !== undefined && bodyKind !== 'true') ? String(bodyKind) : '';
       try {
         var resp = new Response(body, { status: 200, statusText: 'OK' });
         // Absolute, as a real response's url always is.
@@ -1225,7 +1827,9 @@ var zephyrusScriptlets = (function(){
         return Promise.resolve(resp);
       } catch(e){ return Reflect.apply(target, thisArg, args); }
     });
-  };
+  }; };
+  var preventFetch = makePreventFetch(false);
+  var trustedPreventFetch = makePreventFetch(true);
 
   // Runs `apply` now, when the DOM is parsed, and (coalesced) after mutations.
   var watchDom = function(apply, attributeFilter){
@@ -1369,7 +1973,7 @@ var zephyrusScriptlets = (function(){
     };
     ['RTCPeerConnection', 'webkitRTCPeerConnection'].forEach(function(n){
       if (typeof self[n] !== 'function') return;
-      try { self[n] = new Proxy(self[n], { construct: function(){ return new Stub(); } }); } catch(e){}
+      try { self[n] = nativeProxy(self[n], { construct: function(){ return new Stub(); } }); } catch(e){}
     });
   };
 
@@ -1387,6 +1991,24 @@ var zephyrusScriptlets = (function(){
     if (/^-?\d{1,5}$/.test(v) && Math.abs(parseInt(v, 10)) <= 32767) return v;
     return null;
   };
+  // `reload, 1` among a cookie scriptlet's arguments: once the cookie is newly
+  // set, reload the page, for sites that read their consent cookie only while
+  // building the page (the banner would otherwise stay up on the first visit).
+  // Only when the cookie really is there afterwards, so a site that refuses it
+  // cannot make the page reload forever.
+  var wantsReload = function(args, from){
+    for (var i = from; i + 1 < args.length; i++){
+      if (args[i] === 'reload' && args[i + 1] === '1') return true;
+    }
+    return false;
+  };
+  var reloadIfSet = function(pair){
+    try {
+      if (String(document.cookie).split(/;\s*/).indexOf(pair) !== -1){
+        self.location.reload();
+      }
+    } catch(e){}
+  };
   var setCookie = function(name, value, path){
     if (!name || !/^[\w.\-]{1,64}$/.test(name)) return;
     var v = safeValue(value);
@@ -1394,8 +2016,13 @@ var zephyrusScriptlets = (function(){
     var pair = name + '=' + encodeURIComponent(v);
     try {
       if (String(document.cookie).split(/;\s*/).indexOf(pair) !== -1) return;
-      document.cookie = pair + (path === 'none' ? '' : '; path=/');
+      document.cookie = pair + (path === 'none' || path === '' || path === undefined
+                                ? (path === 'none' ? '' : '; path=/') : '; path=' + (path === '/' ? '/' : '/'));
+      if (wantsReload(arguments, 3)) reloadIfSet(pair);
     } catch(e){}
+  };
+  var setCookieReload = function(name, value, path){
+    setCookie(name, value, path, 'reload', '1');
   };
   var setStorageItem = function(which){
     return function(key, value){
@@ -1439,7 +2066,11 @@ var zephyrusScriptlets = (function(){
         cookie += '; expires=' + new Date(Date.now() + seconds * 1000).toUTCString();
       }
       document.cookie = cookie;
+      if (wantsReload(arguments, 4)) reloadIfSet(name + '=' + v);
     } catch(e){}
+  };
+  var trustedSetCookieReload = function(name, value, offsetRaw, path){
+    trustedSetCookie(name, value, offsetRaw, path, 'reload', '1');
   };
   var trustedSetStorageItem = function(which){
     return function(key, value){
@@ -1496,8 +2127,10 @@ var zephyrusScriptlets = (function(){
     'trusted-prevent-dom-bypass': trustedPreventDomBypass,
     'nano-setTimeout-booster': nanoBooster('setTimeout'),
     'nano-stb': nanoBooster('setTimeout'),
+    'adjust-setTimeout': nanoBooster('setTimeout'),
     'nano-setInterval-booster': nanoBooster('setInterval'),
     'nano-sib': nanoBooster('setInterval'),
+    'adjust-setInterval': nanoBooster('setInterval'),
     'trusted-set-constant': setConstant,
     'trusted-set': setConstant,
     'abort-current-script': abortCurrentScript,
@@ -1566,6 +2199,36 @@ var zephyrusScriptlets = (function(){
     // cannot gain anything here. If it is ever needed, port it to the fetch
     // path (see hookFetch above) and mask the patch's toString.
     'no-xhr-if': noXhrIf,
+    'prevent-xhr': noXhrIf,
+    'trusted-prevent-xhr': trustedNoXhrIf,
+    'trusted-no-xhr-if': trustedNoXhrIf,
+    'trusted-prevent-fetch': trustedPreventFetch,
+    'trusted-no-fetch-if': trustedPreventFetch,
+    'set-cookie-reload': setCookieReload,
+    'trusted-set-cookie-reload': trustedSetCookieReload,
+    'json-edit': makeJsonEdit(false),
+    'trusted-json-edit': makeJsonEdit(true),
+    'json-edit-xhr-response': makeJsonEditXhr(false),
+    'trusted-json-edit-xhr-response': makeJsonEditXhr(true),
+    'json-edit-fetch-response': makeJsonEditFetch(false),
+    'trusted-json-edit-fetch-response': makeJsonEditFetch(true),
+    'trusted-replace-argument': trustedReplaceArgument,
+    'spoof-css': spoofCss,
+    'prevent-innerHTML': preventInnerHtml,
+    'href-sanitizer': hrefSanitizer,
+    'set-attr': makeSetAttr(false),
+    'trusted-set-attr': makeSetAttr(true),
+    'trusted-replace-outbound-text': trustedReplaceOutboundText,
+    'refresh-defuser': refreshDefuser,
+    'prevent-clipboard-write': preventClipboardWrite,
+    'xml-prune': xmlPrune,
+    'm3u-prune': m3uPrune,
+    'jsonl-edit-xhr-response': makeJsonlEditXhr(false),
+    'trusted-jsonl-edit-xhr-response': makeJsonlEditXhr(true),
+    'trusted-suppress-native-method': trustedSuppressNativeMethod,
+    'trusted-create-html': trustedCreateHtml,
+    // uBO's own configuration of its proxies; nothing for us to do.
+    'proxy-apply-config': function(){},
     'rmnt': removeNodeText,
     'remove-node-text': removeNodeText,
     'trusted-rpnt': replaceNodeText,

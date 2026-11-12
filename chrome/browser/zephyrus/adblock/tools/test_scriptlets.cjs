@@ -12,12 +12,12 @@ const lib = cc.slice(cc.indexOf('constexpr char kScriptletLibrary[] = R"JS(') + 
                      cc.indexOf(')JS";', cc.indexOf('kScriptletLibrary')));
 let passed = 0, failures = 0;
 function test(name, fn) {
-  try { fn(); passed++; } catch (e) { failures++; console.log('FAIL', name, '\n    ', e.stack.split('\n').slice(0, 4).join('\n     ')); }
+  try { fn(); passed++; } catch (e) { failures++; console.log('FAIL', name, '\n    ', String(e.message).slice(0, 2000)); }
 }
 
 // A fresh page: its own JSON, so a patched stringify cannot leak between tests.
 function page() {
-  const ctx = vm.createContext({console, Proxy, Reflect, Date, Math, RegExp, Array, Object, String, Number, Symbol, Promise});
+  const ctx = vm.createContext({console});
   vm.runInContext('var self = this; var window = this; var JSON = this.JSON;', ctx);
   vm.runInContext(lib + '\nthis.__lib = zephyrusScriptlets;', ctx);
   return ctx;
@@ -105,7 +105,7 @@ test('JSON.stringify still looks native and serialises everything else as before
 
 test('an edit outside the understood language does nothing at all', () => {
   const ctx = page();
-  for (const bad of ['', '[?.a', '.a.b', '[?.a=nope].b=1', '.a+="not json"'])
+  for (const bad of ['', '[?.a', '[?.a=nope].b=1', '.a+="not json"', 'a.b=1'])
     ctx.__lib['trusted-edit-inbound-object']('JSON.stringify', '0', bad);
   ctx.body = {a: {b: 0}};
   assert.strictEqual(vm.runInContext('JSON.stringify(body)', ctx), '{"a":{"b":0}}');
@@ -161,6 +161,164 @@ test('rmnt empties a whole matching script and leaves the others', () => {
   assert.strictEqual(nodes[1].textContent, '');
   assert.strictEqual(add('a(window,"fetch")').textContent, '');
   assert.strictEqual(ctx.__lib['remove-node-text'], ctx.__lib['rmnt']);
+});
+
+test('every patched built-in still stringifies as it did, and a request gets no own properties', () => {
+  const ctx = page();
+  // A stand-in XMLHttpRequest with the shape the hook looks for.
+  vm.runInContext(`
+    function XMLHttpRequest(){ this.readyState = 4; }
+    XMLHttpRequest.prototype.open = function open(){};
+    XMLHttpRequest.prototype.send = function send(){};
+    Object.defineProperty(XMLHttpRequest.prototype, 'responseText', {configurable: true, get: function responseText(){ return '{"a":1}'; }});
+    Object.defineProperty(XMLHttpRequest.prototype, 'response', {configurable: true, get: function response(){ return '{"a":1}'; }});
+    this.XMLHttpRequest = XMLHttpRequest;
+    this.fetch = function fetch(){ return Promise.resolve(null); };
+    function Response(){} Response.prototype.json = function json(){ return Promise.resolve({}); };
+    this.Response = Response;`, ctx);
+  const before = vm.runInContext(`(() => { const t = (f) => Function.prototype.toString.call(f);
+    return [t(JSON.parse), t(JSON.stringify), t(fetch), t(Response.prototype.json), t(XMLHttpRequest.prototype.open),
+            t(XMLHttpRequest.prototype.send), t(Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText').get)]; })()`, ctx);
+  ctx.__lib['json-prune']('ads');
+  ctx.__lib['json-prune-fetch-response']('ads', '', 'propsToMatch', 'x');
+  ctx.__lib['trusted-replace-xhr-response']('a', 'b', 'x');
+  ctx.__lib['json-prune-xhr-response']('ads', '', 'propsToMatch', 'x');
+  ctx.__lib['trusted-edit-inbound-object']('JSON.stringify', '0', '[?.a].b=1');
+  ctx.__lib['trusted-edit-inbound-object']('JSON.stringify', '0', '[?.a].c=2');
+  ctx.__lib['json-prune']('more');
+  const after = vm.runInContext(`(() => { const t = (f) => Function.prototype.toString.call(f);
+    return [t(JSON.parse), t(JSON.stringify), t(fetch), t(Response.prototype.json), t(XMLHttpRequest.prototype.open),
+            t(XMLHttpRequest.prototype.send), t(Object.getOwnPropertyDescriptor(XMLHttpRequest.prototype, 'responseText').get)]; })()`, ctx);
+  assert.deepStrictEqual(after, before);
+  const own = vm.runInContext(`(() => { const x = new XMLHttpRequest(); x.open('GET', 'https://x/'); x.send();
+    void x.responseText; return Object.getOwnPropertyNames(x).filter((k) => k !== 'readyState'); })()`, ctx);
+  assert.deepStrictEqual(Array.from(own), []);
+  // And the hook still edits the response it was asked to.
+  assert.strictEqual(vm.runInContext(`(() => { const x = new XMLHttpRequest(); x.open('GET', 'https://x/'); x.send(); return x.responseText; })()`, ctx), '{"b":1}');
+});
+
+test('the defusers and toString itself keep their exact native text', () => {
+  const ctx = page();
+  vm.runInContext(`this.EventTarget = function EventTarget(){}; EventTarget.prototype.addEventListener = function addEventListener(){};
+                   this.setTimeout = function setTimeout(){}; this.setInterval = function setInterval(){};`, ctx);
+  const read = () => vm.runInContext(`[Function.prototype.toString.call(Function.prototype.toString),
+      Function.prototype.toString.call(EventTarget.prototype.addEventListener), Function.prototype.toString.call(setTimeout),
+      String(Function.prototype.toString), Function.prototype.toString.name, Function.prototype.toString.length]`, ctx);
+  const before = read();
+  ctx.__lib['aeld']('scroll');
+  ctx.__lib['nostif']('adblock');
+  assert.deepStrictEqual(read(), before);
+});
+
+test('a path with no operator removes what it names, arrays included', () => {
+  const ctx = page();
+  ctx.__lib['trusted-edit-inbound-object']('JSON.stringify', '0', '..node[?.__typename=="AdStory"]');
+  ctx.body = {edges: [{node: {__typename: 'Story', id: 1}}, {node: {__typename: 'AdStory', id: 2}}]};
+  assert.strictEqual(vm.runInContext('JSON.stringify(body)', ctx), '{"edges":[{"node":{"__typename":"Story","id":1}},{}]}');
+});
+
+test('json-edit removes ad nodes from what JSON.parse returns; the plain form cannot assign', () => {
+  const ctx = page();
+  ctx.__lib['json-edit']('..node[?.__typename=="MarketplaceFeedAdStory"]');
+  ctx.__lib['json-edit']('.a=1');  // not allowed untrusted: ignored
+  const out = vm.runInContext(`JSON.parse('{"a":0,"items":[{"node":{"__typename":"MarketplaceFeedAdStory"}},{"node":{"__typename":"Listing"}}]}')`, ctx);
+  assert.strictEqual(JSON.stringify(out), '{"a":0,"items":[{},{"node":{"__typename":"Listing"}}]}');
+  ctx.__lib['trusted-json-edit']('[?.type=="ads"].visibility.status="hidden"');
+  const ad = vm.runInContext(`JSON.parse('{"type":"ads","visibility":{"status":"shown"}}')`, ctx);
+  assert.strictEqual(ad.visibility.status, 'hidden');
+});
+
+test('trusted-replace-argument swaps an argument, or the receiver, when the condition holds', () => {
+  const ctx = page();
+  vm.runInContext(`this.api = { send: function send(a, b){ return a + '|' + b; } };`, ctx);
+  ctx.__lib['trusted-replace-argument']('api.send', '1', 'json:{"blocked":false}', 'condition', 'adblock');
+  assert.strictEqual(vm.runInContext(`api.send('x', 'adblock=1')`, ctx), 'x|[object Object]');
+  assert.strictEqual(vm.runInContext(`api.send('x', 'other')`, ctx), 'x|other');
+  ctx.__lib['trusted-replace-argument']('String.prototype.split', 'this', 'repl:/network_machine=true/network_machine=false/', 'condition', 'H5_');
+  assert.strictEqual(vm.runInContext(`'H5_x&network_machine=true'.split('&').join('&')`, ctx), 'H5_x&network_machine=false');
+  assert.strictEqual(vm.runInContext(`'a,b'.split(',').length`, ctx), 2);
+});
+
+test('set-cookie with reload 1 reloads once the cookie is really set, and not otherwise', () => {
+  const ctx = page();
+  let jar = '', reloads = 0;
+  ctx.document = {};
+  Object.defineProperty(ctx.document, 'cookie', {get: () => jar, set: (v) => { const pair = v.split(';')[0]; jar = jar ? jar + '; ' + pair : pair; }});
+  ctx.location = {reload: () => { reloads++; }};
+  vm.runInContext('self.location = location;', ctx);
+  ctx.__lib['set-cookie']('consent', 'accepted', '', 'reload', '1');
+  assert.strictEqual(reloads, 1);
+  ctx.__lib['set-cookie']('consent', 'accepted', '', 'reload', '1');  // already there: nothing
+  assert.strictEqual(reloads, 1);
+  ctx.__lib['set-cookie']('other', 'yes');
+  assert.strictEqual(reloads, 1);
+});
+
+test('no-xhr-if answers a matching request as a quiet success, without sending it or marking it', () => {
+  const ctx = page();
+  vm.runInContext(`
+    var sent = 0;
+    function XMLHttpRequest(){ this.listeners = {}; }
+    XMLHttpRequest.prototype.open = function open(){};
+    XMLHttpRequest.prototype.send = function send(){ sent++; };
+    XMLHttpRequest.prototype.addEventListener = function(t, f){ (this.listeners[t] = this.listeners[t] || []).push(f); };
+    XMLHttpRequest.prototype.dispatchEvent = function(e){ (this.listeners[e.type] || []).forEach((f) => f(e)); };
+    ['readyState','status','statusText','responseText','response','responseURL'].forEach((k) =>
+      Object.defineProperty(XMLHttpRequest.prototype, k, {configurable: true, get: function(){ return 'real-' + k; }}));
+    this.XMLHttpRequest = XMLHttpRequest; this.Event = function(t){ this.type = t; };
+    this.setTimeout = function setTimeout(f){ f(); };`, ctx);
+  vm.runInContext('this.__lib = (function(){' + lib + '\nreturn zephyrusScriptlets;})();', ctx);
+  ctx.__lib['trusted-prevent-xhr']('/ads/', '<VAST version="4.0"></VAST>');
+  const r = vm.runInContext(`(() => { const x = new XMLHttpRequest(); let loaded = false; x.addEventListener('load', () => loaded = true);
+    x.open('GET', 'https://ad.example/ads/1'); x.send();
+    return {sent, loaded, status: x.status, text: x.responseText, own: Object.keys(x).filter((k) => k !== 'listeners')}; })()`, ctx);
+  assert.strictEqual(r.sent, 0);
+  assert.strictEqual(r.loaded, true);
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.text, '<VAST version="4.0"></VAST>');
+  assert.deepStrictEqual(Array.from(r.own), []);
+  const other = vm.runInContext(`(() => { const x = new XMLHttpRequest(); x.open('GET', 'https://site.example/api'); x.send(); return [sent, x.status]; })()`, ctx);
+  assert.deepStrictEqual(Array.from(other), [1, 'real-status']);
+});
+
+test('trusted-replace-outbound-text edits what a function returns, only under its condition', () => {
+  const ctx = page();
+  vm.runInContext(`this.TextDecoder = function TextDecoder(){}; TextDecoder.prototype.decode = function decode(x){ return x; };`, ctx);
+  ctx.__lib['trusted-replace-outbound-text']('TextDecoder.prototype.decode', '/<template data-ads>[\\s\\S]*?<\\/template>/', '', 'condition', 'data-ads');
+  assert.strictEqual(vm.runInContext(`new TextDecoder().decode('a<template data-ads>x</template>b')`, ctx), 'ab');
+  assert.strictEqual(vm.runInContext(`new TextDecoder().decode('plain')`, ctx), 'plain');
+  assert.ok(/decode\(x\)/.test(vm.runInContext(`Function.prototype.toString.call(TextDecoder.prototype.decode)`, ctx)));
+});
+
+test('trusted-suppress-native-method stops only the calls that match its signature', () => {
+  const ctx = page();
+  vm.runInContext(`var made = []; this.doc = { createElement: function createElement(t){ made.push(t); return {tag: t}; } };`, ctx);
+  ctx.__lib['trusted-suppress-native-method']('doc.createElement', '"script"', 'prevent');
+  assert.strictEqual(vm.runInContext(`doc.createElement('script')`, ctx), undefined);
+  assert.strictEqual(vm.runInContext(`doc.createElement('div').tag`, ctx), 'div');
+  assert.deepStrictEqual(Array.from(vm.runInContext('made', ctx)), ['div']);
+});
+
+test('m3u-prune drops ad segments from a playlist an XHR returns', () => {
+  const ctx = page();
+  vm.runInContext(`
+    function XMLHttpRequest(){ this.readyState = 4; }
+    XMLHttpRequest.prototype.open = function open(){}; XMLHttpRequest.prototype.send = function send(){};
+    Object.defineProperty(XMLHttpRequest.prototype, 'responseText', {configurable: true, get: function(){ return '#EXTM3U\\n#EXT-X-AD\\nad1.ts\\nreal1.ts\\n'; }});
+    this.XMLHttpRequest = XMLHttpRequest;`, ctx);
+  ctx.__lib['m3u-prune']('/#EXT-X-AD\\nad\\d\\.ts\\n/', 'video.m3u8');
+  assert.strictEqual(vm.runInContext(`(() => { const x = new XMLHttpRequest(); x.open('GET', 'https://cdn/x/video.m3u8'); x.send(); return x.responseText; })()`, ctx), '#EXTM3U\nreal1.ts\n');
+});
+
+test('every new scriptlet name resolves to a function', () => {
+  const ctx = page();
+  for (const n of ['prevent-xhr', 'trusted-prevent-xhr', 'trusted-prevent-fetch', 'set-cookie-reload', 'trusted-set-cookie-reload',
+                   'json-edit', 'trusted-json-edit', 'json-edit-xhr-response', 'trusted-json-edit-xhr-response', 'json-edit-fetch-response',
+                   'trusted-json-edit-fetch-response', 'trusted-replace-argument', 'spoof-css', 'prevent-innerHTML', 'href-sanitizer',
+                   'set-attr', 'trusted-set-attr', 'trusted-replace-outbound-text', 'refresh-defuser', 'prevent-clipboard-write',
+                   'xml-prune', 'm3u-prune', 'jsonl-edit-xhr-response', 'trusted-suppress-native-method', 'trusted-create-html',
+                   'proxy-apply-config', 'adjust-setTimeout', 'adjust-setInterval', 'trusted-edit-inbound-object', 'trusted-rpfr'])
+    assert.strictEqual(typeof ctx.__lib[n], 'function', n);
 });
 
 console.log(passed + ' passed, ' + failures + ' failed');
