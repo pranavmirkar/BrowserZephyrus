@@ -11,10 +11,12 @@
 
 #include "third_party/blink/public/mojom/zephyrus/zephyrus_privacy_reporter.mojom-blink.h"
 #include "third_party/blink/renderer/core/core_export.h"
+#include "ui/gfx/geometry/size.h"
 
 namespace blink {
 
 class ExecutionContext;
+class LocalDOMWindow;
 
 // Zephyrus §6.5: the fingerprint-randomization seed for `context`, or nullopt
 // when randomization is off for it.
@@ -78,6 +80,14 @@ inline constexpr uint32_t kZephyrusFpFonts = 1u << 5;
 CORE_EXPORT std::optional<std::array<uint8_t, 32>> ZephyrusSeedForSurface(
     ExecutionContext* context,
     uint32_t surface_bit);
+
+// What `window` reports as the screen size when the screen surface is being
+// protected: the size of the browser window it is in (outerWidth by
+// outerHeight). Nullopt when it is not, or when there is no window size to
+// give. Used by window.screen and by the device-width / device-height media
+// features, which must agree or the difference gives the change away.
+CORE_EXPORT std::optional<gfx::Size> ZephyrusScreenSizeFor(
+    LocalDOMWindow* window);
 
 // Surface tags. Kept together so two surfaces cannot silently share one.
 inline constexpr uint64_t kZephyrusSurfaceAudio = 0x617564696f2d3031ULL;

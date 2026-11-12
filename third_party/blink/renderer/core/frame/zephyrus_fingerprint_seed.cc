@@ -178,14 +178,21 @@ class ZephyrusWorkerSeed final : public GarbageCollected<ZephyrusWorkerSeed>,
 // Whether `context` must fetch its own seed instead of reading one from a
 // content settings client.
 //
-// STRICTLY service workers, and the strictness is a safety property rather than
-// tidiness. FingerprintSeedHost is registered for frames and for service
-// workers only. A dedicated or shared worker that asked for it would be making
-// an unbindable interface request, which the browser treats as a bad Mojo
-// message and answers by killing the renderer process. Widening this predicate
-// to "any worker" would turn a missing seed into a crashed tab.
+// STRICTLY service workers and shared workers, and the strictness is a safety
+// property rather than tidiness. FingerprintSeedHost is registered for frames,
+// for service workers and for shared workers (the last through
+// ContentBrowserClient::RegisterBrowserInterfaceBindersForSharedWorker, a hook
+// Zephyrus adds). A dedicated worker that asked for it would be making an
+// unbindable interface request, which the browser treats as a bad Mojo message
+// and answers by killing the renderer process. Widening this predicate to "any
+// worker" would turn a missing seed into a crashed tab.
+//
+// A shared worker has no document to take a seed from, like a service worker:
+// it is started by the browser and can outlive the page that asked for it.
+// MEASURED before it was added here: it read every true value.
 bool FetchesOwnSeed(ExecutionContext* context) {
-  return context && context->IsServiceWorkerGlobalScope();
+  return context && (context->IsServiceWorkerGlobalScope() ||
+                     context->IsSharedWorkerGlobalScope());
 }
 
 }  // namespace
@@ -206,6 +213,18 @@ std::optional<std::array<uint8_t, 32>> ZephyrusFingerprintSeedFor(
   }
   WebContentSettingsClient* settings = SettingsClientFor(context);
   return settings ? settings->GetZephyrusFingerprintSeed() : std::nullopt;
+}
+
+std::optional<gfx::Size> ZephyrusScreenSizeFor(LocalDOMWindow* window) {
+  if (!window || !ZephyrusSeedForSurface(window, kZephyrusFpScreen)) {
+    return std::nullopt;
+  }
+  const int width = window->outerWidth();
+  const int height = window->outerHeight();
+  if (width <= 0 || height <= 0) {
+    return std::nullopt;
+  }
+  return gfx::Size(width, height);
 }
 
 std::optional<std::array<uint8_t, 32>> ZephyrusSeedForSurface(

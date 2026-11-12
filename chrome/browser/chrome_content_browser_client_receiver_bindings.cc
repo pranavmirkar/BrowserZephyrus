@@ -371,6 +371,24 @@ void ChromeContentBrowserClient::RegisterUntrustedWebUIInterfaceBrokers(
   chrome::internal::PopulateUntrustedChromeWebUIFrameInterfaceBrokers(registry);
 }
 
+void ChromeContentBrowserClient::RegisterBrowserInterfaceBindersForSharedWorker(
+    content::BrowserContext* browser_context,
+    const url::Origin& creator_origin,
+    mojo::BinderMapWithContext<const url::Origin&>* map) {
+  // Zephyrus §6.5: a shared worker fetches its own seed, like a service worker.
+  // MEASURED (fp_ruler.py, 2026-11-10): without this a shared worker read the
+  // machine's true canvas, WebGL, core count and memory while every other
+  // context of the same site was given the randomised ones, so any page could
+  // undo the whole defence with one `new SharedWorker()`.
+  //
+  // Registered unconditionally, feature on or off: an interface a worker asks
+  // for that has no binder is a bad Mojo message and costs the renderer.
+  map->Add<zephyrus_privacy::mojom::FingerprintSeedHost>(base::BindRepeating(
+      &zephyrus_privacy::ZephyrusFingerprintSeedServiceWorkerHost::
+          CreateForSharedWorker,
+      browser_context->GetWeakPtr(), creator_origin));
+}
+
 void ChromeContentBrowserClient::
     RegisterBrowserInterfaceBindersForServiceWorker(
         content::BrowserContext* browser_context,

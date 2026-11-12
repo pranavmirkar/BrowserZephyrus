@@ -127,6 +127,39 @@ void ZephyrusFingerprintSeedServiceWorkerHost::Create(
       std::move(receiver));
 }
 
+// static
+void ZephyrusFingerprintSeedServiceWorkerHost::CreateForSharedWorker(
+    base::WeakPtr<content::BrowserContext> browser_context,
+    const url::Origin& creator_origin,
+    const url::Origin& origin,
+    mojo::PendingReceiver<mojom::FingerprintSeedHost> receiver) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  // Always answers, for the reason given on Create().
+  std::vector<uint8_t> seed;
+  uint32_t mask = FingerprintSurfaceMask();
+
+  if (mask != 0) {
+    auto* provider = browser_context
+                         ? FingerprintSeedProvider::GetOrCreate(
+                               browser_context.get())
+                         : nullptr;
+    std::optional<FingerprintSeed> derived =
+        provider ? provider->SeedForOrigin(origin.opaque() ? creator_origin
+                                                           : origin)
+                 : std::nullopt;
+    if (derived) {
+      seed.assign(derived->begin(), derived->end());
+    } else {
+      mask = 0;
+    }
+  }
+
+  mojo::MakeSelfOwnedReceiver(
+      std::make_unique<ZephyrusFingerprintSeedServiceWorkerHost>(
+          std::move(seed), mask),
+      std::move(receiver));
+}
+
 ZephyrusFingerprintSeedServiceWorkerHost::
     ZephyrusFingerprintSeedServiceWorkerHost(std::vector<uint8_t> seed,
                                              uint32_t enabled_surfaces)

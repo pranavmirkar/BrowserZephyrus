@@ -8,10 +8,12 @@
 #include <cstdint>
 #include <vector>
 
+#include "base/memory/weak_ptr.h"
 #include "content/public/browser/document_service.h"
 #include "content/public/browser/service_worker_version_base_info.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "third_party/blink/public/mojom/zephyrus/zephyrus_fingerprint_seed.mojom.h"
+#include "url/origin.h"
 
 namespace content {
 class BrowserContext;
@@ -102,6 +104,17 @@ class ZephyrusFingerprintSeedServiceWorkerHost
  public:
   static void Create(
       const content::ServiceWorkerVersionBaseInfo& service_worker_info,
+      mojo::PendingReceiver<mojom::FingerprintSeedHost> receiver);
+
+  // The same answer for a shared worker. `origin` is the origin of the
+  // worker's script URL and `creator_origin` that of the document that made
+  // it, both as the browser recorded them; the creator's is used when the
+  // script has no origin of its own (a data: URL), so that such a worker gets
+  // its creator's randomised values and not the true ones.
+  static void CreateForSharedWorker(
+      base::WeakPtr<content::BrowserContext> browser_context,
+      const url::Origin& creator_origin,
+      const url::Origin& origin,
       mojo::PendingReceiver<mojom::FingerprintSeedHost> receiver);
 
   ZephyrusFingerprintSeedServiceWorkerHost(std::vector<uint8_t> seed,

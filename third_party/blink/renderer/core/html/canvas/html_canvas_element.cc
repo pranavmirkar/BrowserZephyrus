@@ -1471,6 +1471,18 @@ scoped_refptr<StaticBitmapImage> ZephyrusPerturbForExport(
   if (!seed) {
     return image;
   }
+  // A canvas drawn on the GPU hands back a texture, whose pixels the read
+  // below cannot reach; it would fail and the TRUE image would be exported.
+  // MEASURED (fp_ruler.py): that is how OffscreenCanvas.convertToBlob() kept
+  // returning unperturbed pixels after it was routed through here. Bring the
+  // pixels to memory first.
+  if (image->IsTextureBacked()) {
+    scoped_refptr<StaticBitmapImage> in_memory = image->MakeUnaccelerated();
+    if (!in_memory) {
+      return image;
+    }
+    image = std::move(in_memory);
+  }
   // Unpremultiplied 8-bit RGBA, matching what the perturbation is defined over
   // and what an encoder will read. Premultiplied bytes would make a one-step
   // change in a low-alpha pixel expand after division.
