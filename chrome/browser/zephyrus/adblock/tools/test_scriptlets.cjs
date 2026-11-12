@@ -130,6 +130,7 @@ function scriptPage(texts) {
   ctx.MutationObserver = function(cb) { observerCb = cb; this.observe = () => {}; this.disconnect = () => { observerCb = null; }; };
   // Captured by the library at load time, so load it again with these in place.
   vm.runInContext(lib + '\nthis.__lib = zephyrusScriptlets;', ctx);
+  ctx.__fire = (records) => { if (observerCb) observerCb(records); };
   return {ctx, nodes, add: (text) => { const n = make(text); nodes.push(n); if (observerCb) observerCb([{addedNodes: [n]}]); return n; }};
 }
 
@@ -145,6 +146,19 @@ test('rpnt edits only the script its condition names, once, and skips excluded o
   assert.strictEqual(target.textContent, 'FIX;(function serverContract(){ go(); })()');
   const second = add('(function serverContract(){ again(); })()');
   assert.ok(!second.textContent.startsWith('FIX;'), 'sedCount 1 was exceeded');
+});
+
+test('rpnt edits a script whose text arrives after the element, as a streamed page delivers it', () => {
+  const {ctx, add} = scriptPage([]);
+  ctx.__lib['rpnt']('script', '/(\\(function serverContract\\(\\)|^if \\(window\\.ytcsi)/', 'FIX;$1',
+                    'sedCount', '1', 'excludes', 'MutationObserver', 'condition', '/serverContract|js_ld/');
+  // The parser inserts the element empty...
+  const el = add('');
+  assert.strictEqual(el.textContent, '');
+  // ...and its text in a later task: the record names the text node only.
+  el.textContent = '(function serverContract(){ go(); })()';
+  ctx.__fire([{addedNodes: [{nodeType: 3, nodeName: '#text', parentNode: el}]}]);
+  assert.strictEqual(el.textContent, 'FIX;(function serverContract(){ go(); })()');
 });
 
 test('rpnt without options edits every matching script as it is added', () => {
@@ -331,6 +345,30 @@ test('set through a constructor leaves the constructor alone and objects their o
   assert.strictEqual(vm.runInContext('(() => { const cfg = {}; cfg.ads = {nopreroll_: false}; return cfg.ads.nopreroll_; })()', ctx), true);
   // ...and two unrelated objects do not share one value.
   assert.deepStrictEqual(Array.from(vm.runInContext('(() => { const a = {}, b = {}; a.ads = 1; b.ads = 2; return [a.ads, b.ads, Object.keys(a).length]; })()', ctx)), [1, 2, 1]);
+});
+
+test('several set rules waiting on one object that does not exist yet all take', () => {
+  // YouTube: three rules on ytInitialPlayerResponse, installed before the page
+  // assigns it. Each placeholder replaced the last; only adSlots was cleared.
+  const ctx = page();
+  for (const k of ['playerAds', 'adPlacements', 'adSlots']) {
+    ctx.__lib['set']('ytInitialPlayerResponse.' + k, 'undefined');
+  }
+  const got = vm.runInContext(`(() => {
+    var ytInitialPlayerResponse = {playerAds: [1], adPlacements: [2], adSlots: [3], videoDetails: {id: 'x'}};
+    return JSON.stringify([typeof ytInitialPlayerResponse.playerAds, typeof ytInitialPlayerResponse.adPlacements,
+                           typeof ytInitialPlayerResponse.adSlots, ytInitialPlayerResponse.videoDetails.id]);
+  })()`.replace('var ', 'window.'), ctx);
+  assert.strictEqual(got, '["undefined","undefined","undefined","x"]');
+  // The same for abort-on-property-read rules sharing a parent.
+  const ctx2 = page();
+  ctx2.__lib['abort-on-property-read']('cfg.first');
+  ctx2.__lib['abort-on-property-read']('cfg.second');
+  const thrown = vm.runInContext(`(() => { window.cfg = {first: 1, second: 2, other: 3};
+    const r = [];
+    for (const k of ['first', 'second', 'other']) { try { void window.cfg[k]; r.push('read'); } catch (e) { r.push('threw'); } }
+    return r.join(','); })()`, ctx2);
+  assert.strictEqual(thrown, 'threw,threw,read');
 });
 
 console.log(passed + ' passed, ' + failures + ' failed');

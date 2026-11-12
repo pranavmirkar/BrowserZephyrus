@@ -171,6 +171,15 @@ var zephyrusScriptlets = (function(){
       }
     } catch(e){}
   };
+  // The setter already on owner[prop], when it is an accessor that may not be
+  // dropped: another rule's placeholder, or the page's own. A placeholder
+  // about to take its place calls it on every write.
+  var chainedSetter = function(owner, prop){
+    try {
+      var d = Object.getOwnPropertyDescriptor(owner, prop);
+      return d && typeof d.set === 'function' ? d.set : null;
+    } catch(e){ return null; }
+  };
   var setConstant = function(path, rawValue){
     var value = toValue(rawValue);
     var parts = path.split('.');
@@ -198,10 +207,19 @@ var zephyrusScriptlets = (function(){
         return;
       }
       var next = existing;
+      // Another rule may already wait here for the same parent: three rules
+      // on ytInitialPlayerResponse (adPlacements, playerAds, adSlots) sit side
+      // by side in uBlock filters. MEASURED (youtube.com, 2026-11-12): each
+      // placeholder replaced the one before it, so only the last field was
+      // cleared and the other two ad fields reached the player, which is what
+      // YouTube's detection reads. Chain to it, so every rule still sees the
+      // value when the page assigns it.
+      var prior = chainedSetter(owner, prop);
       try {
         Object.defineProperty(owner, prop, {
           get: function(){ return next; },
           set: function(nv){
+            if (prior) { try { prior.call(this, nv); } catch(e){} }
             // Assigned on an object that only INHERITS this placeholder (it
             // sits on a prototype): that object gets its own property, as it
             // would have without us, and the path continues inside it. One
@@ -688,7 +706,16 @@ var zephyrusScriptlets = (function(){
           var added = records[r].addedNodes;
           for (var a = 0; a < added.length; a++){
             var node = added[a];
-            if (matches(node)){
+            if (node.nodeType === 3){
+              // The parser can insert a <script> first and its text in a later
+              // task, when the page arrives in pieces: the element is seen
+              // empty and skipped, and only this text node carries the code.
+              // MEASURED (YouTube, signed in, 2026-11-12): the serverContract
+              // script was never edited, so the page's "ad blocker detected"
+              // report reached YouTube and the session was flagged.
+              var parent = node.parentNode;
+              if (parent && matches(parent)) edit(parent);
+            } else if (matches(node)){
               edit(node);
             } else if (node.nodeType === 1 && node.firstElementChild){
               var inner;
@@ -1662,10 +1689,12 @@ var zephyrusScriptlets = (function(){
         return;
       }
       var held = existing;
+      var prior = chainedSetter(owner, prop);  // see setConstant
       try {
         Object.defineProperty(owner, prop, { configurable: true, enumerable: true,
           get: function(){ return held; },
           set: function(v){
+            if (prior) { try { prior.call(this, v); } catch(e){} }
             // See setConstant: an inheriting object gets its own property.
             if (this !== owner && this != null){
               try {
