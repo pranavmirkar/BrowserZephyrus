@@ -1195,8 +1195,13 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   // Lay out contents container. The contents container contains the multi-
   // contents view when multi-contents are enabled. The checks here are to
   // force the logic to be updated when multi-contents is fully rolled-out.
-  CHECK(IsParentedToAndVisible(views().multi_contents_view,
-                               views().browser_view));
+  // Zephyrus: parented, but not necessarily VISIBLE. A Zephyrus window can
+  // have no tabs (BrowserView::UpdateZephyrusEmptyState shows the wallpaper
+  // and hides the page area), and the window is laid out in that state as
+  // the last tab closes. Upstream's check that the page area is visible
+  // then crashed the browser on every last-tab close (MEASURED 2026-11-10,
+  // official build, crash dump on each). Laying out a hidden view is harmless.
+  CHECK(IsParentedTo(views().multi_contents_view, views().browser_view));
 
   // Because side panels have minimum width, in a small browser, it is possible
   // for the combination of minimum-sized contents pane and minimum-sized side
