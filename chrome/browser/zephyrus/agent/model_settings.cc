@@ -50,6 +50,7 @@ void RegisterProfilePrefs(PrefRegistrySimple* registry) {
   registry->RegisterStringPref(kCloudModelPref, std::string());
   registry->RegisterStringPref(kCloudBaseUrlPref, std::string());
   registry->RegisterBooleanPref(kCloudForceToolPref, true);
+  registry->RegisterBooleanPref(kCloudNativeTranscriptPref, false);
   registry->RegisterDoublePref(kCloudMaxUsdPref, 1.0);
   registry->RegisterBooleanPref(kCloudScreenshotsPref, true);
   registry->RegisterBooleanPref(kMascotPref, true);
@@ -131,6 +132,7 @@ std::optional<CloudModelConfig> ReadCloudModelConfig(const PrefService& prefs) {
     return std::nullopt;
   }
   config.force_tool = prefs.GetBoolean(kCloudForceToolPref);
+  config.native_transcript = prefs.GetBoolean(kCloudNativeTranscriptPref);
   config.send_screenshots = prefs.GetBoolean(kCloudScreenshotsPref);
   config.max_usd_per_task =
       std::clamp(prefs.GetDouble(kCloudMaxUsdPref), kMinUsd, kMaxUsd);
@@ -163,6 +165,7 @@ void WriteCloudModelConfig(PrefService& prefs, const CloudModelConfig& config) {
                   config.kind == "openai" ? config.base_url.spec()
                                           : std::string());
   prefs.SetBoolean(kCloudForceToolPref, config.force_tool);
+  prefs.SetBoolean(kCloudNativeTranscriptPref, config.native_transcript);
   prefs.SetBoolean(kCloudScreenshotsPref, config.send_screenshots);
   prefs.SetDouble(kCloudMaxUsdPref,
                   std::clamp(config.max_usd_per_task, kMinUsd, kMaxUsd));

@@ -190,6 +190,51 @@ pub struct HttpRequest {
 }
 
 pub fn build(table: &ToolTable, turn: &Turn) -> Result<HttpRequest, String> {
+    build_with(table, turn, vec![first_message(turn)])
+}
+
+/// The one user message of a stateless step, in the provider's shape.
+fn first_message(turn: &Turn) -> Value {
+    let image = turn.image_jpeg_base64;
+    match turn.kind {
+        Kind::Anthropic => json!({"role": "user", "content": if image.is_empty() {
+            json!(turn.user)
+        } else {
+            json!([
+                {"type": "image", "source": {"type": "base64",
+                    "media_type": "image/jpeg", "data": image}},
+                {"type": "text", "text": turn.user},
+            ])
+        }}),
+        Kind::OpenAiCompatible => json!({"role": "user", "content": if image.is_empty() {
+            json!(turn.user)
+        } else {
+            json!([
+                {"type": "image_url", "image_url": {"url": format!(
+                    "data:image/jpeg;base64,{image}")}},
+                {"type": "text", "text": turn.user},
+            ])
+        }}),
+        Kind::Gemini => json!({"role": "user", "parts": if image.is_empty() {
+            json!([{"text": turn.user}])
+        } else {
+            json!([
+                {"inline_data": {"mime_type": "image/jpeg", "data": image}},
+                {"text": turn.user},
+            ])
+        }}),
+    }
+}
+
+/// The request around a given list of messages: `build` passes the single
+/// message of a stateless step, `conversation` passes a whole transcript. The
+/// messages are everything after the system prompt, in the provider's shape;
+/// `turn.user` is not read here.
+pub(crate) fn build_with(
+    table: &ToolTable,
+    turn: &Turn,
+    messages: Vec<Value>,
+) -> Result<HttpRequest, String> {
     let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
     let (path, body) = match turn.kind {
         Kind::Anthropic => {
@@ -214,15 +259,7 @@ pub fn build(table: &ToolTable, turn: &Turn) -> Result<HttpRequest, String> {
                     "text": turn.system,
                     "cache_control": {"type": "ephemeral"},
                 }],
-                "messages": [{"role": "user", "content": if turn.image_jpeg_base64.is_empty() {
-                    json!(turn.user)
-                } else {
-                    json!([
-                        {"type": "image", "source": {"type": "base64",
-                            "media_type": "image/jpeg", "data": turn.image_jpeg_base64}},
-                        {"type": "text", "text": turn.user},
-                    ])
-                }}],
+                "messages": messages,
                 "tools": tools,
             });
             // `auto`, never a forced `any`: Claude Opus 5.5 and Fable 5.1
@@ -257,20 +294,11 @@ pub fn build(table: &ToolTable, turn: &Turn) -> Result<HttpRequest, String> {
                     })
                 })
                 .collect();
+            let mut all = vec![json!({"role": "system", "content": turn.system})];
+            all.extend(messages);
             let mut body = json!({
                 "model": turn.model,
-                "messages": [
-                    {"role": "system", "content": turn.system},
-                    {"role": "user", "content": if turn.image_jpeg_base64.is_empty() {
-                        json!(turn.user)
-                    } else {
-                        json!([
-                            {"type": "image_url", "image_url": {"url": format!(
-                                "data:image/jpeg;base64,{}", turn.image_jpeg_base64)}},
-                            {"type": "text", "text": turn.user},
-                        ])
-                    }},
-                ],
+                "messages": all,
                 "tools": tools,
                 // Several calls per turn, run in order by the loop; see
                 // MAX_CALLS for why that is safe.
@@ -300,15 +328,7 @@ pub fn build(table: &ToolTable, turn: &Turn) -> Result<HttpRequest, String> {
                 .collect();
             let mut body = json!({
                 "systemInstruction": {"parts": [{"text": turn.system}]},
-                "contents": [{"role": "user", "parts": if turn.image_jpeg_base64.is_empty() {
-                    json!([{"text": turn.user}])
-                } else {
-                    json!([
-                        {"inline_data": {"mime_type": "image/jpeg",
-                            "data": turn.image_jpeg_base64}},
-                        {"text": turn.user},
-                    ])
-                }}],
+                "contents": messages,
                 "tools": [{"functionDeclarations": declarations}],
                 "generationConfig": {"maxOutputTokens": turn.max_tokens},
             });

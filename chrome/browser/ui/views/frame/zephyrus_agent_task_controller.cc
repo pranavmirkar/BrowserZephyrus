@@ -326,6 +326,7 @@ void ZephyrusAgentTaskController::Run(mojom::PendingApprovalPtr approved) {
     cloud->kind = cloud_config_->kind;
     cloud->model = cloud_config_->model;
     cloud->force_tool = cloud_config_->force_tool;
+    cloud->native_transcript = cloud_config_->native_transcript;
     // Room for thinking as well as the call: on current Claude models thinking
     // is always on and counts against this cap, and 1,024 was used up before
     // the model chose anything. The spending limit is what bounds cost.

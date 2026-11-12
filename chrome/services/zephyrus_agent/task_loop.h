@@ -7,6 +7,7 @@
 
 #include <deque>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <string_view>
@@ -116,6 +117,10 @@ class TaskLoop {
   std::string NoteOrReadLine(const std::string& tool,
                              const std::string& arguments_json,
                              const mojom::ToolOutcome& outcome);
+  // After a look that followed a link click: runs what is left of the turn,
+  // or what of it still makes sense on the page that opened. False if nothing
+  // was run and the model should be asked.
+  bool ResumeQueuedAfterLook();
   // Runs the next call the model made in the same turn. See `queued_`.
   void RunQueued();
   // Drops the rest of this turn's calls, saying so in the history.
@@ -128,7 +133,18 @@ class TaskLoop {
               mojom::PendingApprovalPtr pending = nullptr);
 
   std::string SystemPrompt() const;
-  std::string UserPrompt() const;
+  // `transcript`: the conversation carries the memory, what was read and what
+  // was done, so only the current look at the page and the task are said.
+  std::string UserPrompt(bool transcript = false) const;
+
+  // True while this task is kept as a native conversation. See
+  // mojom::CloudModel::native_transcript.
+  bool UsingTranscript() const;
+  // Hands the conversation every history line it has not been given yet.
+  void FeedHistory();
+  // The call the model made (the `turn_call_index_`-th of its reply) came to
+  // `result`; history_.back() is the same thing as a history line.
+  void TellResult(const std::string& result);
 
   // Two real, clickable elements from the current Observation, named, or empty.
   //
@@ -261,6 +277,26 @@ class TaskLoop {
   // What has happened so far, oldest first, already shaped for the prompt. A
   // model with no memory of its last step repeats it.
   std::vector<std::string> history_;
+
+  // The task as a native conversation, when the cloud model asked for one.
+  // history_, notes_ and last_read_ are kept up to date either way, so the task
+  // can fall back to the retold prompt at any step.
+  std::optional<::rust::Box<Conversation>> conversation_;
+  // The provider refused the conversation; retold for the rest of the task.
+  bool transcript_broken_ = false;
+  bool opening_set_ = false;
+  // How many of history_'s lines the conversation has been given.
+  size_t history_fed_ = 0;
+  // A link was clicked with more calls of the same reply still to run. The
+  // page it opens is looked at first (and waited for), so that a read which
+  // follows the click reads the page that opened and not the one left behind.
+  bool look_before_queued_ = false;
+  // Where the page was when that click was made.
+  std::string url_before_queued_look_;
+  // Which call of the model's last reply is running: 0 for the first.
+  size_t turn_call_index_ = 0;
+  // What will stand in for the page being shown, once the model has answered.
+  std::string pending_stub_;
   base::WeakPtrFactory<TaskLoop> weak_factory_{this};
 };
 

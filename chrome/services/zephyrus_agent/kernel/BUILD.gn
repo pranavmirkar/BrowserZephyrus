@@ -18,6 +18,7 @@ rust_static_library("kernel") {
   # Listed for build-graph tracking; rustc reaches them all from crate_root.
   sources = [
     "src/contract.rs",
+    "src/conversation.rs",
     "src/extraction.rs",
     "src/lib.rs",
     "src/policy.rs",

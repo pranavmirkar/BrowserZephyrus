@@ -173,6 +173,12 @@ struct CloudModel {
   string model;
   // Insist on a native tool call. Off for servers that reject that.
   bool force_tool;
+  // Keep the task as a real conversation with the model: its own turns and a
+  // native result for every tool call, instead of retelling the task in one
+  // message each step. What it read on an earlier page stays in front of it.
+  // Falls back to the retelling for the rest of the task if the provider
+  // refuses the conversation.
+  bool native_transcript = false;
   uint32 max_tokens_per_step;
 
   // List prices in US dollars per million tokens, from the browser's table.

@@ -287,6 +287,8 @@ void RunOnce(const Kernel& kernel, const base::DictValue& request) {
     cloud->kind = TextOr(*spec, "kind");
     cloud->model = TextOr(*spec, "model");
     cloud->force_tool = spec->FindBool("force_tool").value_or(true);
+    cloud->native_transcript =
+        spec->FindBool("native_transcript").value_or(false);
     cloud->max_tokens_per_step =
         static_cast<uint32_t>(spec->FindInt("max_tokens_per_step").value_or(1024));
     cloud->usd_per_mtok_input = spec->FindDouble("usd_per_mtok_input").value_or(0);

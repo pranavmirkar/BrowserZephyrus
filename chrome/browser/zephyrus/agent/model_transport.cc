@@ -101,15 +101,28 @@ std::string PromptFromBody(const std::string& body) {
       if (const std::string* text = last.FindString("content")) {
         return *text;
       }
-      // [image, text]: the text, and a note that a picture went too, never
-      // the picture's bytes.
+      // Every part in order, so a conversation's newest message reads as it
+      // was sent: each tool result, then what the loop said, then the page.
+      // A picture is only ever noted, never its bytes.
       if (const base::ListValue* parts = last.FindList("content")) {
+        std::string out;
+        bool picture = false;
         for (const base::Value& part : *parts) {
-          if (part.is_dict()) {
-            if (const std::string* text = part.GetDict().FindString("text")) {
-              return "[with screenshot]\n" + *text;
-            }
+          if (!part.is_dict()) {
+            continue;
           }
+          const base::DictValue& fields = part.GetDict();
+          if (const std::string* text = fields.FindString("text")) {
+            base::StrAppend(&out, {out.empty() ? "" : "\n", *text});
+          } else if (const std::string* result = fields.FindString("content")) {
+            base::StrAppend(&out,
+                            {out.empty() ? "" : "\n", "[tool result] ", *result});
+          } else if (fields.Find("source")) {
+            picture = true;
+          }
+        }
+        if (!out.empty()) {
+          return (picture ? "[with screenshot]\n" : "") + out;
         }
       }
     }

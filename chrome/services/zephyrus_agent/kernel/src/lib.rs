@@ -29,6 +29,8 @@
 #[forbid(unsafe_code)]
 mod contract;
 #[forbid(unsafe_code)]
+mod conversation;
+#[forbid(unsafe_code)]
 mod extraction;
 #[forbid(unsafe_code)]
 mod policy;
@@ -39,6 +41,7 @@ mod providers;
 mod tests;
 
 use contract::Contract;
+use conversation::{new_conversation, Conversation};
 use policy::{Disposition as Verdict, Element, Request};
 
 /// The frozen V1 tool contract, compiled in.
@@ -209,6 +212,43 @@ mod ffi {
             status: u16,
             body: &str,
         ) -> ProviderReply;
+
+        /// A task's conversation with a cloud model, kept in the provider's
+        /// own shape. See `conversation`.
+        type Conversation;
+        fn new_conversation() -> Box<Conversation>;
+        fn set_opening(self: &mut Conversation, text: &str);
+        fn note(self: &mut Conversation, text: &str);
+        fn replace_note(self: &mut Conversation, text: &str);
+        fn record_result(self: &mut Conversation, index: usize, result: &str, line: &str);
+        fn compacted(self: &Conversation) -> bool;
+        fn turn_count(self: &Conversation) -> usize;
+
+        /// parse_provider_reply, and a successful reply becomes the next turn
+        /// of `conversation`. `stub` replaces the page the model was shown.
+        fn parse_provider_reply_into(
+            self: &Kernel,
+            kind: &str,
+            status: u16,
+            body: &str,
+            stub: &str,
+            conversation: &mut Conversation,
+        ) -> ProviderReply;
+
+        /// build_provider_request, with the whole conversation in place of one
+        /// user message. `tail` is the current look at the page.
+        fn build_conversation_request(
+            self: &Kernel,
+            kind: &str,
+            model: &str,
+            system: &str,
+            conversation: &Conversation,
+            tail: &str,
+            image_jpeg_base64: &str,
+            max_tokens: u32,
+            force_tool: bool,
+            effort: &str,
+        ) -> ProviderRequest;
     }
 }
 
@@ -495,5 +535,84 @@ impl Kernel {
         out.cache_write_tokens = reply.usage.cache_write;
         out.stop = reply.stop;
         out
+    }
+
+    pub fn parse_provider_reply_into(
+        &self,
+        kind: &str,
+        status: u16,
+        body: &str,
+        stub: &str,
+        conversation: &mut Conversation,
+    ) -> ffi::ProviderReply {
+        conversation.begin_reply();
+        let out = self.parse_provider_reply(kind, status, body);
+        if !out.error.is_empty() || !(200..300).contains(&status) {
+            return out;
+        }
+        let (Some(tools), Some(kind)) = (self.tools.as_ref(), providers::Kind::parse(kind)) else {
+            return out;
+        };
+        // True when the first call was read from the model's text, so the
+        // loop's call 1 is the first NATIVE call.
+        let native = providers::parse(tools, kind, status, body).tool;
+        let promoted = out.found
+            && native.is_some_and(|(tool, arguments)| {
+                tool != out.tool || arguments != out.arguments_json
+            });
+        conversation.record(kind, body, stub, promoted);
+        out
+    }
+
+    pub fn build_conversation_request(
+        &self,
+        kind: &str,
+        model: &str,
+        system: &str,
+        conversation: &Conversation,
+        tail: &str,
+        image_jpeg_base64: &str,
+        max_tokens: u32,
+        force_tool: bool,
+        effort: &str,
+    ) -> ffi::ProviderRequest {
+        let failed = |error: String| ffi::ProviderRequest {
+            error,
+            path: String::new(),
+            headers: Vec::new(),
+            body: String::new(),
+        };
+        let Some(tools) = self.tools.as_ref() else {
+            return failed(format!("the agent is not available ({})", self.error));
+        };
+        let Some(kind) = providers::Kind::parse(kind) else {
+            return failed(format!("`{kind}` is not a model provider this browser speaks"));
+        };
+        let turn = providers::Turn {
+            kind,
+            model,
+            system,
+            user: tail,
+            max_tokens,
+            image_jpeg_base64,
+            force_tool,
+            effort,
+        };
+        let built = conversation
+            .messages(kind, tail, image_jpeg_base64)
+            .and_then(|messages| providers::build_with(tools, &turn, messages));
+        match built {
+            Ok(request) => ffi::ProviderRequest {
+                error: String::new(),
+                path: request.path,
+                headers: request
+                    .headers
+                    .into_iter()
+                    .map(|(name, value)| ffi::ProviderHeader { name, value })
+                    .collect(),
+                body: request.body,
+            },
+            Err(problem) => failed(problem),
+        }
     }
 }

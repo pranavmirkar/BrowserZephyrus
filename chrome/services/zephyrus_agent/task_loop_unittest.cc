@@ -1285,6 +1285,7 @@ class CloudTaskLoopTest : public testing::Test {
     cloud->kind = "anthropic";
     cloud->model = "claude-test";
     cloud->force_tool = true;
+    cloud->native_transcript = native_transcript_;
     cloud->max_tokens_per_step = 1024;
     // $10 / $50 per million: a 1,000-in / 50-out step costs $0.0125.
     cloud->usd_per_mtok_input = 10;
@@ -1311,6 +1312,7 @@ class CloudTaskLoopTest : public testing::Test {
   base::test::TaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   uint32_t max_steps_ = 8;
+  bool native_transcript_ = false;
   mojom::PendingApprovalPtr approved_;
   mojom::TaskMemoryPtr memory_;
   FakeToolRunner runner_;
@@ -1337,6 +1339,89 @@ TEST_F(CloudTaskLoopTest, RunsOnNativeToolCalls) {
   EXPECT_NE(transport_->bodies[0].find("You control a web browser"),
             std::string::npos);
   EXPECT_NE(transport_->bodies[0].find("\"tool_choice\""), std::string::npos);
+}
+
+// Two pages read, then the answer. Retold, the second read replaces the first,
+// so the model answers without the first page in front of it. As a
+// conversation, both are still there.
+class TwoReads {
+ public:
+  static std::vector<FakeTransport::Answer> Answers() {
+    return {
+        ToolUse("page_read", R"({"offset":0})"),
+        ToolUse("page_read", R"({"offset":100})"),
+        ToolUse("task_complete", R"({"answer":"done"})"),
+    };
+  }
+  static void Arrange(FakeToolRunner& runner) {
+    runner.change_page_each_time = true;
+    runner.on_execute = base::BindLambdaForTesting([&runner] {
+      runner.next_value_json =
+          runner.executed.size() == 1
+              ? R"({"text":"The alpha warranty is 7 years","offset":0})"
+              : R"({"text":"The beta warranty is 2 years","offset":100})";
+    });
+  }
+};
+
+TEST_F(CloudTaskLoopTest, RetoldTheFirstPageReadIsGoneByTheAnswer) {
+  // The control for the test below: this is what the conversation fixes.
+  TwoReads::Arrange(runner_);
+  mojom::TaskOutcomePtr outcome = RunCloud(TwoReads::Answers());
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  ASSERT_EQ(transport_->bodies.size(), 3u);
+  EXPECT_EQ(transport_->bodies[2].find("alpha warranty"), std::string::npos);
+  EXPECT_NE(transport_->bodies[2].find("beta warranty"), std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, AConversationKeepsWhatWasReadOnAnEarlierPage) {
+  native_transcript_ = true;
+  TwoReads::Arrange(runner_);
+  mojom::TaskOutcomePtr outcome = RunCloud(TwoReads::Answers());
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  ASSERT_EQ(transport_->bodies.size(), 3u);
+  const std::string& last = transport_->bodies[2];
+  EXPECT_NE(last.find("alpha warranty"), std::string::npos);
+  EXPECT_NE(last.find("beta warranty"), std::string::npos);
+  // The model's own turns went back, and each call was answered natively.
+  EXPECT_NE(last.find(R"("role":"assistant")"), std::string::npos);
+  EXPECT_NE(last.find(R"("type":"tool_result")"), std::string::npos);
+  // The retelling is not also there, and only the newest look at the page is.
+  EXPECT_EQ(last.find("WHAT YOU HAVE DONE SO FAR:"), std::string::npos);
+  size_t looks = 0;
+  // (Counted by a field of the page itself: the rules also say "OBSERVATION".)
+  for (size_t at = last.find("scroll\\\":"); at != std::string::npos;
+       at = last.find("scroll\\\":", at + 1)) {
+    ++looks;
+  }
+  EXPECT_EQ(looks, 1u);
+  // The first request is the retold one's equal: no conversation yet.
+  EXPECT_EQ(transport_->bodies[0].find(R"("role":"assistant")"),
+            std::string::npos);
+}
+
+TEST_F(CloudTaskLoopTest, AProviderThatRefusesTheConversationGetsTheRetelling) {
+  native_transcript_ = true;
+  runner_.change_page_each_time = true;
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUse("page_click", R"({"element_id":"e3"})"),
+      {400, R"({"error":{"message":"unexpected tool_result"}})"},
+      ToolUse("task_complete", R"({"answer":"found it"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  ASSERT_EQ(transport_->bodies.size(), 3u);
+  EXPECT_NE(transport_->bodies[1].find(R"("type":"tool_result")"),
+            std::string::npos);
+  // Asked again the old way, with what was done still told.
+  EXPECT_EQ(transport_->bodies[2].find(R"("type":"tool_result")"),
+            std::string::npos);
+  EXPECT_NE(transport_->bodies[2].find("WHAT YOU HAVE DONE SO FAR:"),
+            std::string::npos);
+  EXPECT_NE(transport_->bodies[2].find("You called page.click"),
+            std::string::npos);
 }
 
 TEST_F(CloudTaskLoopTest, TheCloudPromptNeverTellsTheModelToWriteJson) {
@@ -1478,6 +1563,45 @@ FakeTransport::Answer ToolUses(
   return {200, base::StrCat({R"({"content":[)", blocks,
                              R"(],"stop_reason":"tool_use","usage":)"
                              R"({"input_tokens":1000,"output_tokens":50}})"})};
+}
+
+TEST_F(CloudTaskLoopTest, AReadQueuedBehindALinkClickWaitsForThePageItOpens) {
+  // "Open it and read it" in one reply. The read must not run until the page
+  // the link opens has been looked at: run at once, it reads the page the
+  // click was made on.
+  runner_.observation_json =
+      R"({"url":"https://x.example/","title":"Cities","elements":[)"
+      R"({"id":"e1","name":"Pune","role":"link"}]})";
+  runner_.later_observation_json =
+      R"({"url":"https://x.example/pune","title":"Pune",)"
+      R"("what_changed":"you are now on Pune","elements":[]})";
+  int looks_before_the_read = 0;
+  runner_.on_execute = base::BindLambdaForTesting([&] {
+    if (runner_.executed.back() == "page.read") {
+      looks_before_the_read = runner_.observations;
+    }
+  });
+  mojom::TaskOutcomePtr outcome = RunCloud({
+      ToolUses({{"page_click", R"({"element_id":"e1"})"},
+                {"page_read", R"({"offset":0})"},
+                {"page_click", R"({"element_id":"e1"})"}}),
+      ToolUse("task_complete", R"({"answer":"24.1"})"),
+  });
+  ASSERT_TRUE(outcome);
+  EXPECT_EQ(outcome->status, mojom::TaskStatus::kCompleted) << outcome->message;
+  // The click, then the read; the second click named an element of the page
+  // that was left, and was not run.
+  ASSERT_EQ(runner_.executed.size(), 3u);
+  EXPECT_EQ(runner_.executed[0], "page.click");
+  EXPECT_EQ(runner_.executed[1], "page.read");
+  EXPECT_EQ(runner_.executed[2], "task.complete");
+  // One look to choose the click from, and one at what it opened.
+  EXPECT_EQ(looks_before_the_read, 2);
+  ASSERT_EQ(transport_->bodies.size(), 2u);
+  EXPECT_NE(transport_->bodies[1].find("were NOT run (page.click)"),
+            std::string::npos);
+  // The extra look cost no step: two replies, two steps.
+  EXPECT_EQ(outcome->steps, 2u);
 }
 
 TEST_F(CloudTaskLoopTest, SeveralCallsInOneTurnRunInOrderOnOneLook) {

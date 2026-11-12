@@ -32,6 +32,9 @@ struct CloudModelConfig {
   GURL base_url;
   // Insist on a native tool call. Off only for servers that reject that.
   bool force_tool = true;
+  // Keep each task as a native conversation with the model. See
+  // mojom::CloudModel::native_transcript.
+  bool native_transcript = false;
   // The most one task may spend, in US dollars, at list price. Applied as a
   // token cap instead when the model's price is not known.
   double max_usd_per_task = 1.0;
@@ -46,6 +49,8 @@ inline constexpr char kCloudKindPref[] = "zephyrus.agent.cloud.kind";
 inline constexpr char kCloudModelPref[] = "zephyrus.agent.cloud.model";
 inline constexpr char kCloudBaseUrlPref[] = "zephyrus.agent.cloud.base_url";
 inline constexpr char kCloudForceToolPref[] = "zephyrus.agent.cloud.force_tool";
+inline constexpr char kCloudNativeTranscriptPref[] =
+    "zephyrus.agent.cloud.native_transcript";
 inline constexpr char kCloudMaxUsdPref[] = "zephyrus.agent.cloud.max_usd";
 // Whether the mascot lives in the browser window. On by default.
 inline constexpr char kMascotPref[] = "zephyrus.agent.mascot";
