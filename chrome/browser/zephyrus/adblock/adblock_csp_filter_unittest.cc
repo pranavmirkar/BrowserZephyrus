@@ -19,17 +19,20 @@
 namespace zephyrus_adblock {
 namespace {
 
-const GURL kNoInitiator;
+// A function, not a global: official builds reject a global with a destructor.
+GURL NoInitiator() {
+  return GURL();
+}
 
 TEST(CspFilterTest, AddsThePolicyForTheSiteTheRuleNames) {
   AdblockCspFilter filter;
   EXPECT_EQ(filter.AddRules("||ads-site.example^$csp=frame-src 'self'\n"), 1u);
   const std::vector<std::string> policies = filter.PoliciesFor(
-      GURL("https://ads-site.example/watch"), kNoInitiator, kTypeDocument);
+      GURL("https://ads-site.example/watch"), NoInitiator(), kTypeDocument);
   ASSERT_EQ(policies.size(), 1u);
   EXPECT_EQ(policies[0], "frame-src 'self'");
   EXPECT_TRUE(filter
-                  .PoliciesFor(GURL("https://other.example/"), kNoInitiator,
+                  .PoliciesFor(GURL("https://other.example/"), NoInitiator(),
                                kTypeDocument)
                   .empty());
 }
@@ -38,14 +41,14 @@ TEST(CspFilterTest, OnlyPageAndFrameLoadsGetOne) {
   AdblockCspFilter filter;
   filter.AddRules("||ads-site.example^$csp=frame-src 'self'\n");
   const GURL url("https://ads-site.example/x.js");
-  EXPECT_TRUE(filter.PoliciesFor(url, kNoInitiator, kTypeScript).empty());
-  EXPECT_TRUE(filter.PoliciesFor(url, kNoInitiator, kTypeImage).empty());
+  EXPECT_TRUE(filter.PoliciesFor(url, NoInitiator(), kTypeScript).empty());
+  EXPECT_TRUE(filter.PoliciesFor(url, NoInitiator(), kTypeImage).empty());
   EXPECT_EQ(filter.PoliciesFor(url, GURL("https://page.example/"),
                                kTypeSubdocument)
                 .size(),
             1u);
   EXPECT_TRUE(filter
-                  .PoliciesFor(GURL("ftp://ads-site.example/"), kNoInitiator,
+                  .PoliciesFor(GURL("ftp://ads-site.example/"), NoInitiator(),
                                kTypeDocument)
                   .empty());
 }
@@ -56,16 +59,16 @@ TEST(CspFilterTest, DomainOptionAndTheDocumentOption) {
       "$csp=script-src 'self',domain=thumbs.example\n"
       "||player.example^$document,csp=worker-src 'none'\n");
   EXPECT_EQ(filter
-                .PoliciesFor(GURL("https://thumbs.example/a"), kNoInitiator,
+                .PoliciesFor(GURL("https://thumbs.example/a"), NoInitiator(),
                              kTypeDocument)
                 .size(),
             1u);
   EXPECT_TRUE(filter
                   .PoliciesFor(GURL("https://elsewhere.example/a"),
-                               kNoInitiator, kTypeDocument)
+                               NoInitiator(), kTypeDocument)
                   .empty());
   EXPECT_EQ(filter
-                .PoliciesFor(GURL("https://player.example/a"), kNoInitiator,
+                .PoliciesFor(GURL("https://player.example/a"), NoInitiator(),
                              kTypeDocument)
                 .size(),
             1u);
@@ -80,16 +83,16 @@ TEST(CspFilterTest, ExceptionsCancelOnePolicyOrAll) {
       "@@||free.example^$csp\n"
       "||free.example^$csp=frame-src 'none'\n");
   EXPECT_EQ(filter
-                .PoliciesFor(GURL("https://site.example/a"), kNoInitiator,
+                .PoliciesFor(GURL("https://site.example/a"), NoInitiator(),
                              kTypeDocument)
                 .size(),
             2u);
   const std::vector<std::string> ok = filter.PoliciesFor(
-      GURL("https://site.example/ok/a"), kNoInitiator, kTypeDocument);
+      GURL("https://site.example/ok/a"), NoInitiator(), kTypeDocument);
   ASSERT_EQ(ok.size(), 1u);
   EXPECT_EQ(ok[0], "worker-src 'none'");
   EXPECT_TRUE(filter
-                  .PoliciesFor(GURL("https://free.example/a"), kNoInitiator,
+                  .PoliciesFor(GURL("https://free.example/a"), NoInitiator(),
                                kTypeDocument)
                   .empty());
 }

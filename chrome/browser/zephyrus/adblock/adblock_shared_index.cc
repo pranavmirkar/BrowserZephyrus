@@ -18,6 +18,7 @@
 #include "base/no_destructor.h"
 #include "base/synchronization/lock.h"
 #include "base/thread_annotations.h"
+#include "base/version_info/version_info.h"
 
 namespace zephyrus_adblock {
 
@@ -142,6 +143,9 @@ constexpr char kCanaryRules[] = R"RULES(
 &adunit=
 ||long.example/some/quite/long/path/with/many/tokens/in/it^*^utm=
 ||dest.example^$doc,to=a.example|~b.a.example
+@@$generichide,domain=held.example|other.example
+$script,domain=only-here.example
+*$image,to=dest-only.example
 )RULES";
 
 // What this build's parser and builder make of the canary rules.
@@ -166,10 +170,20 @@ uint64_t AdblockSharedIndex::KeyFor(std::string_view list_text,
   // The length and 32-bit hashes of the texts. A different list that agreed on
   // all of them would leave one profile on a stale index until the next update,
   // which is a worse list rather than a broken one.
-  const uint32_t hash = base::PersistentHash(base::as_byte_span(list_text)) ^
-                        (base::PersistentHash(base::as_byte_span(extra_rules)) *
-                         16777619u) ^
-                        (SemanticsFingerprint() * 2654435761u);
+  //
+  // The canary only notices the parser changes its few lines exercise.
+  // MEASURED (2026-11-12): rules with no pattern, held to sites only
+  // ("@@$generichide,domain=..."), were dropped by one build and kept by the
+  // next, and the canary had no such line, so an index built by the old build
+  // was taken by the new one. The version is in the key too, so every release
+  // rebuilds the index once, whatever the canary misses.
+  const uint32_t hash =
+      base::PersistentHash(base::as_byte_span(list_text)) ^
+      (base::PersistentHash(base::as_byte_span(extra_rules)) * 16777619u) ^
+      (SemanticsFingerprint() * 2654435761u) ^
+      (base::PersistentHash(
+           base::as_byte_span(version_info::GetVersionNumber())) *
+       40503u);
   return (uint64_t{list_text.size() + extra_rules.size()} << 32) | hash;
 }
 
