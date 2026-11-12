@@ -22,6 +22,7 @@
 #include "chrome/browser/zephyrus/adblock/adblock_list_util.h"
 #include "chrome/browser/zephyrus/adblock/adblock_procedural_script.h"
 #include "chrome/browser/zephyrus/adblock/adblock_redirect_resources.h"
+#include "chrome/browser/zephyrus/adblock/adblock_shared_page_rules.h"
 #include "chrome/browser/zephyrus/adblock/zephyrus_adblock_updater.h"
 #include "chrome/common/chrome_paths.h"
 #include "base/strings/string_util.h"
@@ -338,11 +339,7 @@ youtube.com##ytm-companion-slot
 // service builds the index afterwards and swaps it in.
 ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
   auto network = std::make_unique<AdblockFilterEngine>();
-  auto cosmetic = std::make_unique<AdblockCosmeticEngine>();
-  auto scriptlet = std::make_unique<AdblockScriptletEngine>();
   network->AddRules(kStarterFilterList);
-  scriptlet->AddRules(kStarterScriptletList);
-  cosmetic->AddRules(kStarterCosmeticList, /*inject_generic_selectors=*/true);
 
   // Prefer the auto-updated list downloaded to the user-data dir; fall back to
   // the snapshot bundled next to the binary if it's missing (fresh install /
@@ -406,37 +403,54 @@ ZephyrusAdblockService::BuiltEngines BuildEnginesFromBundledList() {
     // The regex rules are matched apart from both of the above, so they are
     // compiled whether or not the index came from the cache.
     regex = AdblockRegexMatcher::GetOrBuild(list_key, contents);
-    cosmetic->AddRules(contents);
-    // Per-section trust (Z-04): third-party lists in the combined file may not
-    // use trusted-* scriptlets; only uBO's own sections may.
-    scriptlet->AddRules(contents, /*trust_unsectioned=*/false);
-    if (scriptlet->untrusted_scriptlets_dropped() > 0) {
-      VLOG(1) << "[Zephyrus] dropped "
-              << scriptlet->untrusted_scriptlets_dropped()
-              << " trusted scriptlet rule(s) from third-party lists";
-    }
   }
-  auto params = std::make_unique<AdblockParamFilter>();
-  params->AddBuiltInRules();
-  if (read) {
-    params->AddRules(contents);
-  }
-  auto urlskip = std::make_unique<AdblockUrlSkipFilter>();
-  if (read) {
-    // Only uBlock Origin's own sections may redirect; see AdblockUrlSkipFilter.
-    urlskip->AddRules(contents, /*trust_unsectioned=*/false);
-  }
-  auto csp = std::make_unique<AdblockCspFilter>();
-  if (read) {
-    csp->AddRules(contents);
-  }
+  // Everything else the lists say, built once for the process: the second
+  // profile to open takes the first one's copy instead of parsing the list
+  // again and holding its own.
+  const uint64_t page_key =
+      AdblockSharedIndex::KeyFor(contents, kStarterFilterList);
+  AdblockPageRules page = GetOrBuildSharedPageRules(
+      page_key != 0 ? page_key : 1, [&contents, read] {
+        auto cosmetic = std::make_unique<AdblockCosmeticEngine>();
+        auto scriptlet = std::make_unique<AdblockScriptletEngine>();
+        scriptlet->AddRules(kStarterScriptletList);
+        cosmetic->AddRules(kStarterCosmeticList,
+                           /*inject_generic_selectors=*/true);
+        auto params = std::make_unique<AdblockParamFilter>();
+        params->AddBuiltInRules();
+        auto urlskip = std::make_unique<AdblockUrlSkipFilter>();
+        auto csp = std::make_unique<AdblockCspFilter>();
+        if (read) {
+          cosmetic->AddRules(contents);
+          // Per-section trust (Z-04): third-party lists in the combined file
+          // may not use trusted-* scriptlets; only uBO's own sections may.
+          scriptlet->AddRules(contents, /*trust_unsectioned=*/false);
+          if (scriptlet->untrusted_scriptlets_dropped() > 0) {
+            VLOG(1) << "[Zephyrus] dropped "
+                    << scriptlet->untrusted_scriptlets_dropped()
+                    << " trusted scriptlet rule(s) from third-party lists";
+          }
+          params->AddRules(contents);
+          // Only uBlock Origin's own sections may redirect; see
+          // AdblockUrlSkipFilter.
+          urlskip->AddRules(contents, /*trust_unsectioned=*/false);
+          csp->AddRules(contents);
+        }
+        AdblockPageRules rules;
+        rules.cosmetic = std::move(cosmetic);
+        rules.scriptlet = std::move(scriptlet);
+        rules.params = std::move(params);
+        rules.urlskip = std::move(urlskip);
+        rules.csp = std::move(csp);
+        return rules;
+      });
   ZephyrusAdblockService::BuiltEngines built;
-  built.csp = std::move(csp);
-  built.urlskip = std::move(urlskip);
-  built.params = std::move(params);
+  built.csp = std::move(page.csp);
+  built.urlskip = std::move(page.urlskip);
+  built.params = std::move(page.params);
   built.network = std::move(network);
-  built.cosmetic = std::move(cosmetic);
-  built.scriptlet = std::move(scriptlet);
+  built.cosmetic = std::move(page.cosmetic);
+  built.scriptlet = std::move(page.scriptlet);
   built.shared_index = std::move(shared_index);
   built.regex = std::move(regex);
   built.list_key = list_key;
@@ -548,11 +562,15 @@ ZephyrusAdblockService::ZephyrusAdblockService(
   // Sync-load the YouTube-critical scriptlets now so they beat the first
   // navigation (the full bundled list loads asynchronously below and races a
   // fast page load; scriptlets MUST run at document-start to work).
-  scriptlet_engine_ = std::make_unique<AdblockScriptletEngine>();
-  scriptlet_engine_->AddRules(kStarterScriptletList);
-  cosmetic_engine_ = std::make_unique<AdblockCosmeticEngine>();
-  cosmetic_engine_->AddRules(kStarterCosmeticList,
-                             /*inject_generic_selectors=*/true);
+  {
+    auto scriptlet = std::make_unique<AdblockScriptletEngine>();
+    scriptlet->AddRules(kStarterScriptletList);
+    scriptlet_engine_ = std::move(scriptlet);
+    auto cosmetic = std::make_unique<AdblockCosmeticEngine>();
+    cosmetic->AddRules(kStarterCosmeticList,
+                       /*inject_generic_selectors=*/true);
+    cosmetic_engine_ = std::move(cosmetic);
+  }
   LoadFullFilterListAsync();
   list_updated_subscription_ = ListUpdatedCallbacks().Add(
       base::BindRepeating(&ZephyrusAdblockService::LoadFullFilterListAsync,

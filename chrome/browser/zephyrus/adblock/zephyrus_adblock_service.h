@@ -195,14 +195,16 @@ class ZephyrusAdblockService : public KeyedService {
   struct BuiltEngines {
     // Null when `shared_index` stands in for it.
     std::unique_ptr<AdblockFilterEngine> network;
-    std::unique_ptr<AdblockCosmeticEngine> cosmetic;
-    std::unique_ptr<AdblockScriptletEngine> scriptlet;
+    // These five are one copy shared by every profile; see
+    // adblock_shared_page_rules.h.
+    std::shared_ptr<const AdblockCosmeticEngine> cosmetic;
+    std::shared_ptr<const AdblockScriptletEngine> scriptlet;
     scoped_refptr<const AdblockSharedIndex> shared_index;
     // The `/regex/` rules, which neither `network` nor `shared_index` holds.
     scoped_refptr<const AdblockRegexMatcher> regex;
-    std::unique_ptr<AdblockParamFilter> params;
-    std::unique_ptr<AdblockUrlSkipFilter> urlskip;
-    std::unique_ptr<AdblockCspFilter> csp;
+    std::shared_ptr<const AdblockParamFilter> params;
+    std::shared_ptr<const AdblockUrlSkipFilter> urlskip;
+    std::shared_ptr<const AdblockCspFilter> csp;
     // Identifies the network rules' list text; 0 when the compiled index is
     // off or no list could be read.
     uint64_t list_key = 0;
@@ -258,19 +260,21 @@ class ZephyrusAdblockService : public KeyedService {
   std::unique_ptr<AdblockStartupGate> startup_gate_;
   // The `$removeparam` rules and the built-in tracking parameters. Starts as the
   // built-ins alone, so even the first page load of a session is cleaned.
-  std::unique_ptr<const AdblockParamFilter> param_filter_;
+  // Like the four below it, shared with the other profiles once the lists
+  // are loaded: read-only, and safe to read from any of them.
+  std::shared_ptr<const AdblockParamFilter> param_filter_;
   int total_params_stripped_ = 0;
   // `$urlskip=` rules; built with the lists and replaced with them.
-  std::unique_ptr<const AdblockUrlSkipFilter> urlskip_;
+  std::shared_ptr<const AdblockUrlSkipFilter> urlskip_;
   // `$csp=` rules; built with the lists and replaced with them.
-  std::unique_ptr<const AdblockCspFilter> csp_filter_;
+  std::shared_ptr<const AdblockCspFilter> csp_filter_;
   int total_urls_skipped_ = 0;
 
   // Shared with the thread that is building the index from it.
   std::shared_ptr<AdblockFilterEngine> engine_;
   uint64_t current_list_key_ = 0;
-  std::unique_ptr<AdblockCosmeticEngine> cosmetic_engine_;
-  std::unique_ptr<AdblockScriptletEngine> scriptlet_engine_;
+  std::shared_ptr<const AdblockCosmeticEngine> cosmetic_engine_;
+  std::shared_ptr<const AdblockScriptletEngine> scriptlet_engine_;
   bool enabled_ = true;
   bool aggressive_popup_blocking_ = true;
   int total_blocked_ = 0;
