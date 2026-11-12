@@ -420,8 +420,10 @@ void ZephyrusAdblockUpdater::OnAllDownloaded() {
   }
   bodies_.clear();
   includes_.clear();
+  // USER_VISIBLE for the same reason as the list-age check: these are the rules
+  // the browser is waiting for.
   base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(&AssembleAndWrite, output_path_, std::move(fresh),
                      kind_ == UpdateKind::kFull,
                      base::Time::Now().ToTimeT()),

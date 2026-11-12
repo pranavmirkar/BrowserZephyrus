@@ -83,6 +83,11 @@ constexpr base::TimeDelta kQuickFixesInterval = base::Hours(8);
 constexpr base::TimeDelta kUpdateCheckPeriod = base::Hours(1);
 // Delay before the first check after startup, so it doesn't compete with launch.
 constexpr base::TimeDelta kInitialUpdateDelay = base::Seconds(45);
+// The same, on a profile that has never downloaded the lists: it is running on
+// the snapshot shipped with the build, which can be months old, and sites that
+// change their anti-adblock weekly (YouTube) detect those rules. Waiting the
+// usual 45 s left a new user's first visits on them.
+constexpr base::TimeDelta kFirstRunUpdateDelay = base::Seconds(3);
 
 // The longest the first requests of a session wait for the full filter list.
 // Loading it takes a few hundred milliseconds; this is only the fail-open for
@@ -579,11 +584,11 @@ ZephyrusAdblockService::ZephyrusAdblockService(
   // Daily filter-list auto-update (only where we have a network factory, i.e.
   // not incognito/guest). First check shortly after startup, then periodically.
   if (url_loader_factory_) {
-    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE,
-        base::BindOnce(&ZephyrusAdblockService::MaybeStartUpdate,
-                       weak_factory_.GetWeakPtr()),
-        kInitialUpdateDelay);
+    base::ThreadPool::PostTaskAndReplyWithResult(
+        FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+        base::BindOnce([] { return base::PathExists(DownloadedListPath()); }),
+        base::BindOnce(&ZephyrusAdblockService::ScheduleFirstUpdate,
+                       weak_factory_.GetWeakPtr()));
     update_timer_.Start(FROM_HERE, kUpdateCheckPeriod, this,
                         &ZephyrusAdblockService::MaybeStartUpdate);
   }
@@ -764,15 +769,25 @@ void ZephyrusAdblockService::RemoveAllowlistDomain(const std::string& domain) {
   });
 }
 
+void ZephyrusAdblockService::ScheduleFirstUpdate(bool have_downloaded_list) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE,
+      base::BindOnce(&ZephyrusAdblockService::MaybeStartUpdate,
+                     weak_factory_.GetWeakPtr()),
+      have_downloaded_list ? kInitialUpdateDelay : kFirstRunUpdateDelay);
+}
+
 void ZephyrusAdblockService::MaybeStartUpdate() {
   // Off means off: the traffic annotation promises that turning the blocker
   // off stops these downloads, and it did not.
   if (updating_ || !url_loader_factory_ || !enabled_) {
     return;
   }
-  // Check the on-disk list off the UI thread, then decide.
+  // Check the on-disk list off the UI thread, then decide. USER_VISIBLE: it only
+  // reads a header, and best-effort work waits for startup to end (MEASURED: on
+  // a cold start that held a new profile's first download for 3 minutes).
   base::ThreadPool::PostTaskAndReplyWithResult(
-      FROM_HERE, {base::MayBlock(), base::TaskPriority::BEST_EFFORT},
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(&DownloadedListDue),
       base::BindOnce(&ZephyrusAdblockService::OnListAgeChecked,
                      weak_factory_.GetWeakPtr()));

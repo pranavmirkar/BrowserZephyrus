@@ -221,6 +221,9 @@ class ZephyrusAdblockService : public KeyedService {
 
   // Filter-list auto-update. No-op when `url_loader_factory_` is null (off the
   // record) or the blocker is off.
+  // Posts the first update check: soon on a profile that has never
+  // downloaded the lists (see kFirstRunUpdateDelay), later otherwise.
+  void ScheduleFirstUpdate(bool have_downloaded_list);
   void MaybeStartUpdate();
   void OnListAgeChecked(std::optional<UpdateKind> due);
   void OnUpdateFinished(bool success);
