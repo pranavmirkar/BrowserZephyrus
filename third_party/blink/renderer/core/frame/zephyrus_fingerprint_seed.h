@@ -82,10 +82,12 @@ CORE_EXPORT std::optional<std::array<uint8_t, 32>> ZephyrusSeedForSurface(
     uint32_t surface_bit);
 
 // What `window` reports as the screen size when the screen surface is being
-// protected: the size of the browser window it is in (outerWidth by
-// outerHeight). Nullopt when it is not, or when there is no window size to
-// give. Used by window.screen and by the device-width / device-height media
-// features, which must agree or the difference gives the change away.
+// protected: a common monitor resolution at least as large as the browser
+// window it is in, picked per site and per launch from the few closest fits
+// (the window size itself when no common resolution holds it). Nullopt when it
+// is not protected, or when there is no window size to give. Used by
+// window.screen and by the device-width / device-height media features, which
+// must agree or the difference gives the change away.
 CORE_EXPORT std::optional<gfx::Size> ZephyrusScreenSizeFor(
     LocalDOMWindow* window);
 
@@ -96,6 +98,12 @@ inline constexpr uint64_t kZephyrusSurfaceWebglRenderer = 0x77676c2d72656e64ULL;
 inline constexpr uint64_t kZephyrusSurfaceHardwareConcurrency =
     0x68772d636f6e6331ULL;
 inline constexpr uint64_t kZephyrusSurfaceDeviceMemory = 0x6d656d2d64657631ULL;
+inline constexpr uint64_t kZephyrusSurfaceScreenSize = 0x7363722d73697a31ULL;
+
+// The resolution ZephyrusScreenSizeFor picks for a window of `window_size`,
+// given the surface value `v`. Exposed for tests.
+CORE_EXPORT gfx::Size ZephyrusPickScreenSize(const gfx::Size& window_size,
+                                             uint64_t v);
 
 // Reports that this document touched `surface` (§6.5 / §9.2.1).
 //

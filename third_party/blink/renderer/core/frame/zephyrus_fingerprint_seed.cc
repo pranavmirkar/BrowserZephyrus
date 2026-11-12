@@ -215,8 +215,57 @@ std::optional<std::array<uint8_t, 32>> ZephyrusFingerprintSeedFor(
   return settings ? settings->GetZephyrusFingerprintSeed() : std::nullopt;
 }
 
+gfx::Size ZephyrusPickScreenSize(const gfx::Size& window_size, uint64_t v) {
+  // The most common desktop screen sizes, in CSS pixels, smallest first.
+  // Reporting the window size alone hid the monitor, but it was the same on
+  // every launch, so it stayed a stable identifier for as long as the window
+  // kept its size. MEASURED (fp_ruler.py, 2026-11-12): "per-session: no".
+  static constexpr auto kCommon = std::to_array<gfx::Size>({
+      {1280, 720},  {1280, 800},  {1366, 768},  {1440, 900},  {1536, 864},
+      {1600, 900},  {1280, 1024}, {1680, 1050}, {1920, 1080}, {1920, 1200},
+      {2048, 1152}, {2560, 1080}, {2560, 1440}, {2560, 1600}, {3440, 1440},
+      {3840, 2160},
+  });
+  // A screen smaller than the window that is on it would be a contradiction a
+  // page can check (outerWidth > screen.width). Of the ones that hold the
+  // window, the closest few by area: a 1366-wide window on a 4K screen is
+  // possible but rare, and a rare answer is itself a signal.
+  static constexpr size_t kSpread = 3;
+  std::array<gfx::Size, kSpread> fits;
+  size_t n = 0;
+  for (const gfx::Size& s : kCommon) {
+    if (s.width() >= window_size.width() &&
+        s.height() >= window_size.height()) {
+      // Keep the kSpread smallest by area (kCommon is nearly sorted by area,
+      // but not exactly: 1280x1024 is larger than 1600x900).
+      if (n < kSpread) {
+        fits[n++] = s;
+      } else {
+        size_t largest = 0;
+        for (size_t i = 1; i < kSpread; ++i) {
+          if (fits[i].Area64() > fits[largest].Area64()) {
+            largest = i;
+          }
+        }
+        if (s.Area64() < fits[largest].Area64()) {
+          fits[largest] = s;
+        }
+      }
+    }
+  }
+  if (n == 0) {
+    return window_size;  // larger than any common screen: the window it is
+  }
+  return fits[v % n];
+}
+
 std::optional<gfx::Size> ZephyrusScreenSizeFor(LocalDOMWindow* window) {
-  if (!window || !ZephyrusSeedForSurface(window, kZephyrusFpScreen)) {
+  if (!window) {
+    return std::nullopt;
+  }
+  const std::optional<std::array<uint8_t, 32>> seed =
+      ZephyrusSeedForSurface(window, kZephyrusFpScreen);
+  if (!seed) {
     return std::nullopt;
   }
   const int width = window->outerWidth();
@@ -224,7 +273,9 @@ std::optional<gfx::Size> ZephyrusScreenSizeFor(LocalDOMWindow* window) {
   if (width <= 0 || height <= 0) {
     return std::nullopt;
   }
-  return gfx::Size(width, height);
+  return ZephyrusPickScreenSize(
+      gfx::Size(width, height),
+      ZephyrusSurfaceValue(*seed, kZephyrusSurfaceScreenSize));
 }
 
 std::optional<std::array<uint8_t, 32>> ZephyrusSeedForSurface(

@@ -200,13 +200,12 @@ gfx::Rect Screen::GetRect(bool available) const {
   LocalFrame* frame = DomWindow()->GetFrame();
   const display::ScreenInfo& screen_info = GetScreenInfo();
   gfx::Rect rect = available ? screen_info.available_rect : screen_info.rect;
-  // Zephyrus §6.5: the screen is the browser window. The monitor's resolution
-  // (with its scaling, a few bits that rarely change) is replaced by the size
-  // of the window the page is in, which the page can already read from
-  // outerWidth/outerHeight, so this tells a site nothing new. Both the full
-  // and the available rect, at the origin: a page that centres a popup on the
-  // screen centres it on the window instead. MEASURED (fp_ruler.py): Brave
-  // already does this and Zephyrus reported the true monitor size.
+  // Zephyrus §6.5: the monitor's resolution (with its scaling, a few bits that
+  // rarely change) is replaced by a common resolution that holds the window,
+  // a new pick per site and per launch; see ZephyrusScreenSizeFor. Both the
+  // full and the available rect, at the origin. MEASURED (fp_ruler.py): the
+  // true monitor size was reported at first, then the window size, which was
+  // the same on every launch.
   if (const std::optional<gfx::Size> as_window = ZephyrusScreenSizeFor(DomWindow())) {
     return gfx::Rect(*as_window);
   }
