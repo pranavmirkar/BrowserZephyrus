@@ -26,6 +26,41 @@ bool Blocks(const std::string& rules,
   return engine.ShouldBlock(GURL(url), GURL(kPage), type);
 }
 
+// --- rules with no pattern ---------------------------------------------------
+
+TEST(AdblockFilterEngineTest, ANoPatternRuleHeldToSitesMeansEveryAddress) {
+  // `$script,domain=news.example`: every script news.example loads.
+  const std::string rule = "$script,3p,domain=news.example";
+  EXPECT_TRUE(Blocks(rule, "https://cdn.anything.example/x.js"));
+  EXPECT_FALSE(Blocks(rule, "https://cdn.anything.example/x.png", kTypeImage));
+  AdblockFilterEngine engine;
+  engine.AddRules(rule);
+  EXPECT_FALSE(engine.ShouldBlock(GURL("https://cdn.anything.example/x.js"),
+                                  GURL("https://other.example/"), kTypeScript));
+}
+
+TEST(AdblockFilterEngineTest, ANoPatternDocumentExceptionCoversItsSites) {
+  // The real line covers a network of sites where generic hiding breaks pages.
+  AdblockFilterEngine engine;
+  engine.AddRules("@@$generichide,domain=cbr.com|collider.com");
+  EXPECT_TRUE(engine.GetDocumentExceptions(GURL("https://www.cbr.com/")) &
+              kExceptGenericHide);
+  EXPECT_TRUE(engine.GetDocumentExceptions(
+                  GURL("https://collider.com/movies/review/")) &
+              kExceptGenericHide);
+  EXPECT_FALSE(engine.GetDocumentExceptions(GURL("https://news.example/")) &
+               kExceptGenericHide);
+}
+
+TEST(AdblockFilterEngineTest, ANoPatternRuleWithNoSiteIsStillDropped) {
+  // It would block every script on every page: a mistake in a list must not
+  // be able to do that.
+  AdblockFilterEngine engine;
+  EXPECT_EQ(engine.AddRules("$script,3p"), 0u);
+  EXPECT_EQ(engine.AddRules("@@$generichide"), 0u);
+  EXPECT_FALSE(Blocks("$script,3p", "https://cdn.anything.example/x.js"));
+}
+
 // --- $to= -----------------------------------------------------------------
 
 TEST(AdblockFilterEngineTest, ToScopesARuleToTheDestinationHost) {
@@ -270,6 +305,49 @@ TEST(AdblockCosmeticEngineTest, OrdinarySelectorsAreKept) {
             std::vector<std::string>{".ad-slot"});
   EXPECT_EQ(StyleRules("site.example##body:style(overflow: auto !important)"),
             std::vector<std::string>{"body{overflow: auto !important}"});
+}
+
+TEST(AdblockCosmeticEngineTest, TheBraceFormIsAStyleRuleVettedTheSameWay) {
+  EXPECT_EQ(StyleRules("site.example##body {padding-top:0;}"),
+            std::vector<std::string>{"body{padding-top:0;}"});
+  EXPECT_EQ(StyleRules("site.example##.banner-spacer {max-height: 50px !important;}"),
+            std::vector<std::string>{".banner-spacer{max-height: 50px !important;}"});
+  // Never a hide rule as well, and the same refusals as :style().
+  EXPECT_TRUE(Selectors("site.example##body {padding-top:0;}").empty());
+  EXPECT_TRUE(StyleRules("site.example##div {background: url(https://t/)}").empty());
+  EXPECT_TRUE(StyleRules("site.example##div {a:b} p {c:d}").empty());
+}
+
+TEST(AdblockCosmeticEngineTest, NoStyleRuleCanHideThePageRoot) {
+  for (const char* rule :
+       {"site.example##body {display:none !important}",
+        "site.example##html:style(visibility: hidden)",
+        "site.example##body.modal-open:style(opacity: 0)",
+        "site.example##:root {display: none}"}) {
+    EXPECT_TRUE(StyleRules(rule).empty()) << rule;
+  }
+  // Hiding something INSIDE the root is an ordinary style rule.
+  EXPECT_EQ(StyleRules("site.example##body > .ad:style(display:none)"),
+            std::vector<std::string>{"body > .ad{display:none}"});
+}
+
+TEST(AdblockCosmeticEngineTest, AStyleExceptionTurnsThatStyleOffOnItsSite) {
+  AdblockCosmeticEngine engine;
+  engine.AddRules(
+      "site.example,other.example##body [class]:style(filter: none !important)\n"
+      "site.example#@#body [class]:style(filter: none !important)");
+  EXPECT_TRUE(
+      engine.GetStyleRulesForUrl(GURL("https://site.example/")).empty());
+  EXPECT_EQ(engine.GetStyleRulesForUrl(GURL("https://other.example/")),
+            std::vector<std::string>{"body [class]{filter: none !important}"});
+}
+
+TEST(AdblockCosmeticEngineTest, AnEscapedQuoteInASelectorIsText) {
+  EXPECT_EQ(Selectors(R"(site.example##article[data-ft*="\"ei\":\""])"),
+            std::vector<std::string>{R"(article[data-ft*="\"ei\":\""])"});
+  // An escape cannot be used to end the rule early either: the brace is still
+  // refused.
+  EXPECT_TRUE(Selectors(R"(site.example##a[x="\"}"] *{color:red})").empty());
 }
 
 TEST(AdblockCosmeticEngineTest, SelectorThatClosesItsRuleIsDropped) {

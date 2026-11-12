@@ -88,6 +88,7 @@ test("zephyrus_adblock_engine_unittests") {
     "adblock_fuzz_regression_unittest.cc",
     "adblock_list_features_unittest.cc",
     "adblock_matcher_perftest.cc",
+    "adblock_coverage_audit_unittest.cc",
     "adblock_csp_filter_unittest.cc",
     "adblock_param_filter_unittest.cc",
     "adblock_procedural_script_unittest.cc",

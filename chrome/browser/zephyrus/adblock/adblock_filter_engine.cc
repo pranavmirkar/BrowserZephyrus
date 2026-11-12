@@ -512,6 +512,9 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
           } else {
             set_type(kTypeDocument);
           }
+        } else if (opt.starts_with("reason=") && !negate) {
+          // The text uBO shows on a page it blocks; it changes nothing about
+          // what is matched. Refusing it dropped the rules that carry it.
         } else if (opt == "all" && !negate) {
           rule.type_mask |= kTypeEverything;
         } else if ((opt == "generichide" || opt == "ghide") &&
@@ -633,7 +636,20 @@ size_t AdblockFilterEngine::AddRules(std::string_view filter_list_text) {
     }
 
     if (line.empty()) {
-      continue;
+      // No pattern means every address, as in uBO: `$popup,domain=x.com`
+      // blocks every pop-up x.com opens, and `@@$generichide,domain=a.com|b.com`
+      // turns generic hiding off on those sites. MEASURED (coverage audit,
+      // 2026-11-12): these were all dropped, and the generichide exception
+      // covers a network of big sites (androidpolice, cbr, collider, gamerant,
+      // ...) where generic hiding breaks pages or trips their anti-adblock.
+      //
+      // Only for a rule held to particular sites. A pattern-less rule with no
+      // site at all would block a whole kind of request everywhere; a list that
+      // ships one by mistake must not be able to do that.
+      if (rule.domains_included.empty() && rule.to_included.empty()) {
+        continue;
+      }
+      line = "*";
     }
     // Reject patterns with an excessive number of '*' wildcards. Real filter
     // rules almost never have more than a couple; a pattern with many wildcards

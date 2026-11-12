@@ -66,7 +66,17 @@ bool IsSafeFilterCss(std::string_view css, bool declarations) {
   int parens = 0;
   int brackets = 0;
   char quote = 0;
-  for (char c : css) {
+  for (size_t i = 0; i < css.size(); ++i) {
+    const char c = css[i];
+    // A backslash makes the next character literal, in a string or out of
+    // one, so `\"` neither opens nor closes a string. Declarations refuse
+    // backslashes outright below; selectors use them (MEASURED, coverage
+    // audit 2026-11-12: 64 of Facebook's sponsored-post rules, such as
+    // article[data-ft*="\"ei\":\""], were dropped as unbalanced).
+    if (c == '\\') {
+      ++i;
+      continue;
+    }
     if (quote) {
       if (c == quote) {
         quote = 0;
@@ -135,18 +145,62 @@ std::optional<std::string> KeyTokenFor(std::string_view selector) {
 
 // Splits "selector:style(decls)" into a CSS rule. Returns nullopt when the
 // filter is not a style filter.
+//
+// Also the "selector { decls }" form some lists write instead (MEASURED,
+// coverage audit 2026-11-12: 42 rules dropped, several of them closing the gap
+// a blocked banner leaves, e.g. hindustantimes.com##body {padding-top:0;}).
+// The same vetting applies to both halves either way.
 std::optional<std::string> AsStyleRule(std::string_view selector) {
   constexpr std::string_view kMarker = ":style(";
+  std::string_view target;
+  std::string_view decls;
   const size_t at = selector.rfind(kMarker);
-  if (at == std::string_view::npos || selector.back() != ')') {
+  if (at != std::string_view::npos && selector.back() == ')') {
+    target = selector.substr(0, at);
+    decls = selector.substr(at + kMarker.size(),
+                            selector.size() - at - kMarker.size() - 1);
+  } else if (selector.back() == '}') {
+    const size_t open = selector.find('{');
+    if (open == std::string_view::npos || open == 0 ||
+        selector.find('{', open + 1) != std::string_view::npos ||
+        selector.find('}') != selector.size() - 1) {
+      return std::nullopt;
+    }
+    target = base::TrimWhitespaceASCII(selector.substr(0, open), base::TRIM_ALL);
+    decls = base::TrimWhitespaceASCII(
+        selector.substr(open + 1, selector.size() - open - 2), base::TRIM_ALL);
+  } else {
     return std::nullopt;
   }
-  std::string_view target = selector.substr(0, at);
-  std::string_view decls = selector.substr(
-      at + kMarker.size(), selector.size() - at - kMarker.size() - 1);
   if (target.empty() || decls.empty() || !IsSafeFilterCss(target, false) ||
       !IsSafeFilterCss(decls, true)) {
     return std::nullopt;
+  }
+  // A style rule that hides, aimed at the page root itself, blanks the page.
+  // Hide rules are scoped under body so they cannot (see BuildHideCss); style
+  // rules are emitted as written, so the same guard is applied here.
+  std::string flat;
+  for (char c : base::ToLowerASCII(decls)) {
+    if (!base::IsAsciiWhitespace(c)) {
+      flat.push_back(c);
+    }
+  }
+  const bool hides = flat.find("display:none") != std::string::npos ||
+                     flat.find("visibility:hidden") != std::string::npos ||
+                     flat.find("opacity:0") != std::string::npos;
+  if (hides) {
+    for (std::string_view part : base::SplitStringPiece(
+             target, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+      const std::string lower = base::ToLowerASCII(part);
+      for (std::string_view root : {"html", "body", ":root"}) {
+        if (lower.starts_with(root) &&
+            lower.find_first_of(" >+~", root.size()) == std::string::npos &&
+            (lower.size() == root.size() ||
+             !base::IsAsciiAlphaNumeric(lower[root.size()]))) {
+          return std::nullopt;
+        }
+      }
+    }
   }
   return base::StrCat({target, "{", decls, "}"});
 }
@@ -225,11 +279,9 @@ size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
     // pipeline here with its declarations already folded into a CSS rule.
     // AsStyleRule vets both halves; nullopt from an unsafe one drops it below.
     std::optional<std::string> style_rule = AsStyleRule(sel);
-    if (style_rule && exception) {
-      continue;  // Unhiding a style override is meaningless.
-    }
     const bool looks_like_style =
-        sel.find(":style(") != std::string::npos;
+        sel.find(":style(") != std::string::npos ||
+        (!sel.empty() && sel.back() == '}');
     if (!style_rule && (looks_like_style || !IsSafeFilterCss(sel, false))) {
       continue;  // See IsSafeFilterCss.
     }
@@ -249,6 +301,20 @@ size_t AdblockCosmeticEngine::AddRules(std::string_view filter_list_text,
       } else {
         included.push_back(base::ToLowerASCII(d));
       }
+    }
+
+    if (style_rule && exception) {
+      // "a.com#@#x:style(...)": that style is not applied on a.com, whichever
+      // list it came from. A generic style exception has no use.
+      if (included.empty()) {
+        continue;
+      }
+      for (const std::string& domain : included) {
+        domain_style_exceptions_[domain].insert(*style_rule);
+      }
+      ++rule_count_;
+      ++added;
+      continue;
     }
 
     if (included.empty()) {
@@ -498,13 +564,23 @@ std::vector<std::string> AdblockCosmeticEngine::GetStyleRulesForUrl(
   if (include_generic) {
     result = injected_style_rules_;
   }
-  if (include_specific) {
-    for (const std::string& key : DomainLookupKeys(std::string(url.host()))) {
+  std::unordered_set<std::string> excepted;
+  for (const std::string& key : DomainLookupKeys(std::string(url.host()))) {
+    if (include_specific) {
       const auto it = domain_style_rules_.find(key);
       if (it != domain_style_rules_.end()) {
         result.insert(result.end(), it->second.begin(), it->second.end());
       }
     }
+    const auto ex = domain_style_exceptions_.find(key);
+    if (ex != domain_style_exceptions_.end()) {
+      excepted.insert(ex->second.begin(), ex->second.end());
+    }
+  }
+  if (!excepted.empty()) {
+    std::erase_if(result, [&excepted](const std::string& rule) {
+      return excepted.contains(rule);
+    });
   }
   return result;
 }

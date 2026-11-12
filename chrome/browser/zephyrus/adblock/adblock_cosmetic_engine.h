@@ -119,6 +119,9 @@ class AdblockCosmeticEngine {
   // a rule nobody scoped.
   std::vector<std::string> injected_style_rules_;
   std::unordered_map<std::string, std::vector<std::string>> domain_style_rules_;
+  // "a.com#@#x:style(...)": the style rules, as CSS text, not applied there.
+  std::unordered_map<std::string, std::unordered_set<std::string>>
+      domain_style_exceptions_;
 
   // Procedural selectors, kept as the list wrote them. Generic ones are few and
   // run on every page, so they are capped; per-domain ones are capped per site.
