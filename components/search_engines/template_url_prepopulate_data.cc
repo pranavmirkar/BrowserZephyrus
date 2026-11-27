@@ -50,7 +50,9 @@ std::unique_ptr<TemplateURLData> ZepSearchData() {
   // every profile that merely lists the engine. chrome://zepsearch stays in the
   // tree, but its own API backend is a development address, so it is not the
   // engine people search with.
-  data->SetURL("https://atharva123.tail76dc89.ts.net/search?q={searchTerms}");
+  // The public hosted instance. It replaced a Tailscale development address
+  // that only reached machines on that tailnet.
+  data->SetURL("https://zepsearch.fly.dev/search?q={searchTerms}");
   data->input_encodings.push_back("UTF-8");
   data->safe_for_autoreplace = true;
   data->date_created = base::Time();
@@ -205,7 +207,8 @@ int GetDataVersion(PrefService* prefs) {
   // updated in place. A saved user-selected default remains
   // user-selected. Raise this number when another engine is added, or profiles
   // that already merged the list will never see it.
-  return kCurrentDataVersion + 4;
+  // +5: Zep Search moved to zepsearch.fly.dev (2026-11-28).
+  return kCurrentDataVersion + 5;
 }
 
 std::vector<std::unique_ptr<TemplateURLData>> GetPrepopulatedEngines(
