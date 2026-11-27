@@ -73,6 +73,13 @@ constexpr float kLensReachGap = 12.0f;
 constexpr base::TimeDelta kPressRingFor = base::Milliseconds(650);
 
 constexpr base::TimeDelta kFallAsleepAfter = base::Seconds(60);
+// How long the sleeping animation plays before it stops on a still pose.
+// MEASURED (idle_wakeups.py, 2026-11-27, quiet page): asleep, the browser ran
+// 297 tasks a second and 504 tile rasters in 15 s for the floating z's, against
+// 66 tasks a second with the mascot off -- and asleep is the state an untouched
+// browser sits in for hours. Counted from the yawn, so it is about a minute of
+// visible sleep.
+constexpr base::TimeDelta kSleepAnimatedFor = base::Seconds(60);
 constexpr base::TimeDelta kOutcomeShownFor = base::Seconds(9);
 
 bool IsOutcome(MascotMood mood) {
@@ -131,7 +138,18 @@ void ZephyrusAgentMascotOverlay::FitToParent() {
   if (!parent()) {
     return;
   }
+  const gfx::Size old_size = size();
   SetBoundsRect(parent()->GetLocalBounds());
+  // Home follows the window, and it is the tick that walks there. Asleep long
+  // enough, the tick has stopped (see kSleepAnimatedFor), so a resize would
+  // leave it where the old window put it -- off the edge, after a shrink. One
+  // tick puts it right; if it has to walk, `moving` keeps the timer going
+  // until it arrives, and then it holds still again.
+  if (size() != old_size && present_ && has_position_ && !timer_.IsRunning() &&
+      GetWidget() && IsDrawn() && gfx::Animation::ShouldRenderRichAnimation() &&
+      rig_.mood() == MascotMood::kSleeping) {
+    Tick();
+  }
   // On top of everything the window has, including views added after this one,
   // with the bubble above it: the order is [... overlay, bubble]. Reordered only
   // when it is wrong -- a reorder that ran on every layout would be a layout.
@@ -449,6 +467,14 @@ void ZephyrusAgentMascotOverlay::UpdateTimer() {
   }
   const bool moving = driven_ || held_ || velocity_.Length() > 1.0f ||
                       (walk_target_ - feet_).Length() > 1.0f;
+  // Long asleep: hold the last frame and stop ticking altogether. Whatever
+  // wakes it comes back through SetMood or a move, both of which call this
+  // again with a different mood or with `moving` set.
+  if (!moving && rig_.mood() == MascotMood::kSleeping &&
+      base::TimeTicks::Now() - mood_since_ > kSleepAnimatedFor) {
+    timer_.Stop();
+    return;
+  }
   // Always present now, so the resting cost matters: a character that is only
   // breathing does not need thirty frames a second, and a window that is
   // minimised needs almost none. (A ticking timer nobody can see was found
